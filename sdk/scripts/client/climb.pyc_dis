@@ -1,0 +1,1154 @@
+# Embedded file name: ./client/climb.py
+"""
+        \xd0\xba\xd0\xbb\xd0\xb0\xd1\x81\xd1\x81 \xd1\x80\xd0\xb5\xd0\xb0\xd0\xbb\xd0\xb8\xd0\xb7\xd1\x83\xd1\x8e\xd1\x89\xd0\xb8\xd0\xb9 \xd0\xb7\xd0\xb0\xd0\xbf\xd1\x80\xd1\x8b\xd0\xb3\xd0\xb8\xd0\xb2\xd0\xb0\xd0\xbd\xd0\xb8\xd0\xb5\\\xd0\xbf\xd0\xb5\xd1\x80\xd0\xb5\xd0\xbf\xd1\x80\xd1\x8b\xd0\xb3\xd0\xb8\xd0\xb2\xd0\xb0\xd0\xbd\xd0\xb8\xd0\xb5 \xd0\xbf\xd1\x80\xd0\xb5\xd0\xbf\xd1\x8f\xd1\x82\xd1\x81\xd1\x82\xd0\xb2\xd0\xb8\xd0\xb9
+        \xd0\xbf\xd0\xb5\xd1\x80\xd0\xb5\xd0\xbc\xd0\xb5\xd1\x89\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5 \xd0\xbf\xd0\xbe \xd0\xb2\xd0\xb5\xd1\x80\xd1\x82\xd0\xb8\xd0\xba\xd0\xb0\xd0\xbb\xd1\x8c\xd0\xbd\xd1\x8b\xd0\xbc \xd0\xbb\xd0\xb5\xd1\x81\xd0\xbd\xd0\xb8\xd1\x86\xd0\xb0\xd0\xbc
+"""
+DEBUG = False
+DEBUG_PRINT = False
+import BigWorld
+import BWPersonality
+import Math
+import math
+import random
+from functools import partial
+import traceback
+from Math import Vector3, Matrix
+from Helpers.BWCoroutine import BWCoroutine, BWWaitForPeriod
+import Stats
+import draw_utils_extend
+from Localization import lc
+import climb_settings
+from climb_settings import ANIMS
+from climb_settings import VERTICAL_LADDER_MATERIAL_KIND, STOP_ANIMATION_ID, INF
+from climb_settings import LADDERIDS
+from climb_settings import MAX_POS as UP_BY_MAX_POS
+from climb_settings import END_POS as UP_BY_END_POS
+from tmp_demo_recorder import rec_attr_demo, rec_foo_demo
+from climb_watcher import ClimbWatcher
+from Constants import MESSAGE_TYPES as MT
+import ItemsUtils
+import RestrictionsUtils
+V_UP = Vector3(0, 0.99, 0.005)
+V_DOWN = Vector3(0, -0.99, 0.005)
+V_UP.normalise()
+V_DOWN.normalise()
+
+def debug_reload_climb_settings():
+    global ANIMS
+    global VERTICAL_LADDER_MATERIAL_KIND
+    global LADDERIDS
+    global climb_settings
+    import climb_settings
+    reload(climb_settings)
+    from climb_settings import ANIMS
+    from climb_settings import VERTICAL_LADDER_MATERIAL_KIND
+    from climb_settings import LADDERIDS
+    print 'debug_reload_climb_settings ok'
+
+
+_debug_lines_draw = draw_utils_extend.LinesHolder(200)
+_debug_lines_draw2 = draw_utils_extend.LinesHolder(200)
+
+def clear_lines_level1():
+    _debug_lines_draw.clear()
+
+
+def clear_lines(level = 0):
+    _debug_lines_draw.clear()
+    if level:
+        _debug_lines_draw2.clear()
+
+
+def _getDebugModel(level = 0):
+    if level:
+        return _debug_lines_draw
+    return _debug_lines_draw2
+
+
+def line(start, end, color = (1, 0, 0, 1), over = False, level = 0):
+    if not DEBUG:
+        return
+    model = _getDebugModel(level)
+    model.add(start, end, color, over)
+
+
+def normalFromTri(triangle):
+    v1, v2, v3 = triangle
+    normal = (v2 - v1) * (v3 - v1)
+    normal.normalise()
+    return normal
+
+
+def collideBoxGeometry(spaceID, pos, direction, width = 0.5, height = 1, depth = 0.5, vector_up = V_UP, no_draw = False, draw_level = 0, draw_handle = None, forcedarw = False):
+    triangle = None
+    height2 = height / 2.0
+    width2 = width / 2.0
+    if not draw_handle:
+        draw_handle = line
+    m = Matrix()
+    m.lookAt((0, 0, 0), direction, vector_up)
+    m.invert()
+    v0 = Math.Vector3(pos) + m.applyVector((-width2, -height2, 0))
+    v1 = Math.Vector3(pos) + m.applyVector((width2, -height2, 0))
+    v2 = Math.Vector3(pos) + m.applyVector((width2, height2, 0))
+    v3 = Math.Vector3(pos) + m.applyVector((-width2, height2, 0))
+    color = (0, 0.1, 0, 0.2)
+    if (DEBUG or forcedarw) and not no_draw:
+
+        def drawpoly(*poly):
+            last = poly[-1]
+            for x in poly:
+                draw_handle(x, last, color, 0, level=draw_level)
+                last = x
+
+        drawpoly(v0, v1, v2, v3)
+    dest = v0 + direction * depth
+    res = BigWorld.naturalCollideBox(v0, v1, v2, v3, direction, dest, depth)
+    collision_advance = depth
+    debug_poly_list = ()
+    if res:
+        color = (0.3, 0.3, 0.3, 0.5)
+        p_coll, triangle, materialKind, collisionFlags, collision_advance, p_natural_coll = res
+        color = (0.4, 0.1, 0, 0.2)
+    else:
+        color = (0.1, 0.0, 0.2, 0.5)
+    if (DEBUG or forcedarw) and not no_draw:
+        dv0 = v0 + direction * collision_advance
+        dv1 = v1 + direction * collision_advance
+        dv2 = v2 + direction * collision_advance
+        dv3 = v3 + direction * collision_advance
+        draw_handle(dv0, dv1, color, level=draw_level)
+        draw_handle(dv1, dv2, color, level=draw_level)
+        draw_handle(dv2, dv3, color, level=draw_level)
+        draw_handle(dv3, dv0, color, level=draw_level)
+        draw_handle(v0, dv0, color, level=draw_level)
+        draw_handle(v1, dv1, color, level=draw_level)
+        draw_handle(v2, dv2, color, level=draw_level)
+        draw_handle(v3, dv3, color, level=draw_level)
+        for dpoly in debug_poly_list:
+            color = (random.random(),
+             random.random(),
+             random.random(),
+             0.7)
+            drawpoly(*dpoly)
+
+    if res:
+        return collision_advance
+    else:
+        return
+
+
+def findEndAminPosition(player, end_pos, end_yaw):
+    spaceID = player.spaceID
+    phy_width = player.DefModelWidth
+    vector_up = Vector3()
+    vector_up.setPitchYaw(0, end_yaw)
+    direction = Vector3(V_DOWN)
+    pos = end_pos + Vector3(0, 0.5, 0)
+    depth = 1.5
+    adv = collideBoxGeometry(spaceID, pos, direction, width=phy_width, height=phy_width, depth=depth, vector_up=vector_up)
+    if adv is None:
+        adv = depth
+    return pos + direction * adv
+
+
+def findForwardGeometry(player, see_dir, recur = True):
+    """
+    \xd0\xbf\xd0\xbe\xd0\xb8\xd1\x81\xd0\xba \xd0\xb3\xd0\xb5\xd0\xbe\xd0\xbc\xd0\xb5\xd1\x82\xd1\x80\xd0\xb8\xd0\xb8 \xd0\xb2\xd0\xbf\xd0\xb5\xd1\x80\xd0\xb5\xd0\xb4\xd0\xb8
+    ret: \xd1\x80\xd0\xb0\xd1\x81\xd1\x82\xd0\xbe\xd1\x8f\xd0\xbd\xd0\xb8\xd0\xb5 \xd0\xb4\xd0\xbe \xd0\xb3\xd0\xb5\xd0\xbe\xd0\xbc\xd0\xb5\xd1\x82\xd1\x80\xd0\xb8\xd0\xb8, \xd0\xbd\xd0\xbe\xd1\x80\xd0\xbc\xd0\xb0\xd0\xbb\xd1\x8c \xd0\xb3\xd0\xb5\xd0\xbe\xd0\xbc\xd0\xb5\xd1\x82\xd1\x80\xd0\xb8\xd0\xb8(\xd0\xba\xd1\x80\xd1\x83\xd1\x82\xd0\xb8\xd1\x82\xd1\x81\xd1\x8f \xd0\xbf\xd0\xbe \xd1\x8f\xd0\xb2\xd1\x83)
+    """
+    spaceID = player.spaceID
+    position = player.position
+    phy_width = player.DefModelWidth
+    no_draw = False
+    one_col_width = phy_width / 4.0
+    height = player.DefModelHeightStanding
+    depth = ANIMS._MAX_SEARCH_FORWARD + phy_width / 2.0
+    left_dir = Vector3()
+    left_dir.setPitchYaw(0, see_dir.yaw - math.pi / 2)
+    start_pos = position + Vector3(0, height / 2 + player.DefModelScrambleHeight - 0.05, 0)
+    posL = start_pos + left_dir * (phy_width / 2.0 - one_col_width / 2.0)
+    posR = start_pos - left_dir * (phy_width / 2.0 - one_col_width / 2.0)
+    posC = start_pos
+    advL = collideBoxGeometry(spaceID, posL, see_dir, phy_width / 4.0, height, depth, no_draw=no_draw)
+    advR = collideBoxGeometry(spaceID, posR, see_dir, phy_width / 4.0, height, depth, no_draw=no_draw)
+    advC = collideBoxGeometry(spaceID, posC, see_dir, phy_width / 4.0, height, depth, no_draw=no_draw)
+    if advL is None or advR is None or advC is None:
+        return (None, None)
+    else:
+        posL = posL + see_dir * advL
+        posR = posR + see_dir * advR
+        posC = posC + see_dir * advC
+        line(posL, posC)
+        line(posR, posC)
+        line(posR, posL)
+        posHC = posR + (posL - posR) / 2.0
+        line(posHC + (0, 0.01, 0), posC + (0, 0.01, 0), (0, 1, 0, 1))
+        dist_tri_h = posC - posHC
+        if dist_tri_h.length > 0.05:
+            if DEBUG_PRINT:
+                print '\xd0\xbd\xd0\xb5\xd1\x80\xd0\xbe\xd0\xb2\xd0\xbd\xd0\xb0\xd1\x8f \xd0\xbf\xd0\xbe\xd0\xb2\xd0\xb5\xd1\x80\xd1\x85\xd0\xbd\xd0\xbe\xd1\x81\xd1\x82\xd1\x8c'
+            if DEBUG_PRINT:
+                print 'dist_tri_h LIMIT', dist_tri_h.length
+            return (None, None)
+        geom_left = posL - posR
+        geom_left.normalise()
+        geom_normal = Vector3()
+        geom_normal.setPitchYaw(0, geom_left.yaw - math.pi / 2)
+        if recur:
+            new_see_dir = -geom_normal
+            dotProduct = max(-1, min(1, see_dir.dot(new_see_dir)))
+            angle = math.degrees(math.acos(dotProduct))
+            if DEBUG_PRINT:
+                print 'angle %.1f' % angle
+            if abs(angle) > climb_settings.MAX_ANGLE_COLLISION:
+                if DEBUG_PRINT:
+                    print '\xd1\x81\xd0\xbb\xd0\xb8\xd1\x88\xd0\xba\xd0\xbe\xd0\xbc \xd0\xb1\xd0\xbe\xd0\xbb\xd1\x8c\xd1\x88\xd0\xbe\xd0\xb9 \xd1\x83\xd0\xb3\xd0\xbe\xd0\xbb \xd0\xbc\xd0\xb5\xd0\xb6\xd0\xb4\xd1\x83 \xd0\xba\xd0\xb0\xd0\xbc\xd0\xb5\xd1\x80\xd0\xbe\xd0\xb9 \xd0\xb8 \xd1\x81\xd1\x82\xd0\xb5\xd0\xbd\xd0\xbe\xd0\xb9  %.1f' % angle
+                return (None, None)
+            return findForwardGeometry(player, new_see_dir, recur=False)
+        adv_forward = min((advL, advR, advC))
+        return (adv_forward, geom_normal)
+
+
+def findHeightGeometry(player, see_dir, forward_advance):
+    """
+    \xd0\xbf\xd0\xbe\xd0\xb8\xd1\x81\xd0\xba \xd0\xb2\xd1\x8b\xd1\x81\xd0\xbe\xd1\x82\xd1\x8b \xd0\xbf\xd1\x80\xd0\xb5\xd0\xbf\xd1\x8f\xd1\x82\xd1\x81\xd1\x82\xd0\xb2\xd0\xb8\xd1\x8f \xd0\xb8 \xd0\xb2\xd1\x8b\xd1\x81\xd0\xbe\xd1\x82\xd1\x8b \xd0\xbd\xd0\xb0\xd0\xb4 \xd0\xbd\xd0\xb8\xd0\xbc
+    ret:  \xd0\xb2\xd1\x8b\xd1\x81\xd0\xbe\xd1\x82\xd0\xb0 \xd0\xbf\xd1\x80\xd0\xb5\xd0\xbf\xd1\x8f\xd1\x82\xd1\x81\xd1\x82\xd0\xb2\xd0\xb8\xd1\x8f(\xd0\xbe\xd1\x82 \xd0\xbd\xd0\xbe\xd0\xb3 \xd0\xb8\xd0\xb3\xd1\x80\xd0\xbe\xd0\xba\xd0\xb0), \xd0\xb2\xd1\x8b\xd1\x81\xd0\xbe\xd1\x82\xd0\xb0 \xd1\x81\xd0\xb2\xd0\xbe\xd0\xb1\xd0\xbe\xd0\xb4\xd0\xbd\xd0\xbe\xd0\xb3\xd0\xbe \xd0\xbf\xd1\x80\xd0\xbe\xd1\x81\xd1\x82\xd1\x80\xd0\xb0\xd0\xbd\xd1\x81\xd1\x82\xd0\xb2\xd0\xb0(\xd0\xbe\xd1\x82 \xd0\xbf\xd1\x80\xd0\xb5\xd0\xbf\xd1\x8f\xd1\x82\xd1\x81\xd1\x82\xd0\xb2\xd0\xb8\xd1\x8f)
+    """
+    spaceID = player.spaceID
+    position = player.position
+    phy_width = player.DefModelWidth
+    up = Vector3(V_UP)
+    down = Vector3(V_DOWN)
+    zzz_pos = position + see_dir * forward_advance
+    line(zzz_pos, zzz_pos + (0, 5, 0))
+    collide_height = max(1.0, forward_advance + 0.5)
+    collide_height_free = collide_height - 0.05
+    geometr_height_ws = INF
+    for from_h_to_dwn in (1.51,
+     1.91,
+     2.31,
+     2.51,
+     2.81,
+     ANIMS._MAX_SEARCH_GEOMETRY_HEIGHT):
+        pos = position + see_dir * (collide_height / 2.0 - phy_width / 2.0) + Vector3(0, from_h_to_dwn, 0)
+        dwn_adv = collideBoxGeometry(spaceID, pos, down, width=0.5, height=collide_height, depth=from_h_to_dwn, vector_up=see_dir)
+        if dwn_adv > 0.001:
+            geometr_height_ws = pos.y - dwn_adv
+            if geometr_height_ws == INF:
+                if DEBUG_PRINT:
+                    print '\xd0\xb2\xd1\x8b\xd1\x81\xd0\xbe\xd1\x82\xd0\xb0 \xd1\x81\xd1\x82\xd0\xb5\xd0\xbd\xd1\x8b:  INF'
+                return (INF, None)
+            geometr_height = geometr_height_ws - position.y
+            pos = position + see_dir * (collide_height_free / 2.0 - phy_width / 2.0 + 0.02) + Vector3(0, geometr_height + 0.01, 0)
+            free_adv = collideBoxGeometry(spaceID, pos, up, width=0.5, height=collide_height_free, depth=2.0, vector_up=see_dir)
+            if free_adv is None:
+                free_adv = INF
+            if free_adv < player.DefModelHeightCrouched:
+                continue
+            c_pos = position + (0, 0.5, 0)
+            up_adv = collideBoxGeometry(spaceID, c_pos, V_UP, width=phy_width * 0.5, height=phy_width * 0.5, depth=geometr_height, vector_up=see_dir)
+            if up_adv is not None:
+                if DEBUG_PRINT:
+                    print '\xd0\x9d\xd0\xb0\xd0\xb9\xd0\xb4\xd0\xb5\xd0\xbd\xd0\xb0 \xd0\xb3\xd0\xb5\xd0\xbe\xd0\xbc\xd0\xb5\xd1\x82\xd1\x80\xd0\xb8\xd1\x8f \xd0\xbd\xd0\xb0 \xd0\xbf\xd1\x83\xd1\x82\xd0\xb8 \xd0\xb0\xd0\xbd\xd0\xb8\xd0\xbc\xd0\xb0\xd1\x86\xd0\xb8\xd0\xb8 \xd0\xb2\xd0\xb2\xd0\xb5\xd1\x80\xd1\x85  up_adv=', up_adv
+                if DEBUG_PRINT:
+                    print
+                return (INF, None)
+            return (geometr_height, free_adv)
+
+    return (INF, None)
+
+
+def findDepthGeometry(player, see_dir, forward_advance, geom_height):
+    """
+    \xd0\xbe\xd0\xbf\xd1\x80\xd0\xb5\xd0\xb4\xd0\xb5\xd0\xbb\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5 \xd1\x82\xd0\xbe\xd0\xbb\xd1\x89\xd0\xb8\xd0\xbd\xd1\x8b \xd0\xbf\xd1\x80\xd0\xb5\xd0\xbf\xd1\x8f\xd1\x82\xd1\x81\xd1\x82\xd0\xb2\xd0\xb8\xd1\x8f
+    ret: \xd1\x82\xd0\xbe\xd0\xbb\xd1\x89\xd0\xb8\xd0\xbd\xd0\xb0 \xd0\xbf\xd1\x80\xd0\xb5\xd0\xbf\xd1\x8f\xd1\x82\xd1\x81\xd1\x82\xd0\xb2\xd0\xb8\xd1\x8f
+    """
+    spaceID = player.spaceID
+    position = player.position
+    phy_width = player.DefModelWidth
+    phy_height = player.DefModelHeightStanding
+    max_depth_wall = 1.01
+    upp = player.DefModelScrambleHeight
+    if geom_height > phy_height:
+        upp = geom_height - phy_height + player.DefModelScrambleHeight
+    height = geom_height - upp + 0.1
+    search_depth = max_depth_wall + forward_advance
+    pos = position + Vector3(0, height / 2 + upp, 0) + see_dir * search_depth
+    wall_adv = collideBoxGeometry(spaceID, pos, -see_dir, width=phy_width, height=height, depth=search_depth)
+    pos2 = player.position + Vector3(0, geom_height, 0) + see_dir * search_depth
+    wall_adv2 = collideBoxGeometry(spaceID, pos2, -see_dir, width=phy_width, height=height * 0.5, depth=search_depth)
+    if not wall_adv and not wall_adv2:
+        return INF
+    if not wall_adv or not wall_adv2:
+        return -1
+    if abs(abs(wall_adv2) - abs(wall_adv)) > 0.3:
+        return -1
+    wall_depth = search_depth - (forward_advance + wall_adv2)
+    return wall_depth
+
+
+class MaterialException(Exception):
+    pass
+
+
+class Climb:
+    vert_ladder_info = dict(animID=0, yaw=0, start_pos=Vector3())
+
+    def __init__(self):
+        self.need_ladder_yaw = None
+        self._is_lader_action_played = False
+        self._ignorGravityAnimation = False
+        self._fence_played = False
+        self._fence_id = False
+        self._last_ladder_action = False
+        self.update_turn_states()
+        self._is_lader_end_action_played = False
+        self._center_ladder = None
+        return
+
+    def resetClimb(self, anim_id):
+        BWPersonality.gpd.sendHightMessage('climb server ERROR!')
+        anim = ANIMS[anim_id]
+        try:
+            self.model.action(anim.pre_action).stop()
+        except:
+            traceback.print_exc()
+
+        try:
+            self.model.action(anim.action).stop()
+        except:
+            traceback.print_exc()
+
+        self._fence_played = False
+        self._setFenceID(STOP_ANIMATION_ID)
+        self.model.attachOffset = (0, 0, 0)
+        self._onEndClimbAction(anim)
+
+    def onClimbAnimation(self, anim_id, need_model_yaw, obstacle_height_ws, start_pos):
+        """
+                \xd1\x81 \xd1\x81\xd0\xb5\xd1\x80\xd0\xb2\xd0\xb5\xd1\x80\xd0\xb0 \xd0\xba\xd0\xbe\xd0\xbc\xd0\xb0\xd0\xbd\xd0\xb4\xd0\xb0 \xd0\xbf\xd1\x80\xd0\xbe\xd0\xb8\xd0\xb3\xd1\x80\xd0\xb0\xd1\x82\xd1\x8c \xd0\xb0\xd0\xbd\xd0\xb8\xd0\xbc\xd0\xb0\xd1\x86\xd0\xb8\xd1\x8e
+        """
+        start_pos = Vector3(start_pos)
+        self._go_climb_play_demo(anim_id, need_model_yaw, obstacle_height_ws=obstacle_height_ws, need_crouch=False, adv_forward=0)
+        if hasattr(self, '_lines_holder'):
+            self._lines_holder.clear()
+        if DEBUG:
+            from draw_utils_extend import LinesHolder
+            self._lines_holder = LinesHolder()
+            self._lines_holder.add(start_pos, color=(1, 0, 0, 1))
+            self._lines_holder.add(start_pos, start_pos + (0, 0.1, 0.1), color=(1, 0, 0, 1))
+            self._lines_holder.add(self.position, color=(0, 1, 0, 1))
+            self._lines_holder.add(self.position, self.position + (0, 0.1, 0.1), color=(0, 1, 0, 1))
+            v = Vector3()
+            v.setPitchYaw(0, need_model_yaw)
+            deb_obst_pos = Vector3(start_pos.x, obstacle_height_ws, start_pos.z)
+            self._lines_holder.add(deb_obst_pos, deb_obst_pos + v * 5, color=(0, 0, 1, 1))
+        anim = ANIMS[anim_id]
+        action = self.model.action(anim.action)
+        dir_to_start_pos = start_pos - self.position
+        self._fix_start_dist = dir_to_start_pos.length
+        dir_to_start_pos.normalise()
+        matrix_pos = Matrix(self.model.matrix)
+        max_y, delay_maxy = action.maxPosY
+        self.__fix_add_pos_geom = obstacle_height_ws - (start_pos.y + max_y)
+
+        def _getFixPosGeom():
+            diff = self.__fix_add_pos_geom - self.__fix_add_pos_geom * 0.8
+            self.__fix_add_pos_geom -= diff
+            return diff
+
+        self.__fix_anim_offset_blend = 1.0
+
+        def _stop_offset():
+            self.model.preDrawDebug = None
+            self.model.preTickDebug = None
+            return
+
+        class EXT_VAR:
+            last_dtime = 0
+            firts_draw = 0
+
+        def _preTick(dTime):
+            EXT_VAR.last_dtime = dTime
+            EXT_VAR.firts_draw = True
+
+        def _preDraw(p_world_matrx):
+            if EXT_VAR.firts_draw:
+                add_start = Vector3(0, _getFixPosGeom(), 0)
+                self._fix_start_dist -= 0.051
+                if self._fix_start_dist > 0:
+                    add_start += dir_to_start_pos * 0.051
+                addpos = Matrix()
+                add_final = self.model.getLastPromotionImpacting() + add_start
+                addpos.setTranslate(add_final)
+                matrix_pos.postMultiply(addpos)
+            if not self._fence_played:
+                if EXT_VAR.firts_draw:
+                    self.__fix_anim_offset_blend -= EXT_VAR.last_dtime * 3.1
+                    if self.__fix_anim_offset_blend <= 0:
+                        BigWorld.callback(0, _stop_offset)
+                    p_world_matrx.blendMatrix(self.__fix_anim_offset_blend, matrix_pos)
+                EXT_VAR.firts_draw = False
+                return p_world_matrx
+            EXT_VAR.firts_draw = False
+            return matrix_pos
+
+        self.model.preDrawDebug = _preDraw
+        self.model.preTickDebug = _preTick
+        if self != BigWorld.player():
+
+            def _isFencePlayed():
+                return not self.isDestroyed and self.isFencePlayed()
+
+            ClimbWatcher(_preDraw, _preTick, self.model.matrix, self.model.root, _isFencePlayed)
+
+    def set_vert_ladder_info(self, old = None):
+        anim_id = self.vert_ladder_info['animID']
+        yaw = self.vert_ladder_info['yaw']
+        start_pos = self.vert_ladder_info['start_pos']
+        self._go_ladder_play_demo(anim_id, yaw, start_pos)
+
+    def scriptNeedSetCrouch(self):
+        pass
+
+    def onPostModelChange(self):
+        if self == BigWorld.player():
+            if self.vert_ladder_info['animID']:
+                self._onStopLadder()
+                self.cell.UpdateVertLadderAnimation(0, 0, self.position)
+                self.vert_ladder_info['animID'] = 0
+        elif self.vert_ladder_info['animID']:
+            self.set_vert_ladder_info()
+            self.updateBlendNodeByImpacting()
+
+    def onChangeFenceID(self, oldID, newID, newClimbObj):
+        pass
+
+    def _setFenceID(self, newID):
+        oldID = self._fence_id
+        self._fence_id = newID
+        self.updateBlendNodeByImpacting()
+        if oldID != newID:
+            newClimbObj = None
+            if newID:
+                newClimbObj = ANIMS[newID]
+            self.onChangeFenceID(oldID, newID, newClimbObj)
+        return
+
+    def onCrouchNotifer(self):
+        if self._is_lader_action_played:
+            self.stopVertiacalLadder()
+            self._is_lader_action_played = False
+
+    def jumpCollisionNotifierClimb(self, ignor_gravity_animation):
+        """
+        \xd1\x84\xd0\xb8\xd0\xb7\xd0\xb8\xd0\xba\xd0\xb0 \xd0\xb2\xd0\xbe \xd0\xb2\xd1\x80\xd0\xb5\xd0\xbc\xd1\x8f \xd0\xbf\xd1\x80\xd1\x8b\xd0\xb6\xd0\xba\xd0\xb0 \xd1\x83\xd0\xb4\xd0\xb0\xd1\x80\xd0\xb8\xd0\xbb\xd0\xb0\xd1\x81\xd1\x8c \xd0\xbe \xd0\xb1\xd1\x81\xd0\xbf
+        """
+        if self._is_lader_action_played:
+            self.stopVertiacalLadder()
+            self._is_lader_action_played = False
+        self.updateBlendNodeByImpacting()
+
+    def cancelClimbAndLadder(self):
+        if self._is_lader_action_played:
+            self.stopVertiacalLadder()
+            self._is_lader_action_played = False
+        self.updateBlendNodeByImpacting()
+
+    def _stopAction(self, name = ''):
+        pass
+
+    def getCameraImpSettings(self):
+        if self._fence_id:
+            return ANIMS[self._fence_id].getCameraSettings()
+
+    def isFencePlayed(self):
+        """        \xd0\xbf\xd1\x80\xd0\xbe\xd0\xb8\xd0\xb3\xd1\x80\xd1\x8b\xd0\xb2\xd0\xb0\xd0\xb5\xd1\x82\xd1\x81\xd1\x8f \xd0\xb0\xd0\xbd\xd0\xb8\xd0\xbc\xd0\xb0\xd1\x86\xd0\xb8\xd1\x8f \xd0\xbd\xd0\xb0 \xd0\xbf\xd1\x80\xd0\xb5\xd0\xbf\xd1\x8f\xd1\x82\xd1\x81\xd0\xb2\xd0\xb8\xd0\xb5
+        """
+        return self._fence_played
+
+    def isImpactingPlayed(self):
+        if self._fence_played:
+            return True
+        if self._is_lader_action_played or self._is_lader_end_action_played:
+            return True
+        return False
+
+    def isVerticalLadderPlayed(self):
+        if self._is_lader_action_played or self._is_lader_end_action_played:
+            return True
+        return False
+
+    def isImpactingPlayedHeadFree(self):
+        if self._is_lader_end_action_played:
+            return False
+        if 'ladder_idle_test' == self._last_ladder_action:
+            return True
+        return False
+
+    def _check_can_fence(self):
+        """
+        \xd1\x82\xd0\xb5\xd1\x81\xd1\x82 \xd0\xb3\xd0\xb5\xd0\xbe\xd0\xbc\xd0\xb5\xd1\x82\xd1\x80\xd0\xb8\xd0\xb8 \xd0\xb2\xd0\xbe\xd0\xb7\xd0\xbb\xd0\xb5 \xd0\xb8\xd0\xb3\xd1\x80\xd0\xbe\xd0\xba\xd0\xb0 \xd0\xbd\xd0\xb0 \xd0\xbf\xd1\x80\xd0\xbe\xd0\xb8\xd0\xb3\xd1\x80\xd1\x8b\xd0\xb2\xd0\xb0\xd0\xbd\xd0\xb8\xd0\xb5 \xd0\xb0\xd0\xbd\xd0\xb8\xd0\xbc\xd0\xb0\xd1\x86\xd0\xb8\xd0\xb8 \xd0\xbf\xd0\xb5\xd1\x80\xd0\xb5\xd0\xbf\xd1\x80\xd1\x8b\xd0\xb3\xd0\xb8\xd0\xb2\xd0\xb0\xd0\xbd\xd0\xb8\xd1\x8f
+        \xd0\xb8\xd0\xbb\xd0\xb8 \xd0\xb7\xd0\xb0\xd1\x88\xd0\xb0\xd0\xb3\xd0\xb8\xd0\xb2\xd0\xb0\xd0\xbd\xd0\xb8\xd1\x8f
+        \xd0\xb2\xd0\xbe\xd0\xb7\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82: (\xd0\xba\xd0\xbe\xd0\xb4 \xd0\xb0\xd0\xbd\xd0\xb8\xd0\xbc\xd0\xb0\xd1\x86\xd0\xb8\xd0\xb8, \xd0\xb2\xd1\x8b\xd1\x81\xd0\xbe\xd1\x82\xd1\x83 \xd0\xba\xd0\xbe\xd0\xbb\xd0\xb8\xd0\xb7\xd0\xb8\xd0\xb8(WS))
+        """
+        clear_lines()
+        see_dir = Vector3()
+        direction_model = Vector3()
+        direction_model.setPitchYaw(0, self.model.yaw)
+        see_dir.setPitchYaw(0, self.yaw)
+        need_crouch = False
+        adv_forward, geom_normal = findForwardGeometry(self, see_dir)
+        if DEBUG_PRINT:
+            print
+        str_adv_forward = '%.3f' % adv_forward if adv_forward else '\xd0\xbd\xd0\xb5\xd1\x82'
+        msg = ''
+        if self._inAir:
+            msg = '\xd1\x8f \xd0\xb2 \xd0\xb2\xd0\xbe\xd0\xb7\xd0\xb4\xd1\x83\xd1\x85\xd0\xb5-\xd0\x94\xd0\x90'
+        if DEBUG_PRINT:
+            print '\xd0\xb4\xd0\xbe \xd1\x81\xd1\x82\xd0\xb5\xd0\xbd\xd1\x8b: %s     %s' % (str_adv_forward, msg)
+        if not geom_normal:
+            return (False,
+             None,
+             0,
+             need_crouch,
+             adv_forward)
+        else:
+            see_dir = -geom_normal
+            geom_height, free_space = findHeightGeometry(self, see_dir, adv_forward)
+            if geom_height >= INF - 0.1:
+                return (0,
+                 None,
+                 0,
+                 need_crouch,
+                 adv_forward)
+            geom_height_ws = geom_height + self.position.y
+            if DEBUG_PRINT:
+                print '\xd0\xb2\xd1\x8b\xd1\x81\xd0\xbe\xd1\x82\xd0\xb0 \xd1\x81\xd1\x82\xd0\xb5\xd0\xbd\xd1\x8b:', geom_height
+            if DEBUG_PRINT:
+                print '\xd1\x81\xd0\xb2\xd0\xbe\xd0\xb1\xd0\xbe\xd0\xb4\xd0\xbd\xd0\xbe:', free_space
+            if free_space < self.DefModelHeightCrouched:
+                return (0,
+                 None,
+                 0,
+                 need_crouch,
+                 adv_forward)
+            need_crouch = free_space - 0.2 < self.DefModelHeightStanding
+            geom_depth = findDepthGeometry(self, see_dir, adv_forward, geom_height)
+            if DEBUG_PRINT:
+                print '\xd1\x82\xd0\xbe\xd0\xbb\xd1\x89\xd0\xb8\xd0\xbd\xd0\xb0 \xd1\x81\xd1\x82\xd0\xb5\xd0\xbd\xd1\x8b:', geom_depth
+            if geom_depth <= 0:
+                if DEBUG_PRINT:
+                    print '\xd1\x8d\xd1\x82\xd0\xbe \xd0\xbd\xd0\xb5\xd0\xbf\xd1\x80\xd0\xb0\xd0\xb2\xd0\xb8\xd0\xbb\xd1\x8c\xd0\xbd\xd0\xb0\xd1\x8f \xd1\x81\xd1\x82\xd0\xb5\xd0\xbd\xd0\xb0'
+                geom_depth = 9999
+
+            def testBadSlope(up_pos):
+                test_depth = 0.2
+                dir_slope = Vector3()
+                vector_up = Vector3()
+                vector_left = Vector3()
+                vector_left.setPitchYaw(0, see_dir.yaw + math.pi / 2.0)
+                vector_left = vector_left * 0.2
+                dir_slope.setPitchYaw(math.pi / 4, see_dir.yaw)
+                vector_up.setPitchYaw(-math.pi / 4, see_dir.yaw)
+                slope_advance_l = collideBoxGeometry(self.spaceID, up_pos - vector_left, dir_slope, depth=test_depth, vector_up=vector_up, height=0.2, width=0.1)
+                slope_advance_r = collideBoxGeometry(self.spaceID, up_pos + vector_left, dir_slope, depth=test_depth, vector_up=vector_up, height=0.2, width=0.1)
+                if slope_advance_l is None or slope_advance_r is None:
+                    return True
+                else:
+                    return
+
+            if testBadSlope(self.position + see_dir * adv_forward + Vector3(0, geom_height, 0)):
+                if DEBUG_PRINT:
+                    print '\xd1\x8d\xd1\x82\xd0\xbe \xd0\xbd\xd0\xb0\xd0\xba\xd0\xbb\xd0\xbe\xd0\xbd \xd0\xb4\xd0\xbb\xd1\x8f \xd0\xbc\xd0\xb0\xd0\xbb \xd1\x88\xd0\xb0\xd0\xb3\xd0\xb0, \xd0\xb7\xd0\xb0\xd0\xbb\xd0\xb0\xd0\xb7\xd0\xb8\xd1\x82\xd1\x8c \xd0\xbd\xd0\xb5\xd0\xbb\xd1\x8c\xd0\xb7\xd1\x8f'
+                return (False,
+                 None,
+                 0,
+                 need_crouch,
+                 adv_forward)
+            player_speed = self.model.motors[0].lastSpeed
+            if DEBUG_PRINT:
+                print 'speed: %.3f' % player_speed
+            for anim_id, anim in ANIMS.items():
+                if anim.check(player_speed, adv_forward, geom_height, free_space, geom_depth, self._inAir):
+                    if DEBUG_PRINT:
+                        print 'ok', anim
+                    return (anim_id,
+                     see_dir.yaw,
+                     geom_height_ws,
+                     need_crouch,
+                     adv_forward)
+
+            return (False,
+             None,
+             0,
+             need_crouch,
+             adv_forward)
+
+    def _chech_can_lader(self, _range = 3, _from_h = 0.7):
+        clear_lines()
+        dir_model = Vector3()
+        dir_model.setPitchYaw(0, self.model.yaw)
+        depth = 0.6
+        tri_collide = None
+        for x in xrange(_range):
+            pos = self.position + Vector3(0, _from_h + x * 0.501, 0)
+            pos2 = pos + dir_model * depth
+            res = BigWorld.collide(self.spaceID, pos, pos2)
+            if not res:
+                return False
+            materialKind = res[-1]
+            if materialKind != VERTICAL_LADDER_MATERIAL_KIND:
+                return False
+            if not tri_collide:
+                tri_collide = res[1]
+
+        return tri_collide
+
+    def _go_climb_play_demo(self, anim_id, need_model_yaw, obstacle_height_ws = None, need_crouch = False, adv_forward = 0):
+        self.onPreStartClimb()
+        self.model.yaw = need_model_yaw
+        climb_obj = ANIMS[anim_id]
+        action = self.model.action(climb_obj.action)
+        delay_end = action.duration - action.blendOutTime / 2.0
+        if climb_obj.pre_action:
+            pre_action = self.model.action(climb_obj.pre_action)
+            delay_end += pre_action.duration
+            post_action = getattr(pre_action(), climb_obj.action)
+            post_action()
+        else:
+            action()
+        self._fence_played = True
+        self._onStartClimb(climb_obj)
+        self.updateBlendNodeByImpacting()
+
+        def onEnd():
+            if self.isDestroyed:
+                return
+            self._fence_played = False
+            self._onEndClimb(climb_obj)
+            self.updateBlendNodeByImpacting()
+
+        BigWorld.callback(delay_end, onEnd)
+
+    def _go_climb(self, anim_id, need_model_yaw, obstacle_height_ws = None, need_crouch = False, adv_forward = 0):
+        anim = ANIMS[anim_id]
+        if self == BigWorld.player():
+            dir_ = Vector3()
+            dir_.setPitchYaw(0, need_model_yaw)
+            phy_fw_dist = math.sqrt(self.DefModelWidth ** 2 + self.DefModelDepth ** 2) / 2.0
+            need_add_fw = adv_forward - phy_fw_dist
+            need_pos = self.position + dir_ * (need_add_fw * 0.99)
+            self.cell.UpdateClimbAnimation(anim_id, need_model_yaw, obstacle_height_ws, need_pos)
+            rec_foo_demo('onClimbAnimation', anim_id, need_model_yaw, obstacle_height_ws, tuple(need_pos))
+            self.physics.resetSpeedJumpCollide = False
+        self.onPreStartClimb()
+        self.model.yaw = need_model_yaw
+
+        def on_end_action():
+            self._fence_played = False
+            self._setFenceID(STOP_ANIMATION_ID)
+            self.model.attachOffset = (0, 0, 0)
+            if self == BigWorld.player():
+                self.physics.velocity = (0, 0, 0)
+                self._velocity = Vector3(0, 0, 0)
+            self._onEndClimbAction(anim)
+
+        ls_obst_height = obstacle_height_ws - self.position.y
+        action = self.model.action(anim.action)
+        pre_action = None
+        if anim.pre_action:
+            pre_action = self.model.action(anim.pre_action)
+        max_y, delay_maxy = action.maxPosY
+        _tmpdir_model = Vector3()
+        _tmpdir_model.setPitchYaw(0, self.model.yaw)
+        impact = action.impact
+        end_pos = impact[0:3]
+        end_yaw = impact[3]
+        delta_height_imp = obstacle_height_ws - end_pos[1]
+        delta_height_maxY = ls_obst_height - max_y
+
+        def on_end_preanim():
+            if self.__down_start_delay > 0:
+                BigWorld.cancelCallback(self.__start_down_id)
+                self.__start_down_id = BigWorld.callback(self.__down_start_delay, self._run_addphy_down_coroutine)
+            if self.__need_add_up or self.__need_add_fw:
+                self._run_addphy_up_forward_coroutine()
+
+        dir_wall = Vector3()
+        dir_wall.setPitchYaw(0, need_model_yaw)
+        real_end_pos = findEndAminPosition(self, end_pos + dir_wall * (adv_forward - 0.3), end_yaw)
+        is_empty_end_ground = False
+        empty_end_ground_frame = anim.empty_end_ground_frame
+        if empty_end_ground_frame:
+            diff_h = real_end_pos.y - self.position.y
+            if diff_h < -0.9:
+                if DEBUG_PRINT:
+                    print '\xd0\xbf\xd1\x80\xd1\x8b\xd0\xb3\xd0\xb0\xd1\x8e \xd0\xb2 \xd0\xbf\xd1\x83\xd1\x81\xd1\x82\xd0\xbe\xd1\x82\xd1\x83!', real_end_pos.y - self.position.y
+                is_empty_end_ground = True
+        delay_end = action.duration
+        if is_empty_end_ground:
+            delay_end = empty_end_ground_frame / action.frameRate
+        delay_end -= action.blendOutTime / 2.0
+        if pre_action:
+            delay_end += pre_action.duration
+            post_action = getattr(pre_action(0, on_end_preanim), anim.action)
+            if is_empty_end_ground:
+                post_action(0, None, 1, post_action.firstFrame, post_action.firstFrame + empty_end_ground_frame)
+            else:
+                post_action(0, None)
+            BigWorld.callback(post_action.duration, on_end_action)
+        else:
+            if is_empty_end_ground:
+                action(0, None, 1, action.firstFrame, action.firstFrame + empty_end_ground_frame)
+            else:
+                action(0, None)
+            BigWorld.callback(action.duration, on_end_action)
+        BigWorld.callback(delay_end, partial(self._onEndClimb, anim))
+        self._fence_played = True
+        self._setFenceID(anim_id)
+        try:
+            self._onStartClimb(anim)
+        except:
+            traceback.print_exc()
+
+        if need_crouch:
+            self.scriptNeedSetCrouch()
+        self.__need_add_up = 0
+        self.__need_add_fw = 0
+        self.__curr_add_up = 0
+        self.__curr_add_fw = 0
+        self.__addphy_push_time = anim.need_push_frame / action.frameRate
+        need_push_up = anim.need_push_up
+        if need_push_up == UP_BY_MAX_POS:
+            self.__need_add_up = delta_height_maxY
+            if DEBUG_PRINT:
+                print '\xd1\x82\xd1\x80\xd0\xb5\xd0\xb1\xd1\x83\xd0\xb5\xd1\x82\xd1\x81\xd1\x8f \xd0\xb4\xd0\xbe\xd1\x82\xd1\x8f\xd0\xbd\xd1\x83\xd1\x82\xd1\x8c \xd0\xb2\xd0\xb2\xd0\xb5\xd1\x80\xd1\x85  %.2f \xd0\xb7\xd0\xb0 %.2f \xd1\x81\xd0\xb5\xd0\xba   (\xd0\xb2\xd1\x8b\xd1\x81\xd0\xbe\xd1\x82\xd0\xb0 \xd0\xbd\xd0\xb0\xd0\xb8\xd0\xb2\xd1\x8b\xd1\x81\xd1\x88\xd0\xb5\xd0\xb9 \xd0\xbf\xd0\xbe\xd0\xb7\xd0\xb8\xd1\x86\xd0\xb8\xd0\xb8 \xd0\xb2 \xd0\xb0\xd0\xbd\xd0\xb8\xd0\xbc\xd0\xb0\xd1\x86\xd0\xb8\xd0\xb8)' % (self.__need_add_up, self.__addphy_push_time)
+        elif need_push_up == UP_BY_END_POS:
+            self.__need_add_up = delta_height_imp
+            if DEBUG_PRINT:
+                print '\xd1\x82\xd1\x80\xd0\xb5\xd0\xb1\xd1\x83\xd0\xb5\xd1\x82\xd1\x81\xd1\x8f \xd0\xb4\xd0\xbe\xd1\x82\xd1\x8f\xd0\xbd\xd1\x83\xd1\x82\xd1\x8c \xd0\xb2\xd0\xb2\xd0\xb5\xd1\x80\xd1\x85  %.2f \xd0\xb7\xd0\xb0 %.2f \xd1\x81\xd0\xb5\xd0\xba (\xd0\xb2\xd1\x8b\xd1\x81\xd0\xbe\xd1\x82\xd0\xb0 \xd0\xbf\xd0\xbe\xd1\x81\xd0\xbb\xd0\xb5\xd0\xb4\xd0\xbd\xd0\xb5\xd0\xb3\xd0\xbe \xd0\xba\xd0\xb0\xd0\xb4\xd1\x80\xd0\xb0)' % (self.__need_add_up, self.__addphy_push_time)
+        if anim.need_push_fw:
+            phy_fw_dist = math.sqrt(self.DefModelWidth ** 2 + self.DefModelDepth ** 2) / 2.0
+            self.__need_add_fw = adv_forward - phy_fw_dist
+            if DEBUG_PRINT:
+                print '\xd1\x82\xd1\x80\xd0\xb5\xd0\xb1\xd1\x83\xd0\xb5\xd1\x82\xd1\x81\xd1\x8f \xd0\xb4\xd0\xbe\xd1\x82\xd1\x8f\xd0\xbd\xd1\x83\xd1\x82\xd1\x8c \xd0\xb2\xd0\xbf\xd0\xb5\xd1\x80\xd0\xb5\xd0\xb4 %.2f \xd0\xb7\xd0\xb0 %.2f \xd1\x81\xd0\xb5\xd0\xba' % (self.__need_add_fw, self.__addphy_push_time)
+        self.__down_start_delay = 0
+        self.__delta_need_down = 0
+        self.__down_all_time = 0
+        need_push_down_frame = anim.need_push_down_frame
+        if need_push_down_frame and not is_empty_end_ground:
+            delta_need_down = max(end_pos.y - real_end_pos.y, 0)
+            if delta_need_down > 0:
+                self.__delta_need_down = delta_need_down
+                start, end = need_push_down_frame
+                self.__down_all_time = (end - start) / action.frameRate
+                self.__down_start_delay = (action.frameCount + start) / action.frameRate
+        if self.__need_add_up or self.__need_add_fw:
+            see_dir = Vector3()
+            see_dir.setPitchYaw(0, need_model_yaw)
+            self.__last_pos_tmp = Vector3(self.position[0], 0, self.position[2])
+            see_add_flat = see_dir * self.__need_add_fw
+            self.__vec_add = Vector3(see_add_flat[0], self.__need_add_up, see_add_flat[2])
+        if not pre_action:
+            on_end_preanim()
+        return
+
+    __addphy_coro = None
+
+    def _run_addphy_up_forward_coroutine(self):
+        if self.__addphy_coro:
+            self.__addphy_coro.stop()
+        self.__addphy_coro = self._addphy_up_forward_coroutine(self)
+        self.__addphy_coro.run()
+
+    __start_down_id = 0
+
+    def _run_addphy_down_coroutine(self):
+        if self.__addphy_coro:
+            self.__addphy_coro.stop()
+        self.__addphy_coro = self._addphy_down_coroutine(self)
+        self.__addphy_coro.run()
+
+    @BWCoroutine
+    def _addphy_up_forward_coroutine(self):
+        """
+        \xd0\xbf\xd0\xbe\xd0\xbc\xd0\xbe\xd0\xb3\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xb0\xd0\xbd\xd0\xb8\xd0\xbc\xd0\xb0\xd1\x86\xd0\xb8\xd0\xb8 \xd0\xbf\xd0\xbe\xd0\xb4\xd1\x82\xd1\x8f\xd0\xbd\xd1\x83\xd1\x82\xd1\x8c \xd1\x84\xd0\xb8\xd0\xb7\xd0\xb8\xd0\xba\xd1\x83 \xd0\xba \xd0\xb3\xd0\xb5\xd0\xbe\xd0\xbc\xd0\xb5\xd1\x82\xd1\x80\xd0\xb8\xd0\xb8
+        """
+        addphy_vec = self.__vec_add
+        addphy_time = self.__addphy_push_time
+        time_rem = addphy_time
+        last_tick_time = BigWorld.time()
+        while time_rem > 0:
+            yield BWWaitForPeriod(0)
+            now_time = BigWorld.time()
+            dt = now_time - last_tick_time
+            last_tick_time = now_time
+            if dt > time_rem:
+                dt = time_rem
+                time_rem = 0
+            else:
+                time_rem -= dt
+            coeff = dt / addphy_time
+            d_vec = addphy_vec * coeff
+            self.physics.nudge_force = Vector3(0, d_vec[1], 0)
+            self.physics.nudge = Vector3(d_vec[0], 0, d_vec[2])
+
+        self.__addphy_coro = None
+        return
+
+    @BWCoroutine
+    def _addphy_down_coroutine(self):
+        """
+        \xd0\xbf\xd0\xbe\xd0\xbc\xd0\xbe\xd0\xb3\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xbf\xd1\x80\xd0\xb8\xd0\xb6\xd0\xb0\xd1\x82\xd1\x8c \xd1\x84\xd0\xb8\xd0\xb7\xd0\xb8\xd0\xba\xd1\x83 \xd0\xba \xd0\xb7\xd0\xb5\xd0\xbc\xd0\xbb\xd0\xb5
+        """
+        addphy_val = self.__delta_need_down
+        addphy_time = self.__down_all_time
+        time_rem = addphy_time
+        last_tick_time = BigWorld.time()
+        while time_rem > 0:
+            yield BWWaitForPeriod(0)
+            now_time = BigWorld.time()
+            dt = now_time - last_tick_time
+            last_tick_time = now_time
+            if dt > time_rem:
+                dt = time_rem
+                time_rem = 0
+            else:
+                time_rem -= dt
+            coeff = dt / addphy_time
+            dy = addphy_val * coeff
+            self.physics.nudge = Vector3(0, -dy, 0)
+            self.physics.velocity = (0, 0, 0)
+            self._velocity = Vector3(0, 0, 0)
+
+        self.__addphy_coro = None
+        return
+
+    _last_ladder_climb = None
+
+    def _onStartLadder(self, anim):
+        self.onPreStartClimb()
+        self.resetFootTwist()
+        BigWorld.callback(0.05, self.resetFootTwist)
+        if self._last_ladder_climb:
+            print 'WARNING _onStartLadder', self._last_ladder_climb, anim
+            return
+        self._last_ladder_climb = anim
+        try:
+            self._onStartClimb(self._last_ladder_climb)
+        except:
+            traceback.print_exc()
+
+    def _onStopLadder(self):
+        if not self._last_ladder_climb:
+            return
+        else:
+            if self == BigWorld.player():
+                self.cell.UpdateVertLadderAnimation(0, 0, self.position)
+            try:
+                self._onEndClimb(self._last_ladder_climb)
+            except:
+                traceback.print_exc()
+
+            try:
+                self._onEndClimbAction(self._last_ladder_climb)
+            except:
+                traceback.print_exc()
+
+            self.update_turn_states()
+            self._last_ladder_climb = None
+            return
+
+    def _get_enterup_position_for_ladder(self, action_name, ladder_pos, ladder_yaw, ladder_height):
+        """ret ws pos, yaw"""
+        action = self.model.action(action_name)
+        act_displacement = Vector3(action.displacement)
+        act_rotation = action.rotation[3]
+        end_matr = Matrix()
+        end_matr.setRotateY(ladder_yaw)
+        up_pos = Vector3(ladder_pos)
+        up_pos.y += ladder_height
+        up_pos.y += act_displacement.y
+        end_matr.translation = up_pos
+        displ_matr = Matrix()
+        displ_matr.setRotateY(act_rotation)
+        displ_matr.translation = act_displacement
+        start_matr = Matrix(displ_matr)
+        start_matr.invert()
+        start_matr.postMultiply(end_matr)
+        offset_matr = Matrix()
+        offset_matr.translation = (0, 0, 0.3)
+        start_matr.preMultiply(offset_matr)
+        return (start_matr.translation, start_matr.yaw)
+
+    def _play_ladder_up_roof(self):
+        self._is_lader_action_played = False
+        self._is_lader_end_action_played = True
+        self.updateBlendNodeByImpacting()
+
+        def end_up_roof_test():
+            self._is_lader_end_action_played = False
+            self.need_ladder_yaw = None
+            self.updateBlendNodeByImpacting()
+            self._onStopLadder()
+            return
+
+        stop_anim_id = LADDERIDS.VERTIVAL_LADDER_UP_ROOF_ID
+        stop_anim = ANIMS[stop_anim_id]
+        self.model.action(stop_anim.action)(0, end_up_roof_test)
+        if self == BigWorld.player():
+            self.cell.UpdateVertLadderAnimation(stop_anim_id, self.need_ladder_yaw, self.position)
+
+    def _switch_movingForward(self):
+        self._movingForward = False
+
+    def _switch_movingBackward(self):
+        self._movingBackward = False
+
+    def _ladder_tick(self):
+        if self.isDestroyed:
+            return
+        else:
+            if not self == BigWorld.player():
+                raise AssertionError
+                if not self._is_lader_action_played:
+                    return
+                self._add_ladder_to_step = 0
+                new_id = LADDERIDS.VERTIVAL_LADDER_IDLE_ID
+                switch_delay = 0.2
+                if self.movingForward:
+                    self._movingForward = True
+                    if getattr(self, '_switch_movingForward_cid', 0):
+                        BigWorld.cancelCallback(self._switch_movingForward_cid)
+                    self._switch_movingForward_cid = BigWorld.callback(switch_delay, self._switch_movingForward)
+                if self.movingBackward:
+                    self._movingBackward = True
+                    if getattr(self, '_switch_movingBackward_cid', 0):
+                        BigWorld.cancelCallback(self._switch_movingBackward_cid)
+                    self._switch_movingBackward_cid = BigWorld.callback(switch_delay, self._switch_movingBackward)
+                _movingForward = getattr(self, '_movingForward', None)
+                _movingBackward = getattr(self, '_movingBackward', None)
+                if _movingForward:
+                    new_id = LADDERIDS.VERTIVAL_LADDER_UP_ID
+                    if self.position.y > self.need_ladder_max_posy - climb_settings.VERTICAL_LADDER_UP_OFFSET:
+                        self._play_ladder_up_roof()
+                        return
+                elif _movingBackward:
+                    new_id = LADDERIDS.VERTIVAL_LADDER_DOWN_ID
+                    if self == BigWorld.player():
+                        if BigWorld.collide(self.spaceID, self.position + (0, 0.1, 0), self.position + (0, -0.2, 0)):
+                            self.stopVertiacalLadder()
+                            return
+                need_anim = ANIMS[new_id]
+                if self._last_ladder_action != need_anim.action:
+                    self.cell.UpdateVertLadderAnimation(new_id, self.need_ladder_yaw, self.position)
+                    if self._last_ladder_action:
+                        self.model.action(self._last_ladder_action).stop()
+                    self._last_ladder_action = need_anim.action
+                    self.update_turn_states()
+                    self.model.action(need_anim.action)()
+                    self.updateBlendNodeByImpacting()
+                if self.need_ladder_center_pos:
+                    self.need_ladder_center_pos.y = self.position.y
+                    self.physics.nudge = self.need_ladder_center_pos - self.position
+                self.model.yaw = self.need_ladder_yaw is not None and self.need_ladder_yaw
+                self.filter.headYaw = self.need_ladder_yaw
+            self._timer_test_end_up = BigWorld.callback(0.0, self._ladder_tick)
+            return
+
+    def startVerticalLadder(self, dwn_pos, height, yaw, enterup = False):
+        if not self == BigWorld.player():
+            raise AssertionError
+            if self._last_ladder_climb:
+                print 'startVerticalLadder stop!'
+                self.stopVertiacalLadder()
+                return
+            self.cancel_action_release()
+            if not self.checkActiveWeapon():
+                return
+            if not self.CheckRestriction(RestrictionsUtils.CHANNEL_ITEMS):
+                self.ReportFail(ItemsUtils.FAIL_OTHER_ACTION)
+                return
+            self.need_ladder_yaw = yaw
+            self.need_ladder_dwn_pos = Vector3(dwn_pos)
+            self.need_ladder_center_pos = Vector3(dwn_pos)
+            self.need_ladder_height = height
+            self.need_ladder_max_posy = dwn_pos.y + height
+            if enterup:
+                need_anim = ANIMS[LADDERIDS.VERTIVAL_LADDER_ENTERUP_ID]
+                need_anim_end = ANIMS[LADDERIDS.VERTIVAL_LADDER_ENTERUP_END_ID]
+                need_anim_post = ANIMS[LADDERIDS.VERTIVAL_LADDER_IDLE_ID]
+                frompos, fromyaw = self._get_enterup_position_for_ladder(need_anim.action, dwn_pos, yaw, height)
+
+                def on_end_enterup():
+                    if self.need_ladder_yaw is None:
+                        return self.stopVertiacalLadder()
+                    else:
+                        self.model.action(need_anim_post.action)()
+                        self._last_ladder_action = need_anim_post.action
+                        BigWorld.cancelCallback(getattr(self, '_timer_test_end_up', 0))
+                        self._timer_test_end_up = BigWorld.callback(0.01, self._ladder_tick)
+                        self.cell.UpdateVertLadderAnimation(LADDERIDS.VERTIVAL_LADDER_IDLE_ID, self.need_ladder_yaw, self.need_ladder_dwn_pos)
+                        fix_roll_matr = Matrix()
+                        fix_roll_matr.setRotateY(self.need_ladder_yaw)
+                        fix_roll_matr.translation = self.position
+                        self.model.setWorldTransform(fix_roll_matr)
+                        return
+
+                def onendwalk(success):
+                    if not success or self.need_ladder_yaw is None:
+                        return self.stopVertiacalLadder()
+                    else:
+                        self.resetFootTwist()
+                        self.filter.headYaw = self.model.yaw = fromyaw
+                        act = self.model.action(need_anim.action)
+                        getattr(act(0, on_end_enterup), need_anim_end.action)()
+                        self._rotate_yaw_cam_to(self.need_ladder_yaw, act.duration)
+                        self.physics.fallingVelocity = 0
+                        return
+
+                self.physics.seeking and self.physics.seekStop()
+            timeout = 1.0
+            speed = 1.5
+            heightTolerance = 0.9
+            x, y, z = frompos
+            dest = Math.Vector4(x, y, z, fromyaw)
+            self.physics.lockUserDir = True
+            self.filter.headYaw = fromyaw
+            self.physics.seek(dest, speed, timeout, heightTolerance, onendwalk)
+            self.physics.seekEnableYaw = True
+            self.cell.UpdateVertLadderAnimation(LADDERIDS.VERTIVAL_LADDER_ENTERUP_ID, fromyaw, frompos)
+        else:
+            need_anim = ANIMS[LADDERIDS.VERTIVAL_LADDER_UP_ID]
+            self._last_ladder_action = need_anim.action
+            BigWorld.cancelCallback(getattr(self, '_timer_test_end_up', 0))
+            self._timer_test_end_up = BigWorld.callback(0.2, self._ladder_tick)
+            self.model.action(need_anim.action)()
+            self.cell.UpdateVertLadderAnimation(LADDERIDS.VERTIVAL_LADDER_UP_ID, self.need_ladder_yaw, self.need_ladder_dwn_pos)
+        self._is_lader_action_played = True
+        try:
+            self._onStartLadder(need_anim)
+        except:
+            traceback.print_exc()
+
+        self.physics.fallingVelocity = 0
+        self.updateBlendNodeByImpacting()
+        self.update_turn_states()
+        self.cancel_action_start(self.stopVertiacalLadder)
+
+    def _go_ladder_play_demo(self, anim_id, yaw, position):
+        if anim_id:
+            need_anim = ANIMS[anim_id]
+            self.need_ladder_yaw = yaw
+            is_first_ladder = not self._last_ladder_action
+            self.model.yaw = self.need_ladder_yaw
+            if self._last_ladder_action:
+                self.model.action(self._last_ladder_action).stop()
+            self._last_ladder_action = need_anim.action
+            self.update_turn_states()
+            if anim_id == LADDERIDS.VERTIVAL_LADDER_ENTERUP_ID:
+                need_anim_post = ANIMS[LADDERIDS.VERTIVAL_LADDER_IDLE_ID]
+                act = self.model.action(need_anim.action)
+
+                def on_end_act():
+                    self._last_ladder_action = need_anim_post.action
+
+                getattr(act(0, on_end_act), need_anim_post.action)()
+            else:
+                self.model.action(need_anim.action)()
+            self._is_lader_action_played = True
+            if is_first_ladder:
+                try:
+                    self._onStartLadder(need_anim)
+                except:
+                    traceback.print_exc()
+
+            else:
+                self.updateBlendNodeByImpacting()
+        else:
+            if self._last_ladder_action:
+                self.model.action(self._last_ladder_action).stop()
+                self._last_ladder_action = None
+                self.update_turn_states()
+            for anim in ANIMS.LADDERS:
+                self.model.action(anim.action).stop()
+
+            self._onStopLadder()
+            if self._is_lader_action_played:
+                self._is_lader_action_played = False
+                self.updateBlendNodeByImpacting()
+        return
+
+    def stopVertiacalLadder(self):
+        self._center_ladder = None
+        self.need_ladder_yaw = None
+        self._onStopLadder()
+        if not self.model:
+            return
+        else:
+            for anim in ANIMS.LADDERS:
+                self.model.action(anim.action).stop()
+
+            if self._last_ladder_action:
+                self.model.action(self._last_ladder_action).stop()
+                self._last_ladder_action = None
+                self.update_turn_states()
+                if BigWorld.player() == self:
+                    self.physics.fallingVelocity = 0
+            if self._is_lader_action_played:
+                self._is_lader_action_played = False
+                self.updateBlendNodeByImpacting()
+                self.cancel_action_clear()
+            return
+
+    def checkActiveWeapon(self):
+        return True
+
+    def checkCanClimb(self, isDown, event = None):
+        """
+        return hook
+        """
+        if self._fence_played:
+            return True
+        if self._slope:
+            return False
+        if self._slope_caps:
+            return False
+        if isDown:
+            if self._is_lader_action_played:
+                self.stopVertiacalLadder()
+                return False
+            anim_id, need_model_yaw, obstacle_height_ws, need_crouch, adv_forward = self._check_can_fence()
+            if anim_id:
+                climb_obj = ANIMS[anim_id]
+                if not self.invulnerable and self.GetStatValue(Stats.ch_Stamina) < climb_obj.stamina:
+                    BWPersonality.gpd.sendHightMessage(lc('PlayerAvatar.client.not_enough_stamina'), MT.PERSONAL)
+                    return True
+                self._go_climb(anim_id, need_model_yaw, obstacle_height_ws, need_crouch, adv_forward)
+                return True
+
+    def onPreStartClimb(self):
+        pass
+
+    def _onStartClimb(self, climb):
+        self.resetFootTwist()
+        BigWorld.callback(0.05, self.resetFootTwist)
+        self.onStartClimbAnimation(climb)
+        if self == BigWorld.player():
+            self.physics.lockUserDir = True
+            self.physics.use_max_vel_or_impacting = False
+        self.update_turn_states()
+
+    def _onEndClimb(self, climb):
+        if self.isDestroyed:
+            return
+        self.onEndClimbAnimation(climb)
+        self.update_turn_states()
+
+    def _onEndClimbAction(self, climb):
+        self.onEndClimbAction(climb)
+        self.update_turn_states()
+        if self == BigWorld.player():
+            self.physics.lockUserDir = False

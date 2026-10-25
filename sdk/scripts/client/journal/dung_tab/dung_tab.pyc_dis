@@ -1,0 +1,292 @@
+# Embedded file name: ./client/journal/dung_tab/dung_tab.py
+from Localization import lc
+from journal.tab import Tab
+from Helpers.PyGUI import Utils
+import BigWorld
+import GUI
+import QuestDispatcher
+import BWPersonality
+import client_utils
+from hunt_block import HuntBlock, LineEventType
+from dung_utils import get_height
+import colorCodes as cc
+
+class DungeonsBlock(object):
+
+    def __init__(self, component):
+        self._component = component
+        self._quests_data = []
+
+    def clear(self):
+        for name, _ in self._component.children:
+            self._component.delChild(name)
+
+    def set_data(self, quests_data):
+        self._quests_data = quests_data
+        self.clear()
+        comp = GUI.Simple('soGUI/frame/paint/white.dds')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.width, comp.height = (848, 20)
+        comp.position = (6, 2, 0.5)
+        comp.materialFX = 'BLEND'
+        comp.colour[3] = 20
+        self._component.addChild(comp)
+        if self._quests_data:
+            comp = GUI.Text(lc('GUI.QuestLog.Events.Dungeons'))
+            comp.colour = cc.active_rgba
+        else:
+            comp = GUI.Text(lc('GUI.QuestLog.Events.DungeonsUnavailable'))
+            comp.colour = cc.inactive_rgba
+        comp.font = 'RobotoCondensedRegular_16.font'
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'CENTER')
+        comp.position = (10, get_height(0), 0.5)
+        self._component.addChild(comp)
+        for i in xrange(len(self._quests_data)):
+            comp = GUI.Text('')
+            comp.colourFormatting = True
+            comp.font = 'RobotoCondensedRegular_16.font'
+            comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+            comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'CENTER')
+            comp.position = (20, get_height(i + 1), 0.5)
+            self._component.addChild(comp, 'qd' + str(i))
+
+        self._update_values()
+
+    def _update_values(self):
+        for i, qd in enumerate(self._quests_data):
+            title = QuestDispatcher.getQuestTitleByID(qd['quest_id'])
+            time = qd['time'] - BWPersonality.gpd.server_time
+            if time <= 0:
+                continue
+            time = client_utils.time_to_full_string(time, seconds=True)
+            text = u'{0}{1}. {2} {3}{4}'.format(cc.inactive_hex, title, lc('GUI.QuestLog.Events.WillBeAvailable'), cc.active_hex, time)
+            getattr(self._component, 'qd' + str(i)).text = text
+
+    def _tick(self):
+        self._update_values()
+
+    @property
+    def lines_count(self):
+        return len(self._quests_data) + 1
+
+
+class EventsBlock:
+
+    def __init__(self, component):
+        self._component = component
+        self._events_data = []
+        self._start_index = 0
+
+    def _clear(self):
+        for name, _ in self._component.children:
+            self._component.delChild(name)
+
+    def update_start_index(self, start_index):
+        if self._start_index == start_index:
+            return
+        self._component.header.position.y = get_height(self._start_index)
+        self._component.stripe.position.y = get_height(self._start_index) - 1
+        for i, ed in enumerate(self._events_data):
+            getattr(self._component, 'ed' + str(i)).position.y = get_height(self._start_index + i + 1)
+
+    def set_data(self, start_index, events_data):
+        self._start_index = start_index
+        self._events_data = events_data
+        self._clear()
+        if events_data:
+            comp = GUI.Text(lc('GUI.QuestLog.Events.Events'))
+            comp.colour = cc.active_rgba
+        else:
+            comp = GUI.Text(lc('GUI.QuestLog.Events.EventsUnavailable'))
+            comp.colour = cc.inactive_rgba
+        comp.font = 'RobotoCondensedRegular_16.font'
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'CENTER')
+        comp.position = (10, get_height(self._start_index), 0.5)
+        self._component.addChild(comp, 'header')
+        comp = GUI.Simple('soGUI/frame/paint/white.dds')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'CENTER')
+        comp.width, comp.height = (848, 20)
+        comp.position = (6, get_height(self._start_index) - 1, 0.5)
+        comp.materialFX = 'BLEND'
+        comp.colour[3] = 20
+        self._component.addChild(comp, 'stripe')
+        for i in xrange(len(self._events_data)):
+            comp = GUI.Text('')
+            comp.colourFormatting = True
+            comp.font = 'RobotoCondensedRegular_16.font'
+            comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+            comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'CENTER')
+            comp.position = (20, get_height(self._start_index + i + 1), 0.5)
+            self._component.addChild(comp, 'ed' + str(i))
+
+        self._update_values()
+
+    def _update_values(self):
+        for i, ed in enumerate(self._events_data):
+            if ed['is_active']:
+                color = cc.red_hex
+                resolution_text = lc('GUI.QuestLog.Events.Busy')
+            else:
+                wait_time = ed['cooldown'] - BWPersonality.gpd.server_time
+                if wait_time <= 0:
+                    color = cc.green_hex
+                    resolution_text = lc('GUI.QuestLog.Events.Free')
+                else:
+                    color = cc.inactive_hex
+                    resolution_text = u'{0} {1}{2}'.format(lc('GUI.QuestLog.Events.WillBeAvailable'), cc.active_hex, client_utils.time_to_full_string(wait_time, seconds=True))
+            event_name = lc('TriggerNames.event.' + ed['name'])
+            text = u'{0}{1}: {2}{3}'.format(cc.inactive_hex, event_name, color, resolution_text)
+            getattr(self._component, 'ed' + str(i)).text = text
+
+    def _tick(self):
+        self._update_values()
+
+    @property
+    def lines_count(self):
+        return len(self._events_data) + 1
+
+
+class DungTab(Tab):
+
+    def __init__(self, component):
+        Tab.__init__(self, lc('GUI.QuestLog.EVENTS_TAB_LABEL'), component)
+        self._component = component
+        self.on_show_wanted_click = lambda space_name, position: None
+        self._show_wanted_on_map_trigger = False
+        comp = GUI.Simple('soGUI/elements/stripedBox.dds')
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'TOP')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'PIXEL')
+        comp.width, comp.height = (1.97, 1.9)
+        comp.position = (0, 2, 0.9)
+        comp.tiled = True
+        comp.tileHeight = 20
+        component.addChild(comp)
+        self._last_sync_time = 0
+        component.addChild(GUI.Simple(''), 'dung')
+        self._dungeons_block = DungeonsBlock(component.dung)
+        component.addChild(GUI.Simple(''), 'events')
+        self._events_block = EventsBlock(component.events)
+        component.addChild(GUI.Simple(''), 'hunt')
+        self._hunt_block = HuntBlock(self._dungeons_block.lines_count + self._events_block.lines_count + 2, component.hunt, self._on_hunt_event)
+        self._tick_callback = None
+        stripe_color = 100
+        comp = GUI.Simple('soGUI/frame/paint/white.dds')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.width, comp.height = (1, 541)
+        comp.materialFX = 'SOLID'
+        comp.colour = (stripe_color,
+         stripe_color,
+         stripe_color,
+         255)
+        comp.position = (6, 2, 0.5)
+        self._component.addChild(comp)
+        comp = GUI.Simple('soGUI/frame/paint/white.dds')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.width, comp.height = (1, 541)
+        comp.materialFX = 'SOLID'
+        comp.colour = (stripe_color,
+         stripe_color,
+         stripe_color,
+         255)
+        comp.position = (self._component.width - 6, 2, 0.5)
+        self._component.addChild(comp)
+        comp = GUI.Simple('soGUI/frame/journal/eye.dds')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.position = (20, 554, 0.1)
+        comp.width, comp.height = comp.texture.width, comp.texture.height
+        self._component.addChild(comp)
+        eye_comp = comp
+        comp = GUI.Text(lc('GUI.QuestLog.Events.TrackNotification'), 'RobotoCondensedRegular_16.font')
+        comp.colour = cc.inactive_rgba
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'CENTER')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.position = (40, eye_comp.position[1] + 2, 0.1)
+        self._component.addChild(comp)
+        return
+
+    def _on_hunt_event(self, event_type, data):
+        if event_type == LineEventType.OnTrackClick:
+            self._data_provider.request_hunt_track(data['wanted'])
+        elif event_type == LineEventType.OnUntrackClick:
+            self._data_provider.request_hunt_track(None)
+        elif event_type == LineEventType.OnSpaceClick:
+            self._data_provider.request_hunt_track(data['wanted'])
+            wanted_mark = self._data_provider.marks_data.get_wanted_mark()
+            if wanted_mark and wanted_mark[0]:
+                self.on_show_wanted_click(*wanted_mark)
+            else:
+                self._show_wanted_on_map_trigger = True
+        self._hunt_block.update_buttons_availability(self._data_provider.tracked_wanted)
+        return
+
+    def on_show(self):
+        self._show_wanted_on_map_trigger = False
+        self._hunt_block.on_show()
+        self._hunt_block.update_start_index(self._dungeons_block.lines_count + self._events_block.lines_count + 2)
+        self._hunt_block.update_buttons_availability(self._data_provider.tracked_wanted)
+        self._dungeons_block.set_data([])
+        self._events_block.set_data(self._dungeons_block.lines_count + 1, [])
+        self._request_all_data()
+        if self._tick_callback:
+            BigWorld.cancelCallback(self._tick_callback)
+        self._tick_callback = BigWorld.callback(1, self._tick)
+
+    def on_hide(self):
+        self._show_wanted_on_map_trigger = False
+        self._hunt_block.on_hide()
+
+    def _tick(self):
+        if not Utils.is_visible_in_hierarchy(self._component):
+            self._tick_callback = None
+            return
+        else:
+            self._dungeons_block._tick()
+            self._events_block._tick()
+            self._tick_callback = BigWorld.callback(1, self._tick)
+            if BigWorld.time() - self._last_sync_time >= 20:
+                self._request_all_data()
+            return
+
+    def _request_all_data(self):
+        self._last_sync_time = BigWorld.time()
+        self._data_provider.subscribe_to_dungeons()
+        self._data_provider.subscribe_to_events()
+
+    def dungeons_data_updated5(self, quests_data):
+        self._dungeons_block.set_data(quests_data)
+        self._events_block.update_start_index(self._dungeons_block.lines_count + 1)
+        self._hunt_block.update_start_index(self._dungeons_block.lines_count + self._events_block.lines_count + 2)
+
+    def got_events_data6(self, events_data):
+        self._events_block.set_data(self._dungeons_block.lines_count + 1, events_data)
+        self._hunt_block.update_start_index(self._dungeons_block.lines_count + self._events_block.lines_count + 2)
+
+    def on_got_hunt2(self, data):
+        self._hunt_block.on_got_hunt3(data)
+        self._hunt_block.update_buttons_availability(self._data_provider.tracked_wanted)
+
+    def on_hunt_notification_got3(self, space_name, position, dung_visible):
+        if self._show_wanted_on_map_trigger:
+            self._show_wanted_on_map_trigger = False
+            if space_name:
+                self.on_show_wanted_click(space_name, position)
+        if dung_visible:
+            self._hunt_block.on_hunt_notification_got4(space_name, position)
+
+    @property
+    def _data_provider(self):
+        return BigWorld.player()

@@ -1,0 +1,213 @@
+# Embedded file name: ./client/Gestures.py
+import random
+import BigWorld
+import Constants
+import Durations
+import GesturesUtils
+import traceback
+from GesturesCommon import GesturesCommon
+from time import time
+from Items import ItemsCatalog
+from functools import partial
+from tmp_demo_recorder import rec_attr_demo, rec_foo_demo
+
+class Gestures(GesturesCommon):
+
+    def __init__(self):
+        GesturesCommon.__init__(self)
+        self._current_action = None
+        self.__current_gesture_actions = None
+        self._looped_action = None
+        self._stopped_action = None
+        self._action_callback = None
+        self._stopped_action_played = None
+        self.use_gesture = False
+        return
+
+    def onDeadChange(self):
+        if self.dead and (self._current_action or self._stopped_action_played):
+            self.stop_all_animations(play_out=False)
+            self.stop_gesture()
+
+    def onLeaveWorld(self):
+        self.__current_gesture_actions = None
+        if self._action_callback:
+            BigWorld.cancelCallback(self._action_callback)
+            self._action_callback = None
+        return
+
+    def playAnimationByIDInList(self, index, force_loop = False):
+        data = GesturesUtils.get_anim_action(index)
+        if not data or not self.model:
+            return
+        else:
+            if self == BigWorld.player():
+                rec_foo_demo('playAnimationByIDInList', index, force_loop)
+            useWeapon = data.get('UseWeapon', False)
+            action = data['action']
+            self.__current_gesture_actions = action
+            self.flashlight_suspend()
+            self.model.ThrowRight = None
+            self.model.ThrowLeft = None
+            try:
+                if self._current_action:
+                    if isinstance(action, list):
+                        act = self.model.action(action[0])
+                        played = [ a['name_'] for a in act.playedInfo() if a ]
+                        for action0 in action:
+                            if action0 in played:
+                                print 'playAnimationByIDInList action0 %s already played' % action0, self
+                                return
+
+                    else:
+                        act = self.model.action(action)
+                        played = [ a['name_'] for a in act.playedInfo() if a ]
+                        if action in played:
+                            print 'playAnimationByIDInList action %s already played' % action, self
+                            return
+            except:
+                traceback.print_exc()
+
+            lock_track_head = False
+            lock_track_torso = False
+            if not data.get('Tracker_head', False):
+                lock_track_head = True
+            if not data.get('Tracker_torso', False):
+                lock_track_torso = True
+            if useWeapon:
+                weapon_to = 'Right'
+            elif self.canAttachWeaponBelly():
+                weapon_to = 'Belly'
+            else:
+                weapon_to = 'Right'
+            self.pushTrackerLockByName('gesture', weapon_to, lock_track_torso=lock_track_torso, lock_track_head=lock_track_head, comment='Gestures::playAnimationByIDInList')
+            if isinstance(action, list):
+                self.play_set_animations(action, force_loop)
+            else:
+                self.play_one_animation(action, 0, self.stop_gesture)
+            if self.__class__.__name__ != 'Avatar':
+                self.checkCamera()
+            self.onStartGestueAniamtion(data)
+            if self.isSitPose(data['id']):
+                self.on_sit_pose()
+            else:
+                self.on_stop_sit()
+            return
+
+    def stop_all_animations(self, play_out = True):
+        if self == BigWorld.player():
+            rec_foo_demo('stop_all_animations')
+        self.stopAnimation()
+        if self._current_action:
+            self.model.action(self._current_action).stop()
+            self._current_action = None
+        if self._action_callback:
+            BigWorld.cancelCallback(self._action_callback)
+            self._action_callback = None
+        if self._looped_action:
+            self.model.action(self._looped_action).stop()
+            self._looped_action = None
+        if self.dead and self.__current_gesture_actions:
+            actions = self.__current_gesture_actions
+            if type(actions) in (str, unicode):
+                actions = [actions]
+            for a in actions:
+                try:
+                    self.model.action(a).stop()
+                except:
+                    print self, repr(a)
+                    traceback.print_exc()
+
+        self.__current_gesture_actions = None
+        if play_out:
+            if self._stopped_action and not self.dead:
+                stop_act = self.model.action(self._stopped_action)
+                self._stopped_action_played = True
+                self.playAnimation(stop_act, stop_act.duration, self.stop_gesture, on_cancel_callback=self.stop_gesture)
+            else:
+                self.stop_gesture()
+        self._stopped_action = None
+        self.onStopGestueAniamtion()
+        self.onStopGestueAniamtionComplete()
+        return
+
+    def stop_gesture(self):
+        if self.isDestroyed:
+            return
+        else:
+            self._stopped_action_played = False
+            if self == BigWorld.player():
+                rec_foo_demo('stop_gesture')
+                self.onUseAnyHandActionEnd()
+            self.__current_gesture_actions = None
+            self.use_gesture = False
+            self.block_channel_items = False
+            self.returnModelToDefault()
+            self.setControlLock(Constants.ControlLockTypes.GESTURE, None)
+            if self.__class__.__name__ == 'PlayerAvatar':
+                self.checkCamera()
+                self.cell.clearAvatarGesture()
+            self.onStopGestueAniamtion()
+            self.onStopGestueAniamtionComplete()
+            self.popTrackerLock('gesture')
+            self.cancel_action_clear()
+            return
+
+    def play_one_animation(self, anim_name, duration = 0, callback = None):
+        if self.isDestroyed:
+            return
+        else:
+            if self._current_action:
+                self.model.action(self._current_action).stop()
+                self._current_action = None
+            if self._action_callback:
+                BigWorld.cancelCallback(self._action_callback)
+                self._action_callback = None
+            self._current_action = anim_name
+            current_action = getattr(self.model, anim_name, None)
+            if duration == 0:
+                duration = current_action.duration
+            self.playAnimationClear(current_action, duration * 0.92, callback or self.stopAnimationClear)
+            return
+
+    def play_set_animations(self, anim_list, force_loop = False):
+        if self.isDestroyed:
+            return
+        if not self.model:
+            return
+        try:
+            self._looped_action = anim_list[1]
+            if force_loop:
+                self.model.action(self._looped_action)
+            else:
+                self._current_action = anim_list[1]
+                getattr(getattr(self.model, anim_list[0])(), anim_list[1])()
+        except AttributeError:
+            print "ERROR::Gestures::play_set_animations:: Model has no Animations: '{0}'".format(anim_list), self
+            return
+
+        self._stopped_action = anim_list[-1]
+
+    def getMarkHeight(self):
+        if self.usingGesture:
+            data = GesturesUtils.get_anim_action(self.usingGesture)
+            if not data:
+                return 1.9
+            return data.get('mark_height', 1.9)
+        else:
+            return 1.9
+
+    def onStartGestueAniamtion(self, data):
+        pass
+
+    def onStopGestueAniamtion(self, data = None):
+        pass
+
+    def onStopGestueAniamtionComplete(self, data = None):
+        pass
+
+    def on_sit_pose(self):
+        pass
+
+    def on_stop_sit(self, *e):
+        pass

@@ -1,0 +1,260 @@
+# Embedded file name: ./client/soGUI/donat_shop/window/bin_tab/bin_tab.py
+from Localization import lc
+from math_bw import inverse_lerpclam, lerp, lerpclamp
+import BigWorld
+import GUI
+from soGUI.donat_shop.window.win_ui.tab import Tab
+from bin_table import BinTable
+from ui.text import Text, Align
+from ui.panel import Panel
+from soGUI.donat_shop.models.bin_model import EventType as BinET
+from soGUI.donat_shop.models.state_model import EventType as StateET
+from ui.button import Button
+from soGUI.donat_shop.models.shop_model import get_currency_name
+from soGUI.donat_shop.window.auxwins.auxwins import Auxwins
+import colorCodes as cc
+import sounds_manager as sm
+import StoreHouseConst
+from soGUI.login.tooltip import TooltipProviderShopWin as TooltipProvider
+from soGUI.soTextField import soTextField3
+from soGUI.soHyperLinkComponent import soHyperLinkComponent
+
+class HyperLink(soHyperLinkComponent, TooltipProvider):
+
+    def handleMouseEnterEvent(self, comp):
+        result = soHyperLinkComponent.handleMouseEnterEvent(self, comp)
+        TooltipProvider.on_mouse_enter(self)
+        return result
+
+    def get_tooltip_text(self):
+        return lc('DonatShop.window.bin.disclamer2')
+
+    def handleMouseLeaveEvent(self, comp):
+        result = soHyperLinkComponent.handleMouseLeaveEvent(self, comp)
+        TooltipProvider.on_mouse_leave(self)
+        return result
+
+
+class DisclamerText(soTextField3):
+
+    def __init__(self, component):
+        self.OVERRIDE_HYPERLINK_COMPONENT = HyperLink
+        self.HLINK_STYLE = 'soGUI/visual_styles/hlink_shop.xml'
+        soTextField3.__init__(self, component, hScroll=False, vScroll=False)
+        text = lc('DonatShop.window.bin.disclamer').format('<hlink=', ';> <hlink=', ';>')
+        self._disc_text = cc.inactive_xml + u'<font=RobotoCondensedRegular_16.font>' + text
+
+    def do_reposition(self, width):
+        height = 600
+        self.component.width, self.component.height = width, height
+        self.width, self.height = width, height
+        self.setTextWidth(width)
+        self.setText(self._disc_text, immidiate=True)
+        return self.textDimensions()[1]
+
+
+class BinTab(Tab):
+
+    def __init__(self, component, bin_model, shop_model, state_model):
+        Tab.__init__(self, component, 'bin')
+        self._bin_model = bin_model
+        self._shop_model = shop_model
+        self._bin_model.add_listener(self._on_binmodel_event)
+        self._state_model = state_model
+        self._state_model.add_listener(self._on_statemodel_event)
+
+        def create_default_comp():
+            comp = GUI.Window()
+            comp.materialFX = 'BLEND'
+            comp.hpm, comp.vpm = ('PIXEL', 'CLIP')
+            comp.ha, comp.va = ('LEFT', 'CENTER')
+            comp.wm, comp.hm = ('PIXEL', 'CLIP')
+            comp.position = (0, 0, 0.5)
+            comp.height = 2
+            self.component.addChild(comp)
+            return comp
+
+        self._c0 = create_default_comp()
+        self._c1 = create_default_comp()
+        self._bin_table = BinTable(self._c1, self._bin_model, self._shop_model)
+        self._bin_table.transform.set_clip_mode((0, 0.05, 1, 0.65))
+        btn_container = Panel(self._c1, 'container')
+        btn_container.transform.set_clip_mode((0, 0.67, 0.83, 1))
+        comp = GUI.Window('soGUI/frame/donatshop/binback.dds')
+        comp.materialFX = 'BLEND'
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.position = (0, 0, 0.5)
+        self._c0.addChild(comp, 'image')
+        comp = GUI.Window('soGUI/frame/donatshop/dot.dds')
+        comp.materialFX = 'BLEND'
+        comp.wm, comp.hm = ('CLIP', 'PIXEL')
+        comp.ha, comp.va = ('LEFT', 'TOP')
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = 2, comp.texture.height
+        comp.position = (0, 0, 0.5)
+        comp.tileHeight = comp.texture.height
+        comp.tileWidth = comp.texture.width
+        comp.tiled = True
+        btn_container.component.addChild(comp, 'pipline')
+        self._total = Text(btn_container.component, 'total', size=24)
+        self._total.set_alignment(Align.Right, Align.Center)
+        self._total.set_color(cc.active_rgba)
+        self._total.transform.set_pixel_mode((1, 0), (1, 0), (250, 70), (0, 0))
+        comp = GUI.Window()
+        comp.ha, comp.va = ('LEFT', 'TOP')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.position = (0, 0, 0.5)
+        btn_container.component.addChild(comp, 'txtdisc')
+        self._disclamer = DisclamerText(comp)
+        self._btn_buy = Button(btn_container.component, 'btnbuy')
+        self._btn_buy.set_visual('soGUI/frame/buttons/donatbutton_red.json')
+        self._btn_buy.set_text(lc('DonatShop.window.bin.buy'))
+        btn_width, btn_height = (220, 40)
+        self._btn_buy.transform.set_pixel_mode((1, 1), (1, 1), (btn_width, btn_height))
+        self._btn_buy.on_click = self._on_buy_click
+        self._btn_clear = Button(btn_container.component, 'btnclear')
+        self._btn_clear.set_visual('soGUI/frame/buttons/donatbutton.json')
+        self._btn_clear.set_text(lc('DonatShop.window.bin.clear'))
+        self._btn_clear.transform.set_pixel_mode((0, 0), (0, 0), (btn_width, btn_height))
+        self._btn_clear.on_click = self._on_clear_click
+
+    def _update_buttons(self):
+        has_items = bool(self._bin_model._items)
+        self._btn_buy.set_enabled(has_items)
+        self._btn_clear.set_enabled(has_items)
+
+    def on_show(self):
+        self._bin_table.on_show()
+        self._update_buttons()
+        self._update_total()
+
+    def on_hide(self):
+        self._bin_table.on_hide()
+
+    def _on_binmodel_event(self, event_type, data):
+        if event_type == BinET.OnCountChanged:
+            self._update_buttons()
+        elif event_type in (BinET.OnTotalChanged, BinET.PricesInvalidated):
+            self._update_total()
+
+    def _on_clear_click(self):
+        sm.playSound('ui/inventory/item_drop')
+        self._bin_model.clear()
+
+    def _update_total(self):
+        cost = self._bin_model.total_cost
+        self._total.component.visible = True
+        currency = get_currency_name(self._shop_model.currency)
+        text = u'{0} {1} {2}'.format(lc('DonatShop.window.bin.total'), cost, currency)
+        self._total.set_text(text)
+
+    def _on_buy_click(self):
+        """ http://hz-dev.stalker.so:8090/issues/25787 """
+        sm.playSound('ui/inventory/put/weapon')
+
+        def on_buy_agree(payment_type = None):
+            item_data = []
+            for item_type in self._bin_model._sorted_types:
+                count = self._bin_model._items[item_type]['bincount']
+                item_data.append({'item_type': item_type,
+                 'count': count})
+
+            self._state_model.buy_bin_request(item_data, self._bin_model.total_cost, payment_type)
+
+        p = BigWorld.player()
+        if p.isMyGamesAcc():
+            Auxwins.show_buy_cancel_vk_win(on_buy_agree)
+        elif not (p.isPayWindowPlatinaW4() and StoreHouseConst.CURRENCY_PLATINA_NAME == self._shop_model.currency):
+            raise AssertionError
+            needed_platina = self._bin_model.total_cost - BigWorld.player().current_platina
+            if needed_platina > 0:
+                Auxwins.show_ok_message(lc('StoreHouse.bin.NOT_ENOUGH_PLATINA').format(needed_platina))
+            else:
+                Auxwins.show_buy_cancel_win(on_buy_agree)
+        elif p.isPayWindowGoldW3():
+            needed_gold = self._bin_model.total_cost - BigWorld.player().gold
+            if needed_gold > 0:
+                Auxwins.show_refill_cancel_win(BigWorld.player().openWebPayment, needed_gold)
+            else:
+                Auxwins.show_buy_cancel_win(on_buy_agree)
+        elif p.isPayWindowEmbdW2():
+            Auxwins.show_buy_cancel_payment_win(on_buy_agree, self._state_model.payment_type)
+        elif p.isPayWindowSteamNoRubW1():
+            Auxwins.show_buy_cancel_steam_win(on_buy_agree)
+        else:
+            raise RuntimeError
+        return
+
+    def _on_statemodel_event(self, event_type, data):
+        if event_type == StateET.OnBinBuyRequested:
+            self._btn_buy.set_enabled(False)
+        elif event_type == StateET.OnBinBuyCompleted:
+            self._update_buttons()
+
+    def on_size_changed(self):
+        Tab.on_size_changed(self)
+        width, height = BigWorld.screenSize()
+        desired_p1_width = height * 0.85
+        desired_p0_width = height * 0.9
+        min_p1_width = height * 0.65
+        if width < desired_p0_width + desired_p1_width:
+            if width <= min_p1_width:
+                p1_width = width
+            else:
+                factor = inverse_lerpclam(min_p1_width, desired_p0_width + desired_p1_width, width)
+                p1_width = width - lerp(0, desired_p0_width, factor)
+        else:
+            p1_width = desired_p1_width
+        p0_width = width - p1_width
+        self._c1.position = (p0_width, 0, 0.5)
+        self._c1.width = width - p0_width
+        if p0_width > 0:
+            self._c0.visible = True
+            self._c0.position = (0, 0, 0.5)
+            self._c0.width = p0_width
+            mode = self._c0.hm
+            self._c0.hm = 'PIXEL'
+            p0_height = self._c0.height
+            self._c0.hm = mode
+            comp = self._c0.image
+            ratio = float(comp.texture.width) / comp.texture.height
+            image_height = p0_height
+            image_width = image_height / ratio
+            if image_width > p0_width:
+                image_width = p0_width
+                image_height = image_width * ratio
+            comp.width, comp.height = image_width, image_height
+        else:
+            self._c0.visible = False
+        mode = self._bin_table.transform._mode[1:]
+        margin = 80
+        mode[1] = (0,
+         0,
+         -margin,
+         0)
+        self._bin_table.transform.set_clip_mode(*mode)
+        comp = self._bin_table.component
+        needed_ratio = 1.32
+        real_ratio = float(comp.width) / comp.height
+        if real_ratio < needed_ratio:
+            margin = lerpclamp(20, margin, pow(real_ratio / needed_ratio, 5))
+            mode[1] = (0,
+             0,
+             -margin,
+             0)
+            self._bin_table.transform.set_clip_mode(*mode)
+        cont_comp = self._c1.container
+        cont_comp.script.transform.apply_mode()
+        total_comp = self._total.component
+        comp = self._disclamer.component
+        comp.position[1] = total_comp.position[1] + total_comp.height
+        comp.height = self._disclamer.do_reposition(cont_comp.width)
+        pixel_ratio = self.transform.pixel_ratio
+        pos_y = comp.position[1] + comp.height + 20 * pixel_ratio
+        comp = self._btn_buy.component
+        pos_y = min(pos_y, cont_comp.height - comp.height)
+        self._btn_buy.component.position[1] = pos_y
+        self._btn_clear.component.position[1] = pos_y

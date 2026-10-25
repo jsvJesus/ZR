@@ -1,0 +1,488 @@
+# Embedded file name: ./client/soGUI/soList_optimized.py
+from Math import Vector3
+import BigWorld
+import GUI
+import Helpers.PyGUI as PyGUI
+import soGUI
+from soGUI.soButton import soButton
+from functools import partial
+from Helpers.PyGUI import PyGUIEvent
+import Keys
+import math_bw
+from soGUI.soScrollBar import soScrollBar2
+from copy import deepcopy
+SORT_NORMAL = 0
+SORT_NORMAL_REV = 1
+SORT_ABC = 2
+SORT_ABC_REV = 3
+
+class ListPropsStructure(object):
+
+    def __init__(self, width = 200, height = 400, topOffset = 5, leftOffset = 5, lineOffset = 0, elemHeight = 20, scrollWidth = 16, listFont = 'RobotoCondensedRegular_16.font', elemStyle = 'soGUI/elements/listElement.xml', isMultiSel = True, needScroll = True, selectCallBack = None, nuSelectionCB = None, sorted = True, colorFont = (175, 166, 112, 255)):
+        self.width = width
+        self.height = height
+        self.colorFont = colorFont
+        self.topOffset = topOffset
+        self.leftOffset = leftOffset
+        self.lineOffset = lineOffset
+        self.elementHeight = elemHeight
+        self.texture = 'soGUI/elements/listFrame.dds'
+        self.textureMappings = (0.0, 0.0, 400.0, 200.0)
+        self.isMultiSelect = isMultiSel
+        self.scrollWidth = scrollWidth
+        self.needScroll = needScroll
+        self.selectCallBack = selectCallBack
+        self.nuSelectionCB = nuSelectionCB
+        self.sorted = sorted
+        self.font = listFont
+        self.elem_style = elemStyle
+
+
+class soListElement(soButton):
+    factoryString = 'soGUI.soListElement'
+
+    def __init__(self, component, rootComp = None, fontLabel = 'RobotoCondensedRegular_18.font', isOptions = True):
+        self.font = fontLabel
+        soButton.__init__(self, component, fontLabel=self.font, isOptions=isOptions)
+        component.script = self
+        self.rootComp = rootComp
+        self.glyph = None
+        return
+
+    def add_glyph(self, path):
+        """ \xd0\xb4\xd0\xbe\xd0\xb1\xd0\xb0\xd0\xb2\xd0\xb8\xd1\x82\xd1\x8c \xd0\xb3\xd0\xbb\xd0\xb8\xd1\x84 """
+        if self.glyph:
+            self.glyph.visible = True
+            return
+        cmp = GUI.Simple(path)
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.width = cmp.height = 16
+        cmp.position = (9, 9, 0)
+        self.component.addChild(cmp, 'glyph')
+        self.glyph = cmp
+
+    def clear_glyph(self):
+        """ \xd1\x83\xd0\xb1\xd1\x80\xd0\xb0\xd1\x82\xd1\x8c \xd0\xb3\xd0\xbb\xd0\xb8\xd1\x84 """
+        if self.glyph:
+            self.glyph.visible = False
+
+    def handleMouseEnterEvent(self, cmp):
+        soButton.handleMouseEnterEvent(self, cmp)
+        handled = self.rootComp.script.handleMouseEnterEvent(self.rootComp)
+        return bool(handled)
+
+    def handleMouseEvent(self, comp, event):
+        soButton.handleMouseEvent(self, comp.script, event)
+        handled = self.rootComp.script.handleMouseEvent(comp, event)
+        return bool(handled)
+
+    def handleMouseButtonEvent(self, comp, event):
+        handled = soButton.handleMouseButtonEvent(self, comp, event)
+        key = event.key
+        down = event.isKeyDown()
+        if key == Keys.KEY_RIGHTMOUSE and down:
+            self.rootComp.script.onRmb(self.component.label.text)
+            return True
+        return bool(handled)
+
+
+class soList_optimized(PyGUI.Window):
+    factoryString = 'soGUI.soList'
+
+    def __init__(self, component, props = ListPropsStructure(), default_frame_skin = 'soGUI/frame/con_frame.dds', buttons_is_options = True):
+        PyGUI.Window.__init__(self, component)
+        component.script = self
+        self.frameComp = None
+        self.buttons_is_options = buttons_is_options
+        self.elementHolder = None
+        self.vScroll = None
+        self.default_frame_skin = default_frame_skin
+        self.scrollStep = 0.0
+        self.textFont = props.font
+        self.colorFont = props.colorFont
+        self.elem_style = props.elem_style
+        self.frameWidth = props.width
+        self.frameHeight = props.height
+        self.topOffset = props.topOffset
+        self.leftOffset = props.leftOffset
+        self.lineOffset = props.lineOffset
+        self.frameTexture = props.texture
+        self.frameMapping = props.textureMappings
+        self.elementHeight = props.elementHeight
+        self.scrollWidth = props.scrollWidth
+        self.isMultiSel = props.isMultiSelect
+        self.needScroll = props.needScroll
+        self.selectionCallBack = props.selectCallBack
+        self.nonuserSelectionCB = props.nuSelectionCB
+        self.sorted = props.sorted
+        self.wheelFocus = False
+        self.all_elements = {}
+        self.elements = {}
+        self.attachments = {}
+        self.indexes = []
+        self.elemComps = []
+        self.visibleCount = 0
+        self.setupRoot()
+        self.setupFrame()
+        self.setupScroll()
+        self.setupElemHolder()
+        self.offset = 0
+        self.maxScroll = 0
+        self.minScroll = 0
+        self.type_sort = SORT_NORMAL
+        return
+
+    def setupRoot(self):
+        self.component.widthMode = self.component.heightMode = 'PIXEL'
+        self.component.verticalPositionMode = self.horizontalPositionMode = 'CLIP'
+        self.component.width = self.frameWidth
+        self.component.height = self.frameHeight
+        self.component.materialFX = 'BLEND'
+        self.component.colour = (255, 255, 255, 255)
+        self.component.position = (400, 300, 0.0)
+        self.component.crossFocus = True
+        self.component.visible = True
+        self.component.mouseButtonFocus = True
+
+    def setupFrame(self):
+        if self.frameComp is None:
+            if self.default_frame_skin:
+                self.frameComp = GUI.Frame2(self.default_frame_skin)
+            else:
+                self.frameComp = GUI.Simple(u'')
+            self.component.addChild(self.frameComp, 'listFrame')
+        self.frameComp.widthMode = self.frameComp.heightMode = 'PIXEL'
+        self.frameComp.width = self.frameWidth
+        self.frameComp.height = self.frameHeight
+        self.frameComp.horizontalAnchor = 'LEFT'
+        self.frameComp.verticalAnchor = 'TOP'
+        self.frameComp.horizontalPositionMode = self.frameComp.verticalPositionMode = 'CLIP'
+        self.frameComp.materialFX = 'BLEND'
+        self.frameComp.colour = (255, 255, 255, 255)
+        self.frameComp.visible = True
+        self.frameComp.position = (-1.0, 1.0, 0.5)
+        return
+
+    def setupScroll(self):
+        if not self.needScroll:
+            return
+        else:
+            if self.vScroll:
+                self.component.listFrame.delChild('vScroll')
+                self.vScroll.scrollMoved = None
+                self.vScroll.scrolledDOWN = None
+                self.vScroll.scrolledUP = None
+            self.vScroll = soScrollBar2(GUI.Window(), width=16, height=self.frameComp.height - self.scrollWidth)
+            self.vScroll.scrollMoved = self.vScrollMoved
+            self.vScroll.scrolledDOWN = self.scrolledDOWN
+            self.vScroll.scrolledUP = self.scrolledUP
+            self.component.listFrame.addChild(self.vScroll.component, 'vScroll')
+            cmp = self.vScroll.component
+            cmp.horizontalAnchor = 'RIGHT'
+            cmp.verticalAnchor = 'TOP'
+            cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+            cmp.position = (self.frameWidth - self.leftOffset, self.topOffset, 0.6)
+            self.vScroll.setVisualState('normal')
+            self.vScroll.onBound()
+            self.vScroll.setSteps(0)
+            return
+
+    def setupElemHolder(self):
+        if self.elementHolder is None:
+            self.elementHolder = GUI.Window()
+            self.frameComp.addChild(self.elementHolder, 'elementHolder')
+        self.elementHolder.widthMode = self.elementHolder.heightMode = 'PIXEL'
+        self.elementHolder.width = self.frameComp.width - self.leftOffset * 2 - self.scrollWidth
+        self.elementHolder.height = self.frameComp.height - self.topOffset * 2
+        self.elementHolder.widthMode = self.elementHolder.heightMode = 'PIXEL'
+        self.elementHolder.horizontalPositionMode = self.elementHolder.verticalPositionMode = 'CLIP'
+        self.elementHolder.horizontalAnchor = 'LEFT'
+        self.elementHolder.verticalAnchor = 'TOP'
+        self.elementHolder.position = (-1.0 + soGUI.getPixelWidth(self.frameComp) * self.leftOffset, 1.0 - soGUI.getPixelHeight(self.frameComp) * self.topOffset, 0.5)
+        self.elementHolder.textureName = ''
+        self.elementHolder.visible = True
+        self.visibleCount = int(self.elementHolder.height / self.elementHeight)
+        self.elementHolder.scroll.set(0.0, 0.0)
+        self.initElements()
+        return
+
+    def fixOffset(self):
+        if len(self.indexes) <= self.visibleCount:
+            self.offset = 0
+        elif self.offset + self.visibleCount > len(self.indexes):
+            self.offset = len(self.indexes) - self.visibleCount
+
+    def applyElements(self, needSort = True):
+        elemList = self.indexes
+        if self.type_sort == SORT_NORMAL:
+            pass
+        elif self.type_sort == SORT_NORMAL_REV and needSort:
+            elemList.reverse()
+        elif self.type_sort == SORT_ABC:
+            elemList.sort()
+        elif self.type_sort == SORT_ABC_REV:
+            elemList.sort()
+            elemList.reverse()
+        self.fixOffset()
+        start = self.offset
+        if len(elemList) >= self.visibleCount:
+            end = self.offset + self.visibleCount
+        else:
+            end = len(elemList)
+        for elemID, elem in self.elementHolder.children:
+            elem.visible = False
+
+        i = 0
+        for elem in xrange(start, end):
+            self.apply_single_element(i, elem)
+            i += 1
+
+        screenH = BigWorld.screenHeight()
+        itemH = self.elementHeight + self.lineOffset
+
+        def setMaxScroll():
+            elementsHeight = len(self.elements) * itemH
+            holderHeight = elementsHeight
+            heightDiff = itemH / screenH * len(self.elements) - holderHeight / screenH
+            if heightDiff > 0.0:
+                self.elementHolder.maxScroll = (0.0, heightDiff * 2)
+            maxScrl = len(self.elements) - self.visibleCount
+            if maxScrl > 0:
+                self.maxScroll = maxScrl
+            else:
+                self.maxScroll = 0
+
+        def setMinScroll():
+            self.elementHolder.minScroll = (0.0, 0.0)
+            self.minScroll = 0
+
+        setMaxScroll()
+        setMinScroll()
+        self.scrollStep = 2.0 / (screenH / itemH)
+        scrollStepCount = (itemH * len(self.elements) - self.elementHolder.height) / float(itemH)
+        if scrollStepCount > 0:
+            self.vScroll.setSteps(round(scrollStepCount))
+        else:
+            self.vScroll.setSteps(0)
+        self.onElementsRedraw()
+
+    def apply_single_element(self, i, elem):
+        if self.elements[self.indexes[elem]] == 0:
+            self.elemComps[i].buttonActive = False
+            self.elemComps[i].setVisualState('normal')
+        else:
+            self.elemComps[i].buttonActive = True
+            self.elemComps[i].setToggleState(True)
+        self.elementHolder.children[i][1].label.text = self.indexes[elem]
+        self.elementHolder.children[i][1].visible = True
+
+    def get_button_label_position(self, component):
+        return (-1.0 + soGUI.getPixelWidth(component), 0.0, 0.0)
+
+    def on_element_inited(self, elem_comp):
+        pass
+
+    def get_elem_class(self):
+        return soListElement
+
+    def initElements(self):
+        self.clearAllChildren(self.elementHolder)
+        self.elemComps = []
+        for elem in xrange(0, self.visibleCount):
+            elemComp = self.get_elem_class()(GUI.Window(), self.component, fontLabel=self.textFont, isOptions=self.buttons_is_options)
+            elemComp.component.verticalPositionMode = elemComp.component.horizontalPositionMode = 'CLIP'
+            elemComp.component.widthMode = elemComp.component.heightMode = 'PIXEL'
+            elemComp.component.horizontalAnchor = 'LEFT'
+            elemComp.component.verticalAnchor = 'TOP'
+            elemComp.component.width = self.elementHolder.width
+            elemComp.component.height = self.elementHeight
+            elemComp.component.position = (-1.0, 1.0 - soGUI.getPixelHeight(self.elementHolder) * self.elementHeight * elem, 0.0)
+            elemComp.component.visible = False
+            elemComp.component.materialFX = 'BLEND'
+            elemComp.buttonStyle = soButton.TOGGLEBUTTON_STYLE
+            elemComp.initVSC(self.elem_style)
+            elemComp.onBound()
+            elemComp.onClick = partial(self.toggleElement, elem)
+            elemComp.component.label.text = ''
+            elemComp.component.label.horizontalPositionMode = elemComp.component.label.verticalPositionMode = 'CLIP'
+            elemComp.component.label.horizontalAnchor = 'LEFT'
+            elemComp.component.label.position = self.get_button_label_position(elemComp.component)
+            elemComp.fontColor = self.colorFont
+            elemComp.fontLabel = self.textFont
+            elemComp.component.label.colour = self.colorFont
+            elemComp.component.label.font = self.textFont
+            elemComp._updateVisualState()
+            self.elemComps.append(elemComp)
+            self.elementHolder.addChild(elemComp.component, 'element' + str(elem))
+            self.on_element_inited(elemComp)
+
+    def toggleElement(self, elemNum, silent = False):
+        elemCaption = self.indexes[int(self.offset + elemNum)]
+        if not self.elements.has_key(elemCaption):
+            self.applyElements(False)
+            return False
+        if not BigWorld.isKeyDown(Keys.KEY_LCONTROL) or not self.isMultiSel:
+            for elem in self.elements:
+                self.elements[elem] = 0
+
+        if BigWorld.isKeyDown(Keys.KEY_LCONTROL) and self.isMultiSel:
+            if self.elements[elemCaption] == 0:
+                self.elements[elemCaption] = 1
+            else:
+                self.elements[elemCaption] = 0
+        elif self.elements[elemCaption] == 0:
+            self.elements[elemCaption] = 1
+        self.applyElements(False)
+        if not silent:
+            self.onSelected()
+        elif self.nonuserSelectionCB:
+            self.nonuserSelectionCB()
+        return True
+
+    def toggleByCaption(self, elemCaption):
+        for elem in self.elements:
+            self.elements[elem] = 0
+
+        if elemCaption in self.elements:
+            self.elements[elemCaption] = 1
+        self.applyElements(False)
+        self.onSelected()
+
+    def getElementByAttachment(self, elemAttachment):
+        for entry in self.attachments.items():
+            if entry[1] == elemAttachment:
+                return entry[0]
+
+        return None
+
+    def onSelected(self):
+        if self.selectionCallBack is not None:
+            self.selectionCallBack()
+        return
+
+    def addElement(self, elementCaption, attachment = None, delayedRender = False):
+        if self.elements.has_key(elementCaption):
+            return False
+        else:
+            self.elements[elementCaption] = 0
+            self.attachments[elementCaption] = attachment
+            if self.type_sort == SORT_NORMAL_REV:
+                self.indexes.insert(0, elementCaption)
+            else:
+                self.indexes.append(elementCaption)
+            if not delayedRender:
+                self.applyElements(False)
+            return True
+
+    def removeElement(self, elementCaption):
+        if self.elements.has_key(elementCaption):
+            del self.elements[elementCaption]
+            del self.attachments[elementCaption]
+            self.indexes.remove(elementCaption)
+            self.applyElements(False)
+            return True
+        else:
+            return False
+
+    def clear(self):
+        self.elements = {}
+        self.attachments = {}
+        self.indexes = []
+        self.elementHolder.scroll.y = 0.0
+        self.elementHolder.maxScroll.y = 0.0
+        self.elementHolder.minScroll.y = 0.0
+        self.applyElements()
+
+    def getSelection(self):
+        retVal = []
+        for elem in self.elements:
+            if self.elements[elem] == 1:
+                retVal.append(elem)
+
+        return retVal
+
+    def getAttachment(self, elemCaption):
+        if self.attachments.has_key(elemCaption):
+            return self.attachments[elemCaption]
+        else:
+            return elemCaption
+
+    def onElementsRedraw(self):
+        return None
+
+    def scrollUp(self):
+        self.set_scroll_value(self.get_scroll_value() - 1)
+
+    def scrollDown(self):
+        self.set_scroll_value(self.get_scroll_value() + 1)
+
+    def get_scroll_value(self):
+        return self.vScroll.getValue()
+
+    def set_scroll_value(self, value):
+        value = math_bw.clamp(value, self.minScroll, self.maxScroll)
+        self.vScroll.setValue(value)
+        self.offset = value
+        self.applyElements(False)
+
+    def handleMouseEnterEvent(self, comp):
+        self.wheelFocus = True
+        self.component.focus = True
+        return True
+
+    def handleMouseLeaveEvent(self, comp):
+        self.wheelFocus = False
+        self.component.focus = False
+        self.multiSelON = False
+        return True
+
+    def handleMouseEvent(self, comp, event):
+        dz = event.dz
+        if dz > 0:
+            self.scrollUp()
+            return True
+        if dz < 0:
+            self.scrollDown()
+            return True
+        return False
+
+    def set_height(self, height):
+        if self.frameHeight == height:
+            return
+        elements = deepcopy(self.elements)
+        attachments = deepcopy(self.attachments)
+        indexes = deepcopy(self.indexes)
+        prev_pos = Vector3(self.component.position)
+        prev_mode = (self.component.horizontalPositionMode, self.component.verticalPositionMode)
+        self.frameHeight = height
+        self.setupRoot()
+        self.setupFrame()
+        self.setupScroll()
+        self.setupElemHolder()
+        self.component.horizontalPositionMode, self.component.verticalPositionMode = prev_mode
+        self.component.position = prev_pos
+        self.elements = elements
+        self.attachments = attachments
+        self.indexes = indexes
+        self.applyElements(False)
+
+    def onRmb(self, caption):
+        return None
+
+    @property
+    def size(self):
+        return len(self.elements)
+
+    def scrolledUP(self):
+        self.scrollUp()
+
+    def scrolledDOWN(self):
+        self.scrollDown()
+
+    def vScrollMoved(self, newVal):
+        self.offset = newVal
+        self.vScroll.setValue(newVal)
+        self.applyElements(False)

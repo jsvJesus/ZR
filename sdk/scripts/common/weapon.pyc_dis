@@ -1,0 +1,1104 @@
+# Embedded file name: ./common/weapon.py
+import ItemsUtils
+import time
+import random
+import scope_reticle_settings
+from nodes_attach import NODE
+from utils import ignoreError
+from utils import lazyproperty
+from utils import pyFixedToNativePythonType
+from utils import pyFixedToNativePythonType as PY
+from Config.Damage import name2DamageType, dictDAMAGE_DISTANCE
+from Config.Damage import DAMAGE_DISTANCE_AVATAR_ARR
+import copy
+import Items
+import traceback
+import weapon_attachment
+from weapon_attachment import WeaponAttachment, Magazine, LauncherAttach
+from Items import ItemsCatalog
+import grades_utils
+
+class ErrorTypeAttachException(Exception):
+    pass
+
+
+class ErrorSizeAttachException(Exception):
+    pass
+
+
+class ErrorMaxAttachException(Exception):
+    pass
+
+
+class ErrorItemException(Exception):
+    pass
+
+
+class Weapon(object):
+    _parent_entity = None
+    _weapon = None
+    _complex_item = None
+    _weapon_slot = None
+    _weapon_slot_copy = None
+    _ItemJammed = 0
+    _ItemCondition = 0
+    _OilEffEnd = 0
+    _magazine = None
+    _itemID = None
+    _itemType = 0
+    _ammoType = 0
+    _ammoCapacityBuiltinByAttach = 0
+    _prev_ammoType = 0
+    _ammoNumber = None
+    _BuiltinMagazine = None
+    _BuiltinMagazineProp = None
+    __params_indexes_ready = False
+    _isWaitBoltAnimation = False
+    _first_launcher = None
+    _custom_hilt = None
+    _light_exist = False
+    _disable_standard_sight = False
+    slot_name = ''
+    _spread_mod = 1.0
+    _recoil_mod = 1.0
+    _has_scope = False
+    _max_scope_world_zoom = 1.0
+    _sprayer = False
+
+    def __init__(self, complex_item = None, parent_entity = None, validate_slot = False):
+        self._parent_entity = parent_entity
+        self._complex_item = complex_item
+        self._launchers = {}
+        if parent_entity and complex_item:
+            self.slot_name = ItemsUtils.getWeaponSlotNameByItemID(parent_entity, complex_item['complexItemID'], validate_slot=validate_slot)
+        if complex_item:
+            self.__params_indexes = {}
+            self.__params_indexes[ItemsCatalog.INC_IS_BROKEN] = None
+            self.__params_indexes[ItemsCatalog.INC_CONDITION] = None
+            self.__params_indexes[ItemsCatalog.INC_POLLUTION_SCORCHING] = None
+            self.__params_indexes[ItemsCatalog.INC_POLLUTION_LEADING] = None
+            self.__params_indexes[ItemsCatalog.INC_POLLUTION_COPPERING] = None
+            prop = ItemsCatalog.GetItemParam(complex_item['complexItemType'])
+            if prop.get('BuiltinMagazine', None):
+                self.__params_indexes[ItemsCatalog.INC_MUNITION_NUMBER] = None
+                self.__params_indexes[ItemsCatalog.INC_LOADED_MUNITION_TYPE] = None
+            self.makeWeaponFromItem(complex_item)
+        return
+
+    def __str__(self):
+        return '<%s(%s)%s/%s>' % (self.__class__.__name__,
+         hex(id(self)),
+         self.getItemID(),
+         self.getItemType())
+
+    def __repr__(self):
+        return str(self)
+
+    def destroyWeapon(self):
+        self._parent_entity = None
+        self._complex_item = None
+        if self._weapon:
+            self._weapon.destroyModels()
+        self._weapon = None
+        self._first_launcher = None
+        self._complex_item = None
+        self._magazine = None
+        self._muzzle_device = None
+        self._launchers.clear()
+        return
+
+    def dumpToItem(self):
+        """
+        \xd1\x81\xd0\xbe\xd1\x85\xd1\x80\xd0\xb0\xd0\xbd\xd0\xb8\xd1\x82\xd1\x8c \xd0\xb2\xd1\x81\xd0\xb5 \xd0\xb8\xd0\xb7\xd0\xbc\xd0\xb5\xd0\xbd\xd0\xb5\xd0\xbd\xd0\xb8\xd1\x8f \xd0\xb2 \xd0\xb8\xd1\x82\xd0\xb5\xd0\xbc
+        """
+        inconstant_param = ItemsUtils.GetComplexItemInconstanParams(self._complex_item)
+        if self._BuiltinMagazine:
+            inconstant_param[ItemsCatalog.INC_MUNITION_NUMBER] = self._ammoNumber
+            inconstant_param[ItemsCatalog.INC_LOADED_MUNITION_TYPE] = self._ammoType
+        inconstant_param[ItemsCatalog.INC_IS_BROKEN] = self._ItemJammed
+        inconstant_param[ItemsCatalog.INC_CONDITION] = self._ItemCondition
+        if inconstant_param.get(ItemsCatalog.INC_WEAPON_GREASEOIL_END) and not self.isGreaseOilEffect():
+            inconstant_param.pop(ItemsCatalog.INC_WEAPON_GREASEOIL_END, 0)
+        mag = self.getMagazine()
+        if mag:
+            mag.dumpToItem()
+        ItemsUtils.SetComplexItemInconstanParams(self._complex_item, inconstant_param)
+        self.__update_index_item()
+
+    def __update_index_item(self):
+        """ \xd0\xb7\xd0\xb0\xd0\xbf\xd0\xbe\xd0\xbc\xd0\xbd\xd0\xb8\xd1\x82\xd1\x8c \xd0\xbf\xd0\xbe\xd0\xb7\xd0\xb8\xd1\x86\xd0\xb8\xd0\xb8 \xd0\xb7\xd0\xbd\xd0\xb0\xd1\x87\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb9 complexItemParametresKeys
+                \xd0\xb4\xd0\xbb\xd1\x8f \xd0\xb1\xd1\x8b\xd1\x81\xd1\x82\xd1\x80\xd0\xbe\xd0\xb9 \xd0\xb7\xd0\xb0\xd0\xbf\xd0\xb8\xd1\x81\xd0\xb8
+        """
+        if not self._complex_item:
+            return
+        self.__params_indexes_ready = False
+        try:
+            for inc_key in self.__params_indexes.keys():
+                self.__params_indexes[inc_key] = self._complex_item['complexItemParametresKeys'].index(inc_key)
+
+        except ValueError:
+            return
+
+        self.__params_indexes_ready = True
+
+    def _fastDumpValuesToItem(self):
+        if not self._complex_item:
+            raise TypeError
+        if not self.__params_indexes_ready:
+            return self.dumpToItem()
+        if len(self._complex_item['complexItemParametresKeys']) != len(self.__params_indexes):
+            return self.dumpToItem()
+        for inc_key, index in self.__params_indexes.items():
+            if inc_key != self._complex_item['complexItemParametresKeys'][index]:
+                return self.dumpToItem()
+
+        def _write(inc_key, value):
+            index = self.__params_indexes[inc_key]
+            if self._complex_item['complexItemParametresValues'][index] != value:
+                self._complex_item['complexItemParametresValues'][index] = value
+
+        if self._BuiltinMagazine:
+            _write(ItemsCatalog.INC_MUNITION_NUMBER, self._ammoNumber)
+            _write(ItemsCatalog.INC_LOADED_MUNITION_TYPE, self._ammoType)
+        _write(ItemsCatalog.INC_IS_BROKEN, self._ItemJammed)
+        _write(ItemsCatalog.INC_CONDITION, self._ItemCondition)
+
+    def _init_externalAmmoCapacityCounter(self):
+        self.__am_cap = 0
+        self.__am_cap_find_end = False
+        self._ammoCapacityBuiltinByAttach = 0
+
+    def _add_externalAmmoCapacityCounter(self, attach_item_param):
+        AmmoCapacityExternalEnd = attach_item_param.get('AmmoCapacityExternalEnd', None)
+        AmmoCapacityExternalStart = attach_item_param.get('AmmoCapacityExternalStart', None)
+        if AmmoCapacityExternalStart:
+            self.__am_cap += AmmoCapacityExternalStart
+        if AmmoCapacityExternalEnd is not None:
+            self.__am_cap += AmmoCapacityExternalEnd
+            self.__am_cap_find_end = True
+        return
+
+    def _end_externalAmmoCapacityCounter(self):
+        if self.__am_cap_find_end:
+            self._ammoCapacityBuiltinByAttach = self.__am_cap
+        self.__am_cap = 0
+        self.__am_cap_find_end = False
+
+    def makeWeaponFromItem(self, complex_item):
+        self._complex_item = complex_item
+        prepare_nodes = {}
+        self._magazine = None
+        self._muzzle_device = None
+        self._ammoCapacityBuiltinByAttach = 0
+        self._max_scope_world_zoom = 1.0
+        self._init_externalAmmoCapacityCounter()
+        weapon_id = complex_item['complexItemID']
+        for subitem in complex_item['itemList']:
+            att = None
+            sub_prop = ItemsCatalog.GetItemParam(subitem['itemType'])
+            self._add_externalAmmoCapacityCounter(sub_prop)
+            if sub_prop.get('PartType') == ItemsCatalog.SCOPE:
+                self._has_scope = True
+                scope_type = sub_prop.get('ScopeType')
+                scope_param = scope_reticle_settings.SCOPE_MULTIPLER_TABLE.get(scope_type, {})
+                if scope_param:
+                    zoom = scope_param.get('zoom')
+                    if zoom:
+                        self._max_scope_world_zoom = max(zoom[-1][0], self._max_scope_world_zoom)
+            if sub_prop.get('PartType') == ItemsCatalog.LIGHT:
+                self._light_exist = True
+            if sub_prop.get('DisableStandardSight', False):
+                self._disable_standard_sight = True
+            if sub_prop.get('PartType') == ItemsCatalog.LAUNCHER:
+                att = LauncherAttach(parent_entity=self._parent_entity, weapon_id=weapon_id)
+                self._launchers[subitem['itemID']] = att
+                self._first_launcher = att
+                if not self._custom_hilt:
+                    self._custom_hilt = att
+            elif sub_prop.get('PartType') == ItemsCatalog.LEFT_HILT:
+                att = WeaponAttachment(parent_entity=self._parent_entity, weapon_id=weapon_id)
+                self._custom_hilt = att
+            elif sub_prop.get('PartType') == ItemsCatalog.MAGAZINE:
+                att = Magazine(parent_entity=self._parent_entity, weapon_id=weapon_id)
+                self._magazine = att
+            else:
+                att = WeaponAttachment(parent_entity=self._parent_entity, weapon_id=weapon_id)
+                if sub_prop.get('PartType') in (ItemsCatalog.SILENCER, ItemsCatalog.MUZZLE_DEVICE):
+                    self._muzzle_device = att
+            att.makeFromSubItem(subitem, sub_prop=sub_prop)
+            prepare_nodes[att.getID()] = att
+
+        self._end_externalAmmoCapacityCounter()
+        if self._first_launcher:
+            self._first_launcher.checkIncompatibleItems([ s['itemType'] for s in complex_item['itemList'] ])
+        base_node = WeaponAttachment(parent_entity=self._parent_entity)
+        base_node.makeFromComplexItem(complex_item)
+        self._weapon = self._makeWeapon(base_node, prepare_nodes)
+        prop = ItemsCatalog.GetItemParam(complex_item['complexItemType'])
+        if prop.get('testSpotLight'):
+            self._light_exist = True
+        param = ItemsUtils.GetComplexItemInconstanParams(complex_item)
+        if ItemsUtils.ConvertOldCondition(complex_item, param, prop):
+            param = ItemsUtils.GetComplexItemInconstanParams(complex_item)
+        self._ItemJammed = param.get(ItemsCatalog.INC_IS_BROKEN, 0)
+        self._OilEffEnd = param.get(ItemsCatalog.INC_WEAPON_GREASEOIL_END, 0)
+        self._ItemCondition = param.get(ItemsCatalog.INC_CONDITION, ItemsCatalog.MAX_CONDITION_VALUE)
+        self._itemID = self._complex_item['complexItemID']
+        self._itemType = self._complex_item['complexItemType']
+        BuiltinMagazine = prop.get('BuiltinMagazine', None)
+        if BuiltinMagazine:
+            self._BuiltinMagazine = BuiltinMagazine
+            self._BuiltinMagazineProp = ItemsCatalog.GetItemParam(BuiltinMagazine)
+            self._ammoType = param.get(ItemsCatalog.INC_LOADED_MUNITION_TYPE, 0)
+            self._ammoNumber = param.get(ItemsCatalog.INC_MUNITION_NUMBER, 0)
+            self._prev_ammoType = self._ammoType
+        if not BuiltinMagazine:
+            self._weapon.createMagazineAttachNode()
+        self.__update_index_item()
+        self.onWeaponReady()
+        return self._weapon
+
+    def rememberSlot(self, weapon_slot):
+        self._weapon_slot_copy = pyFixedToNativePythonType(weapon_slot)
+
+    def makeWeaponFromWeaponSlot(self, weapon_slot):
+        self._weapon_slot = weapon_slot
+        self.rememberSlot(weapon_slot)
+        self._magazine = None
+        self._muzzle_device = None
+        self._init_externalAmmoCapacityCounter()
+        prepare_nodes = {}
+        weapon_id = weapon_slot['itemID']
+        for subitem in weapon_slot['upgr']:
+            att = None
+            sub_prop = ItemsCatalog.GetItemParam(subitem['itemType'])
+            if sub_prop.get('PartType') == ItemsCatalog.SCOPE:
+                self._has_scope = True
+            if sub_prop.get('PartType') == ItemsCatalog.LIGHT:
+                self._light_exist = True
+            if self.isBuiltinMagazine():
+                self._add_externalAmmoCapacityCounter(sub_prop)
+            if sub_prop.get('DisableStandardSight', False):
+                self._disable_standard_sight = True
+            if sub_prop.get('PartType') == ItemsCatalog.LAUNCHER:
+                att = LauncherAttach(parent_entity=self._parent_entity, weapon_id=weapon_id)
+                self._launchers[subitem['itemID']] = att
+                self._first_launcher = att
+                if not self._custom_hilt:
+                    self._custom_hilt = att
+            elif sub_prop.get('PartType') == ItemsCatalog.LEFT_HILT:
+                att = WeaponAttachment(parent_entity=self._parent_entity, weapon_id=weapon_id)
+                self._custom_hilt = att
+            elif sub_prop.get('PartType') == ItemsCatalog.MAGAZINE:
+                att = Magazine(parent_entity=self._parent_entity, weapon_id=weapon_id)
+                self._magazine = att
+            else:
+                att = WeaponAttachment(parent_entity=self._parent_entity, weapon_id=weapon_id)
+                if sub_prop.get('PartType') in (ItemsCatalog.SILENCER, ItemsCatalog.MUZZLE_DEVICE):
+                    self._muzzle_device = att
+            att.makeFromSlot(subitem)
+            prepare_nodes[att.getID()] = att
+
+        self._end_externalAmmoCapacityCounter()
+        if self._first_launcher:
+            self._first_launcher.checkIncompatibleItems([ s['itemType'] for s in weapon_slot['upgr'] ])
+        base_node = WeaponAttachment(parent_entity=self._parent_entity)
+        base_node.makeFromSlot(weapon_slot)
+        self._weapon = self._makeWeapon(base_node, prepare_nodes)
+        self._itemID = self._weapon_slot['itemID']
+        self._itemType = self._weapon_slot['itemType']
+        self._ammoType = self._weapon_slot['ammoType']
+        self._ammoNumber = 0
+        if self._magazine:
+            self._magazine._ammoType = self._weapon_slot['ammoType']
+            self._magazine._ammoNumber = 1
+        elif self._ammoType:
+            self._ammoNumber = 1
+        if self.getParam().get('testSpotLight'):
+            self._light_exist = True
+        BuiltinMagazine = self.getParam().get('BuiltinMagazine', None)
+        if BuiltinMagazine:
+            self._BuiltinMagazine = BuiltinMagazine
+            self._BuiltinMagazineProp = ItemsCatalog.GetItemParam(BuiltinMagazine)
+        if not BuiltinMagazine:
+            self._weapon.createMagazineAttachNode()
+        self.onWeaponReady()
+        return self._weapon
+
+    def _makeWeapon(self, base_node, prepare_nodes):
+        prepare_nodes[base_node.getID()] = base_node
+        for att in prepare_nodes.values():
+            att_param = att.getProp()
+            self._spread_mod *= att_param.get('SpreadMod', 1.0)
+            self._recoil_mod *= att_param.get('RecoilMod', 1.0)
+            parentID = att.getParentID()
+            if not parentID:
+                continue
+            elif att.getParentID() in prepare_nodes.keys():
+                parent = prepare_nodes[att.getParentID()]
+                parent.attachChildren(att, att.getParentNodeID())
+            else:
+                print 'WARNING ', self._parent_entity, 'weapon', base_node, 'not found parent for', att
+
+        return base_node
+
+    def getMagazine(self):
+        return self._magazine
+
+    def getMuzzleDevice(self):
+        return self._muzzle_device
+
+    def hasMuzzleDevice(self):
+        return bool(self._muzzle_device)
+
+    def haveSupressor(self):
+        return self._muzzle_device and self._muzzle_device.getProp().get('PartType') == ItemsCatalog.SILENCER
+
+    def getMagazineUpgradeSlot(self):
+        if not self._magazine:
+            return ItemsUtils.create_empty_upgr()
+        slot = self.makeWeaponSlot(self._complex_item)
+        for upgr in slot['upgr']:
+            if upgr['itemID'] == self._magazine.getID():
+                return upgr
+
+    def hasScope(self):
+        return self._has_scope
+
+    def getItemID(self):
+        return self._itemID
+
+    def getItemType(self):
+        return self._itemType
+
+    def getParam(self, key = None, default = None):
+        if key:
+            if self._parent_entity and self._complex_item:
+                return grades_utils.get_current_param(key, self._complex_item, self._parent_entity, default=default)
+            else:
+                return ItemsCatalog.GetItemParam(self.getItemType()).get(key, default)
+        return ItemsCatalog.GetItemParam(self.getItemType())
+
+    @property
+    def timePerShot(self):
+        return 60.0 / self.rateOfFire
+
+    @property
+    def rateOfFire(self):
+        if not getattr(self, '_rate_of_fire', None):
+            self._rate_of_fire = max(1.0, self.getParam('rateOfFireSM', 120))
+        return self._rate_of_fire
+
+    def onItemChange(self):
+        self._rate_of_fire = None
+        return
+
+    def getLauncherParam(self):
+        if not self._first_launcher:
+            return None
+        else:
+            return self._first_launcher.getProp()
+
+    def isGrenadeGun(self):
+        return self.getGunType() in (ItemsCatalog.ROCKET_LAUNCHER, ItemsCatalog.GRENADE_LAUNCHER)
+
+    def isSprayer(self):
+        return self.getGunType() == ItemsCatalog.SPRAYER
+
+    def isAuto(self):
+        prop = self.getParam()
+        return prop.get('FireType') == ItemsCatalog.AUTOMATIC
+
+    def isBoltAnimation(self):
+        prop = self.getParam()
+        return prop.get('boltAnimation', '')
+
+    def isWaitBoltAnimation(self):
+        return self._isWaitBoltAnimation
+
+    def waitBoltAnimation(self, wait):
+        self._isWaitBoltAnimation = wait
+
+    def isBuiltinMagazine(self):
+        return self._BuiltinMagazine
+
+    def haveSilencer(self):
+        if self._muzzle_device is None:
+            return False
+        else:
+            return self._muzzle_device.getProp()['PartType'] in (ItemsCatalog.SILENCER,)
+
+    def getPenetration(self):
+        return self.getParam('Penetration')
+
+    def getAddDamageMain(self):
+        AddDamageMain = self.getParam('AddDamageMain')
+        if AddDamageMain:
+            damage_type, damage_bounds = AddDamageMain.iteritems().next()
+            return random.uniform(*damage_bounds)
+        return 0
+
+    def getPenetrationDistMod(self):
+        param = self.getParam()
+        return dictDAMAGE_DISTANCE[param['PenetrationDistanceMod']]
+
+    def getDamageDistMod(self):
+        param = self.getParam()
+        return dictDAMAGE_DISTANCE[param['DamageDistanceMod']]
+
+    def getDamageDistAvatarCoef(self, dist):
+        confname = self.getParam().get('DamageDistanceAvatar')
+        if confname not in DAMAGE_DISTANCE_AVATAR_ARR:
+            return 1.0
+        conf = DAMAGE_DISTANCE_AVATAR_ARR[confname]
+        if dist <= conf[0][0]:
+            return conf[0][1]
+        if dist >= conf[-1][0]:
+            return conf[-1][1]
+        for _meters, _dam in conf:
+            if dist <= _meters:
+                sec_dist, sec_coef = _meters, _dam
+                break
+            first_dist, first_coef = _meters, _dam
+
+        d = (dist - first_dist) / (sec_dist - first_dist)
+        coef = first_coef + (sec_coef - first_coef) * d
+        return coef
+
+    def getNumberOfBullet(self):
+        ammo_param = self.getAmmoParam()
+        if not ammo_param:
+            return 0
+        return ammo_param.get('NumShots', 1)
+
+    def getAmmoNumber(self):
+        if self._BuiltinMagazine:
+            return self._ammoNumber
+        mag = self.getMagazine()
+        if mag:
+            return mag.getAmmoNumber()
+
+    def setAmmoNumber(self, value, dump = True):
+        if self._BuiltinMagazine:
+            self._ammoNumber = value
+            self.onChangeAmmo()
+            if dump:
+                self._fastDumpValuesToItem()
+            return
+        mag = self.getMagazine()
+        if mag:
+            mag.setAmmoNumber(value, dump=dump)
+        self.onChangeAmmo()
+
+    def getAmmoType(self):
+        if self._BuiltinMagazine:
+            return self._ammoType
+        mag = self.getMagazine()
+        if mag:
+            return mag.getAmmoType()
+
+    def getAmmoParam(self):
+        ammo_type = self.getAmmoType()
+        if not ammo_type:
+            return None
+        else:
+            return ItemsCatalog.GetItemParam(ammo_type)
+
+    def getLastAmmoType(self):
+        return self._prev_ammoType
+
+    def setAmmoType(self, value):
+        if self._BuiltinMagazine:
+            self._ammoType = value
+            return self._fastDumpValuesToItem()
+        mag = self.getMagazine()
+        if mag:
+            mag.setAmmoType(value)
+
+    def getAmmoCapacityForAmmoType(self, ammo_type):
+        def_capacity = self.getAmmoCapacity()
+        if not self._BuiltinMagazine or not ammo_type:
+            return def_capacity
+        else:
+            ammo_prop = ItemsCatalog.GetItemParam(ammo_type)
+            if not ammo_prop:
+                return 0
+            if not def_capacity:
+                return 0
+            ammo_cl = ammo_prop.get('AmmoClass', None)
+            AmmoClassAdditional = self._BuiltinMagazineProp.get('AmmoClassAdditional', {})
+            if ammo_cl not in AmmoClassAdditional:
+                return def_capacity
+            new_capacity = int(def_capacity * AmmoClassAdditional[ammo_cl])
+            return new_capacity
+
+    def getAmmoCapacity(self):
+        if self._BuiltinMagazine:
+            if self._ammoCapacityBuiltinByAttach:
+                return self._ammoCapacityBuiltinByAttach
+            return self._BuiltinMagazineProp.get('AmmoCapacity', 0)
+        mag = self.getMagazine()
+        if mag:
+            return mag.getAmmoCapacity()
+        return 0
+
+    def getAmmoClass(self):
+        if self._BuiltinMagazine:
+            return self._BuiltinMagazineProp.get('AmmoClass')
+        mag = self.getMagazine()
+        if mag:
+            mag.getAmmoClass()
+
+    def getAmmoClassAdditionalDict(self):
+        if self._BuiltinMagazine:
+            return self._BuiltinMagazineProp.get('AmmoClassAdditional', {})
+        return {}
+
+    def getAmmoClassFullList(self):
+        return [self.getAmmoClass()] + self.getAmmoClassAdditionalDict().keys()
+
+    def getCondition(self):
+        max_cond = ItemsCatalog.GetItemParam(self.getItemType()).get('MaxCondition')
+        return int(round(self._ItemCondition * float(max_cond) / ItemsCatalog.MAX_CONDITION_VALUE))
+
+    def getConditionPercent(self):
+        return self._ItemCondition * ItemsCatalog.PERCENT_MODIFYER / ItemsCatalog.MAX_CONDITION_VALUE
+
+    def getJammed(self):
+        return self._ItemJammed
+
+    def isJammed(self):
+        return self._ItemJammed
+
+    def isGreaseOilEffect(self):
+        return self._OilEffEnd > time.time()
+
+    def subCondition(self, diff):
+        """\xd0\x92\xd1\x8b\xd1\x87\xd0\xb5\xd1\x81\xd1\x82\xd1\x8c \xd0\xbf\xd1\x80\xd0\xbe\xd1\x87\xd0\xba\xd1\x83 \xd0\xb2 \xd0\xb0\xd0\xb1\xd1\x81 \xd0\xb7\xd0\xbd\xd0\xb0\xd1\x87\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb8"""
+        self.setCondition(self.getCondition() - diff)
+
+    def setCondition(self, value):
+        max_condition = ItemsCatalog.GetItemParam(self.getItemType()).get('MaxCondition')
+        self._ItemCondition = int(max(0.0, min(ItemsCatalog.MAX_CONDITION_VALUE, float(value) / max_condition * ItemsCatalog.MAX_CONDITION_VALUE)))
+        self._fastDumpValuesToItem()
+
+    def setJammed(self, value):
+        self._ItemJammed = value
+        self._fastDumpValuesToItem()
+
+    def getReloadSpeedMod(self, entity):
+        """
+        \xd0\x92\xd0\xbe\xd0\xb7\xd0\xb2\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xba\xd0\xbe\xd1\x8d\xd1\x84\xd1\x84\xd0\xb8\xd1\x86\xd0\xb8\xd0\xb5\xd0\xbd\xd1\x82 \xd1\x81\xd0\xba\xd0\xbe\xd1\x80\xd0\xbe\xd1\x81\xd1\x82\xd0\xb8 \xd0\xb7\xd0\xb0\xd1\x80\xd1\x8f\xd0\xb4\xd0\xba\xd0\xb8 \xd0\xbf\xd0\xb0\xd1\x82\xd1\x80\xd0\xbe\xd0\xbd\xd0\xbe\xd0\xb2 \xd0\xb2\xd0\xbe \xd0\xb2\xd1\x81\xd1\x82\xd1\x80\xd0\xbe\xd0\xb5\xd0\xbd\xd0\xbd\xd1\x8b\xd0\xb9 \xd0\xbc\xd0\xb0\xd0\xb3\xd0\xb0\xd0\xb7\xd0\xb8\xd0\xbd \xd0\xb8\xd0\xbb\xd0\xb8 \xd1\x81\xd0\xbc\xd0\xb5\xd0\xbd\xd1\x8b \xd0\xbc\xd0\xb0\xd0\xb3\xd0\xb0\xd0\xb7\xd0\xb8\xd0\xbd\xd0\xb0
+        """
+        base = 1.0 + self.getParam().get('reload_speed_mod', 0)
+        if self.isBuiltinMagazine():
+            return base + entity.get_perk_action_val('W_RELOAD_MANUAL')
+        else:
+            return base + entity.get_perk_action_val('W_RELOAD_MAGAZINE')
+
+    def getGunType(self):
+        return self.getParam()['GunType']
+
+    def getSpreadModifier(self):
+        if self._complex_item:
+            return self._spread_mod * grades_utils.get_current_param('gun_spread_ratio', self._complex_item, self._parent_entity)
+        return self._spread_mod
+
+    def getRecoilModifier(self):
+        if self._complex_item:
+            return self._recoil_mod * grades_utils.get_current_param('Kickback', self._complex_item, self._parent_entity)
+        return self._recoil_mod
+
+    def isPistol(self):
+        prop = self.getParam()
+        if prop['GunType'] in [0, ItemsCatalog.PISTOL, ItemsCatalog.REVOLVER]:
+            return True
+        return False
+
+    def canAttachBelly(self):
+        prop = self.getParam()
+        if prop['GunType'] in [0, ItemsCatalog.PISTOL, ItemsCatalog.REVOLVER]:
+            return False
+        return prop.get('CanBelly', True)
+
+    def canLoadGreandeItem(self, greanade_item, print_error = False):
+        if not self._first_launcher:
+            if print_error:
+                print 'canLoadGreandeItem::not self._first_launcher'
+            return False
+        grenade_param = ItemsCatalog.GetItemParam(greanade_item['complexItemType'])
+        launcher_ammo_class = self._first_launcher.getProp().get('AmmoClass', -1)
+        grenade_ammo_class = grenade_param.get('AmmoClass', -2)
+        if launcher_ammo_class != grenade_ammo_class:
+            if print_error:
+                print 'canLoadGreandeItem !W cl %s != G cl=%s' % (launcher_ammo_class, grenade_ammo_class)
+            return False
+        return True
+
+    def canLoadAmmoItem(self, ammo_item, print_error = False):
+        if not self._BuiltinMagazine:
+            if print_error:
+                print 'canLoadAmmoItem self._BuiltinMagazine', self._BuiltinMagazine
+            return False
+        elif ItemsCatalog.GetItemClass(ammo_item['complexItemType']) != ItemsCatalog.AMMO:
+            if print_error:
+                print 'canLoadAmmoItem !AMMO', ItemsCatalog.GetItemClass(ammo_item['complexItemType'])
+            return False
+        ammo_param = ItemsCatalog.GetItemParam(ammo_item['complexItemType'])
+        ammo_cl = ammo_param.get('AmmoClass', None)
+        if ammo_cl is None:
+            return False
+        elif ammo_cl == self._BuiltinMagazineProp.get('AmmoClass', -1):
+            return True
+        elif ammo_cl in self._BuiltinMagazineProp.get('AmmoClassAdditional', {}):
+            return True
+        else:
+            return False
+
+    def canLoadMagazineItem(self, magazine_item, print_error = False):
+        if self._BuiltinMagazine and not self.getParam().get('MagazineClassList', []):
+            if print_error:
+                print self, 'self._BuiltinMagazine', self._BuiltinMagazine
+            return False
+        magaz_id = magazine_item['complexItemID']
+        magaz_type = magazine_item['complexItemType']
+        cur_mag = self.getMagazine()
+        if cur_mag and cur_mag.getID() == magaz_id:
+            if print_error:
+                print self, 'cur_mag.getID() == magaz_id', magaz_id
+            return False
+        magaz_param = ItemsCatalog.GetItemParam(magaz_type)
+        magazineclass = magaz_param.get('MagazineClass')
+        weapon_magazineclass = self.getParam().get('MagazineClassList', [])
+        if magazineclass in weapon_magazineclass:
+            return True
+        if print_error:
+            print self, 'magaz_param', magazineclass
+        if print_error:
+            print 'weapon_magazineclass', weapon_magazineclass
+        return False
+
+    def canSwitchSpotLight(self):
+        return self._light_exist
+
+    def AttachListParts(self, list_modification, entity):
+        if not self._complex_item:
+            raise ErrorItemException('not found original complex_item')
+        self.validateComplexItem()
+        old_sub_items = dict(((sub['itemID'], PY(sub)) for sub in self._complex_item['itemList']))
+        need_delete_items = []
+        new_sub = []
+        for entry in list_modification:
+            itemID = entry['itemID']
+            parentID = entry['parentID']
+            parentNodeID = entry['parentNodeID']
+            attachOffset = entry['attachOffset']
+            if itemID in old_sub_items:
+                sub_item = old_sub_items.pop(itemID)
+                sub_item = ItemsUtils.UpdateSubItemWeapon(sub_item, parentID, parentNodeID, attachOffset)
+                new_sub.append(sub_item)
+            else:
+                att_item = ItemsUtils.GetComplexItemByID(entity, itemID)
+                if not att_item:
+                    print 'Weapon::AttachListParts not found item', itemID, entity, self
+                    raise ValueError('not found item')
+                sub_item = ItemsUtils.ConvertItemToSubItemWeapon(att_item, parentID, parentNodeID, attachOffset)
+                new_sub.append(sub_item)
+                need_delete_items.append(att_item)
+
+        for item in need_delete_items:
+            if self._magazine and self._magazine.getID() == item['complexItemID']:
+                self._magazine = None
+            if self._muzzle_device and self._muzzle_device.getID() == item['complexItemID']:
+                self._muzzle_device = None
+            comment = 'attach_item'
+            target = 'ITEM:%s' % self.getItemID()
+            if not entity.DeleteComplexItem(item['complexItemID'], target=target, comment=comment, logToChat=False, checkweight=False):
+                print 'Weapon::AttachListParts', PY(item), entity, self
+                raise ValueError
+
+        for detatc_sub in old_sub_items.values():
+            if self._magazine and self._magazine.getID() == detatc_sub['itemID']:
+                self._magazine = None
+            if self._muzzle_device and self._muzzle_device.getID() == detatc_sub['itemID']:
+                self._muzzle_device = None
+            ItemsUtils.ExtractItemFromComplexItem(entity, self._complex_item, detatc_sub, clear_attach_info=True)
+
+        self._complex_item['itemList'] = new_sub
+        self.validateComplexItem()
+        return True
+
+    def validateComplexItem(self):
+        """
+                \xd0\xb1\xd0\xbe\xd1\x80\xd0\xb5\xd0\xbc\xd1\x81\xd1\x8f \xd1\x81 \xd0\xb1\xd0\xb0\xd0\xb3\xd0\xb0\xd0\xbe\xd0\xbc \xd0\xb4\xd1\x83\xd0\xbf\xd0\xbb\xd0\xb5\xd0\xb9 \xd0\xbc\xd0\xb0\xd0\xb3\xd0\xb0\xd0\xb7\xd0\xb8\xd0\xbd\xd0\xbe\xd0\xb2 (\xd0\xba\xd0\xb0\xd0\xba \xd0\xbf\xd0\xbe\xd1\x87\xd0\xb8\xd0\xbd\xd0\xb8\xd0\xbc \xd0\xa3\xd0\x91\xd0\xa0\xd0\x90\xd0\xa2\xd0\xac \xd0\xad\xd0\xa2\xd0\x9e)
+        """
+        if not self._complex_item:
+            return
+        else:
+            entity_item = ItemsUtils.GetComplexItemByID(self._parent_entity, self.getItemID())
+            if not entity_item:
+                print 'WARNING validateComplexItem   not entity_item', self, self._parent_entity
+                print 'self._complex_item', self._complex_item, PY(self._complex_item)
+                self._parent_entity.clearActiveWeaponCache()
+                self._parent_entity.resetAllWeaponsToServer()
+                raise ValueError('not found entity_item')
+            if self._complex_item != entity_item:
+                print 'WARNING validateComplexItem self._complex_item != entity_item', self, self._parent_entity
+                print 'entity_item', entity_item, PY(entity_item)
+                print 'self._complex_item', self._complex_item, PY(self._complex_item)
+                self._complex_item = entity_item
+                traceback.print_stack()
+            att_ids = [ sub['itemID'] for sub in entity_item['itemList'] ]
+            if len(att_ids) != len(set(att_ids)):
+                print 'WARNING validateComplexItem duplicate itemList', self, self._parent_entity, att_ids
+                print 'entity_item', entity_item, PY(entity_item)
+                new_itemList = []
+                new_itemList_ids = set([])
+                for sub in entity_item['itemList']:
+                    itemID = sub['itemID']
+                    if itemID not in new_itemList_ids:
+                        new_itemList.append(sub)
+                    new_itemList_ids.add(itemID)
+
+                entity_item['itemList'] = new_itemList
+                self._parent_entity.clearActiveWeaponCache()
+                self._parent_entity.resetAllWeaponsToServer()
+                raise ValueError('duplicate itemList')
+            if self._magazine:
+                if self._magazine.getItemID() not in att_ids:
+                    print 'ERROR validateComplexItem self._magazine not in itemList', self, self._parent_entity
+                    print 'entity_item', entity_item, PY(entity_item)
+                    print '_magazine', self._magazine
+                    self._magazine = None
+                    traceback.print_stack()
+                    self._parent_entity.clearActiveWeaponCache()
+                    self._parent_entity.resetAllWeaponsToServer()
+                    raise ValueError('self._magazine not in itemList')
+            return
+
+    def detachAll(self, entity):
+        if not self._complex_item:
+            raise ErrorItemException('not found original complex_item')
+        self.validateComplexItem()
+        att_ids = [ sub['itemID'] for sub in self._complex_item['itemList'] ]
+        for sub_item_id in att_ids:
+            self.detachPartByID(entity, sub_item_id)
+
+    def detachPartByID(self, entity, subitemID):
+        if not self._complex_item:
+            raise ErrorItemException('not found original complex_item')
+        if self._magazine and self._magazine.getID() == subitemID:
+            self._magazine = None
+        if self._muzzle_device and self._muzzle_device.getID() == subitemID:
+            self._muzzle_device = None
+        sub_attach = self._weapon.findAttach(subitemID)
+        sub_attach.detach([])
+        sub_item = ItemsUtils.GetSubItemByID(self._complex_item, subitemID)
+        if not sub_item:
+            raise ValueError('not found sub item %s' % subitemID)
+        ItemsUtils.ExtractItemFromComplexItem(entity, self._complex_item, sub_item, clear_attach_info=True)
+        return
+
+    def attachPart(self, entity, item, parent_id, node_id, posY):
+        if not self._complex_item:
+            raise ErrorItemException('not found original complex_item')
+        new_sub_item = ItemsUtils.ConvertItemToSubItemWeapon(item, parentItemID=parent_id, parentNodeID=node_id, attachPosY=posY)
+        ItemsUtils.AttachSubItemToWeapon(entity, self._complex_item, new_sub_item)
+
+    def loadMagazine(self, entity, magazine_item):
+        """ \xd0\xbf\xd1\x80\xd0\xb8\xd0\xb0\xd1\x82\xd0\xb0\xd1\x87\xd0\xb8\xd1\x82\xd1\x8c \xd0\xb8\xd1\x82\xd0\xb5\xd0\xbc\xd0\xb0 \xd0\xbc\xd0\xb0\xd0\xb3\xd0\xb0\xd0\xb7\xd0\xb8\xd0\xbd\xd0\xb0
+        """
+        self.validateComplexItem()
+        magaz = self.getMagazine()
+        if magaz:
+            self.detachPartByID(entity, magaz.getID())
+        if not magazine_item:
+            return True
+        if self.isBuiltinMagazine():
+            pass
+        else:
+            self.attachPart(entity, magazine_item, self.getItemID(), NODE.DEF_MAGAZINE_ID, 0.0)
+        return True
+
+    def insertLauncherGrenade(self, entity, grenade_item, num_ammo = 1, dump = True):
+        """ \xd0\xb4\xd0\xbe\xd0\xb1\xd0\xb0\xd0\xb2\xd0\xb8\xd1\x82\xd1\x8c \xd0\xb3\xd1\x80\xd0\xb0\xd0\xbd\xd0\xb0\xd1\x82\xd1\x83  \xd0\xb8\xd0\xb7 \xd0\xb8\xd1\x82\xd0\xb5\xd0\xbc\xd0\xb0 \xd0\xb2 \xd0\xbf\xd0\xbe\xd0\xb4\xd1\x81\xd1\x82\xd0\xb2\xd0\xbe\xd0\xbb\xd1\x8c\xd0\xbd\xd1\x8b\xd0\xb9 \xd0\xb3\xd1\x80\xd0\xb0\xd0\xbd\xd0\xb0\xd1\x82\xd0\xbe\xd0\xbc\xd0\xb5\xd1\x82
+                \xd1\x82\xd0\xbe\xd0\xbb\xd1\x8c\xd0\xba\xd0\xbe 1 \xd0\xb3\xd1\x80\xd0\xb0\xd0\xbd\xd0\xb0\xd1\x82\xd0\xb0 \xd0\xbc\xd0\xbe\xd0\xb6\xd0\xb5\xd1\x82 \xd0\xb7\xd0\xb0\xd1\x80\xd1\x8f\xd0\xb6\xd0\xb0\xd1\x82\xd1\x8c\xd1\x81\xd1\x8f
+        """
+        if not self._first_launcher:
+            raise TypeError('%s does not have first_launcher' % self)
+        if grenade_item:
+            ammoType = grenade_item['complexItemType']
+            if dump:
+                entity.SpendItem(grenade_item, num_spend=num_ammo, logToChat=False)
+                self._first_launcher.returnItemToPlayer(entity, False)
+            self._first_launcher.setAmmoType(ammoType, dump=False)
+            self._first_launcher.setAmmoNumber(num_ammo, dump=dump)
+        elif not grenade_item:
+            if dump:
+                self._first_launcher.returnItemToPlayer(entity, False)
+            self._first_launcher.setAmmoNumber(0, dump=dump)
+
+    def insertAmmo(self, entity, ammo_item, num_ammo = 1, dump = True):
+        """ \xd0\xb4\xd0\xbe\xd0\xb1\xd0\xb0\xd0\xb2\xd0\xb8\xd1\x82\xd1\x8c \xd0\xbf\xd0\xb0\xd1\x82\xd1\x80\xd0\xbe\xd0\xbd \xd0\xb8\xd0\xb7 \xd0\xb8\xd1\x82\xd0\xb5\xd0\xbc\xd0\xb0 (\xd1\x82\xd0\xbe\xd0\xbb\xd1\x8c\xd0\xba\xd0\xbe \xd0\xb4\xd0\xbb\xd1\x8f \xd0\xb2\xd1\x81\xd1\x82\xd1\x80\xd0\xbe\xd0\xb5\xd0\xbd\xd0\xbd\xd1\x8b\xd1\x85 \xd0\xbc\xd0\xb0\xd0\xb3\xd0\xb0\xd0\xb7\xd0\xb8\xd0\xbd\xd0\xbe\xd0\xb2)
+        """
+        need_ammo_num = self.getAmmoCapacity() - self.getAmmoNumber()
+        if need_ammo_num < 0 and float(abs(need_ammo_num)) / self.getAmmoCapacity() > 0.2:
+            print 'Weapon (ERROR)', entity, (self, self.getAmmoCapacity(), self.getAmmoNumber())
+            raise RuntimeError('insert ammo cheater')
+        if not self._BuiltinMagazine:
+            raise TypeError
+        item_type = ammo_item['complexItemType']
+        ammo_class = ItemsCatalog.GetItemClass(item_type)
+        if ammo_class == ItemsCatalog.AMMO:
+            if item_type != self._ammoType:
+                if self._ammoNumber and self._ammoType:
+                    if dump:
+                        entity.ReturnItem(self._ammoType, self._ammoNumber)
+                self._ammoType = item_type
+                self._ammoNumber = 0
+            if dump:
+                entity.SpendItem(ammo_item, num_spend=num_ammo, logToChat=False)
+            self._ammoNumber += 1
+            self._prev_ammoType = self._ammoType
+        elif ammo_class == ItemsCatalog.PART:
+            inc_param = ItemsUtils.GetComplexItemInconstanParams(ammo_item)
+            magazine_ammo_count = inc_param.get(ItemsCatalog.INC_MUNITION_NUMBER, 0)
+            new_ammo_type = inc_param.get(ItemsCatalog.INC_LOADED_MUNITION_TYPE, 0)
+            if not magazine_ammo_count:
+                raise ValueError('empty clip %s %s %s %s' % (ammo_item['complexItemID'],
+                 item_type,
+                 self,
+                 entity))
+            if ItemsCatalog.GetItemClass(new_ammo_type) != ItemsCatalog.AMMO:
+                raise ValueError('no ammo in clip %s atype:%s %s %s' % (ammo_item['complexItemID'],
+                 new_ammo_type,
+                 self,
+                 entity))
+            if self.getAmmoNumber() and self.getAmmoType() != new_ammo_type:
+                self.pullOutAmmo(entity, dump=dump)
+            need_ammo_num = self.getAmmoCapacity() - self.getAmmoNumber()
+            if dump:
+                inc_param[ItemsCatalog.INC_MUNITION_NUMBER] = max(0, magazine_ammo_count - need_ammo_num)
+                entity.SetComplexItemInconstanParams(ammo_item, inc_param)
+            self._ammoNumber = min(self._ammoNumber + magazine_ammo_count, self.getAmmoCapacity())
+            self._ammoType = new_ammo_type
+            self._prev_ammoType = self._ammoType
+        if dump:
+            self._fastDumpValuesToItem()
+        if self._ammoType != entity.ActiveWeaponSet2[self.slot_name]['ammoType']:
+            entity.ActiveWeaponSet2[self.slot_name]['ammoType'] = self._ammoType
+        self.onChangeAmmo()
+
+    def deleteAmmoOverflow(self, entity, dump = True):
+        if not self.getAmmoType():
+            return
+        cur_ammo_number = self.getAmmoNumber()
+        max_ammo = self.getAmmoCapacityForAmmoType(self.getAmmoType())
+        if cur_ammo_number > max_ammo:
+            self.spendAmmo(count=cur_ammo_number - max_ammo, dump=dump)
+            print 'WEAPON:deleteAmmoOverflow', entity, self, cur_ammo_number, '->', max_ammo
+            return True
+
+    def pullOutAmmo(self, entity, dump = True):
+        """ \xd0\xb4\xd0\xbe\xd1\x81\xd1\x82\xd0\xb0\xd1\x82\xd1\x8c \xd0\xb2\xd1\x81\xd0\xb5 \xd0\xbf\xd0\xb0\xd1\x82\xd1\x80\xd0\xbe\xd0\xbd\xd1\x8b \xd0\xb8\xd0\xb7 \xd0\xbe\xd1\x80\xd1\x83\xd0\xb6\xd0\xb8\xd1\x8f
+        """
+        if not self._BuiltinMagazine:
+            raise TypeError
+        ammoType = self._ammoType
+        ammoNumber = self._ammoNumber
+        self._ammoType = 0
+        self._ammoNumber = 0
+        if dump:
+            self._fastDumpValuesToItem()
+        if self.slot_name and self._ammoType != entity.ActiveWeaponSet2[self.slot_name]['ammoType']:
+            entity.ActiveWeaponSet2[self.slot_name]['ammoType'] = self._ammoType
+        self.onChangeAmmo()
+        if ammoType and ammoNumber and dump:
+            entity.ReturnItem(ammoType, ammoNumber)
+
+    def getAttachListTypes(self):
+        result = []
+        if not self._complex_item:
+            return result
+        for subitem in self._complex_item['itemList']:
+            result.append(subitem['itemType'])
+
+        return result
+
+    def getCurrentGrenadeNumber(self):
+        if not self._first_launcher:
+            return 0
+        return self._first_launcher.getAmmoNumber()
+
+    def getCurrentGrenadeCapacity(self):
+        if not self._first_launcher:
+            return 0
+        return self._first_launcher.getAmmoCapacity()
+
+    def getCurrentGrenadeType(self):
+        if not self._first_launcher:
+            return 0
+        return self._first_launcher.getAmmoType()
+
+    def spendCurrentGrenade(self, count = 1, dump = False):
+        return self._first_launcher.spendAmmo(count, dump)
+
+    def getLaunchereAmmoClass(self, count = 1, dump = False):
+        if not self._first_launcher:
+            return None
+        else:
+            return self._first_launcher.getProp().get('AmmoClass', -1)
+
+    def spendAmmo(self, count = 1, dump = True):
+        if self._BuiltinMagazine:
+            spend_ammo_type = self._ammoType
+            if self._ammoNumber <= 0:
+                spend_ammo_type = 0
+                self._ammoType = 0
+            self._ammoNumber -= count
+            self._ammoNumber = max(0, self._ammoNumber)
+            self._prev_ammoType = self._ammoType
+            if not self._ammoNumber:
+                self._ammoType = 0
+            if dump:
+                self._fastDumpValuesToItem()
+            self.onSpendAmmo(spend_ammo_type)
+            return spend_ammo_type
+        spend_ammo_type = 0
+        mag = self.getMagazine()
+        if mag:
+            spend_ammo_type = mag.spendAmmo(count, dump)
+        self.onSpendAmmo(spend_ammo_type)
+        return spend_ammo_type
+
+    def findBestMagazine(self, entity):
+        magazine_class_list = self.getParam().get('MagazineClassList', [])
+        if self._BuiltinMagazine and not magazine_class_list:
+            return False
+        else:
+            magazine_class_list = self.getParam().get('MagazineClassList', [])
+            best_magazine = None
+            best_magazine_ammo = 0
+            if not magazine_class_list:
+                return
+            for item in entity.CarryingItems:
+                if ItemsCatalog.GetItemClass(item['complexItemType']) != ItemsCatalog.PART:
+                    continue
+                magaz_param = ItemsCatalog.GetItemParam(item['complexItemType'])
+                magazineclass = magaz_param.get('MagazineClass', None)
+                if not magazineclass:
+                    continue
+                if magazineclass not in magazine_class_list:
+                    continue
+                if self._magazine and item['complexItemID'] == self._magazine.getID():
+                    traceback.print_stack()
+                    print 'RELOAD MAGIC BUG'
+                    continue
+                magaz_inc = ItemsUtils.GetComplexItemInconstanParams(item)
+                ammo = magaz_inc.get(ItemsCatalog.INC_MUNITION_NUMBER, 0)
+                if ammo >= best_magazine_ammo:
+                    best_magazine = item
+                    best_magazine_ammo = ammo
+
+            return best_magazine
+
+    def findRandomAmmoType(self):
+        """\xd0\xb2\xd0\xbe\xd0\xb7\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xbf\xd0\xbe\xd0\xb4\xd1\x85\xd0\xbe\xd0\xb4\xd1\x8f\xd1\x89\xd0\xb8\xd0\xb9 \xd1\x82\xd0\xb8\xd0\xbf \xd0\xbf\xd0\xb0\xd1\x82\xd1\x80\xd0\xbe\xd0\xbd\xd0\xb0 \xd0\xb4\xd0\xbb\xd1\x8f \xd1\x8d\xd1\x82\xd0\xbe\xd0\xb3\xd0\xbe \xd0\xbc\xd0\xb0\xd0\xb3\xd0\xb0\xd0\xb7\xd0\xb8\xd0\xbd\xd0\xb0"""
+        if self._BuiltinMagazine:
+            ammo_class = self._BuiltinMagazineProp.get('AmmoClass', None)
+        elif self.getMagazine():
+            ammo_class = self.getMagazine().getProp().get('AmmoClass', None)
+        else:
+            return
+        if ammo_class is None:
+            return
+        else:
+            for ammo in sorted(ItemsCatalog.AMMOS.keys()):
+                ammo_param = ItemsCatalog.GetItemParam(ammo)
+                if ammo_param.has_key('HideFromINFO'):
+                    continue
+                if ammo_param['AmmoClass'] == ammo_class:
+                    return ammo_param['TypeID']
+
+            return
+
+    def findRandomMagazineType(self):
+        if self._BuiltinMagazine:
+            return
+        else:
+            magazine_class_list = self.getParam().get('MagazineClassList', [])
+            for magaz_type in sorted(ItemsCatalog.PARTS.keys()):
+                magaz_param = ItemsCatalog.GetItemParam(magaz_type)
+                if magaz_param.get('PartType') != ItemsCatalog.MAGAZINE:
+                    continue
+                magazineclass = magaz_param.get('MagazineClass', None)
+                if not magazineclass:
+                    continue
+                if magazineclass in magazine_class_list:
+                    return magaz_type
+
+            return
+
+    def getChildrenByNodeID(self, node_id):
+        return tuple(self._weapon.getChildren().get(node_id, ()))
+
+    def getChildrenInfoList(self):
+        return self._weapon.getChildrenInfoList()
+
+    def findAttach(self, itemID):
+        return self._weapon.findAttach(itemID)
+
+    @staticmethod
+    def makeWeaponSlot(complex_item, check = False):
+        u"""
+                \u0441\u043e\u0437\u0434\u0430\u043d\u0438\u0435 WEAPON_SLOT \u0438\u0437 complex_item,
+                @param check - \u043f\u0440\u043e\u0432\u0435\u0440\u043a\u0430 \u043f\u0440\u0438\u0441\u043e\u0435\u0434\u0435\u043d\u0435\u043d\u044b\u0445 \u0430\u0442\u0442\u0430\u0447\u0435\u0439 \u043d\u0430 \u0432\u043e\u0437\u043c\u043e\u0436\u043d\u043e\u0441\u0442\u044c \u043f\u0440\u0438\u0441\u043e\u0435\u0434\u0435\u043d\u0435\u043d\u0438\u044f(TODO)
+                @ret (slot, ammoType, ammoNumber)
+        """
+        ammoType = 0
+        prop = ItemsCatalog.GetItemParam(complex_item['complexItemType'])
+        param = ItemsUtils.GetComplexItemInconstanParams(complex_item)
+        if prop.get('BuiltinMagazine', None):
+            ammoType = param.get(ItemsCatalog.INC_LOADED_MUNITION_TYPE, 0)
+        slot = Weapon.getEmptySlot()
+        slot['itemID'] = complex_item['complexItemID']
+        slot['itemType'] = complex_item['complexItemType']
+        slot['COLORISEA'] = param.get(ItemsCatalog.INC_COLORISE_A, 0)
+        slot['COLORISEB'] = param.get(ItemsCatalog.INC_COLORISE_B, 0)
+        for subitem in complex_item['itemList']:
+            subparam = ItemsUtils.GetSubItemInconstanParams(subitem)
+            sub_prop = ItemsCatalog.GetItemParam(subitem['itemType'])
+            if sub_prop['PartType'] == ItemsCatalog.MAGAZINE:
+                ammoType = subparam.get(ItemsCatalog.INC_LOADED_MUNITION_TYPE, 0)
+            attach = WeaponAttachment.makeWeaponAttachmentSlot(subitem)
+            slot['upgr'].append(attach)
+
+        slot['ammoType'] = ammoType
+        return slot
+
+    @staticmethod
+    def getEmptySlot():
+        return ItemsUtils.qiuck_weapon_set()
+
+    def createWeaponSlot(self):
+        if not self._complex_item:
+            raise TypeError
+        return Weapon.makeWeaponSlot(self._complex_item)
+
+    def getModel(self):
+        return None
+
+    def onSpendAmmo(self, spend_ammo_type):
+        pass
+
+    def onChangeAmmo(self):
+        pass
+
+    def onWeaponReady(self):
+        pass
+
+
+if __name__ == '__main__':
+    w = Weapon()
+    print w.getEmptySlot()
+    print w.makeWeaponSlot({})

@@ -1,0 +1,185 @@
+# Embedded file name: ./client/soGUI/donat_shop/window/win_ui/items_block.py
+from math import ceil
+from utils import Listenable
+from soGUI.donat_shop.models.model import EventType as ModelET
+from soGUI.donat_shop.window.win_ui.scroll_content import ScrollPart
+from soGUI.donat_shop.window.win_ui.item_view import ItemView
+from soGUI.donat_shop.window import element
+
+class EventType:
+    OnItemsChanged, OnItemViewEvent = ((r, 'itemsblock') for r in range(2))
+
+
+class ItemsBlock(ScrollPart, Listenable):
+    _counter = 0
+
+    def __init__(self, component, pool, model, slot_ratio):
+        ScrollPart.__init__(self)
+        Listenable.__init__(self)
+        self.component = component
+        self.component.script = self
+        self._model = model
+        self._visible_rows = None
+        self._slot_ratio = slot_ratio
+        self._cols = 0
+        self._model.add_listener(self._on_model_event)
+        self._pool = pool
+        self._itemviews = []
+        self._row_height = 0
+        self._slot_width = 0
+        return
+
+    def _on_model_event(self, event_type, data):
+        if event_type == ModelET.OnItems:
+            self.notify_listeners(EventType.OnItemsChanged)
+
+    def _on_itemview_event(self, event_type, data):
+        data = {'event_type': event_type,
+         'data': data}
+        self.notify_listeners(EventType.OnItemViewEvent, data)
+
+    def _calc_visible_rows(self):
+
+        def get_row(line_border):
+            return int(line_border / self._row_height)
+
+        if self._row_height <= 0 or not self.scroll_visible or not self._model.items or not self._cols or not self._slot_width:
+            visible_rows = None
+        else:
+            start_line, end_line = self.get_visible_borders()
+            visible_rows = (get_row(start_line), get_row(end_line))
+        return visible_rows
+
+    def _create_item_view(self, component, name):
+        return ItemView(component, name)
+
+    def _generate_item_in_pool(self):
+        item_view = self._create_item_view(self.component, 'itemview_' + str(ItemsBlock._counter))
+        self._pool.add(item_view)
+        self.component.delChild(item_view.component, False)
+        ItemsBlock._counter += 1
+        return item_view
+
+    def _send_item_to_pool(self, item_view):
+        self._itemviews.remove(item_view)
+        item_view.remove_listener(self._on_itemview_event)
+        item_view.set_item_data(None)
+        comp = item_view.component
+        self.component.delChild(comp, False)
+        raise comp not in self._pool or AssertionError
+        self._pool.add(item_view)
+        return
+
+    def _get_item_from_pool(self):
+        if self._pool:
+            item_view = self._pool.pop()
+        else:
+            item_view = self._generate_item_in_pool()
+            self._pool.remove(item_view)
+        comp = item_view.component
+        self.component.addChild(comp, '', False)
+        item_view.add_listener(self._on_itemview_event)
+        self._itemviews.append(item_view)
+
+    def mark_align_content(self, slot_width, cols):
+        self._slot_width = slot_width
+        self._cols = cols
+        rows = (len(self._model.items) + self._cols - 1) / self._cols
+        if self._cols >= 2:
+            space = float(self.component.width - self._slot_width * self._cols) / (self._cols - 1)
+        else:
+            space = 0
+        slot_height = self._slot_width / self._slot_ratio
+        height = max(0, slot_height * rows + space * (rows - 1))
+        self._row_height = slot_height + space
+        self.component.height = height
+        element.add_pre_gui_callback(self._align_content)
+        align_data = {'height': height,
+         'slot_height': self._row_height}
+        return align_data
+
+    def get_pool_potential_count(self):
+        if not all((self._view_size, self._row_height, self._cols)):
+            return 0
+        potential_count = int(ceil(float(self._view_size) / self._row_height + 1) * self._cols)
+        return min(potential_count, len(self._model.items))
+
+    def _align_content(self):
+        need_resort = False
+        self._visible_rows = self._calc_visible_rows()
+        if self._visible_rows:
+            start_row, end_row = self._visible_rows
+            start_item_index = start_row * self._cols
+            end_item_index = min(len(self._model.items) - 1, (end_row + 1) * self._cols - 1)
+            items_count = end_item_index - start_item_index + 1
+            while items_count > len(self._itemviews):
+                need_resort = True
+                self._get_item_from_pool()
+
+            slot_width = float(self._slot_width) / self.component.width
+            space_width_pix = float(self.component.width - self._slot_width * self._cols) / (self._cols - 1)
+            space_width = space_width_pix / self.component.width
+            row_height = float(self._row_height) / self.component.height
+            space_heigh = space_width_pix / self.component.height
+            slot_height = row_height - space_heigh
+            visible_item_uids = set()
+            for item_index in range(start_item_index, end_item_index + 1):
+                item_uid = self._model.items[item_index]['uid']
+                visible_item_uids.add(item_uid)
+
+            existing_views = {}
+            free_views = []
+            for item_view in self._itemviews:
+                item_uid = item_view.item_uid
+                if item_uid and item_uid not in existing_views and item_uid in visible_item_uids:
+                    existing_views[item_view.item_uid] = item_view
+                else:
+                    free_views.append(item_view)
+
+            for item_index in range(start_item_index, end_item_index + 1):
+                row, col = divmod(item_index, self._cols)
+                item_data = self._model.items[item_index]
+                if item_data['uid'] in existing_views:
+                    item_view = existing_views.pop(item_data['uid'])
+                else:
+                    item_view = free_views.pop()
+                pos_x = col * (slot_width + space_width)
+                pos_y = row * row_height
+                mode = (pos_x,
+                 pos_y,
+                 pos_x + slot_width,
+                 pos_y + slot_height)
+                if item_view._item_data == item_data and item_view.transform._mode[1] == mode:
+                    continue
+                item_view.set_item_data(item_data)
+                item_view.transform.set_clip_mode(mode)
+
+            for item_view in free_views:
+                need_resort = True
+                self._send_item_to_pool(item_view)
+
+        else:
+            while self._itemviews:
+                need_resort = True
+                self._send_item_to_pool(self._itemviews[-1])
+
+        if need_resort:
+            self.component.reSort()
+
+    def on_show(self):
+        if self._visible_rows and not self._itemviews:
+            self._align_content()
+
+    def on_hide(self):
+        need_resort = False
+        while self._itemviews:
+            need_resort = True
+            self._send_item_to_pool(self._itemviews[-1])
+
+        if need_resort:
+            self.component.reSort()
+
+    def on_visible_borders_changed(self, visible, start, end):
+        visible_rows = self._calc_visible_rows()
+        if self._visible_rows != visible_rows:
+            self._align_content()

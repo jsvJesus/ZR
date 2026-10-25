@@ -1,0 +1,80 @@
+# Embedded file name: ./common/PathFollower/utils.py
+import BigWorld
+from circuit import WayPointCircuit, RoutePoint
+from target import WayPointTarget
+from progress_tracker import WayPointProgressTracker
+import random
+_circuits_cache = {}
+
+def has_data(space_id, start_point_guid):
+    return bool(BigWorld.globalData.get((space_id, 'SimpleWayPoints')))
+
+
+def find_nearest_point_guid(space_id, position, start_seek_point_guid):
+    data = BigWorld.globalData.get((space_id, 'SimpleWayPoints'))
+    checked = set()
+    nearest_point = [None]
+    min_dist = [None]
+
+    def check_point(point_guid):
+        if point_guid in checked:
+            return
+        else:
+            checked.add(point_guid)
+            point = data[point_guid]
+            dist = point['position'].distSqrTo(position)
+            if nearest_point[0] is None or dist < min_dist[0]:
+                min_dist[0] = dist
+                nearest_point[0] = point
+            for next_guid in point['next_point_guids']:
+                check_point(next_guid)
+
+            return
+
+    check_point(start_seek_point_guid)
+    return nearest_point[0]['guid']
+
+
+def get_circuit_target_and_tracker(seed, follower, target_data, tracker_data, space_id, start_point_guid, cycled_route):
+
+    def dict_to_route_point(data):
+        return RoutePoint(data['position'], None)
+
+    key = (space_id, start_point_guid)
+    if key not in _circuits_cache:
+        random.seed(seed)
+        data = BigWorld.globalData.get((space_id, 'SimpleWayPoints'))
+        if not data:
+            return None
+        cur_point = data[start_point_guid]
+        waypoints = []
+        used_guids = set()
+        emergency_counter = 0
+        while True:
+            waypoints.append(cur_point)
+            used_guids.add(cur_point['guid'])
+            next_guids = cur_point['next_point_guids']
+            if not next_guids:
+                break
+            next_guid = random.choice(next_guids)
+            cur_point = data[next_guid]
+            if cur_point['guid'] in used_guids:
+                break
+            emergency_counter += 1
+            if emergency_counter > 1000:
+                raise RuntimeError
+
+        circuit = WayPointCircuit(map(dict_to_route_point, waypoints), cycled_route)
+        _circuits_cache[key] = (circuit, waypoints)
+        random.seed()
+    circuit, waypoints = _circuits_cache[key]
+    target = WayPointTarget(target_data)
+    tracker = WayPointProgressTracker(follower, tracker_data, target, circuit)
+    return (circuit,
+     target,
+     tracker,
+     waypoints)
+
+
+def clear_cache():
+    _circuits_cache.clear()

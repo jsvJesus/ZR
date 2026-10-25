@@ -1,0 +1,104 @@
+# Embedded file name: ./client/MapNotesHolder.py
+from Math import Vector3
+import BWPersonality
+from utils import lazyproperty
+from maputils.MarksData import MarksData
+from maputils.data_loader import DataLoader, EventType as DataLoaderET, ValidType
+import space_utils
+from Localization import lc
+from ChatChannelConfig import CHANNEL_CONSTS
+from Constants import MESSAGE_TYPES as MT
+
+class MapNotesHolder:
+
+    def __init__(self):
+        BWPersonality.GUICore.minimap.set_marks_data(self.marks_data)
+        if BWPersonality.GUICore.is_world_map_created():
+            BWPersonality.GUICore.world_map.set_marks_data(self.marks_data)
+            BWPersonality.GUICore.minimap.set_filterset(BWPersonality.GUICore.world_map._filter_set)
+
+    def show_dead_mark(self, name, position, space_id):
+        self.marks_data.add_corpse(name, position, space_id)
+
+    @lazyproperty
+    def data_loader(self):
+        dl = DataLoader()
+        dl.add_listener(self._on_data_loader_event)
+        return dl
+
+    @lazyproperty
+    def marks_data(self):
+        return MarksData()
+
+    def onSpaceEntered(self):
+        self.marks_data.clear_compounds_except_space(self.spaceID)
+
+    def _on_data_loader_event(self, event_type, data):
+        if event_type == DataLoaderET.PersonalMarksLoaded:
+            space_name, marks, valid_type = data['space_name'], data['marks'], data['valid_type']
+            self.marks_data.personal_marks_loaded(space_name, marks, valid_type)
+            if data['valid_type'] == ValidType.Invalid:
+                BWPersonality.gpd.sendHightMessage(lc('MapNotesHolder.PERSONAL_ERROR'), MT.FAIL)
+        elif event_type == DataLoaderET.CommonMarksLoaded:
+            space_name, npcs_ids = data['space_name'], data['npcs_ids']
+            area_indices, markquest_ids = data['area_indices'], data['markquest_ids']
+            self.marks_data.common_marks_loaded(space_name, npcs_ids, area_indices, markquest_ids)
+        elif event_type == DataLoaderET.PersonalCreated:
+            uid, servuid = data['uid'], data['servuid']
+            self.marks_data.update_uid(uid, servuid)
+
+    def on_world_map_created(self):
+        BWPersonality.GUICore.world_map.set_marks_data(self.marks_data)
+        BWPersonality.GUICore.minimap.set_filterset(BWPersonality.GUICore.world_map._filter_set)
+
+    def load_marks(self, space_name):
+        self.data_loader.load_marks(space_name)
+
+    def request_delete_personal_mark1(self, note):
+        space_name = note.note_data['spaceName']
+        if not self.marks_data.delete_personal_mark(note, space_name):
+            self.systemMsgChat(lc('MapNotesHolder.PERSONAL_ERROR'))
+            return
+        self.data_loader.delete_personal_mark(note.note_data['servuid'], space_name)
+
+    def request_create_personal_mark1(self, position, space_name, new_mark):
+        mark = self.marks_data.add_personal_mark(position, space_name, new_mark)
+        if not mark:
+            self.systemMsgChat(lc('MapNotesHolder.PERSONAL_ERROR'))
+            return
+        self.data_loader.create_personal_mark(position, space_name, mark)
+
+    def take_db_notes_key(self, hashkey, db_id):
+        self.data_loader.take_db_notes_key(hashkey, db_id)
+
+    def onLeaveWorld(self):
+        self.data_loader.release()
+        self.marks_data.release()
+        if BWPersonality.GUICore.is_world_map_created():
+            BWPersonality.GUICore.world_map.set_marks_data(None)
+        BWPersonality.GUICore.minimap.set_marks_data(None)
+        return
+
+    def on_hunt_track_wanted_changed(self):
+        self.marks_data.delete_wanted_mark()
+
+    def on_hunt_notification_got0(self, space_id, position):
+        position = Vector3(position[0], 0, position[1])
+        if space_id and self.tracked_wanted:
+            space_name = space_utils.get_long_space_name_by_id(space_id)
+            self.marks_data.set_wanted_mark(space_name, position)
+        else:
+            space_name = None
+            self.marks_data.delete_wanted_mark()
+        BWPersonality.GUICore.journal_win.on_hunt_notification_got1(space_name, position)
+        return
+
+    def on_entered_event_place(self, entered, space_id, place_id, position, radius):
+        import BigWorld
+        print 'MapNotesHolder: got worldplace event', entered, space_id, place_id, position, BigWorld.time()
+        if entered:
+            self.putMessage(CHANNEL_CONSTS.SYSTEM, lc('MapNotesHolder.PLACE_ON'))
+            self.marks_data.set_worldplace_mark(space_id, place_id, position, radius)
+        else:
+            self.putMessage(CHANNEL_CONSTS.SYSTEM, lc('MapNotesHolder.PLACE_OFF'))
+            self.marks_data.remove_worldspace_mark(space_id, place_id)

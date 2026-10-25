@@ -1,0 +1,148 @@
+# Embedded file name: ./client/journal/scroll_view/scroll_bar.py
+import BigWorld
+import GUI
+from soGUI.soButton import soButton
+from Helpers.PyGUI.PyGUIBase import Interceptor
+import Keys
+import math_bw
+from Helpers.PyGUI import Utils
+
+class ScrollBar(Interceptor):
+    default_width = 16
+
+    def __init__(self, component, data_provider):
+        Interceptor.__init__(self, component)
+        self._data_provider = data_provider
+        self._drag_tick_controller = None
+        self.component.script = self
+        self._handle_height = 32
+        self._button_height = 16
+        comp = GUI.Window()
+        btn = soButton(comp)
+        btn.initVSC('soGUI/elements/scroll_bar_1_up.xml')
+        btn.setVisualState('normal')
+        btn.soundControlName = 'ArrowBtn'
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.width, comp.height = self.component.width, self._button_height
+        comp.materialFX = 'BLEND'
+        comp.position = (0, 0, 0.1)
+
+        def on_up_click():
+            self.change_factor(-50.0 / self._data_provider.get_scroll_content_height())
+
+        btn.onClick = on_up_click
+        self.component.addChild(comp, 'btn_up')
+        btn.onBound()
+        comp = GUI.Window()
+        btn = soButton(comp)
+        btn.initVSC('soGUI/elements/scroll_bar_1_down.xml')
+        btn.setVisualState('normal')
+        btn.soundControlName = 'ArrowBtn'
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'BOTTOM')
+        comp.materialFX = 'BLEND'
+        comp.width, comp.height = self.component.width, self._button_height
+        comp.position = (0, self.component.height, 0.1)
+        self.component.addChild(comp, 'btn_down')
+
+        def on_down_click():
+            self.change_factor(50.0 / self._data_provider.get_scroll_content_height())
+
+        btn.onClick = on_down_click
+        btn.onBound()
+        comp = GUI.Window('soGUI/elements/scroll_bar_1_slider')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'CENTER')
+        comp.materialFX = 'BLEND'
+        comp.colour = (255, 255, 255, 150)
+        comp.width, comp.height = 16, self._handle_height
+        comp.position = (0, 0, 0.1)
+        self.component.addChild(comp, 'handle')
+        self._factor = None
+        self._set_factor(0)
+        return
+
+    def handleMouseButtonEvent(self, component, event):
+        self._stop_tick()
+        if not event.isRepeatedEvent() and event.isKeyDown() and event.key == Keys.KEY_LEFTMOUSE:
+            self._drag_tick()
+        return Interceptor.handleMouseButtonEvent(self, component, event)
+
+    def change_factor(self, delta):
+        self._set_factor(self.factor + delta)
+
+    def content_size_changed(self):
+        factor = self.factor
+        self._factor = None
+        self._set_factor(factor)
+        return
+
+    def _set_factor(self, value):
+        bottom_overflow = value > 1.0
+        value = math_bw.clamp(value)
+        data_content_disp = self._data_provider.get_scroll_content_height() - self._data_provider.get_scroll_visual_height()
+        disabled = data_content_disp <= 0
+        if disabled:
+            value = 0
+        self.component.handle.visible = not disabled
+        self.component.btn_up.script.setDisabledState(disabled)
+        self.component.btn_down.script.setDisabledState(disabled)
+        if self._factor != value:
+            self._factor = value
+            comp = self.component.handle
+            step = self._button_height + self._handle_height * 0.5
+            comp.position[1] = (self.component.height - 2 * step) * value + step
+            self._data_provider.on_scroll_factor_changed()
+        if bottom_overflow:
+            self._on_bottom_overflow()
+
+    def _on_bottom_overflow(self):
+        if not hasattr(self._data_provider, 'on_bottom_overflow'):
+            return
+        accepted = self._data_provider.on_bottom_overflow()
+        if accepted:
+            self._just_overflow_trigger = True
+
+    def _drag_tick(self):
+        if not BigWorld.isKeyDown(Keys.KEY_LEFTMOUSE):
+            self._stop_tick()
+            return
+        if not Utils.is_visible_in_hierarchy(self.component):
+            self._stop_tick()
+            return
+        self._just_overflow_trigger = False
+        pos = GUI.mcursor().position
+        height = self.component.screenToLocal((pos[0], pos[1]))[1]
+        step = self._button_height
+        ratio = float(height - step) / (self.component.height - 2 * step)
+        if 0 < ratio < 1:
+            step = self._button_height + self._handle_height * 0.5
+            ratio = float(height - step) / (self.component.height - 2 * step)
+            self._set_factor(ratio)
+        if not self._just_overflow_trigger:
+            self._drag_tick_controller = BigWorld.callback(0, self._drag_tick)
+
+    def _stop_tick(self):
+        if self._drag_tick_controller:
+            BigWorld.cancelCallback(self._drag_tick_controller)
+        self._drag_tick_controller = None
+        return
+
+    def handleMouseEvent(self, component, event):
+        was_ticking = bool(self._drag_tick_controller)
+        self._stop_tick()
+        if BigWorld.isKeyDown(Keys.KEY_LEFTMOUSE) and was_ticking:
+            self._drag_tick()
+        return Interceptor.handleMouseEvent(self, component, event)
+
+    @property
+    def factor(self):
+        return self._factor
+
+    @factor.setter
+    def factor(self, value):
+        self._set_factor(value)

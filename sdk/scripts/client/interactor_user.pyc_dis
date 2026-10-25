@@ -1,0 +1,267 @@
+# Embedded file name: ./client/interactor_user.py
+"""
+ \xd0\xa1\xd0\xbb\xd0\xbe\xd0\xb6\xd0\xbd\xd0\xbe\xd0\xb5 \xd0\xb2\xd0\xb7\xd0\xb0\xd0\xb8\xd0\xbc\xd0\xbe\xd0\xb4\xd0\xb5\xd0\xb9\xd1\x81\xd1\x82\xd0\xb2\xd0\xb8\xd0\xb5 \xd1\x81 CrossingControl
+"""
+import BigWorld
+import BWPersonality
+import Math
+import Keys
+import Constants
+from functools import partial
+from math import pi
+from CrossingCommon import I_EVENTS
+
+class _GroupAction(object):
+    NONE_STATE, PAUSE_STATE, RUN_STATE, PLAYOUT_STATE = xrange(4)
+
+    def __init__(self, entities, name_in, name_loop, name_out):
+        self.name_out = name_out
+        self.name_loop = name_loop
+        self._actions = []
+        self._entities = entities
+        loop_action = None
+        for e in entities:
+            in_action = getattr(e.model, name_in)
+            loop_action = getattr(in_action(), name_loop)
+            loop_action()
+            self._actions.append([e, loop_action])
+
+        self._firstFrame = loop_action.firstFrame
+        self._lastFrame = loop_action.lastFrame
+        self._frameRate = loop_action.frameRate
+        self._cur_firstFrame = self._firstFrame
+        self._cur_lastFrame = self._lastFrame
+        self.state = self.NONE_STATE
+        self.paused = False
+        self.pause()
+        return
+
+    def _getActionCurrentFrame(self):
+        first_action = self._actions[0][1]
+        cur_frame = self._cur_firstFrame
+        for info in first_action.playedInfo():
+            if info and info['name_'] == self.name_loop:
+                anim_perc = 0.0
+                if info['duration'] > 0:
+                    anim_perc = info['played_'] % info['duration'] / info['duration']
+                    frame_count = self._cur_lastFrame - self._cur_firstFrame
+                    cur_frame = self._cur_firstFrame + int(frame_count * anim_perc)
+
+        return cur_frame
+
+    def _playFromFrame(self, frame, first, last):
+        self._cur_firstFrame = first
+        self._cur_lastFrame = last
+        frame_count = self._cur_lastFrame - self._cur_firstFrame
+        played = 10.0
+        if frame_count:
+            played = (frame - self._cur_firstFrame) / self._frameRate
+        played = abs(played)
+        passed = played
+        for e, loop_action in self._actions:
+            loop_action.changeParam(passed, played, first, last, self._frameRate)
+
+    def pause(self):
+        if self.paused:
+            return
+        self.paused = True
+        self.state = self.PAUSE_STATE
+        frame = self._getActionCurrentFrame()
+        self._playFromFrame(frame, frame, frame)
+
+    def forward(self):
+        self.paused = False
+        self.state = self.RUN_STATE
+        frame = self._getActionCurrentFrame()
+        self._playFromFrame(frame, self._firstFrame, self._lastFrame)
+
+    def backward(self):
+        self.paused = False
+        self.state = self.RUN_STATE
+        frame = self._getActionCurrentFrame()
+        self._playFromFrame(frame, self._lastFrame, self._firstFrame)
+
+    def playOut(self, only_avatar = False):
+        if not self._actions:
+            return
+        else:
+            actions = self._actions
+            if only_avatar:
+                actions = self._actions[:1]
+            for e, loop_action in actions:
+                try:
+                    e.model.action(self.name_out)()
+                except Exception as err:
+                    print 'playOut err', e, err
+
+            self.state = self.PLAYOUT_STATE
+            self._entities = None
+            self._actions = None
+            return
+
+    @property
+    def state(self):
+        return getattr(self, '_state', self.NONE_STATE)
+
+    @state.setter
+    def state(self, value):
+        if self.state == value:
+            return
+        self._state = value
+        for e in self._entities:
+            if not hasattr(e, 'on_group_action_state_change'):
+                continue
+            e.on_group_action_state_change(self)
+
+
+class InteractorUser:
+    _interact_entity = None
+    _interact_anim = None
+
+    def __init__(self):
+        pass
+
+    @property
+    def is_interaction(self):
+        return self._interact_entity and not self._interact_entity.isDestroyed
+
+    def _seek_to_inter_entity(self, entity, callback):
+        x, y, z, yaw = entity.hoist_positon
+        dest = Math.Vector4(x, y, z, yaw)
+
+        def onSeek(success):
+            if success:
+                self.model.yaw = yaw
+                self.forceStopPhysics()
+                callback()
+            else:
+                self.moving_locked = False
+
+        self.forceStopPhysics()
+        self.moving_locked = True
+        self.physics.seek(dest, 1.0, 3, 0.1, onSeek)
+        self.physics.seekEnableYaw = True
+
+    def startInteract(self, entity):
+        self.cancel_action_release()
+
+        def onprestart():
+            if entity.isDestroyed:
+                return
+            if self.dead:
+                return
+            self.physics.lockUserDir = True
+            self.setControlLock(Constants.ControlLockTypes.INTERACT)
+            self.onStartInteract(entity.id)
+            self.cell.itnteractEvent(entity.id, I_EVENTS.E_START)
+            BWPersonality.unregister_key_event_interceptor(self.hookKeyEventInteract)
+            BWPersonality.register_key_event_interceptor(self.hookKeyEventInteract)
+            self.cancel_action_start(self.stopInteract)
+
+        self.useAnyHandAction(partial(self._seek_to_inter_entity, entity, onprestart))
+
+    def stopInteract(self):
+        entity_id = 0
+        if self._interact_entity:
+            entity_id = self._interact_entity.id
+        if self._interact_anim and not self._interact_anim.paused:
+            if entity_id:
+                self.cell.itnteractEvent(entity_id, I_EVENTS.E_IDLE)
+        self.onStopInteract(entity_id)
+        self.moving_locked = False
+        self.physics.lockUserDir = False
+        self.setControlLock(Constants.ControlLockTypes.INTERACT, False)
+        self.onUseAnyHandActionEnd()
+        BWPersonality.unregister_key_event_interceptor(self.hookKeyEventInteract)
+        self.cell.itnteractEvent(entity_id, I_EVENTS.E_STOP)
+        self.cancel_action_clear()
+
+    def hookKeyEventInteract(self, event):
+        if not self.is_interaction:
+            return False
+        if event.key not in (Keys.KEY_LEFTMOUSE, Keys.KEY_RIGHTMOUSE):
+            return False
+        e_id = self._interact_entity.id
+        if not event.isKeyDown():
+            self.cell.itnteractEvent(e_id, I_EVENTS.E_IDLE)
+            self.onItnteractEvent(e_id, I_EVENTS.E_IDLE)
+        elif event.key == Keys.KEY_LEFTMOUSE:
+            self.cell.itnteractEvent(e_id, I_EVENTS.E_FWD)
+            self.onItnteractEvent(e_id, I_EVENTS.E_FWD)
+        elif event.key == Keys.KEY_RIGHTMOUSE:
+            self.cell.itnteractEvent(e_id, I_EVENTS.E_BKW)
+            self.onItnteractEvent(e_id, I_EVENTS.E_BKW)
+        return True
+
+    def onInteractorEnterSpace(self):
+        if self._interact_entity:
+            self.stopInteract()
+
+    def stopInteractByEntity(self, entity):
+        self._interact_entity = None
+        if self._interact_anim:
+            self._interact_anim.playOut(only_avatar=True)
+            self._interact_anim = None
+        if self is BigWorld.player():
+            self.stopInteract()
+            v = Math.Vector3()
+            v.setPitchYaw(0, self.model.yaw - pi)
+            pos = self.position + v * 0.5
+            dest = Math.Vector4(pos.x, pos.y, pos.z, self.yaw)
+            self.physics.seek(dest, 1.0, 3, 0.1, None)
+        return
+
+    def onEnterWorld(self):
+        pass
+
+    def onLeaveWorld(self):
+        BWPersonality.unregister_key_event_interceptor(self.hookKeyEventInteract)
+        if self._interact_entity:
+            self.onStopInteract(self._interact_entity.id)
+
+    def onItnteractEvent(self, entity_id, event_id):
+        if event_id == I_EVENTS.E_STOP:
+            self.onStopInteract(entity_id)
+        elif event_id == I_EVENTS.E_START:
+            self.onStartInteract(entity_id)
+        elif not self.is_interaction:
+            self.onStartInteract(entity_id)
+        if event_id == I_EVENTS.E_IDLE:
+            self._interact_anim.pause()
+        if event_id == I_EVENTS.E_FWD:
+            self._interact_anim.forward()
+        if event_id == I_EVENTS.E_BKW:
+            self._interact_anim.backward()
+
+    def onStartInteract(self, entity_id):
+        self._interact_entity = BigWorld.entity(entity_id)
+        self._interact_entity.onStartInteract(self.id)
+        self.pushTrackerLockByName('Interactor', 'Belly-Belly2-PistolHolster', lock_track_torso=1, lock_track_head=1, lock_track_foot=1)
+        ents = [self, self._interact_entity]
+        self._interact_anim = _GroupAction(ents, 'use_winch_start', 'use_winch_loop', 'use_winch_end')
+        self.model.yaw = self._interact_entity.yaw
+        matrix = Math.Matrix(self._interact_entity.matrix)
+        self.model.motors[0].resetFootTwist()
+        if self.torso_nodeinfo:
+            self.torso_nodeinfo.disableAddHipsEffect = True
+
+        def _preDraw(p_world_matrx):
+            return matrix
+
+        self.model.preDrawDebug = _preDraw
+        self.update_turn_states()
+
+    def onStopInteract(self, entity_id):
+        if self._interact_entity and not self._interact_entity.isDestroyed:
+            self._interact_entity.onStopInteract(self.id)
+        self._interact_entity = None
+        if self._interact_anim:
+            self._interact_anim.playOut()
+            self._interact_anim = None
+        if self.model:
+            self.model.preDrawDebug = None
+        if self.torso_nodeinfo:
+            self.torso_nodeinfo.disableAddHipsEffect = False
+        self.popTrackerLock('Interactor')
+        self.update_turn_states()
+        return

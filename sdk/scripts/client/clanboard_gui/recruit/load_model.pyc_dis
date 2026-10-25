@@ -1,0 +1,72 @@
+# Embedded file name: ./client/clanboard_gui/recruit/load_model.py
+import BigWorld
+from utils import Listenable
+from functools import partial
+from copy import deepcopy
+
+class State:
+    Stopped, Loading, Ready = range(3)
+
+
+class EventType:
+    OnStateChanged, OnGotPage = ((r, 'RecruitLoadModel') for r in range(2))
+
+
+class LoadModel(Listenable):
+    _fake_delay = 0.5
+
+    def __init__(self):
+        Listenable.__init__(self)
+        self._state = State.Stopped
+        self._request_id = 0
+        self._delayed_handler = None
+        return
+
+    def load(self, start_index, count, filters):
+        BigWorld.player().got_recruitment_page0 = self._got_recruitment_page
+        self._request_id = (self._request_id + 1) % 255
+        self.state = State.Loading
+        filters = deepcopy(filters)
+        foo = partial(self._load, start_index, count, filters, self._request_id)
+        if self._delayed_handler:
+            BigWorld.cancelCallback(self._delayed_handler)
+            self._delayed_handler = None
+        self._delayed_handler = BigWorld.callback(LoadModel._fake_delay, foo)
+        return
+
+    def _load(self, start_index, count, filters, request_id):
+        self._delayed_handler = None
+        if request_id != self._request_id:
+            return
+        else:
+            BigWorld.player().base.get_recruitment_page0(start_index, count, filters, request_id)
+            return
+
+    def _got_recruitment_page(self, page, total, start_index, request_id):
+        if self._request_id != request_id:
+            return
+        if self.state == State.Loading:
+            self.state = State.Ready
+            data = {'page': page,
+             'total': total,
+             'start_index': start_index}
+            self.notify_listeners(EventType.OnGotPage, data)
+
+    def stop(self):
+        BigWorld.player().got_recruitment_page0 = lambda *args: None
+        if self._delayed_handler:
+            BigWorld.cancelCallback(self._delayed_handler)
+            self._delayed_handler = None
+        self.state = State.Stopped
+        return
+
+    @property
+    def state(self):
+        return self._state
+
+    @state.setter
+    def state(self, value):
+        if value == self._state:
+            return
+        self._state = value
+        self.notify_listeners(EventType.OnStateChanged)

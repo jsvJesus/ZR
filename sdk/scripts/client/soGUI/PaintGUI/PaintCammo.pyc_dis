@@ -1,0 +1,357 @@
+# Embedded file name: ./client/soGUI/PaintGUI/PaintCammo.py
+from ScrollTable import ScrollTable
+from Helpers.PyGUI.PyGUIBase import PyGUIBase, Interceptor
+import GUI
+import Keys
+import DyeConstant
+from Localization import lc
+from PaintColorPicker import PaintColorPicker, CHANNELS
+import ItemsUtils
+from PaintPalete import PaintPalete
+from soGUI.UtilsGUI.TextScaler import TextScaler
+DEBUG = False
+
+class PaintItem(PyGUIBase):
+
+    def __init__(self, camo_id, colors):
+        PyGUIBase.__init__(self)
+        self._edited_chanel = None
+        comp = GUI.Window('soGUI/frame/paint/yellow.dds') if DEBUG else GUI.Window('')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.position = (0, 0, 0.2)
+        comp.width = comp.height = 2
+        self.camo_id = camo_id
+        self.colors = colors
+        self.component = comp
+        self.component.mouseButtonFocus = True
+        self.component.script = self
+        self._repositioners = []
+        self._setup_content()
+        self.on_click = lambda paint_item: None
+        self.selected = False
+        return
+
+    def _setup_content(self):
+        comp = GUI.Simple('soGUI/frame/paint/rectborderslot.dds')
+        comp.materialFX = 'BLEND'
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.position = (0, 0, 0.9)
+        comp.colour = (255, 255, 255, 80)
+        comp.width = comp.height = 2
+        self.component.addChild(comp, 'background')
+        if self.camo_id is None:
+            text = lc('PaintScreen.emblems.REMOVE')
+            image_path = 'soGUI/frame/paint/no_camo.dds'
+        else:
+            image_path = DyeConstant.get_camo_image(self.camo_id)
+            text = lc('colourItemWindow.CAMMO_' + str(self.camo_id))
+        comp = GUI.Simple(image_path)
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'TOP')
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.position = (0.0, 0.96, 0.8)
+        comp.width, comp.height = (1.94, 1.2)
+        comp.colour = (255, 255, 255, 255)
+        self.component.addChild(comp, 'image')
+        comp = GUI.Simple('soGUI/frame/paint/black.dds')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'BOTTOM')
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.position = (0.0, -0.96, 0.8)
+        comp.width, comp.height = (1.94, 0.7)
+        comp.materialFX = 'BLEND'
+        comp.colour = (255, 255, 255, 120)
+        self.component.addChild(comp, 'stripe')
+        comp = GUI.Text(text)
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'CENTER')
+        comp.position = (-0.86, -0.6, 0.5)
+        comp.colour = (255, 255, 255, 170)
+        self._repositioners.append(TextScaler(comp, 'RobotoCondensedRegular_20_2'))
+        self.component.addChild(comp, 'text')
+        self.do_reposition()
+        return
+
+    def handleMouseButtonEvent(self, comp, event):
+        if event.key == Keys.KEY_LEFTMOUSE and event.isKeyDown():
+            self.on_click(self)
+        return True
+
+    def do_reposition(self):
+        for r in self._repositioners:
+            r.do_reposition()
+
+        if self.camo_id is None:
+            comp = self.component.image
+            comp.height = 0.7
+            comp.position[1] = 0.7
+            comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+            comp.width = comp.height
+            comp.heightMode = 'CLIP'
+        return
+
+    @property
+    def selected(self):
+        return self.component.background.visible
+
+    @selected.setter
+    def selected(self, value):
+        if self.selected == value:
+            return
+        self.component.background.visible = value
+
+
+class PaintCammo(object):
+    """ \xd0\xa1\xd0\xbf\xd0\xb8\xd1\x81\xd0\xbe\xd0\xba \xd0\xba\xd0\xb0\xd0\xbc\xd1\x83\xd1\x84\xd0\xbb\xd1\x8f\xd0\xb6\xd0\xb5\xd0\xb9
+            \xd0\xb2\xd1\x8b\xd0\xb7\xd1\x8b\xd0\xb2\xd0\xb0\xd1\x82\xd1\x8c do_reposition \xd1\x80\xd1\x83\xd0\xba\xd0\xb0\xd0\xbc\xd0\xb8
+    """
+
+    def __init__(self, cammo_comp, colors_comp):
+        self._colors_comp = colors_comp
+        self._repositioners = []
+        self._setup_content(cammo_comp, colors_comp)
+        self.on_item_painted = lambda complex_item: None
+        self._selected = None
+        self._stored_item = None
+        self.parent_changed_callback = lambda : None
+        return
+
+    def _setup_content(self, cammo_comp, colors_comp):
+        paint_comp = GUI.Window()
+        paint_comp.materialFX = 'SOLID'
+        colors_comp.addChild(paint_comp, 'colors_cammo')
+        palete_comp = GUI.Window()
+        palete_comp.horizontalAnchor, palete_comp.verticalAnchor = ('LEFT', 'TOP')
+        palete_comp.materialFX = 'SOLID'
+        colors_comp.addChild(palete_comp, 'palete')
+        self._scroll_table = ScrollTable(cammo_comp, True, 2, 4)
+        self._scroll_table.create_item_delegate = self.create_item_component
+        self._colors_grid = PaintColorPicker(paint_comp)
+        self._colors_grid.on_click = self._on_color_click
+        self._paint_palete = PaintPalete(palete_comp)
+        self._paint_palete.on_click = self._on_palete_click
+        comp = GUI.Window('soGUI/frame/paint/black.dds')
+        comp.materialFX = 'BLEND'
+        comp.colour = (0, 0, 0, 150)
+        comp.position = (0, 0, 0.1)
+        Interceptor(comp)
+        cammo_comp.addChild(comp, 'lock_pane')
+        comp = GUI.Text(lc('PaintScreen.emblems.LOCKED'))
+        self._repositioners.append(TextScaler(comp, 'RobotoCondensedRegular_36_2'))
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+        comp.position = (0, 0, 0.5)
+        comp.width, comp.height = (2, 2)
+        cammo_comp.lock_pane.addChild(comp, 'text')
+        comp = GUI.Text(u'')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'CENTER')
+        comp.position = (-0.94, 0.9, 0.5)
+        comp.colour = (255, 255, 255, 120)
+        self._layer_text = comp
+        self._repositioners.append(TextScaler(comp, 'RobotoCondensedRegular_20_2'))
+        colors_comp.addChild(comp, 'layer_text')
+        comp = GUI.Text(lc('PaintScreen.screen.LAYERS_COLOR'))
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'CENTER')
+        comp.position = (self._layer_text.position[0], 0.28, 0.5)
+        comp.colour = self._layer_text.colour
+        self._repositioners.append(TextScaler(comp, 'RobotoCondensedRegular_20_2'))
+        colors_comp.addChild(comp, 'layer_color_text')
+
+    def on_inventoryitem_selected(self, paint_item):
+        self._selected = None
+        self._texts = []
+        if paint_item:
+            complex_item = paint_item.complex_item
+            if bool(complex_item):
+                self.locked = not ItemsUtils.can_be_painted(complex_item['complexItemType'])
+                camo_ids = []
+                camo_id = None
+                self._stored_item = None
+                if paint_item:
+                    self._stored_item = paint_item
+                    camo_ids = DyeConstant.get_item_camos(self._stored_item.complex_item['complexItemType'])
+                    camo_ids and camo_ids.insert(0, None)
+                    paint_data = ItemsUtils.getItemColorise(self._stored_item.complex_item)
+                    camo_id = paint_data and paint_data[1]
+        self._scroll_table.set_items(camo_ids)
+        if camo_ids:
+            try:
+                selected_index = camo_ids.index(camo_id)
+                self._selected = self._scroll_table.items[selected_index]
+                self._selected.selected = True
+            except ValueError:
+                print 'PaintCammo (ERROR): unexisting cammo', camo_id
+
+        self._update_color_picker()
+        self.do_reposition()
+        return
+
+    def reset(self, restore = True):
+        """ restore - \xd0\xb7\xd0\xb0\xd0\xba\xd1\x80\xd0\xbe\xd0\xb5\xd1\x82\xd1\x81\xd1\x8f \xd0\xb8\xd0\xbb\xd0\xb8 \xd0\xbe\xd1\x81\xd1\x82\xd0\xb0\xd0\xbd\xd0\xb5\xd1\x82\xd1\x81\xd1\x8f \xd0\xb8 \xd0\xbe\xd0\xb1\xd0\xbd\xd0\xbe\xd0\xb2\xd0\xb8\xd1\x82\xd1\x81\xd1\x8f
+        """
+        self._cached_colors = {}
+        self.on_inventoryitem_selected(self._stored_item if restore else None)
+        return
+
+    def create_item_component(self, camo_id, index):
+        color_data = []
+        item = self._stored_item.complex_item
+        item_paint_data = ItemsUtils.getItemColorise(item)
+        camo_colors = DyeConstant.get_camo_colors(item['complexItemType'], camo_id)
+        num_colors = len(camo_colors)
+        if item_paint_data and camo_id == item_paint_data[1]:
+            for i in xrange(0, 3 * num_colors, 3):
+                color_data.append(item_paint_data[0][i:i + 3] + (255,))
+
+        elif (item['complexItemID'], camo_id) in self._cached_colors:
+            color_data = self._cached_colors[item['complexItemID'], camo_id]
+        else:
+            default_colours = DyeConstant.get_camo_default_colors(item['complexItemType'], camo_id)
+            for i in xrange(num_colors):
+                color_data.append(default_colours[CHANNELS[i]] + (255,))
+
+        paint_item = PaintItem(camo_id, color_data)
+        paint_item.on_click = self._on_cammoitem_click
+        self._texts.append(paint_item)
+        return paint_item.component
+
+    def _on_cammoitem_click(self, item):
+        if self._selected == item:
+            return
+        if self._selected:
+            self._selected.selected = False
+        self._selected = item
+        if self._selected:
+            self._selected.selected = True
+            self._update_item_colors()
+        self._update_color_picker()
+
+    def do_reposition(self):
+        prev_mode = self._colors_comp.widthMode
+        self._colors_comp.widthMode = 'PIXEL'
+        pixel_width = self._colors_comp.width
+        self._colors_comp.widthMode = prev_mode
+        self._scroll_table.do_reposition()
+        comp = self._scroll_table.component.lock_pane
+        frame_comp = self._scroll_table.component.frame
+        comp.widthMode, comp.heightMode = frame_comp.widthMode, frame_comp.heightMode
+        comp.width, comp.height = frame_comp.width, frame_comp.height
+        comp.horizontalPositionMode, comp.verticalPositionMode = frame_comp.horizontalPositionMode, frame_comp.verticalPositionMode
+        comp.horizontalAnchor, comp.verticalAnchor = frame_comp.horizontalAnchor, frame_comp.verticalAnchor
+        comp.position[0], comp.position[1] = frame_comp.position[0], frame_comp.position[1]
+        for text in self._texts:
+            text.do_reposition()
+
+        comp = self._colors_comp.layer_text
+        comp.verticalPositionMode = 'PIXEL'
+        comp.position[1] = pixel_width * 0.03
+        comp = self._colors_comp.layer_color_text
+        comp.verticalPositionMode = 'PIXEL'
+        comp.position[1] = pixel_width * 0.215
+        for r in self._repositioners:
+            r.do_reposition()
+
+        self._do_colors_reposition()
+
+    def _do_colors_reposition(self):
+        prev_mode = self._colors_comp.widthMode
+        self._colors_comp.widthMode = 'PIXEL'
+        pixel_width = self._colors_comp.width
+        self._colors_comp.widthMode = prev_mode
+        comp = self._colors_grid.component
+        comp.widthMode, comp.heightMode = ('CLIP', 'PIXEL')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.width, comp.height = 0.862, pixel_width * 0.108
+        comp.position = (-0.973, pixel_width * 0.07, 0.9)
+        self._colors_grid.do_reposition()
+        comp = self._paint_palete.component
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.widthMode = 'PIXEL'
+        comp.width = pixel_width * 0.98
+        comp.position = (-1, pixel_width * 0.24, 0.7)
+        self._paint_palete.do_reposition()
+        self._update_parent_size()
+
+    def _update_parent_size(self):
+        comp = self._paint_palete.component
+        prev_mode = (comp.heightMode, comp.verticalPositionMode)
+        comp.heightMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        component_pixel_height = comp.height + comp.position[1] if comp.visible else 0
+        comp.heightMode, comp.verticalPositionMode = prev_mode
+        comp = self._paint_palete.component.parent
+        prev_mode = comp.heightMode
+        comp.heightMode = 'PIXEL'
+        comp.height = component_pixel_height
+        comp.heightMode = prev_mode
+        self.parent_changed_callback()
+
+    def _update_color_picker(self):
+        if not (self._selected and self._selected.colors):
+            colors = []
+            self._paint_palete.hide()
+            self._edited_chanel = None
+            self._colors_grid.set_items(colors)
+            self._do_colors_reposition()
+            self._layer_text.visible = self._selected and True
+            self._layer_text.text = lc('PaintScreen.screen.LAYERS').format(self._selected.component.text.text)
+        else:
+            self._layer_text.visible = False
+        self._paint_palete.component.parent.visible = bool(colors)
+        return
+
+    def _update_item_colors(self):
+        item_id = self._stored_item.complex_item['complexItemID']
+        camo_id = self._selected.camo_id
+        subitem = None
+        if self._stored_item.parent_item:
+            subitem = ItemsUtils.GetSubItemByID(self._stored_item.parent_item, item_id)
+        if camo_id is None:
+            if subitem:
+                ItemsUtils.clear_item_colors(subitem)
+            ItemsUtils.clear_item_colors(self._stored_item.complex_item)
+        else:
+            colors = self._selected.colors
+            keys = ['r', 'g', 'b']
+            empty_values = [0, 0, 0]
+            c = []
+            for index in xrange(4):
+                values = colors[index][:3] if len(colors) > index else empty_values
+                c.append(dict(zip(keys, values)))
+
+            if subitem:
+                ItemsUtils.setItemColorise(subitem, c[0], c[1], c[2], c[3], camo_id)
+            ItemsUtils.setItemColorise(self._stored_item.complex_item, c[0], c[1], c[2], c[3], camo_id)
+            self._cached_colors[item_id, camo_id] = colors
+        self.on_item_painted(self._stored_item.complex_item)
+        return
+
+    def _on_palete_click(self, color):
+        chanel = self._edited_chanel
+        color += (255,)
+        self._colors_grid.set_color(chanel, color)
+        self._selected.colors[CHANNELS.index(chanel)] = color
+        self._update_item_colors()
+
+    def _on_color_click(self, chanel, color):
+        camo_data = DyeConstant.get_camo_colors(self._stored_item.complex_item['complexItemType'], self._selected.camo_id)
+        colors = camo_data[chanel]
+        self._paint_palete.show(colors, color)
+        self._edited_chanel = chanel
+        self._do_colors_reposition()
+
+    @property
+    def locked(self):
+        self._scroll_table.component.lock_pane.visible
+
+    @locked.setter
+    def locked(self, value):
+        self._scroll_table.component.lock_pane.visible = value

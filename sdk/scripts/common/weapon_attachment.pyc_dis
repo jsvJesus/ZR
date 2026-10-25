@@ -1,0 +1,1907 @@
+# Embedded file name: ./common/weapon_attachment.py
+"""
+WeaponAttachment \xd0\xba\xd0\xbb\xd0\xb0\xd1\x81 \xd1\x80\xd0\xb5\xd0\xb0\xd0\xbb\xd0\xb8\xd0\xb7\xd1\x83\xd1\x8e\xd1\x89\xd0\xb8\xd0\xb9 \xd0\xbf\xd1\x80\xd0\xb5\xd0\xb4\xd1\x81\xd1\x82\xd0\xb0\xd0\xb2\xd0\xbb\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5 \xd1\x87\xd0\xb0\xd1\x81\xd1\x82\xd0\xb8 \xd0\xbe\xd1\x80\xd1\x83\xd0\xb6\xd0\xb8\xd1\x8f Weapon
+
+
+
+"""
+import ItemsUtils
+from nodes_attach import NODE
+import utils_bw
+import BigWorld
+import ResMgr
+import traceback
+import scope_reticle_settings
+import tracker_lod_settings
+from Items import ItemsCatalog
+from utils import ignoreError
+from math_bw import clamp
+from Math import Vector3, Matrix
+import math
+if utils_bw.isClient():
+    import StalkerModel
+import DyeConstant
+DEBUG = False
+USE_OBSTACLEATTACHMENT = True
+SIGHT_PITCH_LIST = [ x * -0.06 for x in xrange(12) ]
+
+def rot_matrix(pos, ypr, pre_mult = True):
+    m_left = Matrix()
+    m_left.setRotateYPR(ypr)
+    m_ = Matrix()
+    m_.setTranslate(pos)
+    if pre_mult:
+        m_left.preMultiply(m_)
+    else:
+        m_left.postMultiply(m_)
+    return m_left
+
+
+class WeaponAttachment(object):
+    TMP_LIGHT_COUNT = 0
+
+    def __init__(self, parentAttach = None, itemID = 0, itemType = 0, COLORISEID = (0, 0), attachPosY = 0.0, parentItemID = 0, parentNodeID = None, sub_prop = None, parent_entity = None, weapon_id = 0):
+        self._parent_entity = parent_entity
+        self._parentAttach = parentAttach
+        self._weapon_id = weapon_id
+        self._prop = sub_prop
+        self._itemID = itemID
+        self._itemType = itemType
+        self._COLORISEID = COLORISEID
+        self._attachPosY = attachPosY
+        self._children = {}
+        self._parentItemID = parentItemID
+        self._parentNodeID = parentNodeID
+        self._sub_prop = sub_prop
+        self.model = None
+        self._model_scope_mask = None
+        self._parent_bw_node = None
+        self._subitem = None
+        self._showboxs = {}
+        self._colliderboxs = {}
+        self._debug_bw_cashe = {}
+        self._debug_labels = {}
+        self._tmp_child_model = None
+        self._tmp_bw_node = None
+        self._parent_model_node = None
+        self.current_zoom_id = 0
+        self._link_dclamp_child = None
+        self._link_dclamp_0 = None
+        self._link_dclamp_2 = None
+        self._link_dclamp_parent_0 = None
+        self._link_dclamp_parent_2 = None
+        self._link_dclamp_dist = 0.0
+        self._scalefactor = 1.0
+        self._duplicate = False
+        return
+
+    def weaponID(self):
+        return self._weapon_id
+
+    def getID(self):
+        return self._itemID
+
+    def getItemID(self):
+        return self._itemID
+
+    def getItemType(self):
+        return self._itemType
+
+    def getParentID(self):
+        return self._parentItemID
+
+    def getParentNodeID(self):
+        return self._parentNodeID
+
+    def getParam(self):
+        return ItemsCatalog.GetItemParam(self._itemType)
+
+    def getProp(self):
+        return ItemsCatalog.GetItemParam(self._itemType)
+
+    def getLODColor(self, def_value = (255, 0, 0, 255)):
+        if self._COLORISEID and any(self._COLORISEID):
+            r1, g1, b1, r2, g2, b2, camo_id = ItemsUtils.int64ToColor(self._COLORISEID[0])
+            r3, g3, b3, r4, g4, b4, dayEnd = ItemsUtils.int64ToColor(self._COLORISEID[1])
+            return ((r1 + r2 + r3 + r4) * 0.25,
+             (g1 + g2 + g3 + g4) * 0.25,
+             (b1 + b2 + b3 + b4) * 0.25,
+             255)
+        else:
+            lod_color = self.getProp().get('LOD_COLOR')
+            if lod_color:
+                return lod_color
+            if self.getItemType() in DyeConstant.item_colours:
+                ret_color = [0,
+                 0,
+                 0,
+                 255]
+                res = StalkerModel.getColorsFromModel(self.getModel(), None, 'tint_weapon')
+                if res:
+                    for key, ch_color in res.items():
+                        for i in xrange(3):
+                            ret_color[i] += ch_color[i]
+
+                    for i in xrange(3):
+                        ret_color[i] *= 0.25
+
+                    return tuple(ret_color)
+            return def_value
+
+    def getLODVisible(self, def_value = True):
+        return self.getProp().get('LOD_VISIBLE', def_value)
+
+    def getRequiredDoubleClamping(self):
+        return self.getProp().get('RequiredDoubleClamping')
+
+    def getParentNodeIDs(self):
+        return self.getProp().get('ParentNodeIDs', [])
+
+    def getAttachMountSize(self):
+        return self.getProp().get('AttachMountSize')
+
+    def getAttachModelSize(self):
+        return self.getProp().get('AttachModelSize')
+
+    def hasAttachMount(self):
+        return bool(self.getAttachMountSize() and self.getAttachModelSize())
+
+    def canEnableNightVision(self):
+        return True
+
+    _children_nodes_config = None
+
+    def getChildrenNodesConfig(self):
+        if self._children_nodes_config is not None:
+            return self._children_nodes_config
+        else:
+            self._children_nodes_config = dict()
+            self._children_nodes_config.update(self.getProp().get('ChildrenNodes', {}))
+            return self._children_nodes_config
+
+    def createMagazineAttachNode(self):
+        self.getChildrenNodesConfig()
+        self._children_nodes_config[NODE.DEF_MAGAZINE_ID] = [(0, 0), 0, 1]
+
+    def makeFromComplexItem(self, complex_item, sub_prop = None, subparam = None, parentAttach = None):
+        if sub_prop is None:
+            sub_prop = ItemsCatalog.GetItemParam(complex_item['complexItemType'])
+        if subparam is None:
+            subparam = ItemsUtils.GetComplexItemInconstanParams(complex_item)
+        self._parentAttach = parentAttach
+        self._itemID = complex_item['complexItemID']
+        self._itemType = complex_item['complexItemType']
+        self._attachPosY = 0
+        self._parentItemID = 0
+        self._parentNodeID = 0
+        self._COLORISEID = (subparam.get(ItemsCatalog.INC_COLORISE_A, 0), subparam.get(ItemsCatalog.INC_COLORISE_B, 0))
+        self._sub_prop = sub_prop
+        return
+
+    def makeFromSubItem(self, subitem, sub_prop = None, subparam = None, parentAttach = None):
+        self._subitem = subitem
+        if sub_prop is None:
+            sub_prop = ItemsCatalog.GetItemParam(subitem['itemType'])
+        if subparam is None:
+            subparam = ItemsUtils.GetSubItemInconstanParams(subitem)
+        self._parentAttach = parentAttach
+        self._itemID = subitem['itemID']
+        self._itemType = subitem['itemType']
+        self._attachPosY = subparam.get(ItemsCatalog.INC_WEAPON_ATTACH_POSY, 0) / float(ItemsUtils.ATTACH_POSY_MULT)
+        self._parentItemID = subparam.get(ItemsCatalog.INC_WEAPON_ATTACH_PARENT_ID, 0)
+        self._parentNodeID = subparam.get(ItemsCatalog.INC_WEAPON_ATTACH_PARENT_NODE, 0)
+        self._COLORISEID = (subparam.get(ItemsCatalog.INC_COLORISE_A, 0), subparam.get(ItemsCatalog.INC_COLORISE_B, 0))
+        self._sub_prop = sub_prop
+        return
+
+    def makeFromSlot(self, slot_upgr, sub_prop = None, parentAttach = None):
+        slot_upgr = dict(slot_upgr)
+        if sub_prop is None:
+            sub_prop = ItemsCatalog.GetItemParam(slot_upgr['itemType'])
+        self._parentAttach = parentAttach
+        self._attachPosY = slot_upgr.get('attachPosY', 0)
+        self._parentItemID = slot_upgr.get('parentItemID', 0)
+        self._parentNodeID = slot_upgr.get('parentNode', 0)
+        self._itemID = slot_upgr['itemID']
+        self._itemType = slot_upgr['itemType']
+        self._COLORISEID = (slot_upgr.get('COLORISEA', 0), slot_upgr.get('COLORISEB', 0))
+        self._sub_prop = sub_prop
+        return
+
+    def createDuplicate(self, dup_parent = None):
+        dup = WeaponAttachment()
+        dup._duplicate = True
+        dup._parentAttach = dup_parent
+        dup._prop = self._prop
+        dup._itemID = self._itemID
+        dup._itemType = self._itemType
+        dup._COLORISEID = self._COLORISEID
+        dup._attachPosY = self._attachPosY
+        dup._parentNodeID = self._parentNodeID
+        dup._parentItemID = self._parentItemID
+        dup._parent_entity = self._parent_entity
+        dup._weapon_id = self._weapon_id
+        dup._children = {}
+        for nodeID in self._children:
+            dup._children[nodeID] = []
+            for ch in self._children[nodeID]:
+                ch_dup = ch.createDuplicate(dup)
+                dup._children[nodeID].append(ch_dup)
+
+        return dup
+
+    def __repr__(self):
+        return str(self)
+
+    def __str__(self):
+        if self._duplicate:
+            return 'Attach_DUPL[:%s, %s]' % (self._itemID, self._itemType)
+        return 'Attach[%s, %s]' % (self._itemID, self._itemType)
+
+    def getNameLC(self, fGetShortName = False, utf8 = False, language = None):
+        return ItemsUtils.GetItemName(self._itemType, fGetShortName=fGetShortName, utf8=utf8, language=language)
+
+    def setScaleFactor(self, scalefactor):
+        self._scalefactor = scalefactor
+        if self.model:
+            self.model.scale = (scalefactor, scalefactor, scalefactor)
+            self.model.newScaleTest = (scalefactor, scalefactor, scalefactor)
+        for ch in self._allChildren():
+            ch.setScaleFactor(scalefactor)
+
+    def _setTint(self, model, dye, tintname):
+        try:
+            setattr(model, dye, tintname)
+        except:
+            print 'ERROR FOR:', self
+            print 'model, dye, tintname', model, dye, tintname
+            print 'model:', getattr(model, 'sources')
+            traceback.print_exc()
+
+    @staticmethod
+    def _setColour(model, dye, colors):
+        try:
+            getattr(model, dye).colouriseR = tuple(map(lambda x: x / 255.0, colors['R'])) + (1.0,)
+            getattr(model, dye).colouriseG = tuple(map(lambda x: x / 255.0, colors['G'])) + (1.0,)
+            getattr(model, dye).colouriseB = tuple(map(lambda x: x / 255.0, colors['B'])) + (1.0,)
+            getattr(model, dye).colouriseA = tuple(map(lambda x: x / 255.0, colors['A'])) + (1.0,)
+        except:
+            print 'model, dye, colors', model, dye, colors
+            print 'model:', getattr(model, 'sources')
+            traceback.print_exc()
+
+    @staticmethod
+    def _loadModel(itemType, COLORISEID = (0, 0), prop = None, prereqs = None, lod_model_path = None, scale = None):
+        if prop is None:
+            prop = ItemsCatalog.GetItemParam(itemType)
+        if not prop or 'ModelPath' not in prop:
+            raise KeyError('error: ModelPath not found in prop item: %s' % itemType)
+        modelpath = prop['ModelPath']
+        if not modelpath:
+            raise ValueError('empty ModelPath, itemType=%s' % itemType)
+        if lod_model_path:
+            modelpath = (modelpath, lod_model_path)
+        else:
+            modelpath = (modelpath,)
+        if prereqs and prereqs.has_key(modelpath):
+            try:
+                model = prereqs[modelpath]
+            except:
+                print '\nerror in model:', repr(modelpath)
+                raise
+
+        else:
+            try:
+                model = BigWorld.Model(*modelpath)
+            except:
+                print '\nerror in model:', repr(modelpath)
+                raise
+
+        origin = prop.get('ModelOrigin', None)
+        if origin:
+            model.origin(origin)
+        WeaponAttachment.update_color(itemType, COLORISEID, model)
+        if scale:
+            model.scale = (scale, scale, scale)
+            model.newScaleTest = (scale, scale, scale)
+        return model
+
+    @staticmethod
+    def update_color(itemType, COLORISEID, model):
+        if itemType not in DyeConstant.item_colours:
+            return
+        StalkerModel.set_weapon_tint(model)
+        if COLORISEID[0] or COLORISEID[1]:
+            r1, g1, b1, r2, g2, b2, camo_id = ItemsUtils.int64ToColor(COLORISEID[0])
+            r3, g3, b3, r4, g4, b4, dayEnd = ItemsUtils.int64ToColor(COLORISEID[1])
+            color_data = {'R': (r1,
+                   g1,
+                   b1,
+                   255),
+             'G': (r2,
+                   g2,
+                   b2,
+                   255),
+             'B': (r3,
+                   g3,
+                   b3,
+                   255),
+             'A': (r4,
+                   g4,
+                   b4,
+                   255)}
+            StalkerModel.setColoredTexture(model, 'tint_weapon', camo_id, color_data)
+        else:
+            StalkerModel.setBlackPixel(model, 'tint_weapon')
+
+    def loadNewModel(self):
+        return WeaponAttachment._loadModel(self._itemType, self._COLORISEID, self._sub_prop, scale=self._scalefactor)
+
+    def getScopeMaskModel(self, use_mask_tints = {}):
+        if not self._model_scope_mask:
+            self._model_scope_mask = self.loadNewModel()
+        for dye, tint in use_mask_tints.items():
+            self._setTint(self._model_scope_mask, dye, tint)
+
+        return self._model_scope_mask
+
+    def recursiveUpdateColor(self):
+        for ch in self._allChildren():
+            ch.recursiveUpdateColor()
+
+        if not self.model:
+            return
+        WeaponAttachment.update_color(self.getItemType(), self._COLORISEID, self.model)
+
+    def getModel(self, to_model = None, lod_model_path = None):
+        if to_model:
+            raise ValueError
+            dup_model = WeaponAttachment._loadModel(self._itemType, self._COLORISEID, self._sub_prop, scale=self._scalefactor)
+            dup_model.attachOffset = (0, 0, self._attachPosY)
+            if self._parentAttach:
+                node_name = NODE.getNodeName(self._parentNodeID)
+                to_model.node(node_name).attach(dup_model)
+            return dup_model
+        if not self.model:
+            if self._parent_entity:
+                prereqs = self._parent_entity.prereqs
+                self.model = WeaponAttachment._loadModel(self._itemType, self._COLORISEID, self._sub_prop, prereqs, lod_model_path=lod_model_path, scale=self._scalefactor)
+                self.model.attachOffset = (0, 0, self._attachPosY)
+                self.model.batched = False
+            node_name = self._parentAttach and self._parentAttach.model and not self.model.attached and NODE.getNodeName(self._parentNodeID)
+            try:
+                parent_model_node = self._parentAttach.model.node(node_name)
+            except:
+                print self, self.model.sources
+                print 'self._parentAttach', self._parentAttach, self._parentAttach.model.sources
+                print 'self._parentNodeID', self._parentNodeID, 'node_name:', node_name
+                raise
+
+            try:
+                parent_model_node.attach(self.model)
+            except:
+                print
+                print 'node_name:', node_name
+                print 'parent_model_node:', parent_model_node, parent_model_node.inWorld, parent_model_node.attachments
+                parentm = self._parentAttach.model
+                print 'parentm:', parentm, getattr(parentm, 'inWorld', 'no-inWorld!'), getattr(parentm, 'sources', 'no-sources!')
+                print 'self.model:', self.model, getattr(self.model, 'inWorld', 'no-inWorld!'), getattr(self.model, 'sources', 'no-sources!')
+                raise
+
+            self._parent_model_node = parent_model_node
+        return self.model
+
+    def applyOriginModel(self):
+        if not self.model:
+            return
+        else:
+            origin = self.getProp().get('ModelOrigin', None)
+            if origin:
+                self.model.origin(origin)
+            return
+
+    def removeModel(self):
+        if self.model:
+            if self._parentAttach and self._parentAttach.model:
+                node_name = NODE.getNodeName(self._parentNodeID)
+                parent_model = self._parentAttach.model.node(node_name)
+                parent_model.detach(self.model)
+        self.model = None
+        self._model_scope_mask = None
+        return
+
+    def recursiveClearModel(self):
+        self.model = None
+        self._model_scope_mask = None
+        for nodeID in self._children:
+            for node in self._children[nodeID]:
+                node.recursiveClearModel()
+
+        return
+
+    def getBwNode(self, nodeID):
+        node_name = NODE.getNodeName(nodeID)
+        return self.model.node(node_name)
+
+    def recursiveLoadModels(self, to_model = None, weapon = None, lod_model_path = None):
+        if to_model:
+            model = self.getModel(to_model, lod_model_path=lod_model_path)
+            for nodeID in self._children:
+                for node in self._children[nodeID]:
+                    node.recursiveLoadModels(to_model=model)
+
+            return model
+        model = self.getModel(lod_model_path=lod_model_path)
+        if weapon:
+            weapon.registerSubModel(self, model)
+        self.onLoadedModel(model)
+        for nodeID in self._children:
+            for node in self._children[nodeID]:
+                node.recursiveLoadModels(weapon=weapon)
+
+    def getAllModelsPaths(self):
+        ret = set()
+        prop = ItemsCatalog.GetItemParam(self._itemType)
+        if 'ModelPath' in prop:
+            ret.add(prop['ModelPath'])
+        for nodeID in self._children:
+            for node in self._children[nodeID]:
+                ret.update(node.getAllModelsPaths())
+
+        return ret
+
+    def destroyModels(self):
+        self._clearLight()
+        self.model = None
+        self._model_scope_mask = None
+        self.sys_node = None
+        self._parent_model_node = None
+        self._parent_entity = None
+        self._scope_reticle_param_gen = None
+        self._current_scope_reticle_param = None
+        for nodeID in self._children:
+            for node in self._children[nodeID]:
+                node.destroyModels()
+
+        for k in self._children.keys():
+            del self._children[k]
+
+        del self._children
+        del self._parentAttach
+        return
+
+    def blink(self):
+        """
+        \xd0\xbf\xd0\xbe\xd0\xb4\xd1\x81\xd0\xb2\xd0\xb5\xd1\x82\xd0\xb8\xd1\x82\xd1\x8c \xd0\xbc\xd0\xbe\xd0\xb4\xd0\xb5\xd0\xbb\xd1\x8c \xd0\xb0\xd1\x82\xd1\x82\xd0\xb0\xd1\x87\xd0\xb0
+        """
+
+        def foo():
+            self.model.stipple = False
+
+        if self.model:
+            self.model.stipple = True
+            BigWorld.callback(0.1, foo)
+
+    def select(self, doSelect):
+        return
+        if doSelect:
+            self.model.stipple = True
+        else:
+            self.model.stipple = False
+
+    def hasScope(self):
+        if self.getProp().get('PartType', None) == ItemsCatalog.SCOPE:
+            return True
+        else:
+            for nodeID in self._children:
+                for node in self._children[nodeID]:
+                    if node.hasScope():
+                        return True
+
+            return
+
+    def onCahngeFPSMode(self, isfps):
+        if not hasattr(self, '_children'):
+            return
+        for nodeID in self._children:
+            for node in self._children[nodeID]:
+                node.onCahngeFPSMode(isfps)
+
+        self._update_particle()
+
+    def switchSpotLightRecurs(self, enable, silent = False):
+        self._switchSpotLight(enable, silent)
+        if not hasattr(self, '_children'):
+            return
+        for nodeID in self._children:
+            for node in self._children[nodeID]:
+                node.switchSpotLightRecurs(enable, silent)
+
+    def getAllSpotLight(self, result = None):
+        if result is None:
+            result = set()
+        if self.getProp().get('PartType') == ItemsCatalog.LIGHT:
+            result.add(self)
+        if not hasattr(self, '_children'):
+            return
+        else:
+            for nodeID in self._children:
+                for node in self._children[nodeID]:
+                    node.getAllSpotLight(result)
+
+            return result
+
+    _tmp_light_on = False
+    _spotLight = None
+    _particles = None
+
+    def _switchSpotLight(self, enable, silent = False):
+        if not self.model:
+            return
+        enable = bool(enable)
+        if self._tmp_light_on == enable:
+            return
+        self._tmp_light_on = enable
+        params = self.getProp()
+        if not params.get('PartType') == ItemsCatalog.LIGHT:
+            if not params.get('testSpotLight'):
+                return
+            if self._parent_entity and self._parent_entity.__class__.__name__ != 'NPC':
+                if not self._spotLight and enable:
+                    self._spotLight = BigWorld.PyChunkSpotLight()
+                    self._spotLight.priority = -1 if self._parent_entity == BigWorld.player() else -50
+                    self._spotLight.specular = True
+                    WeaponAttachment.TMP_LIGHT_COUNT += 1
+                if self._tmp_light_on:
+                    self._spotLight.visible = True
+                    self._spotLight.colour = params.get('LightColour', (255,
+                     1275,
+                     255,
+                     255))
+                    self._spotLight.cosConeAngle = params.get('CosConeAngle', 0.96)
+                    self._spotLight.innerRadius = params.get('InnerRadius', 10)
+                    self._spotLight.outerRadius = params.get('OuterRadius', 30)
+                    self._spotLight.source = self.model.node('HP_lens')
+                    self._spotLight.recalc()
+                elif self._spotLight:
+                    self._spotLight.colour = (0, 0, 0, 0)
+                    self._spotLight.visible = False
+            if not silent and params.get('sfx_switch'):
+                import FX
+                FX.bufferedOneShotEffect(params['sfx_switch'], self.model)
+            if enable and params.get('tint_on'):
+                dye, tint = params['tint_on'].iteritems().next()
+                setattr(self.model, dye, tint)
+            if not enable and params.get('tint_off'):
+                dye, tint = params['tint_off'].iteritems().next()
+                setattr(self.model, dye, tint)
+            if not (params.get('particles_light') and self._particles):
+                import Pixie
+                self._particles = Pixie.create(params.get('particles_light'))
+            self._update_particle()
+
+    def _clearLight(self):
+        if self._tmp_light_on:
+            self._tmp_light_on = False
+            self._update_particle()
+        if self._spotLight:
+            WeaponAttachment.TMP_LIGHT_COUNT -= 1
+            self._spotLight.colour = (0, 0, 0, 0)
+            self._spotLight.visible = False
+            self._spotLight.source = None
+            self._spotLight = None
+        return
+
+    def _update_particle(self):
+        if not self._particles:
+            return
+        if not self.model:
+            return
+        try:
+            if self._tmp_light_on and not self._parent_entity.isFPSmode():
+                if not self._particles.attached:
+                    self.model.node('HP_lens').attach(self._particles)
+                    self._particles.force(1)
+            elif self._particles.attached:
+                self.model.node('HP_lens').detach(self._particles)
+                self._particles.clear()
+        except:
+            traceback.print_exc()
+
+    def onActivateAttach(self):
+        pass
+
+    def onDeactivateAttach(self):
+        pass
+
+    def onlookInScope(self, look):
+        if not self.model:
+            return
+        if self._parent_entity == BigWorld.player():
+            if not self._parent_entity.isFPSmode():
+                look = False
+        param = self.getProp()
+        dyes = {}
+        if look and 'tint_on' in param:
+            dyes = param['tint_on']
+        elif not look and 'tint_off' in param:
+            dyes = param['tint_off']
+        for dye, tint in dyes.items():
+            try:
+                setattr(self.model, dye, tint)
+            except Exception as e:
+                traceback.print_exc()
+                print self, self.model.sources, e
+                print dyes
+                print
+
+    _current_scope_param = None
+    _current_scope_reticle_param = None
+    _current_scope_reticle_index = None
+    _scope_reticle_param_gen = None
+
+    def switchScopeReticle(self):
+        if not self.getScopeParams():
+            return
+
+        def gen():
+            while True:
+                for i, reticle_param in enumerate(self.getScopeParams().get('reticles', [])):
+                    yield (i, reticle_param)
+
+        if not self._scope_reticle_param_gen:
+            self._scope_reticle_param_gen = gen()
+        self._current_scope_reticle_index, self._current_scope_reticle_param = self._scope_reticle_param_gen.next()
+        return True
+
+    def getScopeReticleParams(self):
+        if not self._current_scope_reticle_param:
+            self.switchScopeReticle()
+        return self._current_scope_reticle_param
+
+    def setScopeReticleParams(self, index):
+        params = self.getScopeParams()
+        if params:
+            reticles = params.get('reticles', [])
+            if len(reticles) > index:
+                self._current_scope_reticle_param = reticles[index]
+
+    def getScopeParams(self):
+        if self._current_scope_param:
+            return self._current_scope_param
+        prop = self.getProp()
+        if not prop:
+            return
+        self._current_scope_param = scope_reticle_settings.SCOPE_MULTIPLER_TABLE.get(prop.get('ScopeType'))
+        return self._current_scope_param
+
+    def resetScope(self):
+        self._current_scope_reticle_param = None
+        self._scope_reticle_param_gen = None
+        self._current_scope_param = None
+        for nodeID in self._children:
+            for node in self._children[nodeID]:
+                node.resetScope()
+
+        return
+
+    _iron_sight_gen = None
+
+    def switchIronSightMode(self):
+        prop = self.getProp()
+        irsmodes = prop.get('IronSightModes')
+        if not irsmodes:
+            return
+        if not self._iron_sight_gen:
+
+            def gen():
+                while True:
+                    for a in irsmodes:
+                        yield a
+
+                    for a in irsmodes[-2:0:-1]:
+                        yield a
+
+            self._iron_sight_gen = gen()
+            try:
+                self.getModel().action(self._iron_sight_gen.next())()
+            except:
+                pass
+
+        action = self._iron_sight_gen.next()
+        if not action:
+            return
+        try:
+            self.getModel().action(action)(0.07)
+        except:
+            print self, repr(action)
+            traceback.print_exc()
+
+        return True
+
+    def findAttach(self, itemID):
+        if self._itemID == itemID:
+            return self
+        for nodeID in self._children:
+            for node in self._children[nodeID]:
+                required = node.findAttach(itemID)
+                if required:
+                    return required
+
+    def _allChildren(self):
+        for nodeID in self._children:
+            for node in self._children[nodeID]:
+                yield node
+
+    def findAllItemsAttached(self, lst_fake_items, lst_ignore_itemsID):
+        """
+                \xd0\xb2 lst_fake_items \xd0\xb4\xd0\xbe\xd0\xb1\xd0\xb0\xd0\xb2\xd0\xbb\xd1\x8f\xd1\x8e\xd1\x82\xd1\x81\xd1\x8f \xd1\x84\xd0\xb5\xd0\xb9\xd0\xba\xd0\xbe\xd0\xb2\xd1\x8b\xd0\xb5 \xd0\xb8\xd1\x82\xd0\xb5\xd0\xbc\xd1\x8b \xd0\xb8\xd0\xb7 \xd0\xb2\xd1\x81\xd0\xb5\xd0\xb3\xd0\xbe \xd0\xb4\xd0\xb5\xd1\x80\xd0\xb5\xd0\xb2\xd0\xb0 \xd0\xb0\xd1\x82\xd0\xb0\xd1\x87\xd0\xb5\xd0\xb9 (\xd0\xb4\xd0\xbb\xd1\x8f \xd0\xb3\xd1\x83\xd0\xb8)
+                \xd0\xb8\xd0\xb3\xd0\xbd\xd0\xbe\xd1\x80\xd0\xb8\xd1\x80\xd1\x83\xd1\x8e\xd1\x82\xd1\x81\xd1\x8f \xd0\xb0\xd1\x82\xd1\x82\xd0\xb0\xd1\x87\xd0\xb8 \xd0\xb8\xd0\xb7 lst_ignore_itemsID
+        
+        """
+        if self._itemID not in lst_ignore_itemsID:
+            lst_fake_items.append(self.getFakeItem())
+        for node in self._allChildren():
+            node.findAllItemsAttached(lst_fake_items, lst_ignore_itemsID)
+
+    def findAllItemIDsAttached(self, lst_itemID, lst_ignore_itemsID):
+        """
+                \xd0\xb2 lst_itemID \xd0\xb4\xd0\xbe\xd0\xb1\xd0\xb0\xd0\xb2\xd0\xbb\xd1\x8f\xd1\x8e\xd1\x82\xd1\x81\xd1\x8f itemID \xd0\xb8\xd0\xb7 \xd0\xb2\xd1\x81\xd0\xb5\xd0\xb3\xd0\xbe \xd0\xb4\xd0\xb5\xd1\x80\xd0\xb5\xd0\xb2\xd0\xb0 \xd0\xb0\xd1\x82\xd0\xb0\xd1\x87\xd0\xb5\xd0\xb9 (\xd0\xb4\xd0\xbb\xd1\x8f \xd0\xb3\xd1\x83\xd0\xb8)
+                \xd0\xb8\xd0\xb3\xd0\xbd\xd0\xbe\xd1\x80\xd0\xb8\xd1\x80\xd1\x83\xd1\x8e\xd1\x82\xd1\x81\xd1\x8f \xd0\xb0\xd1\x82\xd1\x82\xd0\xb0\xd1\x87\xd0\xb8 \xd0\xb8\xd0\xb7 lst_ignore_itemsID
+        
+        """
+        if self._itemID not in lst_ignore_itemsID:
+            lst_itemID.append(self._itemID)
+        for nodeID in self._children:
+            for node in self._children[nodeID]:
+                node.findAllItemIDsAttached(lst_itemID, lst_ignore_itemsID)
+
+    def getChildren(self):
+        return self._children
+
+    def getChildrenInfoList(self):
+        ret = [dict(itemID=self._itemID, parentID=self._parentItemID, parentNodeID=self._parentNodeID, attachOffset=self._attachPosY)]
+        for nodeID in self._children:
+            for node in self._children[nodeID]:
+                ret.extend(node.getChildrenInfoList())
+
+        return ret
+
+    def attachChildren(self, child, nodeID = None):
+        if nodeID is None:
+            nodeID = child._parentNodeID
+        if nodeID not in self._children:
+            self._children[nodeID] = []
+        self._children[nodeID].append(child)
+        child._scalefactor = self._scalefactor
+        child.onAttached(self, nodeID)
+        return
+
+    def onAttached(self, parent, nodeID):
+        self._parentAttach = parent
+        self._parentItemID = parent._itemID
+        self._parentNodeID = nodeID
+
+    def onLoadedModel(self, model):
+        pass
+
+    def checkLinkCanMoveTo(self, value):
+        if not self.getLink():
+            return True
+        if self._link_dclamp_0:
+            link_val = value - self._link_dclamp_dist
+        else:
+            link_val = value + self._link_dclamp_dist
+        snap = self.getParentSnap()
+        if type(snap) not in (list, tuple):
+            return True
+        for pos in snap:
+            if abs(pos - link_val) < 0.0005:
+                return True
+
+        return False
+
+    def getParentSnap(self):
+        if not self._parentAttach:
+            return None
+        else:
+            parent_settings = self._parentAttach.getChildrenNodesConfig()
+            if self._parentNodeID not in parent_settings:
+                return None
+            parent_mount_gabarite, snap, max_attach = parent_settings[self._parentNodeID]
+            return snap
+
+    def setAttachPosY(self, value, to_link = True):
+        self._attachPosY = value
+        if to_link and self.getLink():
+            if self._link_dclamp_0:
+                self._link_dclamp_0.setAttachPosY(value - self._link_dclamp_dist, False)
+            if self._link_dclamp_2:
+                self._link_dclamp_2.setAttachPosY(value + self._link_dclamp_dist, False)
+        if self.model:
+            self.model.attachOffset = (0, 0, self._attachPosY)
+            if DEBUG:
+                self._clearLinesAll()
+                self._updateDebugMountLabels()
+
+    def detach(self, lst_tmp_items, edit_weapon = None):
+        u"""
+                \u043e\u0442\u0446\u0435\u043f\u0438\u0442\u044c \u0441\u0435\u0431\u044f \u043e\u0442 \u0440\u043e\u0434\u0438\u0442\u0435\u043b\u044f \u0438 \u043e\u0446\u0435\u0438\u0442\u044c \u0432\u0441\u0435\u0445 \u0434\u0435\u0442\u0435\u0439
+                \u043a\u0430\u0436\u0434\u0430\u044f \u043e\u0442\u0446\u0435\u043f\u043b\u0435\u043d\u043d\u0430\u044f \u043d\u043e\u0434\u0430 \u0441\u043e\u0437\u0434\u0430\u0441\u0442 \u0444\u0435\u0439\u043a\u043e\u0432\u044b\u0439 \u0438\u0442\u0435\u043c \u0432 lst_tmp_items
+        """
+        self._clearLinesAll()
+        if self._parentAttach:
+            lst_tmp_items.append(self.getFakeItem())
+            self._parentAttach.onChildDetached(self._itemID, edit_weapon)
+            if self._parent_model_node and self.model:
+                self._parent_model_node.detach(self.model)
+                self.model = None
+                self._model_scope_mask = None
+                self._parent_model_node = None
+        self._parentAttach = None
+        for nodeID in self._children:
+            for node in self._children[nodeID][:]:
+                node.detach(lst_tmp_items, edit_weapon)
+
+        self._parent_entity = None
+        self.onDetached(edit_weapon)
+        return
+
+    def onChildDetached(self, itemID, edit_weapon = None):
+        for nodeID in self._children:
+            self._children[nodeID] = filter(lambda node: node._itemID != itemID, self._children[nodeID])
+
+    def onDetached(self, edit_weapon = None):
+        if not edit_weapon:
+            return
+        else:
+            if self._link_dclamp_parent_0:
+                self._link_dclamp_parent_0._link_dclamp_child = None
+                self._link_dclamp_parent_0._link_dclamp_0 = None
+                self._link_dclamp_parent_0._link_dclamp_2 = None
+            if self._link_dclamp_parent_2:
+                self._link_dclamp_parent_2._link_dclamp_child = None
+                self._link_dclamp_parent_2._link_dclamp_0 = None
+                self._link_dclamp_parent_2._link_dclamp_2 = None
+            if self._link_dclamp_0 and self._link_dclamp_child:
+                scope_id = self._link_dclamp_child.getID()
+
+                def detach_scope():
+                    edit_weapon.detachNodeByID(scope_id)
+
+                BigWorld.callback(0.1, detach_scope)
+            if self._link_dclamp_2:
+                pass
+            self._link_dclamp_parent_0 = None
+            self._link_dclamp_parent_2 = None
+            self._link_dclamp_child = None
+            self._link_dclamp_0 = None
+            self._link_dclamp_2 = None
+            return
+
+    def getFakeItem(self):
+        keys, vals = [ItemsCatalog.INC_COLORISE_A, ItemsCatalog.INC_COLORISE_B], [self._COLORISEID[0], self._COLORISEID[1]]
+        return ItemsUtils.CreateComplexItem(self._itemID, self._itemType, keys, vals)
+
+    def _clearLinesAll(self):
+        if self._debug_lines_holder:
+            self.debug_lines.clear()
+        for c_list in self._children.values():
+            for c in c_list:
+                c._clearLinesAll()
+
+    def resetCacheParam(self):
+        self._children_nodes_config = None
+        for nodeID in self._children:
+            for node in self._children[nodeID]:
+                node.resetCacheParam()
+
+        return
+
+    def getSnap(self, nodeID):
+        return NODE.getSnap(nodeID)
+
+    def checkCanAttach(self, possible_attach, nodeID, attachPosY = 0, findDoubleMount = False):
+        """
+        \xd0\xbf\xd1\x80\xd0\xbe\xd0\xb2\xd0\xb5\xd1\x80\xd0\xba\xd0\xb0 \xd0\xb2\xd0\xbe\xd0\xb7\xd0\xbc\xd0\xbe\xd0\xb6\xd0\xbd\xd0\xbe\xd1\x81\xd1\x82\xd0\xb8 \xd0\xbf\xd1\x80\xd0\xb8\xd1\x81\xd0\xbe\xd0\xb5\xd0\xb4\xd0\xb5\xd0\xbd\xd0\xb5\xd0\xbd\xd0\xb8\xd1\x8f \xd0\xba \xd1\x87\xd0\xb0\xd1\x81\xd1\x82\xd0\xb8 \xd0\xbe\xd1\x80\xd1\x83\xd0\xb6\xd0\xb8\xd1\x8f \xd0\xb8 \xd0\xba\xd0\xbe\xd1\x80\xd0\xb5\xd0\xba\xd1\x86\xd0\xb8\xd1\x8f \xd1\x81\xd0\xbc\xd0\xb5\xd1\x89\xd0\xb5\xd0\xbd\xd0\xb8\xd1\x8f
+        @ret: (canattach: Bool
+                   attachPosY, Float)
+        """
+        print_reason = False
+        if print_reason:
+            print 'check', possible_attach, 'to %s' % nodeID
+        if not possible_attach.hasAttachMount():
+            if print_reason:
+                print 'E 1'
+            return (False, attachPosY)
+        else:
+            mount_max, mount_min = possible_attach.getAttachMountSize()
+            model_max, model_min = possible_attach.getAttachModelSize()
+            if print_reason:
+                print 'Attach', possible_attach
+                print 'mount_max/min', mount_max, mount_min
+                print 'model_max/min', model_max, model_min
+                at_param = ItemsCatalog.GetItemParam(possible_attach._itemType)
+                print 'I mount_max/min', at_param['AttachModelSize']
+                print 'I model_max/min', at_param['AttachMountSize']
+            parent_settings = self.getChildrenNodesConfig()
+            if not parent_settings or nodeID not in parent_settings:
+                if print_reason:
+                    print 'E 2'
+                return (False, attachPosY)
+            parent_mount_gabarite, snap, max_attach = parent_settings[nodeID]
+            parent_max, parent_min = parent_mount_gabarite
+            if parent_max < parent_min:
+                if print_reason:
+                    print 'E 3'
+                return (False, attachPosY)
+            parent_slot = self._children.get(nodeID, [])
+            parent_slot = filter(lambda node: node != possible_attach, parent_slot)
+            if possible_attach.getLink():
+                parent_slot = filter(lambda node: node != possible_attach.getLink(), parent_slot)
+                gabar = possible_attach.getSizeGabariteLink()
+                mount_max, mount_min = gabar['mount_size']
+                model_max, model_min = gabar['model_size']
+            if len(parent_slot) >= max_attach:
+                if print_reason:
+                    print 'E 4'
+                return (False, attachPosY)
+            if parent_max - parent_min < mount_max - mount_min:
+                return (False, attachPosY)
+            if attachPosY + mount_min < parent_min:
+                attachPosY = parent_min - mount_min
+            if attachPosY + mount_max > parent_max:
+                attachPosY = parent_max - mount_max
+            attach_gabarite = [min(mount_min, model_min), max(mount_max, model_max)]
+            attach_gabarite_len = attach_gabarite[1] - attach_gabarite[0]
+            if attach_gabarite_len < 0:
+                if print_reason:
+                    print 'E 5'
+                return (False, attachPosY)
+            red_zones = []
+            green_zones = []
+            min_mount_parent = parent_min
+            max_mount_parent = parent_max
+            if mount_min > model_min:
+                min_mount_parent = parent_min - (-model_min + mount_min) - 0.001
+            if mount_max < model_max:
+                max_mount_parent = parent_max + (-mount_max + model_max) + 0.001
+            red_zones.append([-10, min_mount_parent])
+            for subnode in parent_slot:
+                if subnode.hasAttachMount():
+                    mount_max, mount_min = subnode.getAttachMountSize()
+                    model_max, model_min = subnode.getAttachModelSize()
+                    subnode_gabarite = [min(mount_min, model_min), max(mount_max, model_max)]
+                    red_zones.append([subnode._attachPosY + subnode_gabarite[0], subnode._attachPosY + subnode_gabarite[1]])
+
+            red_zones.sort()
+            red_zones.append([max_mount_parent, 10])
+            lastz = None
+            for zone in red_zones:
+                if lastz:
+                    if zone[0] - lastz[1] >= attach_gabarite_len:
+                        green_zones.append([lastz[1], zone[0]])
+                lastz = zone
+
+            if not green_zones:
+                if print_reason:
+                    print 'E 6'
+                return (False, attachPosY)
+            if findDoubleMount:
+                rdc = possible_attach.getRequiredDoubleClamping()
+                if rdc:
+                    if not self._findDoubleClampAttach(possible_attach):
+                        return (False, attachPosY)
+            oldattachPosY = attachPosY
+            for zone in green_zones:
+                if attachPosY < zone[1]:
+                    if attachPosY + attach_gabarite[0] < zone[0]:
+                        attachPosY = zone[0] - attach_gabarite[0]
+                    elif attachPosY + attach_gabarite[1] > zone[1]:
+                        attachPosY = zone[1] - attach_gabarite[1]
+                    return (True, self._snap(attachPosY, nodeID, snap))
+
+            attachPosY = green_zones[-1][1] - attach_gabarite[1]
+            return (True, self._snap(attachPosY, nodeID, snap))
+
+    def _findDoubleClampAttach(self, possible_attach):
+        """
+        \xd0\xbf\xd0\xbe\xd0\xb8\xd1\x81\xd0\xba \xd0\xb1\xd0\xbb\xd0\xb8\xd0\xb6\xd0\xb0\xd0\xb9\xd1\x88\xd0\xb5\xd0\xb3\xd0\xbe \xd0\xba\xd1\x80\xd0\xb5\xd0\xbf\xd0\xbb\xd0\xb5\xd0\xbd\xd0\xb8\xd1\x8f \xd0\xbd\xd0\xb0 \xd1\x80\xd0\xbe\xd0\xb4\xd0\xb8\xd1\x82\xd0\xb5\xd0\xbb\xd1\x8c\xd1\x81\xd0\xba\xd0\xbe\xd0\xb9 \xd0\xbf\xd0\xbb\xd0\xb0\xd0\xbd\xd0\xba\xd0\xb5
+        \xd1\x82\xd0\xb0\xd0\xba\xd0\xbe\xd0\xb3\xd0\xbe\xd0\xb6\xd0\xb5 \xd1\x82\xd0\xb8\xd0\xbf\xd0\xb0 \xd1\x87\xd1\x82\xd0\xbe \xd0\xb8 \xd1\x8d\xd1\x82\xd0\xbe\xd1\x82 \xd0\xb0\xd1\x82\xd1\x82\xd0\xb0\xd1\x87
+        \xd1\x87\xd1\x82\xd0\xbe\xd0\xb1\xd1\x8b \xd1\x83\xd1\x81\xd1\x82\xd0\xb0\xd0\xbd\xd0\xbe\xd0\xb2\xd0\xb8\xd1\x82\xd1\x8c \xd0\xbd\xd0\xb0 \xd1\x81\xd0\xb5\xd0\xb1\xd1\x8f \xd0\xb8 \xd0\xb0\xd1\x82\xd1\x82\xd0\xb0\xd1\x87  \xd0\xbf\xd1\x80\xd0\xb8\xd1\x86\xd0\xb5\xd0\xbb possible_attach
+        """
+        rdc = possible_attach.getProp().get('RequiredDoubleClamping')
+        if not rdc:
+            return False
+        else:
+            best_at = None
+            best_dist = 9999
+            for att in self._parentAttach.getChildren()[self._parentNodeID]:
+                if att == self:
+                    continue
+                if self._link_dclamp_child or self._link_dclamp_0 or self._link_dclamp_2:
+                    continue
+                dist = att._attachPosY - self._attachPosY
+                if dist < 0:
+                    continue
+                if att.getItemType() != self.getItemType():
+                    continue
+                eps = 0.01
+                if dist < rdc[0] - eps or dist > rdc[1] + eps:
+                    continue
+                if dist < best_dist:
+                    best_dist = dist
+                    best_at = att
+
+            if best_at:
+                if best_at._link_dclamp_child or best_at._link_dclamp_0 or best_at._link_dclamp_2:
+                    return
+            return best_at
+
+    def setLinkDoubleClamping(self, link_attach, scope_attach):
+        """
+        \xd0\xba \xd1\x8d\xd1\x82\xd0\xbe\xd0\xbc\xd1\x83 \xd1\x83\xd1\x81\xd1\x82\xd1\x80\xd0\xbe\xd0\xb9\xd1\x81\xd1\x82\xd0\xb2\xd1\x83 \xd0\xbf\xd1\x80\xd0\xb8\xd1\x86\xd0\xb5\xd0\xbf\xd0\xb8\xd0\xbb\xd0\xb8 scope_attach, \xd0\xba\xd0\xbe\xd1\x82\xd0\xbe\xd1\x80\xd0\xbe\xd0\xb5 \xd1\x82\xd1\x80\xd0\xb5\xd0\xb1\xd1\x83\xd0\xb5\xd1\x82 \xd0\xb2\xd1\x82\xd0\xbe\xd1\x80\xd1\x83\xd1\x8e \xd0\xbe\xd0\xbf\xd0\xbe\xd1\x80\xd1\x83 link_attach
+        
+        """
+        self._link_dclamp_child = scope_attach
+        self._link_dclamp_0 = None
+        self._link_dclamp_2 = link_attach
+        self._link_dclamp_dist = link_attach._attachPosY - self._attachPosY
+        link_attach._link_dclamp_dist = self._link_dclamp_dist
+        link_attach._link_dclamp_child = scope_attach
+        link_attach._link_dclamp_0 = self
+        link_attach._link_dclamp_2 = None
+        scope_attach._link_dclamp_parent_0 = self
+        scope_attach._link_dclamp_parent_2 = link_attach
+        return
+
+    def checkAllLinks(self):
+        rdc = self.getRequiredDoubleClamping()
+        if rdc and self._parentAttach:
+            link_attach = self._parentAttach._findDoubleClampAttach(self)
+            if not link_attach:
+                print 'WARNING not found link', self, self._parentAttach
+            else:
+                self._parentAttach.setLinkDoubleClamping(link_attach, self)
+        for child in self._allChildren():
+            child.checkAllLinks()
+
+    def getLink(self):
+        return self._link_dclamp_0 or self._link_dclamp_2
+
+    def getSizeGabariteLink(self):
+        gabar = {}
+        mount_max, mount_min = self.getAttachMountSize()
+        model_max, model_min = self.getAttachModelSize()
+        l_mount_max, l_mount_min = self.getLink().getAttachMountSize()
+        l_model_max, l_model_min = self.getLink().getAttachModelSize()
+        if self._link_dclamp_0:
+            gabar['mount_size'] = (mount_max, l_mount_min - self._link_dclamp_dist)
+            gabar['model_size'] = (model_max, l_model_min - self._link_dclamp_dist)
+        if self._link_dclamp_2:
+            gabar['mount_size'] = (l_mount_max + self._link_dclamp_dist, mount_min)
+            gabar['model_size'] = (l_model_max + self._link_dclamp_dist, model_min)
+        return gabar
+
+    def _snap(self, offset, nodeID, snap):
+        if not snap:
+            return offset
+        if type(snap) in (list, tuple):
+            return self._snapByList(offset, nodeID, snap)
+        steps = offset // snap
+        old_offset = offset
+        dt = offset - steps * snap
+        if dt > 0 and dt > snap / 2:
+            steps += 1
+        if dt < 0 and abs(dt) < snap / 2:
+            steps -= 1
+        offset = steps * snap
+        return offset
+
+    def _snapByList(self, offset, nodeID, snap):
+        sort_snap = list(snap)
+        sort_snap.sort(key=lambda x: abs(offset - x))
+        return sort_snap[0]
+
+    def getBoundsNode(self, nodeID):
+        children_nodes = self.getChildrenNodesConfig()
+        if nodeID in children_nodes:
+            limit, snap, numslot = children_nodes[nodeID]
+            k = NODE._nodesID2bbheight[nodeID]
+            if limit[0] - limit[1] < k:
+                limit = [k, -k]
+            min_bounds = Vector3(-k, -k, limit[1])
+            max_bounds = Vector3(k, k, limit[0])
+            return (min_bounds, max_bounds)
+        print 'WARNING', self, 'getBoundsNode not found node', nodeID
+
+    def addVisibleBox(self, nodeID, mark_lock = False, min_bounds = None, max_bounds = None):
+        u""" 
+                \u0441\u043e\u0437\u0434\u0430\u0442\u044c \u043a\u0443\u0431\u0438\u043a \u043f\u043e\u043a\u0430\u0437\u044b\u0432\u0430\u044e\u0449\u0438\u0439 \u0433\u0440\u0430\u043d\u0438\u0446\u044b 
+        """
+        if nodeID in self._showboxs:
+            self.hideVisbleBox(nodeID)
+        if not min_bounds or not max_bounds:
+            bounds = self.getBoundsNode(nodeID)
+            if not bounds:
+                return
+            min_bounds, max_bounds = bounds
+        bone_name = NODE.getNodeName(nodeID)
+        model_name = NODE._nodesID2drawMounrModel[nodeID]
+        showbox = BigWorld.Model(model_name)
+        showbox.dye = 'red' if mark_lock else 'green'
+        bw_node = self.model.node(bone_name)
+        bw_node.attach(showbox)
+        showbox.newScaleTest = max_bounds - min_bounds
+        showbox.attachOffset = (0, 0, min_bounds[2] + showbox.newScaleTest[2] / 2)
+        self._showboxs[nodeID] = (bw_node, showbox)
+        return showbox
+
+    def hideVisbleBox(self, nodeID):
+        if nodeID in self._showboxs:
+            bw_node, showbox = self._showboxs[nodeID]
+            bw_node.detach(showbox)
+            del self._showboxs[nodeID]
+
+    def hideAllVisbleBox(self):
+        for nodeID in self._showboxs.keys():
+            self.hideVisbleBox(nodeID)
+
+        self._showboxs = {}
+
+    def getRootAttach(self):
+        if not self._parentAttach:
+            return self
+        return self._parentAttach.getRootAttach()
+
+    _debug_lines_holder = None
+
+    @property
+    def debug_lines(self):
+        if not DEBUG:
+            return
+        elif self._debug_lines_holder:
+            return self._debug_lines_holder
+        else:
+            import draw_utils_extend
+            draw_system = getattr(self.getRootAttach(), 'debug_geometry_inst', None)
+            self._debug_lines_holder = draw_utils_extend.LinesHolder(1000, draw_system=draw_system)
+            return self._debug_lines_holder
+
+    def hideDebugLabels(self, render_system = None):
+        for lbls in self._debug_labels.values():
+            for text_node in lbls.values():
+                text_node.destroy()
+
+        self._debug_labels = {}
+        for node in self._allChildren():
+            node.hideDebugLabels(render_system=render_system)
+
+        if self.debug_lines:
+            self.debug_lines.clear()
+
+    def updateDebugLabels(self, render_system = None):
+        if not DEBUG:
+            return
+        elif not self.model:
+            return
+        elif not self.debug_lines:
+            return
+        else:
+            drawer = self.debug_lines
+            drawer.clear()
+            for node in self._allChildren():
+                node.updateDebugLabels(render_system=render_system)
+
+            from __debug.show_text_label import AttachText
+            parent_settings = self.getChildrenNodesConfig()
+            for nodeID in parent_settings:
+                parent_mount_gabarite, snap, max_attach = parent_settings[nodeID]
+                parent_max, parent_min = parent_mount_gabarite
+                bone_name = NODE.getNodeName(nodeID)
+                try:
+                    bw_node = self.model.node(bone_name)
+                except:
+                    print self
+                    print self.model.sources, repr(bone_name)
+                    raise
+
+                if bw_node not in self._debug_bw_cashe:
+                    self._debug_bw_cashe[nodeID] = bw_node
+                need_draw_lim = abs(parent_max - parent_min) > 0.001
+                matrix = Matrix(bw_node)
+                up = matrix.applyVector((0, -0.05, 0))
+                center = matrix.translation
+                lablel_ofs = Vector3(-0.15, 0, 0)
+                lablel_ofs_w = matrix.applyVector(lablel_ofs)
+                pos_min = matrix.applyPoint((0, 0, parent_min))
+                pos_max = matrix.applyPoint((0, 0, parent_max))
+                drawer.addLine(center, center + up, (0.5, 0.5, 0, 1), 1)
+                drawer.addLine(center, center + lablel_ofs_w, (0.5, 0.5, 0, 1), 0)
+                drawer.addLine(pos_min, pos_min + lablel_ofs_w, (0.5, 0.5, 0, 1), 0)
+                drawer.addLine(pos_max, pos_max + lablel_ofs_w, (0.5, 0.5, 0, 1), 0)
+                drawer.addLine(pos_min, pos_min + up, (0.3, 1, 0.3, 1), 1)
+                drawer.addLine(pos_max, pos_max + up, (1, 1, 0, 1), 1)
+                drawer.addLine(pos_min + up, pos_max + up, (1, 1, 0, 1), 1)
+                drawer.addLine(pos_min, pos_max, (1, 1, 0, 1), 1)
+                drawer.addLine(center, center + lablel_ofs_w, (0.5, 0.5, 0, 1), 0)
+                if snap:
+                    s_first = None
+                    pos = None
+                    if type(snap) in (list, tuple):
+                        getsnaps = snap
+                    else:
+
+                        def getsnaps():
+                            val = parent_min // snap * snap
+                            if val < parent_min:
+                                val += snap
+                            while val < parent_max:
+                                yield val
+                                val += snap
+
+                        getsnaps = getsnaps()
+                    for s_lim in getsnaps:
+                        pos = matrix.applyPoint((0, -0.01, s_lim))
+                        pos2 = matrix.applyPoint((-0.03, -0.01, s_lim))
+                        drawer.addLine(pos, pos2, (0.5, 0.0, 0, 1), 1)
+                        if s_first is None:
+                            s_first = pos
+
+                    if s_first and pos:
+                        drawer.addLine(pos, s_first, (0.5, 0.0, 0, 1), 1)
+                if need_draw_lim:
+                    half_up = up * 0.5
+                    dir_ = pos_max - pos_min
+                    dir_.normalise()
+                    curs_c = pos_min + half_up + dir_ * 0.01
+                    drawer.addLine(pos_min + half_up, curs_c, (0.2, 5, 0.2, 1), 1)
+                    drawer.addLine(curs_c, pos_min + half_up + half_up * 0.1, (0.2, 5, 0.2, 1), 1)
+                    drawer.addLine(curs_c, pos_min + half_up - half_up * 0.1, (0.2, 5, 0.2, 1), 1)
+                if nodeID not in self._debug_labels:
+                    lbls = {}
+                    self._debug_labels[nodeID] = lbls
+                    m_left = rot_matrix((0, 0, -0.15), (math.pi / 2, 0, 0))
+                    bw_node_transf = self.model.node(bone_name, m_left)
+                    text = u'%s\n%s' % (NODE._nodesID2Const.get(nodeID, '?'), bone_name)
+                    lbls['center'] = AttachText(bw_node_transf, text, 0.015)
+                    if need_draw_lim:
+                        text = u'min\n%.3f' % parent_min
+                        m_left = rot_matrix((-parent_min, 0, -0.15), (math.pi / 2, 0, 0))
+                        bw_node_min = self.model.node(bone_name, m_left)
+                        lbls['min'] = AttachText(bw_node_min, text, 0.01)
+                        text = u'max\n%.3f' % parent_max
+                        m_left = rot_matrix((-parent_max, 0, -0.15), (math.pi / 2, 0, 0))
+                        bw_node_max = self.model.node(bone_name, m_left)
+                        lbls['max'] = AttachText(bw_node_max, text, 0.01)
+
+            self._updateDebugMountLabels()
+            return
+
+    def _updateDebugMountLabels(self):
+        if not DEBUG:
+            return
+        if not self.hasAttachMount():
+            return
+        if not self.debug_lines:
+            return
+        drawer = self.debug_lines
+        mount_max, mount_min = self.getAttachMountSize()
+        model_max, model_min = self.getAttachModelSize()
+        model = self.model
+        attachPosY = self._attachPosY
+        if self._tmp_model and self._tmp_model.inWorld:
+            model = self._tmp_model
+            attachPosY = self._tmp_model.attachOffset[2]
+            drawer.clear()
+        m = Matrix(model.matrix)
+        inv_m = Matrix(m)
+        inv_m.invert()
+        m_add = Matrix()
+        m_add.setTranslate((0, 0, attachPosY))
+        m.preMultiply(m_add)
+        drawer.addLine(m.applyPoint((0, -0.01, 0)), m.applyPoint((0, 0.025, 0)), (1, 1, 1, 1), 1)
+        up = m.applyVector((0, 0.02, 0))
+        pos_min = m.applyPoint((0, 0.01, mount_min))
+        pos_max = m.applyPoint((0, 0.01, mount_max))
+        drawer.addLine(pos_min, pos_max, (0, 1, 1, 1), 1)
+        drawer.addLine(pos_min + up, pos_max + up, (0, 1, 1, 1), 1)
+        drawer.addLine(pos_min, pos_min + up, (0.3, 5, 0.3, 1), 1)
+        drawer.addLine(pos_max, pos_max + up, (0, 1, 1, 1), 1)
+        half_up = up * 0.5
+        dir_ = pos_max - pos_min
+        dir_.normalise()
+        curs_c = pos_min + half_up + dir_ * 0.01
+        drawer.addLine(pos_min + half_up, curs_c, (0.2, 5, 0.2, 1), 1)
+        drawer.addLine(curs_c, pos_min + half_up + half_up * 0.1, (0.2, 5, 0.2, 1), 1)
+        drawer.addLine(curs_c, pos_min + half_up - half_up * 0.1, (0.2, 5, 0.2, 1), 1)
+        up = m.applyVector((0, 0.011, 0))
+        pos_min = m.applyPoint((0, 0.032, model_min))
+        pos_max = m.applyPoint((0, 0.032, model_max))
+        drawer.addLine(pos_min, pos_max, (0, 1, 1, 1), 1)
+        drawer.addLine(pos_min + up, pos_max + up, (0, 1, 1, 1), 1)
+        drawer.addLine(pos_min, pos_min + up, (0.3, 1, 0.3, 1), 1)
+        drawer.addLine(pos_max, pos_max + up, (0, 1, 1, 1), 1)
+        if self.getLink():
+            gabar = self.getSizeGabariteLink()
+            if not gabar:
+                return
+            mount_max, mount_min = gabar['mount_size']
+            model_max, model_min = gabar['model_size']
+            pos_min = m.applyPoint((0, 0.05, model_min))
+            pos_max = m.applyPoint((0, 0.05, model_max))
+            drawer.addLine(pos_min, pos_max, (0, 0, 1, 1), 1)
+            drawer.addLine(pos_min, m.translation, (0, 0, 1, 1), 1)
+            drawer.addLine(pos_max, m.translation, (0, 0, 1, 1), 1)
+            pos_min = m.applyPoint((0, 0.048, mount_min))
+            pos_max = m.applyPoint((0, 0.048, mount_max))
+            drawer.addLine(pos_min, pos_max, (1, 0, 0, 1), 1)
+
+    _tmp_model = None
+
+    def setTmpMovedModel(self, model):
+        self._tmp_model = model
+        self._updateDebugMountLabels()
+
+    _cashe_custom_gabaritecolide = None
+
+    def _getCustomGabaritesColidersConfig(self):
+        if self._cashe_custom_gabaritecolide is not None:
+            return self._cashe_custom_gabaritecolide
+        else:
+            self._cashe_custom_gabaritecolide = []
+            prop = ItemsCatalog.GetItemParam(self._itemType)
+            if 'ModelPath' not in prop:
+                return
+            modelpath = prop['ModelPath']
+            len_ext = len('model')
+            path = modelpath[:-len_ext] + 'bwhitbox.xml'
+            try:
+                colliders_config = ResMgr.openSection(path)
+                if colliders_config is None:
+                    return False
+                for entry in colliders_config['SkeletonCollider'].values():
+                    cbox = dict(bone=entry['name'].asString, minBounds=entry['minBounds'].asVector3, maxBounds=entry['maxBounds'].asVector3)
+                    self._cashe_custom_gabaritecolide.append(cbox)
+
+            except Exception as e:
+                traceback.print_exc()
+
+            return self._cashe_custom_gabaritecolide
+
+    def addNodeCollderBox(self, nodeID, collider, dct):
+        u""" 
+                \u0434\u043e\u0431\u0430\u0432\u0438\u0442\u044c \u043a\u043e\u043b\u043b\u0430\u0439\u0434\u0435\u0440 \u043a\u043e\u0440\u043e\u0431\u043a\u0443 \u043a \u043d\u043e\u0434\u0435 \u0441\u0432\u043e\u0435\u0439 \u043c\u043e\u0434\u0435\u043b\u0438
+                nodeID -
+                collider - \u0433\u043b\u043e\u0431\u0430\u043b\u044c\u043d\u044b\u0439 \u043a\u043e\u043b\u0430\u0439\u0434\u0435\u0440 \u0432\u0441\u0435\u0433\u043e \u043e\u0440\u0443\u0436\u0438\u044f
+                dct - \u0433\u043b\u043e\u0431\u0430\u043b\u044c\u043d\u044b\u0439 \u0441\u043b\u043e\u0432\u0430\u0440\u044c \u0431\u043e\u043a\u0441\u043e\u0432
+        """
+        if nodeID in self._colliderboxs:
+            self.removeNodeCollider(nodeID)
+        bounds = self.getBoundsNode(nodeID)
+        if not bounds:
+            return
+        min_bounds, max_bounds = bounds
+        bone_name = NODE.getNodeName(nodeID)
+        bw_node = self.model.node(bone_name)
+        box = BigWorld.BoxAttachment()
+        bone_id = 'Bone:%s,%s' % (bone_name, self._itemID)
+        box.name = bone_id
+        box.minBounds = min_bounds
+        box.maxBounds = max_bounds
+        bw_node.attach(box)
+        collider.addCollider(box)
+        self._colliderboxs[nodeID] = (bw_node, box)
+        box_model = self.addVisibleBox(nodeID, mark_lock=False, min_bounds=min_bounds, max_bounds=max_bounds)
+        dct[bone_id] = (self,
+         nodeID,
+         bw_node,
+         box_model)
+
+    def addGabariteCollderBox(self, collider, dct):
+        u""" 
+                \u0434\u043e\u0431\u0430\u0432\u0438\u0442\u044c \u043a\u043e\u043b\u043b\u0430\u0439\u0434\u0435\u0440 \u043a\u043e\u0440\u043e\u0431\u043a\u0443 \u043d\u0430 \u0432\u0441\u044e \u043c\u043e\u0434\u0435\u043b\u044c \u044d\u0442\u043e\u0433\u043e \u0430\u0442\u0442\u0430\u0447\u0430
+                collider - \u0433\u043b\u043e\u0431\u0430\u043b\u044c\u043d\u044b\u0439 \u043a\u043e\u043b\u0430\u0439\u0434\u0435\u0440 \u0432\u0441\u0435\u0433\u043e \u043e\u0440\u0443\u0436\u0438\u044f
+                dct - \u0433\u043b\u043e\u0431\u0430\u043b\u044c\u043d\u044b\u0439 \u0441\u043b\u043e\u0432\u0430\u0440\u044c \u0431\u043e\u043a\u0441\u043e\u0432
+        """
+        if not self._parentAttach:
+            return
+        if not self._parentAttach.model:
+            return
+        if not self.model:
+            return
+        prop = self.getProp()
+        if not prop or 'ModelPath' not in prop:
+            return
+        if USE_OBSTACLEATTACHMENT:
+            modelpath = prop['ModelPath']
+            bone_name = NODE.getNodeName(self._parentNodeID)
+            bw_node = self.model.node('Scene Root')
+            bone_id = 'Root:%s,%s' % (bone_name, self._itemID)
+            box = BigWorld.ObstacleAttachment(modelpath, True)
+            box.bodyIndex = 100
+            box.name = bone_id
+            bw_node.attach(box)
+            collider.addCollider(box)
+            self._colliderboxs[-1] = (bw_node, box)
+            dct[bone_id] = (self, self._parentNodeID, self._parentAttach)
+            return
+        custom = self._getCustomGabaritesColidersConfig()
+        if custom:
+            for index, cbox in enumerate(custom):
+                box = BigWorld.BoxAttachment()
+                bone_id = 'Root:%s,%s' % (cbox['bone'], self._itemID)
+                box.name = bone_id
+                box.minBounds = cbox['minBounds']
+                box.maxBounds = cbox['maxBounds']
+                bw_node = self.model.node(cbox['bone'])
+                bw_node.attach(box)
+                collider.addCollider(box)
+                self._colliderboxs['gabarite_%s' % index] = (bw_node, box)
+                dct[bone_id] = (self, self._parentNodeID, self._parentAttach)
+
+            return
+        bw_node = self.model.root
+        min_bounds, max_bounds = self.model.getMinMaxbounds
+        box = BigWorld.BoxAttachment()
+        bone_id = 'Root:%s,%s' % (bone_name, self._itemID)
+        box.name = bone_id
+        box.minBounds = min_bounds
+        box.maxBounds = max_bounds
+        bw_node.attach(box)
+        collider.addCollider(box)
+        self._colliderboxs[-1] = (bw_node, box)
+        dct[bone_id] = (self, self._parentNodeID, self._parentAttach)
+
+    def removeNodeCollider(self, nodeID):
+        if nodeID in self._colliderboxs:
+            bw_node, box = self._colliderboxs[nodeID]
+            bw_node.detach(box)
+            del self._colliderboxs[nodeID]
+        self.hideVisbleBox(nodeID)
+
+    def removeColliders(self):
+        for nodeID in self._colliderboxs.keys():
+            self.removeNodeCollider(nodeID)
+
+    def addTmpChildModel(self, nodeID, child_model, attachPosY):
+        self.clearTmpChildModel()
+        self._tmp_child_model = child_model
+        bone_name = NODE.getNodeName(nodeID)
+        self._tmp_bw_node = self.model.node(bone_name)
+        self._tmp_bw_node.attach(self._tmp_child_model)
+        self._tmp_child_model.attachOffset = (0, 0, attachPosY)
+
+    def clearTmpChildModel(self):
+        if self._tmp_child_model and self._tmp_bw_node:
+            self._tmp_bw_node.detach(self._tmp_child_model)
+        self._tmp_child_model = None
+        self._tmp_bw_node = None
+        return
+
+    def clearCollideBoxReacursive(self):
+        self.clearTmpChildModel()
+        self.removeColliders()
+        self.hideAllVisbleBox()
+        for nodeID in self._children:
+            for node in self._children[nodeID]:
+                node.clearCollideBoxReacursive()
+
+    def addCollidersModiff(self, collider, dct):
+        u"""
+                \u0441\u043e\u0437\u0434\u0430\u0442\u044c \u043a\u043e\u0440\u043e\u0431\u043a\u0438 \u043d\u0430 \u0434\u0435\u0440\u0435\u0432\u0435 \u043e\u0440\u0443\u0436\u0438\u044f \u0434\u043b\u044f \u0434\u043e\u0431\u0430\u0432\u043b\u0435\u043d\u0438\u044f \u0432\u044b\u0434\u0435\u043b\u0435\u043d\u0438\u044f \u0430\u0442\u0442\u0447\u0435\u0439
+                @param collider - \u0433\u043b\u043e\u0431\u0430\u043b\u044c\u043d\u044b\u0439 BigWorld.SkeletonCollider() \u0434\u043b\u044f \u0432\u0441\u0435\u0439 \u043c\u043e\u0434\u0435\u043b\u0438
+                @param dct - \u0441\u043b\u043e\u0432\u0430\u0440\u044c \u0432\u0441\u0435\u0445 \u0431\u043e\u043a\u0441\u043e\u0432
+        """
+        self.addGabariteCollderBox(collider, dct)
+        for nodeID in self._children:
+            for node in self._children[nodeID]:
+                node.addCollidersModiff(collider, dct)
+
+    def addCollidersAttach(self, possible_attach, collider, dct):
+        u"""
+                \u0441\u043e\u0437\u0434\u0430\u0442\u044c \u043a\u043e\u0440\u043e\u0431\u043a\u0438 \u043d\u0430 \u0432\u0441\u0435\u0445 \u043d\u043e\u0434\u0430\u0445 \u0434\u0435\u0440\u0435\u0432\u0430 \u043e\u0440\u0443\u0436\u0438\u044f \u043a\u043e\u0442\u043e\u0440\u044b\u0435 \u0438\u043c\u0435\u044e\u0442 \u0432\u043e\u0437\u043c\u043e\u0436\u043d\u043e\u0441\u0442\u044c \u043f\u0440\u0438\u0446\u0435\u043f\u0438\u0442\u044c possible_attach
+                @param possible_attach - \u043d\u0435 \u043f\u0440\u0438\u0446\u0435\u043f\u043b\u0435\u043d\u043d\u044b\u0439 \u043e\u0431\u044a\u0435\u043a\u0442 WeaponAttachment 
+                @param collider - \u0433\u043b\u043e\u0431\u0430\u043b\u044c\u043d\u044b\u0439 BigWorld.SkeletonCollider() \u0434\u043b\u044f \u0432\u0441\u0435\u0439 \u043c\u043e\u0434\u0435\u043b\u0438
+                @param dct - \u0441\u043b\u043e\u0432\u0430\u0440\u044c \u0432\u0441\u0435\u0445 \u0431\u043e\u043a\u0441\u043e\u0432
+        
+        """
+        nodeIDs = possible_attach.getParentNodeIDs()
+        if not nodeIDs:
+            return
+        children_nodes = self.getChildrenNodesConfig()
+        for nodeID, param in children_nodes.items():
+            if nodeID in nodeIDs:
+                canattach, attachPosY = self.checkCanAttach(possible_attach, nodeID, attachPosY=0, findDoubleMount=True)
+                if canattach:
+                    self.addNodeCollderBox(nodeID, collider, dct)
+                else:
+                    self.addVisibleBox(nodeID, mark_lock=True)
+
+        for nodeID in self._children:
+            for node in self._children[nodeID]:
+                node.addCollidersAttach(possible_attach, collider, dct)
+
+    @staticmethod
+    def makeWeaponAttachmentSlot(item):
+        slot = ItemsUtils.create_empty_upgr()
+        if item.has_key('itemType') and item.has_key('itemID'):
+            itemparam = ItemsUtils.GetSubItemInconstanParams(item)
+            slot['itemType'] = item['itemType']
+            slot['itemID'] = item['itemID']
+        elif item.has_key('complexItemType') and item.has_key('complexItemID'):
+            itemparam = ItemsUtils.GetComplexItemInconstanParams(item)
+            slot['itemType'] = item['complexItemType']
+            slot['itemID'] = item['complexItemID']
+        slot['parentItemID'] = itemparam.get(ItemsCatalog.INC_WEAPON_ATTACH_PARENT_ID, 0)
+        slot['parentNode'] = itemparam.get(ItemsCatalog.INC_WEAPON_ATTACH_PARENT_NODE, 0)
+        slot['attachPosY'] = itemparam.get(ItemsCatalog.INC_WEAPON_ATTACH_POSY, 0) / float(ItemsUtils.ATTACH_POSY_MULT)
+        slot['COLORISEA'] = itemparam.get(ItemsCatalog.INC_COLORISE_A, 0)
+        slot['COLORISEB'] = itemparam.get(ItemsCatalog.INC_COLORISE_B, 0)
+        return slot
+
+
+class _AmmoHolderAttach(WeaponAttachment):
+    _ammoType = 0
+    _ammoNumber = 0
+    _prev_ammoType = 0
+    __index_ammo_number_id = None
+    __index_ammo_type_id = None
+
+    def getAmmoType(self):
+        return self._ammoType
+
+    def getLastAmmoType(self):
+        return self._prev_ammoType
+
+    def getAmmoNumber(self):
+        return self._ammoNumber
+
+    def getAmmoCapacity(self):
+        return self.getProp().get('AmmoCapacity', 0)
+
+    def getAmmoClass(self):
+        return self.getProp().get('AmmoClass')
+
+    def setAmmoType(self, value, dump = True):
+        self._ammoType = value
+        if self._ammoType:
+            self._prev_ammoType = self._ammoType
+        if dump:
+            self.fastDumpAmmoToItem()
+
+    def setAmmoNumber(self, value, dump = True):
+        self._ammoNumber = value
+        if dump:
+            self.fastDumpAmmoToItem()
+
+    def spendAmmo(self, count = 1, dump = True):
+        if self._ammoNumber < 0:
+            self._ammoType = 0
+        self._ammoNumber -= count
+        self._ammoNumber = max(0, self._ammoNumber)
+        ammo_type = self._ammoType
+        self._prev_ammoType = self._ammoType
+        if not self._ammoNumber:
+            self._ammoType = 0
+        if dump:
+            self.fastDumpAmmoToItem()
+        return ammo_type
+
+    def fastDumpAmmoToItem(self):
+        """
+        \xd0\xb1\xd1\x8b\xd1\x81\xd1\x82\xd1\x80\xd0\xb0\xd1\x8f \xd0\xbf\xd0\xb5\xd1\x80\xd0\xb5\xd0\xb7\xd0\xb0\xd0\xbf\xd0\xb8\xd1\x81\xd1\x8c \xd0\xba\xd0\xbe\xd0\xbb-\xd0\xb2\xd0\xb0 \xd0\xb8 \xd1\x82\xd0\xb8\xd0\xbf \xd0\xbf\xd0\xb0\xd1\x82\xd1\x80\xd0\xbe\xd0\xbd\xd0\xbe\xd0\xb2 \xd0\xb2 \xd0\xb8\xd1\x82\xd0\xb5\xd0\xbc \xd1\x81\xd1\x81\xd1\x8b\xd0\xbb\xd0\xb0\xd1\x8e\xd1\x89\xd0\xb8\xd1\x81\xd1\x8f \xd0\xbd\xd0\xb0 \xd0\xb8\xd1\x82\xd0\xb5\xd0\xbc \xd0\xb2 \xd0\xb8\xd0\xbd\xd0\xb2\xd0\xb5\xd0\xbd\xd1\x82\xd0\xb0\xd1\x80\xd0\xb5
+        """
+        if not self._subitem:
+            raise TypeError
+        if self.__index_ammo_number_id is None or self.__index_ammo_type_id is None:
+            return self.dumpToItem()
+        elif self._subitem['itemParametresKeys'][self.__index_ammo_number_id] != ItemsCatalog.INC_MUNITION_NUMBER:
+            return self.dumpToItem()
+        elif self._subitem['itemParametresKeys'][self.__index_ammo_type_id] != ItemsCatalog.INC_LOADED_MUNITION_TYPE:
+            return self.dumpToItem()
+        else:
+            if self._subitem['itemParametresValues'][self.__index_ammo_number_id] != self._ammoNumber:
+                self._subitem['itemParametresValues'][self.__index_ammo_number_id] = self._ammoNumber
+            if self._subitem['itemParametresValues'][self.__index_ammo_type_id] != self._ammoType:
+                self._subitem['itemParametresValues'][self.__index_ammo_type_id] = self._ammoType
+            return
+
+    def _update_index_item(self):
+        try:
+            self.__index_ammo_number_id = self._subitem['itemParametresKeys'].index(ItemsCatalog.INC_MUNITION_NUMBER)
+            self.__index_ammo_type_id = self._subitem['itemParametresKeys'].index(ItemsCatalog.INC_LOADED_MUNITION_TYPE)
+        except ValueError:
+            self.__index_ammo_number_id = None
+            self.__index_ammo_type_id = None
+
+        return
+
+    def makeFromComplexItem(self, item, **kw):
+        WeaponAttachment.makeFromComplexItem(self, item, **kw)
+        prop = ItemsUtils.GetComplexItemInconstanParams(item)
+        self._ammoNumber = prop.get(ItemsCatalog.INC_MUNITION_NUMBER, 0)
+        self._ammoType = prop.get(ItemsCatalog.INC_LOADED_MUNITION_TYPE, 0)
+
+    def makeFromSubItem(self, subitem, **kw):
+        WeaponAttachment.makeFromSubItem(self, subitem, **kw)
+        prop = ItemsUtils.GetSubItemInconstanParams(subitem)
+        self._ammoNumber = prop.get(ItemsCatalog.INC_MUNITION_NUMBER, 0)
+        self._ammoType = prop.get(ItemsCatalog.INC_LOADED_MUNITION_TYPE, 0)
+        self._update_index_item()
+
+    def dumpToItem(self):
+        if not self._subitem:
+            return
+        prop = ItemsUtils.GetSubItemInconstanParams(self._subitem)
+        prop[ItemsCatalog.INC_MUNITION_NUMBER] = self._ammoNumber
+        prop[ItemsCatalog.INC_LOADED_MUNITION_TYPE] = self._ammoType
+        ItemsUtils.SetSubItemInconstanParams(self._subitem, prop)
+        self._update_index_item()
+
+    def findRandomAmmoType(self):
+        """\xd0\xb2\xd0\xbe\xd0\xb7\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xbf\xd0\xbe\xd0\xb4\xd1\x85\xd0\xbe\xd0\xb4\xd1\x8f\xd1\x89\xd0\xb8\xd0\xb9 \xd1\x82\xd0\xb8\xd0\xbf \xd0\xbf\xd0\xb0\xd1\x82\xd1\x80\xd0\xbe\xd0\xbd\xd0\xb0 \xd0\xb4\xd0\xbb\xd1\x8f \xd1\x8d\xd1\x82\xd0\xbe\xd0\xb3\xd0\xbe \xd0\xbc\xd0\xb0\xd0\xb3\xd0\xb0\xd0\xb7\xd0\xb8\xd0\xbd\xd0\xb0"""
+        ammo_class = self.getProp().get('AmmoClass', None)
+        if ammo_class is None:
+            return
+        else:
+            for ammo in sorted(ItemsCatalog.AMMOS.keys()):
+                ammo_param = ItemsCatalog.GetItemParam(ammo)
+                if ammo_param.has_key('HideFromINFO'):
+                    continue
+                if ammo_param['AmmoClass'] == ammo_class:
+                    return ammo_param['TypeID']
+
+            return
+
+    def returnItemToPlayer(self, entity, dump = True):
+        if self.getAmmoType() and self.getAmmoNumber():
+            entity.ReturnItem(self.getAmmoType(), self.getAmmoNumber())
+        self.setAmmoNumber(0, dump=dump)
+
+
+class Magazine(_AmmoHolderAttach):
+
+    def getParentNodeIDs(self):
+        return [NODE.DEF_MAGAZINE_ID]
+
+    def getAttachMountSize(self):
+        return (0, 0)
+
+    def getAttachModelSize(self):
+        return (0, 0)
+
+    def getFakeItem(self):
+        keys = [ItemsCatalog.INC_COLORISE_A,
+         ItemsCatalog.INC_COLORISE_B,
+         ItemsCatalog.INC_LOADED_MUNITION_TYPE,
+         ItemsCatalog.INC_MUNITION_NUMBER]
+        vals = [self._COLORISEID[0],
+         self._COLORISEID[1],
+         self._ammoType,
+         self._ammoNumber]
+        return ItemsUtils.CreateComplexItem(self._itemID, self._itemType, keys, vals)
+
+    @staticmethod
+    def itemIsMagazine(item):
+        item_type = item['complexItemType']
+        magaz_param = ItemsCatalog.GetItemParam(item_type)
+        if magaz_param.get('PartType') != ItemsCatalog.MAGAZINE:
+            return
+        return True
+
+    def createDuplicate(self, dup_parent = None):
+        dup = Magazine()
+        dup._duplicate = True
+        dup._parentAttach = dup_parent
+        dup._prop = self._prop
+        dup._itemID = self._itemID
+        dup._itemType = self._itemType
+        dup._COLORISEID = self._COLORISEID
+        dup._attachPosY = self._attachPosY
+        dup._parentNodeID = self._parentNodeID
+        dup._parentItemID = self._parentItemID
+        dup._parent_entity = self._parent_entity
+        dup._ammoType = self._ammoType
+        dup._ammoNumber = self._ammoNumber
+        return dup
+
+    def __str__(self):
+        if self._duplicate:
+            return 'MAGAZ_DUPL[:%s, %s]' % (self._itemID, self._itemType)
+        return 'MAGAZ[%s, %s,AT %s, AN %s]' % (self._itemID,
+         self._itemType,
+         self._ammoType,
+         self._ammoNumber)
+
+
+class LauncherAttach(_AmmoHolderAttach):
+    """\xd0\xbf\xd0\xbe\xd0\xb4\xd1\x81\xd1\x82\xd0\xb2\xd0\xbe\xd0\xbb\xd1\x8c\xd0\xbd\xd0\xb8\xd0\xba"""
+    sys_node = None
+    _grenade_model = None
+    _sight_assembly_nodeInfo = None
+    _cur_index_angle = 0
+    _isIncompatibleItems = False
+    __sight_assembly_pitch = 0.0
+
+    def __str__(self):
+        if self._duplicate:
+            return 'LauncherAttach_DUPL[:%s, %s]' % (self._itemID, self._itemType)
+        return 'LauncherAttach[%s, %s]' % (self._itemID, self._itemType)
+
+    @ignoreError
+    def onLoadedModel(self, model):
+        try:
+            self.sys_node = model.node('HP_AIMSYS')
+        except Exception as e:
+            print self, self._parent_entity
+            traceback.print_exc()
+
+        self.recreateAssemblyTracker()
+        self.setRotateStepGreandeSight(rot_index=None, only_sight=True)
+        return
+
+    def recreateAssemblyTracker(self):
+        if not self.model:
+            return
+        if not hasattr(self.model, 'sight_assembly_tracker'):
+            self.model.sight_assembly_tracker = BigWorld.Tracker()
+            self.model.sight_assembly_tracker.maxLod = tracker_lod_settings.sight_assembly_lod
+            self.model.sight_assembly_tracker.testTick = False
+            self.model.sight_assembly_tracker.nodeMatrixUpdateType = 'UPDATE_SELECTED'
+            self.model.sight_assembly_tracker.nodeMatrixUpdateList = ['sight_assembly']
+        self.model.sight_assembly_tracker.removeAllAdditionalNodes()
+        self._sight_assembly_nodeInfo = BigWorld.NodeInfoSimpleTransform(self.model, 'sight_assembly')
+        self.model.sight_assembly_tracker.addAdditionalNode(self._sight_assembly_nodeInfo)
+        self._sight_assembly_nodeInfo.setRotYPR(0, -self.__sight_assembly_pitch, 0)
+
+    def createDuplicate(self, dup_parent = None):
+        dup = LauncherAttach()
+        dup._duplicate = True
+        dup._parentAttach = dup_parent
+        dup._prop = self._prop
+        dup._itemID = self._itemID
+        dup._itemType = self._itemType
+        dup._COLORISEID = self._COLORISEID
+        dup._attachPosY = self._attachPosY
+        dup._parentNodeID = self._parentNodeID
+        dup._parentItemID = self._parentItemID
+        dup._parent_entity = self._parent_entity
+        dup._ammoType = self._ammoType
+        dup._ammoNumber = self._ammoNumber
+        dup._cur_index_angle = self._cur_index_angle
+        return dup
+
+    def checkIncompatibleItems(self, types_list):
+        search_items = self.getProp().get('IncompatibleItemsOnFireGrenade')
+        if not search_items:
+            return
+        search_items = set(search_items)
+        self._isIncompatibleItems = bool(search_items.intersection(types_list))
+
+    def isIncompatibleItems(self):
+        return self._isIncompatibleItems
+
+    def getAllModelsPaths(self):
+        ret = _AmmoHolderAttach.getAllModelsPaths(self)
+        if self._ammoNumber and self._ammoType:
+            grenade_param = ItemsCatalog.GetItemParam(self._itemType)
+            if 'ModelPath' in grenade_param:
+                ret.add(grenade_param['ModelPath'])
+        return ret
+
+    def _loadModelGrenade(self, greande_type):
+        prereqs = self._parent_entity and self._parent_entity.prereqs
+        return WeaponAttachment._loadModel(greande_type, prereqs=prereqs, scale=self._scalefactor)
+
+    def getModel(self, to_model = None, lod_model_path = None):
+        need_add_grenade = not self.model and self._ammoNumber and self._ammoType
+        model = _AmmoHolderAttach.getModel(self, to_model=to_model)
+        if need_add_grenade:
+            try:
+                self._grenade_model = self._loadModelGrenade(self._ammoType)
+                model.grenade = self._grenade_model
+            except:
+                print self, self._ammoType, self.weaponID(), self._parent_entity
+                traceback.print_exc()
+
+        return model
+
+    def setScaleFactor(self, scale):
+        _AmmoHolderAttach.setScaleFactor(self, scale)
+        if scale and self._grenade_model:
+            self._grenade_model.scale = (scale, scale, scale)
+            self._grenade_model.newScaleTest = (scale, scale, scale)
+
+    def destroyModels(self):
+        try:
+            if self.model:
+                self.model.grenade = None
+        except:
+            traceback.print_exc()
+
+        _AmmoHolderAttach.destroyModels(self)
+        self._grenade_model = None
+        self._sight_assembly_nodeInfo = None
+        return
+
+    _cur_index_angle = 0
+    _sight_assembly_pos_ot_gunrw_ = (0, 0, 0)
+
+    def rotateStepGreandeSight(self, weapon, dir_):
+        prev_index = self._cur_index_angle
+        if dir_ > 0:
+            self._cur_index_angle -= 1
+        elif dir_ < 0:
+            self._cur_index_angle += 1
+        self._cur_index_angle = clamp(self._cur_index_angle, 0, len(SIGHT_PITCH_LIST) - 1)
+        self.setRotateStepGreandeSight(self._cur_index_angle)
+        return (prev_index != self._cur_index_angle, self._cur_index_angle)
+
+    def setRotateStepGreandeSight(self, rot_index = None, only_sight = False):
+        if rot_index is not None:
+            self._cur_index_angle = rot_index
+        self.__sight_assembly_pitch = SIGHT_PITCH_LIST[self._cur_index_angle]
+        if not self._duplicate and not only_sight:
+            if self._parent_entity:
+                pygunRWnode = getattr(self._parent_entity, '_pygunRWnode', None)
+                if pygunRWnode:
+                    pygunRWnode.setLauncherSightAssemblyPos(self._sight_assembly_pos_ot_gunrw_)
+                    pygunRWnode.setLauncherPitch(self.__sight_assembly_pitch)
+        if getattr(self, '_sight_assembly_nodeInfo', None):
+            self._sight_assembly_nodeInfo.setRotYPR(0, -self.__sight_assembly_pitch, 0)
+        return
+
+    def onlookInScope(self, look):
+        if look and self._active_launcher:
+            self.setRotateStepGreandeSight()
+
+    @ignoreError
+    def onFireGreande(self):
+        if self._grenade_model:
+            self.getModel().grenade = None
+            self._grenade_model = None
+        return
+
+    @ignoreError
+    def updateLauncherGreandeByItem(self, item, visible = True):
+        if self._parent_entity != BigWorld.player():
+            self._ammoType = item['complexItemType'] if item else 0
+            self._ammoNumber = 1 if self._ammoType else 0
+        if item:
+            self._grenade_model = self._loadModelGrenade(item['complexItemType'])
+        else:
+            self._grenade_model = None
+        self.getModel().grenade = self._grenade_model
+        if self._grenade_model:
+            self._grenade_model.visible = visible
+        return
+
+    def getLaunchPosDir(self):
+        if not self.sys_node or not self.sys_node.isActualCoords:
+            fire_point = self._parent_entity.position + (0, 1, 0)
+            fire_vector = Vector3()
+            fire_vector.setPitchYaw(self._parent_entity.pitch, self._parent_entity.yaw)
+            return (fire_point, fire_vector)
+        node = Matrix(self.sys_node)
+        fire_point = node.translation
+        fire_vector = node.applyToAxis(2)
+        return (fire_point, fire_vector)
+
+    _active_launcher = False
+
+    def onActivateAttach(self):
+        self._active_launcher = True
+        self.setRotateStepGreandeSight()
+        if not self._duplicate and self._parent_entity:
+            self._parent_entity.changeAngleLauncherSight(self.weaponID(), self._cur_index_angle)
+
+    def onDeactivateAttach(self):
+        self._active_launcher = False
+        if not self._duplicate:
+            if self._parent_entity:
+                pygunRWnode = getattr(self._parent_entity, '_pygunRWnode', None)
+                if pygunRWnode:
+                    pygunRWnode.setLauncherPitch(0)
+                self._parent_entity.changeAngleLauncherSight(self.weaponID(), 0)
+        return

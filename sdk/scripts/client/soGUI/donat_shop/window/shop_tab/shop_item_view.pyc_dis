@@ -1,0 +1,228 @@
+# Embedded file name: ./client/soGUI/donat_shop/window/shop_tab/shop_item_view.py
+import GUI
+from decimal import Decimal
+from soGUI.donat_shop.window.win_ui.item_view import ItemView
+from soGUI.donat_shop.models.shop_model import EventType as ShopET, get_currency_name
+from soGUI.donat_shop.window.bin_tab.bin_counter import BinCounter, EventType as CounterET
+from ui.button import Button
+from ui.text import Text, Align
+import colorCodes as cc
+from soGUI.donat_shop.window import element
+from soGUI.StorehouseGUI.InfoWin import InfoWin
+import sounds_manager as sm
+
+class CbMode:
+    Standard, Extended = range(2)
+
+
+class CounterButton(Button):
+
+    def __init__(self, component, name, bin_model, shop_model, view_owner, depth = 0.5):
+        Button.__init__(self, component, name, depth=depth)
+        self._has_discount = False
+        self._item_type = None
+        self.mode = CbMode.Standard
+        self._shop_model = shop_model
+        self._shop_model.add_listener(self._on_shopmodel_event)
+        self._bin_counter = BinCounter(self.component, 'bincounter', bin_model, True, view_owner=view_owner)
+        self._bin_counter.transform.set_clip_mode((0.08, 0, 0.92, 1))
+        self._bin_counter.add_listener(self._on_counter_event)
+        self._original_text = Text(self.component, 'original_text', size=16)
+        self._original_text.set_color(cc.inactive_rgba)
+        self._original_text.transform.set_clip_mode((0.5, 0, 1, 1))
+        self._original_text.set_alignment(Align.Left, Align.Center)
+        self._original_text.component.text.materialFX = 'BLEND_MASKABLE'
+        self._original_text.component.visible = False
+        comp = GUI.Window('soGUI/frame/paint/white.dds')
+        comp.ha, comp.va = ('LEFT', 'CENTER')
+        comp.colour = cc.inactive_rgba
+        comp.materialFX = 'BLEND_MASKABLE'
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = (0, 1)
+        comp.position = (-1, 0, 0.5)
+        comp.visible = False
+        self._original_text.component.addChild(comp)
+        self._stripe_comp = comp
+        self.mark_update_content()
+        return
+
+    def _on_click(self):
+        if self.has_arrows():
+            sm.playSound('ui/weapon_mod/adjust')
+        else:
+            sm.playSound('ui/weapon_mod/approve')
+        Button._on_click(self)
+
+    def has_arrows(self):
+        return self._bin_counter.component.visible
+
+    def _on_counter_event(self, event_type, data):
+        if event_type == CounterET.OnCountChanged:
+            self._update_content()
+
+    def on_size_changed(self):
+        Button.on_size_changed(self)
+        self._realign_text()
+
+    def mark_update_content(self):
+        element.add_pre_gui_callback(self._update_content)
+
+    def _update_content(self):
+        self._update_counter()
+        self._update_price()
+
+    def _on_shopmodel_event(self, event_type, data):
+        if event_type == ShopET.OnCurrencyChanged:
+            self._update_price()
+
+    def _update_counter(self):
+        if self._bin_counter.count > 0:
+            self._bin_counter.component.visible = True
+            if self._text:
+                self._text.component.visible = False
+        else:
+            self._bin_counter.component.visible = False
+            if self._text:
+                self._text.component.visible = True
+
+    def _realign_text(self):
+        if not self._text or self.component.width == 0:
+            return
+        if self._has_discount:
+            self._stripe_comp.visible = True
+            comp0 = self._text.component.text
+            txt_width0 = comp0.stringDimensions(comp0.text)[0]
+            comp1 = self._original_text.component.text
+            txt_width1 = comp1.stringDimensions(comp1.text)[0]
+            btn_width = self.component.width
+            self._stripe_comp.width = txt_width1
+            if txt_width0 + txt_width1 < btn_width:
+                left_space = (btn_width - txt_width0 - txt_width1) * 0.5
+                ratio = float(left_space + txt_width0) / btn_width
+                self._text.set_alignment(Align.Right, Align.Center)
+                self._text.transform.set_clip_mode((0,
+                 0,
+                 ratio,
+                 1))
+                self._original_text.set_alignment(Align.Left, Align.Center)
+                self._original_text.transform.set_clip_mode((ratio,
+                 0,
+                 1,
+                 1))
+                self.mode = CbMode.Standard
+                self._stripe_comp.ha = 'LEFT'
+                self._stripe_comp.position[0] = -1
+            else:
+                self._text.set_alignment(Align.Center, Align.Center)
+                self._text.transform.set_clip_mode((0, 0.5, 1, 1), (0, -8, 0, 0))
+                self._original_text.set_alignment(Align.Center, Align.Center)
+                self._original_text.transform.set_clip_mode((0, 0, 1, 0.5))
+                self.mode = CbMode.Extended
+                self._stripe_comp.ha = 'CENTER'
+                self._stripe_comp.position[0] = 0
+        else:
+            self._text.transform.set_clip_mode((0, 0, 1, 1))
+            self._text.set_alignment(Align.Center, Align.Center)
+            self._stripe_comp.visible = False
+            self.mode = CbMode.Standard
+
+    def _update_price(self):
+        if self._item_type:
+            item_data = self._shop_model.get_item(self._item_type)
+            original_cost = None
+            if item_data:
+                if self._shop_model.is_valid(self._item_type):
+                    currency = self._shop_model.currency
+                    self.set_enabled(True)
+
+                    def format_price(cost):
+                        if isinstance(cost, (float, Decimal)):
+                            if cost % 1 == 0:
+                                return str(cost)
+                            return '%.2f' % cost
+                        return str(cost)
+
+                    if self._shop_model.has_item_discount_now(self._item_type):
+                        original_cost = item_data['original_cost']
+                    actual_cost = self._shop_model.get_item_actual_cost(self._item_type)
+                    self.set_text(format_price(actual_cost) + ' ' + get_currency_name(currency))
+                else:
+                    self.set_enabled(False)
+                    self.set_text(u'invalid item')
+            return self._text or None
+        else:
+            if original_cost:
+                has_counter = self._bin_counter.component.visible
+                self._original_text.component.visible = not has_counter
+                self._original_text.set_text(format_price(original_cost) + ' ' + get_currency_name(currency))
+                self._has_discount = True
+            else:
+                self._original_text.component.visible = False
+                self._has_discount = False
+            self._realign_text()
+            return
+
+    def set_item_type(self, item_type):
+        self._item_type = item_type
+        self._bin_counter.item_type = item_type
+        self.mark_update_content()
+
+
+class ShopItemView(ItemView):
+
+    def __init__(self, component, name, shop_model, bin_model, **kargs):
+        self._shop_model = shop_model
+        self._bin_model = bin_model
+        self._item_type = None
+        self._has_discount = False
+        ItemView.__init__(self, component, name, **kargs)
+        self._disc_text = Text(self.component, 'disc', size=24, depth=0.3)
+        self._disc_text.component.textureName = 'soGUI/frame/paint/white.dds'
+        self._disc_text.component.materialFX = 'BLEND_MASKABLE'
+        self._disc_text.component.text.materialFX = 'BLEND_MASKABLE'
+        self._disc_text.transform.set_pixel_mode((0, 0), (0, 0), (68, 32))
+        self._disc_text.set_color((174, 220, 2, 255))
+        self._disc_text.component.colour = (76, 131, 19, 255)
+        return
+
+    def _create_button(self, component, name):
+        return CounterButton(component, name, self._bin_model, self._shop_model, self)
+
+    def show_info_win(self):
+        InfoWin.instance.show_cbutton(self.item_type, self._bin_model, self._shop_model)
+
+    def _on_click(self):
+        ItemView._on_click(self)
+        self._bin_model.add_item_type(self.item_type, self)
+
+    def on_tick(self):
+        has_discount = self._shop_model.has_item_discount_now(self._item_type)
+        if has_discount != self._has_discount:
+            self._has_discount = has_discount
+            self.mark_update_content()
+
+    def _update_content(self):
+        self._btn._update_content()
+        self.set_button_height(ItemView.btn_height if self._btn.mode == CbMode.Standard else 60)
+        ItemView._update_content(self)
+        if not self._shop_model.is_valid(self._item_type):
+            self._disc_text.component.visible = False
+            return
+        item_data = self._shop_model.get_item(self._item_type)
+        if self._has_discount:
+            self._disc_text.component.visible = True
+            text = u'-{0}%'.format(int(item_data['promo_discount']))
+            self._disc_text.set_text(text)
+        else:
+            self._disc_text.component.visible = False
+
+    def set_item_data(self, item_data):
+        self._item_type = item_data and item_data['item_type']
+        self._has_discount = self._shop_model.has_item_discount_now(self._item_type)
+        self._btn.set_item_type(self._item_type)
+        self._btn.set_enabled(True)
+        ItemView.set_item_data(self, item_data)
+
+    def set_item_type(self, item_type):
+        self.set_item_data(item_type and self._shop_model.get_item(item_type))

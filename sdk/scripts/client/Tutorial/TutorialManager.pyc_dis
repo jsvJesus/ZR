@@ -1,0 +1,268 @@
+# Embedded file name: ./client/Tutorial/TutorialManager.py
+import traceback
+import BigWorld
+import ResMgr
+import BWPersonality
+import sys
+import json
+from ClientTrigger import ClientTrigger
+import tmp_demo_recorder
+from actions_recorder import actions_recorder
+import TutorialUtils
+from InitializationPhase import InitializationPhase
+from CutscenePhase import CutscenePhase
+from GetUpNPCPhase import GetUpNPCPhase
+from FollowNpcPhase import FollowNpcPhase
+from WasdPhase import WasdPhase
+from ClimbUnderPhase import ClimbUnderPhase
+from ClimbOverPhase import ClimbOverPhase
+from InventoryPhase import InventoryPhase
+from RunNPCPhase import RunNPCPhase
+from SlidePhase import SlidePhase
+from EatDrinkPhase import EatDrinkPhase
+from JournalPhase import JournalPhase
+from FindHide import FindHide
+from TalkNPCPhase import TalkNPCPhase
+from TalkNpcQuest import TalkNpcQuest
+from ShootPhase import ShootPhase
+from TouchPhase import TouchPhase
+from DressupPhase import DressupPhase
+from GatherWoodPhase import GatherWoodPhase
+from ThrowAnomalyPhase import ThrowAnomalyPhase
+from DressdownPhase import DressdownPhase
+from BlockQuestPhase import BlockQuestPhase
+from TakeAmmo import TakeAmmo
+from LoadPhase import LoadPhase
+from FencePhase import FencePhase
+from MapPhase import MapPhase
+from TradePhase import TradePhase
+from IntrusionPhase1 import IntrusionPhase1
+from IntrusionPhase2 import IntrusionPhase2
+from SkillsPhase import SkillsPhase
+from TowerPhase import TowerPhase
+from ModificationPhase import ModificationPhase
+from SkeletonPhase import SkeletonPhase
+from WeaponPhase import WeaponPhase
+from LooserPhase import LooserPhase
+from BoxPhase1 import BoxPhase1
+from BoxPhase2 import BoxPhase2
+from CorpsePhase import CorpsePhase
+from DupePhase import DupePhase
+
+class TutorialManager:
+
+    @staticmethod
+    def is_space_tutorial(space_id):
+        return BWPersonality.GUICore.getSpaceName(space_id)[0] in TutorialUtils.TUTORIAL_SPACES
+
+    def __init__(self, actor):
+        self._inside_triggers = set()
+        self._destroyed = False
+        self._completed = False
+        self._actor = actor
+        self._config, self._phases = self._parse_config()
+        self._update_obstacles()
+        self._recorder = None
+        self._cur_npc_animation = None
+        self._cur_phase = self._phase_id_to_phase_class(self.actor_phase)(self.actor_phase, actor)
+        self._cur_phase.id = self.actor_phase
+        self._cur_phase.complete_callback = self._phase_completed
+        self._cur_phase.on_restore()
+        self._apply_triggers_on_new_phase()
+        self.complete_callback = lambda : None
+        self.phase_change_callback = lambda phase_id: None
+        on_enter = self._cur_phase_config.get('on_enter')
+        self._comply_actions(on_enter)
+        can_skip_tutorial = self._cur_phase.id not in (1, 0)
+        BWPersonality.GUICore.show_tutorial_skip_in_ingame_menu(can_skip_tutorial)
+        BWPersonality.GUICore.tutorial_gui.show_skip(can_skip_tutorial)
+        BigWorld.callback(0, self._update_npc)
+        return
+
+    @property
+    def _cur_phase_config(self):
+        return self._config[self._cur_phase.id]
+
+    def _update_obstacles(self):
+        cur_phase_id = self.actor_phase
+        for phase_id in self._phases:
+            if 'on_enter' in self._config[phase_id]:
+                self._comply_obstacles_actions_only(self._config[phase_id]['on_enter'])
+            if phase_id == cur_phase_id:
+                break
+            if 'on_exit' in self._config[phase_id]:
+                self._comply_obstacles_actions_only(self._config[phase_id]['on_exit'])
+
+    def _update_npc(self):
+        animation = None
+        cur_phase_id = self.actor_phase
+        cur_phase_index = self._phases.index(cur_phase_id)
+        for i, phase_id in enumerate(self._phases):
+            if 'npc_animation' in self._config[phase_id]:
+                animation = self._config[phase_id]['npc_animation']
+            if i >= cur_phase_index and animation:
+                break
+
+        if animation:
+            if TutorialUtils.USE_NEW_TUTORIAL_ACTIONS:
+                self._recorder = actions_recorder.get_instance()
+            else:
+                self._recorder = tmp_demo_recorder.getRecorder()
+            self._recorder.loadNPCAsync(animation)
+            self._cur_npc_animation = animation
+        return
+
+    def _phase_id_to_phase_class(self, phase_id):
+        class_name = self._config[phase_id]['python_class']
+        return getattr(sys.modules[__name__], class_name)
+
+    def _get_next_phase_id(self, prev_id):
+        next_index = self._phases.index(prev_id) + 1
+        if next_index >= len(self._phases):
+            return -1
+        return self._phases[next_index]
+
+    def _parse_config(self):
+        section = ResMgr.openSection('scripts/common/data/TutorialPhases.json')
+        config = {}
+        phases = []
+        for phase in json.loads(section.asBinary):
+            if 'index' in phase:
+                config[phase['index']] = phase
+                phases.append(phase['index'])
+
+        if phases[0] != 0:
+            raise RuntimeError
+        return (config, phases)
+
+    def _comply_obstacles_actions_only(self, actions):
+        if not actions:
+            return
+        if 'destroy_obstacle' in actions:
+            ClientTrigger.lock_triggers([actions['destroy_obstacle']], self.__class__.__name__)
+
+    def _comply_actions(self, actions):
+        if not actions:
+            return
+        if 'destroy_obstacle' in actions:
+            ClientTrigger.lock_triggers([actions['destroy_obstacle']], self.__class__.__name__)
+        if 'flashhelp' in actions:
+            BWPersonality.GUICore.flashHelpGUI.show_card(actions['flashhelp'])
+        if actions.get('close_dialog', False):
+            if BWPersonality.GUICore.is_dialog_screen_visible():
+                BWPersonality.GUICore.dialog_screen.hide()
+
+    def _apply_triggers_on_new_phase(self):
+        for trigger_id in self._inside_triggers:
+            trigger = BigWorld.entities.get(trigger_id)
+            if not trigger:
+                continue
+            self._cur_phase.on_player_client_trigger(True, trigger)
+            if trigger.run_dialog_on_enter:
+                self._actor.start_talk(trigger, trigger.run_dialog_on_enter)
+
+    def _phase_completed(self):
+        prev_phase_id = self._cur_phase.id
+        on_exit = self._config[prev_phase_id].get('on_exit')
+        self._comply_actions(on_exit)
+        print '  ZIM: phase completed', prev_phase_id
+        self._cur_phase.on_destroy()
+        while True:
+            next_phase_id = self._get_next_phase_id(prev_phase_id)
+            if next_phase_id == -1:
+                self._completed = True
+                self.complete_callback()
+                BWPersonality.GUICore.tutorial_gui.hide()
+                return
+            next_phase_class = self._phase_id_to_phase_class(next_phase_id)
+            next_phase = next_phase_class(next_phase_id, self._actor)
+            if next_phase.need_skip():
+                prev_phase_id = next_phase_id
+                next_phase.on_destroy()
+            else:
+                break
+
+        self.phase_change_callback(next_phase_id)
+        self._cur_phase = next_phase
+        self._cur_phase.id = next_phase_id
+        next_phase_config = self._config[next_phase_id]
+        on_enter = next_phase_config.get('on_enter')
+        self._comply_actions(on_enter)
+        print '  ZIM: phase started', next_phase_id
+        self._cur_phase.complete_callback = self._phase_completed
+        self._apply_triggers_on_new_phase()
+        if self._recorder and 'npc_animation' in next_phase_config:
+            try:
+                self._recorder.playNPCDemo(self._cur_npc_animation, lambda : None)
+            except:
+                print 'TutorialManager (ERROR):', self._cur_npc_animation, next_phase_config['npc_animation']
+                print traceback.format_exc()
+
+            self._cur_npc_animation = next_phase_config['npc_animation']
+
+    @property
+    def actor_phase(self):
+        return self._actor.tutorial_phase
+
+    @property
+    def npc_animation_list(self):
+        animations = []
+        for phase_id in self._phases:
+            animation_name = self._config[phase_id].get('npc_animation')
+            if animation_name:
+                animations.append(str(animation_name).strip())
+
+        return animations
+
+    def can_speak_with_entity(self, entity_id):
+        if not TutorialUtils.is_entity_tutor(entity_id) or not self._recorder:
+            return True
+        return not self._recorder.isNPCDemoPlayed()
+
+    def on_destroy(self):
+        if self._recorder:
+            self._recorder.destroyDemos()
+            self._cur_npc_animation = None
+            self._recorder = None
+        ClientTrigger.unlock_triggers(self.__class__.__name__)
+        self.phase_change_callback = lambda phase_id: None
+        self.complete_callback = lambda : None
+        self._destroyed = True
+        self._actor = None
+        self._cur_phase.on_destroy()
+        self._cur_phase = None
+        BWPersonality.GUICore.tutorial_gui.hide()
+        return
+
+    def on_player_client_trigger(self, is_inside, trigger):
+        if is_inside:
+            self._inside_triggers.add(trigger.id)
+        elif trigger.id in self._inside_triggers:
+            self._inside_triggers.remove(trigger.id)
+        if self._cur_phase:
+            self._cur_phase.on_player_client_trigger(is_inside, trigger)
+        if is_inside and trigger.run_dialog_on_enter:
+            self._actor.start_talk(trigger, trigger.run_dialog_on_enter)
+
+    def on_throwable_anomaly_hit(self, throwable_id, anomaly_id):
+        if self._cur_phase:
+            self._cur_phase.on_throwable_anomaly_hit(throwable_id, anomaly_id)
+
+    def on_use_item(self, item):
+        if self._cur_phase:
+            self._cur_phase.on_use_item(item)
+
+    def on_weapon_upgrade(self, item_id):
+        if self._cur_phase:
+            self._cur_phase.on_weapon_upgrade(item_id)
+
+    def get_state(self):
+        return self._cur_phase.get_state()
+
+    def validate_interacion(self):
+        if not self._cur_phase:
+            return True
+        if not self._cur_phase.lock_interactions:
+            return True
+        BWPersonality.GUICore.tutorial_gui.blink()
+        return False

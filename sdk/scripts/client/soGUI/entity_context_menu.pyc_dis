@@ -1,0 +1,286 @@
+# Embedded file name: ./client/soGUI/entity_context_menu.py
+from functools import partial
+import Helpers.PyGUI as PyGUI
+import GUI
+import BigWorld
+import soGUI
+import Keys
+import math
+from soGUI.soButton import soButton
+from Helpers.BWCoroutine import BWMemberCoroutine, BWWaitForPeriod
+import traceback
+import BWPersonality
+from Math import Matrix
+import Math
+
+class ActionButton(soButton):
+    """docstring for ActionButton"""
+
+    def __init__(self, *w, **kw):
+        super(ActionButton, self).__init__(*w, **kw)
+
+    def initBtnChildren(self):
+        super(ActionButton, self).initBtnChildren()
+        self.bind_label = GUI.Text('[1]')
+        self.bind_label.horizontalPositionMode = self.default_PositionMode
+        self.bind_label.verticalPositionMode = 'CLIP'
+        self.bind_label.horizontalAnchor = 'RIGHT'
+        self.bind_label.verticalAnchor = 'CENTER'
+        self.bind_label.colour = (255.0, 255.0, 255.0, 200.0)
+        self.bind_label.position = (1.0, 0.0, self.BTN_LABEL_DEPTH)
+        self.bind_label.visible = 1
+        self.bind_label.font = 'RobotoCondensedRegular_12.font'
+        self.component.addChild(self.bind_label, 'bind_label')
+
+
+class EntityContextMenu(PyGUI.Window):
+    LEFT_OFFSET = 0
+    TOP_OFFSET = 4
+    LABEL_LEFT_OFFSET = 5
+    ELEMENT_HEIGHT = 20
+    ELEMENT_INTERVAL = 0
+    BTN_FONT_NAME = 'RobotoCondensedRegular_16.font'
+    TITLE_FONT_NAME = 'RobotoCondensedRegular_16.font'
+
+    def __init__(self, component):
+        PyGUI.Window.__init__(self, component)
+        self._actions = []
+        self._elem_btns = {}
+        self._binds = {}
+        self.tmpShader = GUI.MatrixShader()
+        self._update_coroutine = None
+        component.script = self
+        self.component.visible = False
+        self.setupFrame()
+        return
+
+    def setupFrame(self):
+        mainFrame = GUI.Simple('textures/default/white.dds')
+        mainFrame.horizontalPositionMode = mainFrame.verticalPositionMode = 'CLIP'
+        mainFrame.widthMode = mainFrame.heightMode = 'CLIP'
+        mainFrame.horizontalAnchor = 'LEFT'
+        mainFrame.verticalAnchor = 'BOTTOM'
+        mainFrame.width = 2.0
+        mainFrame.height = 2.0
+        mainFrame.position = (-1.0, -1.0, 0.9)
+        mainFrame.colour = (0, 0, 0, 190)
+        mainFrame.materialFX = 'BLEND'
+        self.component.addChild(mainFrame, 'theFrame')
+        mainFrame = GUI.Simple('textures/default/white.dds')
+        mainFrame.horizontalPositionMode = mainFrame.verticalPositionMode = 'PIXEL'
+        mainFrame.widthMode = 'CLIP'
+        mainFrame.heightMode = 'PIXEL'
+        mainFrame.horizontalAnchor = 'LEFT'
+        mainFrame.verticalAnchor = 'TOP'
+        mainFrame.width = 2.0
+        mainFrame.height = 23
+        mainFrame.position = (0, 0, 0.6)
+        mainFrame.colour = (0, 0, 0, 255)
+        mainFrame.materialFX = 'BLEND'
+        self.component.addChild(mainFrame, 'head')
+        title = GUI.Text('')
+        title.font = self.TITLE_FONT_NAME
+        title.verticalPositionMode = title.horizontalPositionMode = 'PIXEL'
+        title.horizontalAnchor = 'LEFT'
+        title.verticalAnchor = 'TOP'
+        title.colour = (200, 200, 200, 255)
+        title.position = (5, 2, 0.5)
+        self.component.addChild(title, 'title')
+        btn = soButton(GUI.Window())
+        cmp = btn.component
+        cmp.horizontalPositionMode = 'CLIP'
+        cmp.verticalPositionMode = 'PIXEL'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.horizontalAnchor = 'RIGHT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.materialFX = 'BLEND'
+        cmp.width = 18
+        cmp.height = 18
+        cmp.position = (0.96, 2, 0.1)
+        cmp.script.onClick = self.hide
+        btn.initVSC('soGUI/elements/closeBox.xml')
+        btn.setDisabledState(False)
+        btn.onBound()
+        btn.setVisualState('normal')
+        self.component.addChild(cmp, 'closebox')
+
+    def setupActions(self):
+        self._clearBtns()
+        self.component.title.text = self._title
+        elemWidth = self._getMaxWidth() + self.LEFT_OFFSET * 2
+        for index, action in enumerate(self._actions, 1):
+            btn = ActionButton(GUI.Window())
+            cmp = btn.component
+            cmp.verticalPositionMode = cmp.horizontalPositionMode = 'CLIP'
+            cmp.widthMode = cmp.heightMode = 'PIXEL'
+            cmp.horizontalAnchor = 'CENTER'
+            cmp.verticalAnchor = 'TOP'
+            cmp.width = elemWidth
+            cmp.height = self.ELEMENT_HEIGHT
+            btn.initVSC('soGUI/elements/button_ent_context.xml')
+            y_pos = 1.0 - soGUI.getPixelHeight(self.component) * (self.TOP_OFFSET + self.ELEMENT_HEIGHT * index)
+            cmp.position = (0.0, y_pos, 0.0)
+            btn.onBound()
+            btn.component.label.position = (-1.0 + soGUI.getPixelWidth(cmp) * self.LABEL_LEFT_OFFSET, 0.0, 0.0)
+            btn.component.label.horizontalAnchor = 'LEFT'
+            btn.component.label.text = self._getActionLabel(action)
+            btn.component.bind_label.text = self._getActionBindLabel(action)
+            self.component.addChild(cmp, 'button_{0}'.format(index))
+            btn.setVisualState('normal')
+            btn._updateVisualState()
+            btn.onClick = partial(self._onElement, action)
+            self._elem_btns[btn] = action
+            if action.get('bind_key'):
+                key = BigWorld.stringToKey(action['bind_key'])
+                self._binds[key] = (action, btn)
+
+    def updateRoot(self, position):
+        maxWidth = self._getMaxWidth()
+        posX, posY = position
+        self.component.verticalPositionMode = self.component.horizontalPositionMode = 'LEGACY'
+        self.component.widthMode = self.component.heightMode = 'PIXEL'
+        self.component.width = self.LABEL_LEFT_OFFSET * 2 + self.LEFT_OFFSET * 2 + maxWidth
+        height = self.TOP_OFFSET * 2 + self.ELEMENT_INTERVAL * len(self._actions)
+        height += self.ELEMENT_HEIGHT * (len(self._actions) + 1)
+        self.component.height = height
+        if soGUI.getLegacyWidth(self.component) + posX > 1.0:
+            self.component.horizontalAnchor = 'RIGHT'
+        else:
+            self.component.horizontalAnchor = 'LEFT'
+        if soGUI.getLegacyHeight(self.component) - posY < -1.0:
+            self.component.verticalAnchor = 'BOTTOM'
+        else:
+            self.component.verticalAnchor = 'TOP'
+        if posY - soGUI.getLegacyHeight(self.component) < -1.0:
+            posY = posY + (-1.0 - (posY - soGUI.getLegacyHeight(self.component)))
+        self.component.position = (posX, posY, 0)
+        self.component.textureName = ''
+        self.component.colour = (255, 255, 255, 255)
+        self.component.materialFX = 'BLEND'
+        self.component.visible = True
+        self.component.crossFocus = True
+
+    def handleKeyEvent(self, event):
+        if event.key in self._binds:
+            action, btn = self._binds[event.key]
+            if action.get('foo_active') and not action['foo_active']():
+                return True
+            if event.isKeyDown():
+                btn.hovering = True
+                btn._updateVisualState()
+                return True
+            self._onElement(action)
+            return True
+        return False
+
+    def _getActionLabel(self, action):
+        return action['label']
+
+    def _getActionBindLabel(self, action):
+        text = ''
+        if action.get('bind_key'):
+            text += '  %s' % action['bind_key']
+        return text
+
+    def _getMaxWidth(self):
+        maxWidth = 170
+        testString = GUI.Text('')
+        testString.font = self.TITLE_FONT_NAME
+        actionWidth = testString.stringWidth(self._title)
+        if actionWidth > maxWidth:
+            maxWidth = actionWidth
+        testString.font = self.BTN_FONT_NAME
+        for action in self._actions:
+            text = self._getActionLabel(action) + '  ' + self._getActionBindLabel(action)
+            actionWidth = testString.stringWidth(text)
+            if actionWidth > maxWidth:
+                maxWidth = actionWidth
+
+        return maxWidth
+
+    def getWindWorldPosDir(self):
+        W, H = BigWorld.screenSize()
+        fov_ = math.pi / 3.0
+        aspectRatio_ = W / float(H)
+        nearPlane_ = 0.15
+        mpos = self.component.position
+
+        def nearPlanePoint(xClip, yClip):
+            yLength = nearPlane_ * math.tan(fov_ * 0.5)
+            xLength = yLength * aspectRatio_
+            return Math.Vector3(xLength * xClip, yLength * yClip, nearPlane_)
+
+        cameraSpace = nearPlanePoint(mpos.x, mpos.y)
+        inv = Math.Matrix(BigWorld.camera().matrix)
+        inv.invert()
+        ray = inv.applyVector(cameraSpace)
+        ray.normalise()
+        src = inv.applyPoint(cameraSpace)
+        return src
+
+    @BWMemberCoroutine
+    def _updateBtns(self):
+        while True:
+            for btn, action in self._elem_btns.items():
+                if action.get('foo_active') and not action['foo_active']():
+                    btn.setDisabledState(True)
+                else:
+                    btn.setDisabledState(False)
+
+            yield BWWaitForPeriod(0.1)
+
+    def _onElement(self, action):
+        try:
+            action['callback']()
+        except:
+            traceback.print_exc()
+
+        self.hide(nonuser=False)
+
+    def _clearBtns(self):
+        self._binds = {}
+        for elem in self._elem_btns.keys():
+            self.component.delChild(elem.component)
+            elem.onClick = None
+
+        self._elem_btns = {}
+        return
+
+    @property
+    def isVisible(self):
+        return self.component.visible
+
+    def showMenu(self, title, actions, on_cancel = None, position = None, target_matrix = None):
+        self._target_matrix = target_matrix
+        self._title = title
+        self._actions = actions
+        self.on_cancel = on_cancel
+        GUI.addRoot(self.component)
+        self.component.focus = True
+        if position is None:
+            position = GUI.mcursor().position
+        self.updateRoot(position)
+        self.setupActions()
+        self.onBound()
+        GUI.reSort()
+        if self._update_coroutine:
+            self._update_coroutine.stop()
+        self._update_coroutine = self._updateBtns()
+        self._update_coroutine.run()
+        return
+
+    def hide(self, nonuser = True):
+        self._clearBtns()
+        self._actions = []
+        self._target_matrix = None
+        visible = self.component.visible
+        self.component.visible = False
+        self.component.focus = False
+        GUI.delRoot(self.component)
+        if self._update_coroutine:
+            self._update_coroutine.stop()
+            self._update_coroutine = None
+        if nonuser and visible and self.on_cancel:
+            self.on_cancel()
+        self.on_cancel = None
+        return

@@ -1,0 +1,86 @@
+# Embedded file name: ./client/journal/quests_tab2/server.py
+import BigWorld
+import QuestDispatcher as qd
+import traceback
+
+class EventType:
+    OnDataLoaded, OnSubsLoaded, OnVisibleChanged = xrange(3)
+
+
+class Server(object):
+    _version = 1
+
+    def __init__(self, callback_listener):
+        self._callback_listener = callback_listener
+        self._notify_pool = {}
+        self._execute_pool_calback = None
+        return
+
+    def load_journal_quests2(self, chapters, unique_id, taken_amount):
+        data = {'unique_id': unique_id,
+         'chapters': [ (ch if ch['q_id'] else None) for ch in chapters ],
+         'taken_amount': taken_amount}
+        self._callback_listener(EventType.OnDataLoaded, data)
+        return
+
+    def notify_quest_filter_change1(self, quest_id, visible, main_visible, version):
+        if version != Server._version:
+            return
+        data = {'quest_id': quest_id,
+         'visible': visible,
+         'main_visible': main_visible}
+        self._callback_listener(EventType.OnVisibleChanged, data)
+
+    def _execute_notify_pool(self):
+        for quest_id, data in self._notify_pool.items():
+            sortfilter, version = data['sortfilter'], data['version']
+            self._p.base.notify_quest_filter_change0(quest_id, sortfilter, version)
+
+        self._notify_pool.clear()
+        self._execute_pool_calback = None
+        return
+
+    def cancel_all_requests(self):
+        self._change_version()
+
+    def _change_version(self):
+        Server._version += 1
+        self._notify_pool.clear()
+        if self._execute_pool_calback:
+            BigWorld.cancelCallback(self._execute_pool_calback)
+            self._execute_pool_calback = None
+        return
+
+    def on_quest_state_event(self, quest_id, prev_state, state, sortfilter):
+        self._p.notify_quest_filter_change1 = self.notify_quest_filter_change1
+        quest_id = qd.getRootID(quest_id)
+        if not quest_id:
+            print 'Quest server (ERROR):', [quest_id,
+             prev_state,
+             state,
+             sortfilter]
+            traceback.print_stack()
+            return
+        self._notify_pool[quest_id] = {'sortfilter': sortfilter,
+         'version': Server._version}
+        if self._execute_pool_calback:
+            BigWorld.cancelCallback(self._execute_pool_calback)
+        self._execute_pool_calback = BigWorld.callback(0, self._execute_notify_pool)
+
+    def load_journal_subquests1(self, quest_id, unique_id, sub_ids):
+        data = {'quest_id': quest_id,
+         'unique_id': unique_id,
+         'sub_ids': sub_ids}
+        self._callback_listener(EventType.OnSubsLoaded, data)
+
+    def load_subs(self, quest_id, unique_id, sortfilter):
+        self._p.load_journal_subquests1 = self.load_journal_subquests1
+        self._p.base.load_journal_subquests0(quest_id, unique_id, sortfilter)
+
+    def load_data(self, context_ids, unique_id, sortfilter):
+        self._p.load_journal_quests1 = self.load_journal_quests2
+        self._p.base.load_journal_quests0(context_ids, unique_id, sortfilter)
+
+    @property
+    def _p(self):
+        return BigWorld.player()

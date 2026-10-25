@@ -1,0 +1,475 @@
+# Embedded file name: ./client/Speaker.py
+import sys
+import BigWorld
+import BWPersonality
+import Dialog
+from Dialog import SpeakTarget as ST, DialogAdditionalData as DAD
+from Notices import Notices
+import Clan
+from NPCs import NPCs
+import client_utils
+from ChatChannelConfig import CHANNEL_CONSTS
+from Localization import lc
+import Constants
+from DialogActions import DialogActions
+import QuesterConsts
+from functools import partial
+import AdditionalNPCParameters
+from WorkbenchUtil import WorkbenchTypes as WT, InteractionType as IT
+import gui_jokes
+import msgbox_templates
+import rep_utils
+from utils import groupNumber
+from gui_const import MESSAGEBOX
+from time import time
+import sounds_manager
+import NPCSoundUtils
+from NPCSoundUtils import UNIQUE_NPC_NAMES, UNIQUE_NPC_SPEECH_DELAY, DEFAULT_USUAL_NPC_SPEECH_DELAY, nature_id2speech_delay
+
+class Speaker:
+    _talk_entity = None
+    _npc_client_talk_entity = None
+    _last_screen_close_time = 0
+    _npc_hi2tts = {}
+    _npc_bye2tts = {}
+    _speech_type2tts = {}
+
+    def onEnterWorld(self):
+        self._talk_pot = None
+        self._pending_data = {}
+        return
+
+    def onLeaveWorld(self):
+        if self._talk_pot:
+            BigWorld.delPot(self._talk_pot)
+            self._talk_pot = None
+        self._talk_entity = None
+        self._npc_client_talk_entity = None
+        return
+
+    def on_radio_click(self, npc_id):
+        """ \xd0\xb7\xd0\xb2\xd0\xbe\xd0\xbd\xd0\xbe\xd0\xba NPC \xd1\x87\xd0\xb5\xd1\x80\xd0\xb5\xd0\xb7 \xd0\xb7\xd0\xbd\xd0\xb0\xd0\xba\xd0\xbe\xd0\xbc\xd1\x81\xd1\x82\xd0\xb2\xd0\xb0 """
+        if self._talk_pot:
+            BigWorld.delPot(self._talk_pot)
+        self._talk_pot = None
+        self._talk_entity = None
+        npc_name = NPCs.getName(AdditionalNPCParameters.get_npc_name_by_id(npc_id))
+        self._dialog_screen.show(npc_name)
+        self._npc_client_talk_entity = (npc_id, ST.Radio, 0)
+        self.cell.start_client_talk(npc_id, 0, ST.Radio, 0)
+        return
+
+    def request_quest_entity_talk(self, quest_entity_id, npc_name, guid_hash):
+        if self._talk_pot:
+            BigWorld.delPot(self._talk_pot)
+        self._talk_pot = None
+        self._talk_entity = None
+        npc_id = AdditionalNPCParameters.get_npc_id_by_name(npc_name)
+        self._dialog_screen.show(NPCs.getName(npc_name))
+        self._npc_client_talk_entity = (npc_id, ST.QuestEntity, quest_entity_id)
+        self.cell.start_client_talk(npc_id, 0, ST.QuestEntity, guid_hash)
+        self.onStartNpcDialog()
+        return
+
+    def _prepare_talk(self, entity, start_dialog_id = 0):
+        if self._tutorial_manager and not self._tutorial_manager.validate_interacion():
+            return False
+        else:
+            if self._talk_pot:
+                BigWorld.delPot(self._talk_pot)
+            if not entity.can_talk():
+                self.putMessage(CHANNEL_CONSTS.SYSTEM, lc('Avatar.cell.cant_speak'))
+                return False
+            self._talk_pot = BigWorld.addPot(entity.matrix, QuesterConsts.MAX_DIALOG_DISTANCE, self._talk_pot_handler)
+            self._talk_entity = entity
+            self._npc_client_talk_entity = None
+            self._dialog_screen.show(self._talk_entity.name)
+            self.onStartNpcDialog()
+            self.try_speech_npc_hi(entity)
+            return True
+
+    def start_talk(self, entity, start_dialog_id = 0):
+        if self._prepare_talk(entity, start_dialog_id):
+            self.cell.onStartTalk(self._talk_entity.id, start_dialog_id)
+
+    def prepare_speakarea_talk(self, entity, start_dialog_id = 0):
+        self._prepare_talk(entity, start_dialog_id)
+
+    def on_talk_without_dialog(self, entity):
+        self._talk_entity = entity
+        self._npc_client_talk_entity = None
+        return
+
+    def _talk_pot_handler(self, entered, handle):
+        if not entered:
+            if self._talk_pot:
+                BigWorld.delPot(self._talk_pot)
+                self._talk_pot = None
+            self._dialog_screen.hide()
+        return
+
+    def avatarLeaveWorld(self, entity_id):
+        if self.last_interlocutor_id == entity_id and self._talk_pot:
+            BigWorld.delPot(self._talk_pot)
+            self._talk_pot = None
+            self._dialog_screen.hide()
+        return
+
+    def is_magnpc_locked(self, item_id):
+        if not BWPersonality.GUICore.npc_reload_ui_visible():
+            return False
+        return BWPersonality.GUICore._npc_reload_win.is_item_locked(item_id)
+
+    def restart_current_dialog_node(self):
+        self._dialog_screen.restart_current_dialog_node()
+
+    def end_dialog(self):
+        if self._talk_pot:
+            BigWorld.delPot(self._talk_pot)
+            self._talk_pot = None
+        self._dialog_screen.hide()
+        return
+
+    def got_dialog_preliminary_data(self, ints, strs):
+        self._dialog_screen.set_preliminary_data(ints, strs)
+
+    def got_next_dialogs(self, dialog_ids, cur_dialog_id, dialog_additional_data):
+        dialog_additional_data = DAD.parse(dialog_additional_data)
+        if DAD.MustBreak in dialog_additional_data:
+            self.end_dialog()
+            return
+        if dialog_ids:
+            lines = list(dialog_ids)
+        else:
+            lines = [Constants.FAREWELL_DIALOG_ID]
+        self._dialog_screen.set_lines(lines, cur_dialog_id, dialog_additional_data)
+
+    def no_radio_replicas(self):
+        lines = [Constants.NO_RADIO_DIALOG_ID]
+        self._dialog_screen.set_lines(lines, Constants.NO_RADIO_DIALOG_ID, [])
+
+    def activate_dialog_actions(self, actions):
+        if self._dialog_screen.visible:
+            DialogActions.setDialogActions(self, actions)
+
+    def activate_dialog_events(self, dialog_event_id, event_data):
+        """ dialog_event_id - \xd0\xb8\xd0\xb4\xd0\xb5\xd0\xbd\xd1\x82\xd0\xb8\xd1\x84\xd0\xb8\xd0\xba\xd0\xb0\xd1\x82\xd0\xbe\xd1\x80 \xd1\x81\xd0\xbe\xd0\xb1\xd1\x8b\xd1\x82\xd0\xb8\xd1\x8f
+                event_data - event specific STRING data
+        """
+        if dialog_event_id == Dialog.EVENT_TYPE_CHANGE:
+            self.onStartItemCache(self._talk_entity)
+        elif dialog_event_id == Dialog.EVENT_TYPE_CREATECLAN:
+            self.showConfirmNotice(Notices.CLAN_CREATE, 0, [])
+        elif dialog_event_id == Dialog.EVENT_TYPE_REPAIR:
+            self.onStartRepair(self._talk_entity)
+        elif dialog_event_id == Dialog.EVENT_TYPE_REPAIR_WEAPON:
+            self.onStartRepairWeapon(self._talk_entity)
+        elif dialog_event_id == Dialog.EVENT_TYPE_BARTER:
+            self.init_npc_barter(self._talk_entity)
+        elif dialog_event_id == Dialog.EVENT_TYPE_COMPLEX_REPAIR:
+            self.onStartComplexRepair(self._talk_entity)
+            BWPersonality.GUICore.setBestCursor()
+        elif dialog_event_id == Dialog.EVENT_TYPE_GO_PVP_AREA:
+            if self.AgrFlag:
+                return
+            BWPersonality.GUICore.showSelectMap(True)
+        elif dialog_event_id == Dialog.EVENT_TYPE_GO_INST_BLOCK:
+            self.runCommand(u'/createBuildSpace')
+        elif dialog_event_id == Dialog.EVENT_TYPE_EMBLEM_AND_COLOR_ITEM:
+            raise RuntimeError
+        elif dialog_event_id == Dialog.EVENT_TYPE_START_BUY_FLAGS:
+            capture_gui = BWPersonality.GUICore.getBaseToCaptureGUI()
+        elif dialog_event_id == Dialog.EVENT_TYPE_START_BUY_GUARDS:
+            capture_gui = BWPersonality.GUICore.getBaseToCaptureGUI()
+            if capture_gui.is_buying_state:
+                capture_gui.stop_buying()
+            self.start_guardians_buying()
+        elif dialog_event_id == Dialog.EVENT_TYPE_SHOW_BASE2CAPTURE_MONEY:
+            BWPersonality.GUICore.showBaseMoneyInfo(True)
+        elif dialog_event_id == Dialog.EVENT_TYPE_START_CHANGE_CLAN_ICON:
+            BWPersonality.GUICore.showClanEmblemsScreen(True)
+        elif dialog_event_id == Dialog.EVENT_ADVANCED_TRADE:
+            self.start_buying(self._talk_entity.id)
+            BWPersonality.GUICore.showInventory(True)
+        elif dialog_event_id == Dialog.EVENT_TYPE_NPC_ORDER:
+            if self.checkClanRights(Clan.FLAG_CAN_BASE_BUY_ENTITIES):
+                action_id = int(event_data)
+                if action_id == NPCs.ORDER_REMOVE_ALL:
+                    self.present_remove_all_dialog()
+                elif action_id == NPCs.ORDER_STAND and client_utils.is_position_under_water(self._talk_entity.position):
+                    self.putMessage(CHANNEL_CONSTS.SYSTEM, lc('Avatar.cell.restr_position'))
+                else:
+                    self._talk_entity.cell.complyOrder(action_id)
+            else:
+                self.putMessage(CHANNEL_CONSTS.SYSTEM, lc('Avatar.cell.restr_clan_right'))
+        elif dialog_event_id == Dialog.EVENT_TYPE_GOTO:
+            for dialog_area in self._talk_entity.dialogAreas:
+                if dialog_area.name == event_data:
+                    self.goto_point(dialog_area.position)
+                    break
+            else:
+                print "PlayerAvatar (ERROR): can't find dialog point with name:", event_data
+
+        elif dialog_event_id == Dialog.EVENT_TYPE_TOO_FAR:
+            print 'Speaker: to far for speaking'
+            self._dialog_screen.hide()
+        elif dialog_event_id == Dialog.EVENT_TYPE_ACCESS_TO_TERRITORY:
+            self.cell.get_territory_access()
+        elif dialog_event_id in [Dialog.EVENT_WEAPON_WORKBENCH, Dialog.EVENT_WORKBENCH]:
+
+            def find_nearest_object_by_condition(condition_filter):
+                result = None
+                dist = sys.float_info.max
+                for e in BigWorld.entities.values():
+                    if not condition_filter(e):
+                        continue
+                    d = e.position.distTo(self.position)
+                    if d < dist:
+                        result = e
+                        dist = d
+
+                return result
+
+            if dialog_event_id == Dialog.EVENT_WEAPON_WORKBENCH:
+
+                def is_entity_weapon_workbench(entity):
+                    return entity.__class__.__name__ == 'WeaponWorkbench'
+
+                condition_filter = is_entity_weapon_workbench
+            elif dialog_event_id == Dialog.EVENT_WORKBENCH:
+                workbench_type = int(event_data) if event_data else WT.NONE
+
+                def is_entity_valid_workbench(entity):
+                    if entity.__class__.__name__ != 'Workbench':
+                        return False
+                    return entity.workbenchType == workbench_type
+
+                condition_filter = is_entity_valid_workbench
+            self._dialog_screen.hide()
+            workbench = find_nearest_object_by_condition(condition_filter)
+            if workbench:
+                payed = True
+                if self._talk_entity.clanName == self.clanUnion:
+                    payed = False
+                elif self.clanName and self._talk_entity.clanName == self.clanName:
+                    payed = False
+                interaction_type = IT.NpcPayed if payed else IT.NpcFree
+                if dialog_event_id == Dialog.EVENT_WEAPON_WORKBENCH:
+                    workbench.interact(self, self._talk_entity, interaction_type)
+                elif self._talk_entity:
+                    self._interact_workbench(workbench, interaction_type)
+            else:
+                print 'Speaker (ERROR) no workbench found nearby', repr(event_data)
+        elif dialog_event_id == Dialog.EVENT_RESETREP:
+            rep_id, rep_value = map(int, event_data.split(':'))
+            if rep_value >= 0:
+                print 'Speaker (ERROR): no need to reset reputation', rep_id, rep_value
+                return
+            caption = lc('Quests.Messages.RepCaption')
+            int_price = -rep_value * Dialog.BUY_REP_PRICE
+            if self.money < int_price:
+                gui_jokes.askUserOk(caption, lc('Quests.Messages.RepChangeNo'))
+                return
+
+            def callback(event, data):
+                if event == MESSAGEBOX.EVENT_BTNPRESS:
+                    if data['btn'] == MESSAGEBOX.BTN_YES:
+                        self.cell.reset_money_rep(rep_id, int_price)
+
+            text = lc('Quests.Messages.RepChangeText').format(rep_utils.get_name(rep_id), groupNumber(int_price, sep="'"))
+            msgbox_templates.text_yes_no_timer(caption, text, callback)
+            BigWorld.callback(0, partial(BWPersonality.game.set_cursor_mouse, True))
+        elif dialog_event_id in [Dialog.EVENT_TYPE_TELEPORT,
+         Dialog.EVENT_TYPE_TELEPORT_TO_CLAN_BASE,
+         Dialog.EVENT_TYPE_TELEPORT_TO_DUNGEON,
+         Dialog.EVENT_DUNGEON_TARGET_ACTIVATE]:
+            pass
+        elif dialog_event_id == Dialog.EVENT_PLAY_SOUND:
+            source_model = None
+            if self._talk_entity:
+                source_id = self._talk_entity.id
+                if not source_id:
+                    if self._npc_client_talk_entity:
+                        source_id = self._npc_client_talk_entity[2]
+                    source_entity = source_id and BigWorld.entities.get(source_id)
+                    source_model = source_entity and source_entity.model
+            sounds_manager.playSound(event_data, source_model)
+        elif dialog_event_id == Dialog.EVENT_CLAN_REWARD:
+            BWPersonality.GUICore.show_clan_reward_win()
+        elif dialog_event_id == Dialog.EVENT_RELOAD:
+            BWPersonality.GUICore.show_npc_reload_win()
+        elif dialog_event_id == Dialog.EVENT_SET_CHARGE:
+            self._set_abils_controller.request_npc_charge()
+        elif dialog_event_id == Dialog.EVENT_REMOVE_GRADE:
+            self.onStartNPCResetWeaponGrades(self._talk_entity)
+        else:
+            raise NotImplementedError('event: ' + str(dialog_event_id))
+        return
+
+    def try_speech_npc_hi(self, entity):
+        if entity.__class__.__name__ == 'NPC':
+            npc_name = entity.npcName
+            now = time()
+            if NPCSoundUtils.SPEECH_NPC_DEBUG:
+                tts = 0
+            else:
+                _, tts = self._npc_hi2tts.get(npc_name, (True, 0))
+            if npc_name in UNIQUE_NPC_NAMES:
+                if now > tts:
+                    self._npc_hi2tts[npc_name] = (None, now + UNIQUE_NPC_SPEECH_DELAY)
+                    entity.npc_say('hi', is_unique_npc=True)
+            elif now > tts:
+                nature_id = entity.getAdditionalParam('nature')
+                speech_delay = nature_id2speech_delay.get(nature_id, DEFAULT_USUAL_NPC_SPEECH_DELAY)
+                self._npc_hi2tts[npc_name] = (None, now + speech_delay)
+                entity.npc_say('hi', is_unique_npc=False)
+        return
+
+    def try_speech_npc_bye(self):
+        if self._talk_entity and self._talk_entity.__class__.__name__ == 'NPC':
+            if self._talk_entity.isDestroyed:
+                return
+            npc_name = self._talk_entity.npcName
+            now = time()
+            if NPCSoundUtils.SPEECH_NPC_DEBUG:
+                tts = 0
+            else:
+                _, tts = self._npc_bye2tts.get(npc_name, (True, 0))
+            if npc_name in UNIQUE_NPC_NAMES:
+                if now > tts:
+                    self._npc_bye2tts[npc_name] = (None, now + UNIQUE_NPC_SPEECH_DELAY)
+                    self._talk_entity.npc_say('bye', is_unique_npc=True)
+            elif now > tts:
+                nature_id = self._talk_entity.getAdditionalParam('nature')
+                speech_delay = nature_id2speech_delay.get(nature_id, DEFAULT_USUAL_NPC_SPEECH_DELAY)
+                self._npc_bye2tts[npc_name] = (None, now + speech_delay)
+                self._talk_entity.npc_say('bye', is_unique_npc=False)
+        return
+
+    def can_manipulate_talk_npc(self):
+        return BigWorld.time() - Speaker._last_screen_close_time > 0.5
+
+    def on_screen_close(self):
+        DialogActions.stop_dialog_camera(self)
+        Speaker._last_screen_close_time = BigWorld.time()
+
+    def on_line_click(self, dialog_id):
+        """ \xd0\xbd\xd0\xb0\xd0\xb6\xd0\xb0\xd1\x82\xd0\xb0 \xd0\xba\xd0\xbd\xd0\xbe\xd0\xbf\xd0\xba\xd0\xb0 \xd0\xb4\xd0\xb8\xd0\xb0\xd0\xbb\xd0\xbe\xd0\xb3\xd0\xb0 \xd0\xb2 \xd0\xb8\xd0\xbd\xd1\x82\xd0\xb5\xd1\x80\xd1\x84\xd0\xb5\xd0\xb9\xd1\x81\xd0\xb5 """
+        if dialog_id in (Constants.FAREWELL_DIALOG_ID, Constants.NO_RADIO_DIALOG_ID):
+            self.end_dialog()
+        elif self._talk_entity:
+            self.cell.onStartTalk(self._talk_entity.id, dialog_id)
+        elif self._npc_client_talk_entity:
+            npc_id, target_type, entity_id = self._npc_client_talk_entity
+            guid_hash = 0
+            if target_type == ST.QuestEntity:
+                guid_hash = BigWorld.entities[entity_id].get_guid_hash()
+            self.cell.start_client_talk(npc_id, dialog_id, target_type, guid_hash)
+        else:
+            raise RuntimeError
+
+    @property
+    def _dialog_screen(self):
+        return BWPersonality.GUICore.dialog_screen
+
+    @property
+    def last_interlocutor_id(self):
+        return self._talk_entity and self._talk_entity.id
+
+    def _get_data(self, key, request, cache):
+        if key not in self._pending_data:
+            self._pending_data[key] = (None, BigWorld.time())
+            request()
+            return
+        else:
+            result, time = self._pending_data[key]
+            if cache and result is not None:
+                return result
+            if BigWorld.time() - time > 5.0:
+                self._pending_data[key] = (None, BigWorld.time())
+                request()
+                return
+            if self._pending_data[key][0] is None:
+                return
+            if not cache:
+                del self._pending_data[key]
+            return result
+
+    def get_random_quest(self, npc_id):
+        key = (npc_id, 'rand_quest')
+        request = partial(self.base.get_random_quest, npc_id)
+        return self._get_data(key, request, False)
+
+    def got_random_quest(self, quest_id, npc_id):
+        key = (npc_id, 'rand_quest')
+        self._pending_data[key] = ((quest_id, npc_id), BigWorld.time())
+
+    def get_time_remain(self, quest_id):
+        key = (quest_id, 'get_time_remain')
+        request = partial(self.base.get_time_remain, quest_id)
+        return self._get_data(key, request, False)
+
+    def got_time_remain(self, quest_id, time):
+        key = (quest_id, 'get_time_remain')
+        self._pending_data[key] = (time, BigWorld.time())
+
+    def get_time_end(self, quest_id):
+        key = (quest_id, 'get_time_end')
+        request = partial(self.base.get_time_end, quest_id)
+        return self._get_data(key, request, False)
+
+    def got_time_end(self, quest_id, time):
+        key = (quest_id, 'get_time_end')
+        self._pending_data[key] = (time, BigWorld.time())
+
+    def get_items_text(self):
+        entity_id = self.last_interlocutor_id
+        key = (entity_id, 'get_items_text')
+        entity = BigWorld.entities[entity_id]
+        request = entity.cell.get_items_text0
+        return self._get_data(key, request, True)
+
+    def get_items_text4(self, item_types, entity_id):
+        key = (entity_id, 'get_items_text')
+        self._pending_data[key] = (item_types, BigWorld.time())
+
+    def get_money_text(self, dialog_id):
+        key = (dialog_id, 'get_money_text')
+        request = partial(self.base.get_money_text, dialog_id)
+        return self._get_data(key, request, True)
+
+    def got_money_text(self, dialog_id, money):
+        key = (dialog_id, 'get_money_text')
+        self._pending_data[key] = (money, BigWorld.time())
+
+    def get_cablist(self):
+        cabman_id = self.last_interlocutor_id
+        key = (cabman_id, 'get_cablist')
+        request = BigWorld.entities[cabman_id].cell.get_cablist
+        return self._get_data(key, request, False)
+
+    def got_cablist(self, names, destination, entity_id):
+        key = (entity_id, 'get_cablist')
+        self._pending_data[key] = ((names, destination), BigWorld.time())
+
+    def get_cabdestdata(self):
+        cabman_id = self.last_interlocutor_id
+        key = (cabman_id, 'get_cabdestdata')
+        request = BigWorld.entities[cabman_id].cell.get_cabdestdata
+        return self._get_data(key, request, False)
+
+    def got_cabdestdata(self, data):
+        cabman_id = self.last_interlocutor_id
+        key = (cabman_id, 'get_cabdestdata')
+        self._pending_data[key] = (data, BigWorld.time())
+
+    def get_caballdests(self):
+        cabman_id = self.last_interlocutor_id
+        key = (cabman_id, 'get_caballdests')
+        request = BigWorld.entities[cabman_id].cell.get_caballdests
+        return self._get_data(key, request, False)
+
+    def got_caballdests(self, dests, entity_id):
+        cabman_id = self.last_interlocutor_id
+        key = (cabman_id, 'get_caballdests')
+        self._pending_data[key] = (dests, BigWorld.time())

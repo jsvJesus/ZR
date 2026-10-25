@@ -1,0 +1,243 @@
+# Embedded file name: ./client/soGUI/circlemenu/circle_menu.py
+import Keys
+from math import pi
+import BigWorld
+import BWPersonality
+from utils import Tickable
+import GUI
+from Helpers.PyGUI import Utils
+from Helpers.PyGUI.PyGUIBase import Interceptor
+from petal import ItemPetal, WeaponPetal
+from soGUI.soTextField import soTextField3
+from functools import partial
+from circle_utils import petal_count
+from circle_states import UseState, EditState
+import sounds_manager
+
+class CircleMenu(Interceptor, Tickable):
+
+    def __init__(self):
+        Tickable.__init__(self)
+        comp = GUI.Window()
+        comp.isClip = False
+        comp.materialFX = 'SOLID'
+        comp.visible = False
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.position = (0, 0, 0.051)
+        Interceptor.__init__(self, comp)
+        comp = GUI.Window('soGUI/frame/circle_menu/center.dds')
+        comp.materialFX = 'BLEND'
+        comp.filterType = 'LINEAR'
+        comp.wm, comp.hm = ('CLIP', 'CLIP')
+        comp.width, comp.height = (1, 1)
+        comp.position = (0, 0, 0.8)
+        self.component.addChild(comp, 'center')
+        comp = GUI.Window()
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = (100, 200)
+        comp.position = (0, 0, 0.5)
+        comp.visible = False
+        self._center_text = soTextField3(comp, width=comp.width, textWidth=comp.width, height=comp.height, hScroll=False, vScroll=False, borderWidth=0, vOffset=0, hOffset=0)
+        self.component.center.addChild(comp)
+        self._center_raw_text = u''
+        self._slot_index_to_petal_index = [3,
+         2,
+         1,
+         0,
+         11,
+         10,
+         9,
+         8,
+         7]
+        petal_index_to_slot_index = {}
+        for slot_index, petal_index in enumerate(self._slot_index_to_petal_index):
+            petal_index_to_slot_index[petal_index] = slot_index
+
+        pti = petal_index_to_slot_index
+        actions = [(ItemPetal, ('QuickSlot4', pti[0])),
+         (ItemPetal, ('QuickSlot3', pti[1])),
+         (ItemPetal, ('QuickSlot2', pti[2])),
+         (ItemPetal, ('QuickSlot1', pti[3])),
+         (WeaponPetal, ('SecondaryWeapon', 'SecondarySlot')),
+         (WeaponPetal, ('PrimaryWeapon', 'PrimarySlot')),
+         (WeaponPetal, ('Primary2Weapon', 'Primary2Slot')),
+         (ItemPetal, ('QuickSlot9', pti[7])),
+         (ItemPetal, ('QuickSlot8', pti[8])),
+         (ItemPetal, ('QuickSlot7', pti[9])),
+         (ItemPetal, ('QuickSlot6', pti[10])),
+         (ItemPetal, ('QuickSlot5', pti[11]))]
+        self._petals = []
+        for i, (petal_class, args) in enumerate(actions):
+            comp = GUI.Window('soGUI/frame/circle_menu/petal.dds')
+            comp.ha, comp.va = ('CENTER', 'BOTTOM')
+            comp.materialFX = 'BLEND'
+            comp.filterType = 'LINEAR'
+            comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+            comp.isClip = False
+            comp.position = (0, 0, 0.9)
+            comp.rotate = float(i) / petal_count * pi * 2 - pi / 2
+            self.component.addChild(comp)
+            if not self._petals:
+                self._petal_ratio = float(comp.texture.width) / comp.texture.height
+            container = GUI.Simple(u'')
+            container.position = (0, 0, 0.1)
+            self.component.addChild(container)
+            petal = petal_class(comp, container, *args)
+            self._petals.append(petal)
+
+        self._weapon_petals = [4, 5, 6]
+        self._use_state = UseState(self)
+        self._edit_state = EditState(self)
+        self._cur_state = None
+        return
+
+    def set_center_text(self, text):
+        if text == self._center_text:
+            return
+        self._center_raw_text = text
+        if text:
+            self._center_text.height = 1000
+            self._center_text.setText('<alignment=center>' + text, immidiate=True)
+            self._center_text.recalc_auto_height()
+            self._center_text.component.visible = True
+        else:
+            self._center_text.component.visible = False
+
+    def update_data(self, data):
+        if not self.visible:
+            return
+        self._set_data(data)
+
+    def show_edit(self, data):
+        self._show(self._edit_state, data)
+
+    def show_use(self, data):
+        self._show(self._use_state, data)
+
+    def _show(self, state, data):
+        if self.visible:
+            self.update_data(data)
+            return
+        self.component.visible = True
+        self._cur_state = state
+        self._set_data(data)
+        self._on_show()
+
+    def _set_data(self, data):
+        for slot_index, petal_index in enumerate(self._slot_index_to_petal_index):
+            if petal_index is None:
+                continue
+            slot_data = data['slots'][slot_index]
+            complex_item = slot_data['item'] or None
+            self._petals[petal_index].set_item(complex_item)
+
+        return
+
+    def need_mouse_cursor(self):
+        return self._cur_state.need_mouse_cursor()
+
+    def _on_show(self):
+        self.start_tick()
+        self._cur_state.on_enter()
+        BWPersonality.register_mouse_event_interceptor(self._mouse_intercepted)
+        BWPersonality.register_key_event_interceptor(self._key_intercepted)
+        sounds_manager.playSound('ui/obd/click')
+        for petal in self._petals:
+            petal.on_show()
+
+    def _mouse_intercepted(self, event):
+        return self._cur_state.mouse_intercepted(event)
+
+    def _key_intercepted(self, event):
+        result = self._cur_state.key_intercepted(event)
+        if event.key == Keys.KEY_LEFTMOUSE and event.isKeyDown() and not event.isRepeatedEvent():
+            self._cur_state.apply_selection()
+            sounds_manager.playSound('ui/obd/add_click')
+            self.hide()
+            result = True
+        return result
+
+    def on_tick(self):
+        for index in self._weapon_petals:
+            self._petals[index].on_tick()
+
+    def hide(self):
+        if not self.component.visible:
+            return
+        self.component.visible = False
+        self._on_hide()
+
+    def _on_hide(self):
+        self._cur_state.on_exit()
+        self._cur_state = None
+        self.stop_tick()
+        BWPersonality.unregister_mouse_event_interceptor(self._mouse_intercepted)
+        BWPersonality.unregister_key_event_interceptor(self._key_intercepted)
+        BWPersonality.GUICore.inventoryGUI.edit_circle.untoggle()
+        sounds_manager.playSound('ui/obd/click')
+        for petal in self._petals:
+            petal.on_hide()
+
+        return
+
+    def can_tick(self):
+        return Utils.is_visible_in_hierarchy(self.component)
+
+    def onParentSizeChanged(self, component):
+        size = BigWorld.screenHeight() * 0.5
+        self.component.width = self.component.height = size
+        for petal in self._petals:
+            comp = petal.petal_comp
+            comp.height = size * 0.5
+            comp.width = comp.height * self._petal_ratio
+            petal.on_parent_size_changed(size)
+
+        self._center_text.component.visible = False
+        foo = partial(self._recompile_center_text_later, size)
+        BigWorld.callback(0, foo)
+        self._use_state.on_parent_size_changed(size)
+        self._edit_state.on_parent_size_changed(size)
+
+    def _recompile_center_text_later(self, size):
+        width, height = size * 0.4, 600
+        comp = self._center_text.component
+        comp.width, comp.height = width, height
+        self._center_text.width, self._center_text.height = width, height
+        self._center_text.setTextWidth(width)
+        self.set_center_text(self._center_raw_text)
+
+    @property
+    def visible(self):
+        return self.component.visible
+
+    def _get_drop_slot(self, event_data):
+        from soGUI.soInventorySlot2 import soInventorySlot2
+        from soGUI.soCharacterScreen import soGadgetSlot, soCharacterSlot
+        if event_data:
+            slot = event_data.script
+            return isinstance(slot, (soInventorySlot2, soGadgetSlot, soCharacterSlot)) and slot
+
+    def release(self):
+        self.hide()
+
+    def handleDragStartEvent(self, comp):
+        self._cur_state.handle_drag_start()
+        return True
+
+    def handleDragStopEvent(self, comp):
+        self._cur_state.handle_drag_stop(comp)
+        return True
+
+    def handleDragEnterEvent(self, comp, dragged):
+        return True
+
+    def handleDragLeaveEvent(self, comp, dragged):
+        return True
+
+    def handleDropEvent(self, comp, dropped):
+        self._cur_state.accept_drop(self._get_drop_slot(dropped))
+        return True

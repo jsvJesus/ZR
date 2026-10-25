@@ -1,0 +1,107 @@
+# Embedded file name: ./client/NPCFriend.py
+import BWPersonality
+from ChatChannelConfig import CHANNEL_CONSTS
+import Fractions
+from Localization import lc
+from NPCs import NPCs
+
+class NPCFriend:
+
+    def __init__(self):
+        self._fav_relations = BWPersonality.settings.get_fav_relations(self.name)
+
+    def set_fraction_relations_copy(self, oldvalue):
+        raise NotImplementedError
+
+    def setNested_fraction_relations_copy(self, path, old_value):
+        fraction_id = self.fraction_relations_copy[path[0]]['fractionID']
+        new_value = self.fraction_relations_copy[path[0]]['status']
+        if len(path) == 1:
+            old_value = old_value['status']
+        elif path[1] != 'status':
+            raise RuntimeError
+        self.on_relations_updated(fraction_id, new_value, old_value)
+
+    def setSlice_fraction_relations_copy(self, path, old_value):
+        if not old_value:
+            insert_index = path[0][0]
+            fraction_id = self.fraction_relations_copy[insert_index]['fractionID']
+            new_value = self.fraction_relations_copy[insert_index]['status']
+            self.on_relations_updated(fraction_id, new_value, 0)
+            return
+        fraction_id = old_value[0]['fractionID']
+        old_value = old_value[0]['status']
+        self.on_relations_updated(fraction_id, 0, old_value)
+
+    def on_relations_updated(self, fraction_id, new_value, old_value):
+        """ \xd1\x84\xd1\x80\xd0\xb0\xd0\xba\xd1\x86\xd0\xb8\xd0\xbe\xd0\xbd\xd0\xbd\xd0\xb0\xd1\x8f \xd1\x80\xd0\xb5\xd0\xbf\xd1\x83\xd1\x82\xd0\xb0\xd1\x86\xd0\xb8\xd1\x8f """
+        fracion_name = lc(Fractions.FractionNames[fraction_id])
+        diff_value = new_value - old_value
+        if diff_value > 0:
+            message = lc('Avatar.cell.STRING_1446_13').format(fracion_name, abs(diff_value), new_value)
+        elif diff_value < 0:
+            message = lc('Avatar.cell.STRING_1476_13').format(fracion_name, abs(diff_value), new_value)
+        else:
+            print 'NPCFriend (ERROR) relations updated', fraction_id, new_value, old_value
+            return
+        self.putMessage(CHANNEL_CONSTS.ACHIEVMENTS, message)
+
+    def getFractionRelationship(self, fraction_id):
+        try:
+            relation = next((r for r in self.fraction_relations_copy if r['fractionID'] == fraction_id))
+            return relation['status']
+        except StopIteration:
+            return Fractions.PlayerStatusDefault.get(fraction_id, 0)
+
+    def print_reputation(self, reputations):
+        rep_dict = {}
+        message = lc('Avatar.cell.STRING_1486_8') + '\n'
+        for reputation in reputations:
+            rep_dict[reputation['fractionID']] = reputation['status']
+
+        for fraction_id in Fractions.ALL_FRACTIONS:
+            value = rep_dict.get(fraction_id, Fractions.PlayerStatusDefault.get(fraction_id, 0))
+            fraction_name = lc(Fractions.FractionNames[fraction_id])
+            message += u'{0} {1}: {2}\n'.format(fraction_id, fraction_name, value)
+
+        self.putMessage(CHANNEL_CONSTS.ACHIEVMENTS, message)
+
+    def print_personal_reputation(self, npc_name, value):
+        message = u'{0}: {1}'.format(npc_name, value)
+        self.putMessage(CHANNEL_CONSTS.ACHIEVMENTS, message)
+
+    def on_personal_relation_updated(self, npc_name, value, prev_value):
+        npc_name = NPCs.getName(npc_name)
+        diff = value - prev_value
+        if diff > 0:
+            message = lc('Quester.RELATION.INCREASE').format(npc_name)
+        elif diff < 0:
+            message = lc('Quester.RELATION.DECREASE').format(npc_name)
+        self.putMessage(CHANNEL_CONSTS.ACHIEVMENTS, message)
+
+    def got_relation_spec(self, rel_specs):
+        callback = self._request_relation_spec_callbacks[rel_specs['npc_id']]
+        del self._request_relation_spec_callbacks[rel_specs['npc_id']]
+        if not self._request_relation_spec_callbacks:
+            del self._request_relation_spec_callbacks
+        callback(rel_specs)
+
+    def request_relation_spec(self, npc_id, callback):
+        if not hasattr(self, '_request_relation_spec_callbacks'):
+            self._request_relation_spec_callbacks = {}
+        self._request_relation_spec_callbacks[npc_id] = callback
+        self.base.request_relation_spec(npc_id)
+
+    def mark_npc_fav(self, npc_id, fav):
+        if fav:
+            if npc_id not in self._fav_relations:
+                self._fav_relations.append(npc_id)
+        elif npc_id in self._fav_relations:
+            self._fav_relations.remove(npc_id)
+        BWPersonality.settings.set_fav_relations(self.name, self._fav_relations)
+
+    def is_npc_favorite(self, npc_id):
+        return npc_id in self._fav_relations
+
+    def is_fav_npc_limit(self):
+        return len(self._fav_relations) >= 5

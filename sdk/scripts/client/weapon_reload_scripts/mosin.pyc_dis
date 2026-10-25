@@ -1,0 +1,210 @@
+# Embedded file name: ./client/weapon_reload_scripts/mosin.py
+import BigWorld
+import time
+import BWPersonality
+import Math, math
+from Math import Matrix, Vector3
+import traceback
+from functools import partial
+from Items import ItemsCatalog
+from utils import ignoreError
+from utils_bw import not_safe_animation_callback
+from reload_base_script import BaseWeaponReloader, BaseWeaponManualReloader
+from reload_base_script import _set_visible_magazine_from_model
+
+class STATE:
+    RELOAD = 1
+    RELOAD_END = 2
+    CANCELED = 3
+
+
+class ReloadMOSIN(BaseWeaponManualReloader):
+    patr_name = 'characters2/weapons/rifle/mosin_nagant/MosinAmmo.model'
+    anim_name = 'reload_MOSIN'
+    state = None
+
+    def play(self, e = None):
+        player = self.player
+        self.state = STATE.RELOAD
+
+        @not_safe_animation_callback
+        def RoundPocketToHandSYS(*e):
+            patr_in_hand.visible = True
+            BigWorld.callback(0, partial(self.playSfxOrSound, 'RoundPocketToHandSYS'))
+
+        @not_safe_animation_callback
+        def RoundHandToGunSYS(*e):
+            patr_in_hand.visible = False
+            BigWorld.callback(0, partial(self.playSfxOrSound, 'RoundHandToGunSYS'))
+
+        def BoltOpen(*e):
+            self.playSfxOrSound('BoltOpen')
+
+        def BoltClose(*e):
+            patr_in_hand.visible = False
+            self.playSfxOrSound('BoltClose')
+
+        player.model.cue('RoundPocketToHandSYS', RoundPocketToHandSYS)
+        player.model.cue('RoundHandToGunSYS', RoundHandToGunSYS)
+        player.model.cue('BoltOpen', BoltOpen)
+        player.model.cue('BoltClose', BoltClose)
+
+        def onMoveComplete(isBreak):
+            if isBreak:
+                return
+            elif not player or player.isDestroyed:
+                return
+            elif self._canceled:
+                return
+            else:
+                self.state = STATE.RELOAD_END
+                player.active_weapon.setVisibleModel(player.active_weapon_model)
+                player.model.Rmanipulator = None
+                self.onFini()
+
+                def endR(isBreak):
+                    if isBreak:
+                        return
+                    else:
+                        player.model.Rhand = None
+                        player.model.Lhand = None
+                        return
+
+                player.nodeInfoL.AttachedProviders = (player.left_weapon_prov, 0.3, endR)
+                return
+
+        def _returnHand():
+            if not player or player.isDestroyed:
+                return
+            if self._canceled:
+                return
+            self.state = STATE.RELOAD_END
+            to_tr_interval = 0.3
+            player.nodeInfoR.AttachedProviders = (player.right_weapon_prov, to_tr_interval, onMoveComplete)
+
+        def _draw(prov, color = (0, 1, 0, 1), size = 0.2):
+            pass
+
+        def _LeftToFake():
+            if not player or player.isDestroyed:
+                return
+            if self._canceled:
+                return
+            self.state = STATE.RELOAD_END
+            player.nodeInfoL.AttachedProviders = (fake_Lhand_provider, 0.2)
+
+        to_anim_interval = 0.5
+        player.nodeInfoL.AttachedProviders = (None, to_anim_interval)
+        player.nodeInfoR.AttachedProviders = (None, to_anim_interval)
+        copy_model = self.player.active_weapon.createCopyModelWeapon()
+        player.model.Rhand = copy_model
+        copy_model.node('HP_Rhand').attach(BigWorld.Model(''))
+        copy_model.node('HP_Lhand').attach(BigWorld.Model(''))
+        self.player.blendHandOffset(copy_model, self.player.right_weapon_prov, 1, 0, to_anim_interval)
+        patr_in_hand = BigWorld.Model(self.patr_name)
+        player.model.Rmanipulator = patr_in_hand
+        patr_in_hand.visible = False
+        fake_Lhand_provider = copy_model.node('HP_Lhand')
+        fake_Lhand_provider.blend_factor_hand = 1.0
+        fake_Lhand_provider.disableDrawInReflection = True
+        self.player.active_weapon.setVisibleModel(copy_model)
+        action_pl = player.model.action(self.anim_name)
+        action_w = copy_model.action(self.anim_name)
+        xspeed = 1.0 * self.reload_speed
+
+        def actionSet(parent, action_name, pool):
+            if not pool:
+                return 0.0
+            callb, startfr, endfr = pool.pop(0)
+            dur = (endfr - startfr) / (parent.frameRate * xspeed)
+            res = parent(0, callb, 0, startfr, endfr, parent.frameRate * xspeed)
+            if not pool:
+                return dur
+            next_action = getattr(res, action_name)
+            return dur + actionSet(next_action, action_name, pool)
+
+        player.active_weapon._debug_fire_counter = 0
+        need_ammo = getattr(self.player.active_weapon, 'need_ammo_number', 1)
+        self._ammo_number_done = 0
+        self._need_ammo = need_ammo
+
+        def onInsert(ammo_number):
+            self._ammo_number_done = ammo_number
+            if ammo_number == need_ammo:
+                patr_in_hand.visible = False
+            if self._onInsetAmmoCallback:
+                self._onInsetAmmoCallback(self.ammo_or_magazine_item)
+
+        st_fr = 46
+        end_fr = 67
+        if self.reload_data and len(self.reload_data) == 2:
+            st_fr, end_fr = map(int, self.reload_data)
+        pool = [(None, action_pl.firstFrame, st_fr)]
+        poolw = [(None, action_w.firstFrame, st_fr)]
+        for x in xrange(need_ammo):
+            pool.append((lambda x = x: onInsert(x + 1), st_fr, end_fr))
+            poolw.append((None, st_fr, end_fr))
+
+        pool.append((None, end_fr, action_pl.lastFrame))
+        poolw.append((None, end_fr, action_w.lastFrame))
+        dur_pl = actionSet(action_pl, self.anim_name, pool)
+        dur_w = actionSet(action_w, self.anim_name, poolw)
+        BigWorld.callback(dur_pl - 0.31, _returnHand)
+        BigWorld.callback(dur_pl - 0.31 - 0.2, _LeftToFake)
+        return
+
+    _ammo_number_done = 0
+
+    def cancelReload(self, smooth = True):
+        if self.state == STATE.RELOAD_END:
+            return
+        else:
+            self.state = STATE.CANCELED
+            self._canceled = True
+            self.unsubscribeCues()
+            acts = self.player.model.action(self.anim_name).playedInfo()
+            played_ = 0
+            frameRate = self.player.model.action(self.anim_name).frameRate
+            for a in acts:
+                if a['name_'] == self.anim_name:
+                    played_ = a['played_']
+                    duration = a['duration']
+
+            player = self.player
+
+            def onMoveComplete(isBreak):
+                if isBreak:
+                    return
+                if not player or player.isDestroyed:
+                    return
+                player.active_weapon.setVisibleModel(player.active_weapon_model)
+
+            def _returnHand():
+                if not player or player.isDestroyed:
+                    return
+                interval = 0.2
+                player.nodeInfoR.AttachedProviders = (player.right_weapon_prov, interval, onMoveComplete)
+
+            speed = 1.9
+            st_fr = 46.0
+            end_fr = 67.0
+            if self._ammo_number_done:
+                played_ += st_fr / frameRate
+            played_frame = int(played_ * frameRate)
+            ret_hand_time = played_ / speed - 0.3
+            BigWorld.callback(ret_hand_time, _returnHand)
+            self.player.model.action(self.anim_name).stop()
+            self.player.model.action(self.anim_name)(0, None, 0, played_frame, 0, frameRate * speed)
+            if self.player.model.Rhand:
+                self.player.model.Rhand.action(self.anim_name).stop()
+                self.player.model.Rhand.action(self.anim_name)(0, None, 0, played_frame, 0, frameRate * speed)
+
+            def continuecancel():
+                BaseWeaponReloader.cancelReload(self, smooth=smooth)
+
+            BigWorld.callback(played_ / speed + 0.3, continuecancel)
+            fake_Lhand_provider = self.player.model.Rhand.node('HP_Lhand')
+            fake_Lhand_provider.blend_factor_hand = 1.0
+            fake_Lhand_provider.disableDrawInReflection = True
+            self.player.nodeInfoL.AttachedProviders = (fake_Lhand_provider, 0.2)
+            return

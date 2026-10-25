@@ -1,0 +1,233 @@
+# Embedded file name: ./client/TimeEntity.py
+from Math import Matrix, Vector3
+import bisect
+import BigWorld
+import ResourceLoader
+import json
+from datetime import datetime, timedelta
+import BWPersonality
+import time
+import FX
+from particle_spawner import ParticleSpawner
+time.tzname = ('RTZ 4 (\xe7\xe8\xec\xe0)', 'RTZ 4 (\xeb\xe5\xf2\xee)')
+from CellListenerUtils import VisibleObjectType as VOT
+import CellListenerUtils
+from client_utils import check_player_inside_entity
+_configs_cache = {}
+
+class ConfigType:
+    Time, Weather, Mixed = xrange(3)
+
+
+class TimeEntity(BigWorld.Entity):
+
+    def __init__(self):
+        BigWorld.Entity.__init__(self)
+        if not self.config:
+            raise AssertionError
+            self._update_callback = None
+            self._cur_schedule_data = None
+            self._model_name = None
+            self._particles_ready = False
+            self._particle_spawner = ParticleSpawner()
+
+            def on_config_loaded(res_ref):
+                config_data = json.loads(res_ref.produce(0).asBinary)
+                if 'schedule_time' in config_data or 'schedule_mixed' in config_data:
+                    if 'schedule_time' in config_data:
+                        config_data['config_type'] = ConfigType.Time
+                    elif 'schedule_mixed' in config_data:
+                        config_data['config_type'] = ConfigType.Mixed
+                        config_data['schedule_time'] = config_data['schedule_mixed']
+                    else:
+                        raise RuntimeError
+                    for sch in config_data['schedule_time']:
+                        sch['start'] = self._parse_time_string(sch['start'])
+
+                    config_data['schedule_time'].sort(key=lambda v: v['start'])
+                    config_data['timekeys'] = [ sch['start'] for sch in config_data['schedule_time'] ]
+                elif 'schedule_weather' in config_data:
+                    config_data['weather'] = {}
+                    for sch in config_data['schedule_weather']:
+                        for weather in sch['weather']:
+                            config_data['weather'][weather] = sch
+
+                    config_data['config_type'] = ConfigType.Weather
+                else:
+                    print 'TimeEntity (ERROR):', self.config
+                    raise RuntimeError
+                _configs_cache[self.config] = config_data
+                self._on_config_ready()
+
+            config_path = self.config not in _configs_cache and 'scripts/client/data/TimeEntitiesConfigs/{0}.json'.format(self.config)
+            ResourceLoader.asyncLoad([(ResourceLoader.DATA_SECTION, config_path)], on_config_loaded)
+        else:
+            self._on_config_ready()
+        return
+
+    def _on_config_ready(self):
+        if self._config['config_type'] == ConfigType.Time:
+            BWPersonality.game.addListener('on_local_timeofday_changed', self._on_time_changed)
+        elif self._config['config_type'] == ConfigType.Weather:
+            BWPersonality.game.addListener('on_weather_changed', self._on_weather_changed)
+        elif self._config['config_type'] == ConfigType.Mixed:
+            BWPersonality.game.addListener('on_local_timeofday_changed', self._on_time_changed)
+            BWPersonality.game.addListener('on_weather_changed', self._on_weather_changed)
+        load_particles = set()
+        for conf_key in ('schedule_time', 'schedule_weather', 'schedule_mixed'):
+            for schedule_data in self._config.get(conf_key, []):
+                particles_path = schedule_data.get('particles')
+                if particles_path:
+                    load_particles.add(particles_path)
+
+        if load_particles:
+            load_particles = list(load_particles)
+
+            def _on_particles_ready(res_ref):
+                self._particles_cache = {}
+                for i, particle_path in enumerate(load_particles):
+                    self._particles_cache[particle_path] = res_ref.produce(i)
+
+                self._particles_ready = True
+                self._update_visual()
+
+            load_data = [ (ResourceLoader.PARTICLE, d) for d in load_particles ]
+            ResourceLoader.asyncLoad(load_data, _on_particles_ready)
+        else:
+            self._particles_ready = True
+            self._update_visual()
+
+    def _on_time_changed(self):
+        self._update_visual()
+
+    def _on_weather_changed(self):
+        self._update_visual()
+
+    def _update_visual(self):
+        if self._update_callback:
+            BigWorld.cancelCallback(self._update_callback)
+            self._update_callback = None
+        if self.config not in _configs_cache or self.spaceID not in BWPersonality._tod_inits or not self._particles_ready:
+            self._update_callback = BigWorld.callback(1, self._update_visual)
+            return
+        else:
+            if self._config['config_type'] in [ConfigType.Time, ConfigType.Mixed]:
+                cur_time = self._parse_time_string(BigWorld.timeOfDay())
+                timekeys = self._config['timekeys']
+                index = bisect.bisect_right(timekeys, cur_time) - 1
+                schedule = self._config['schedule_time']
+                schedule_data = schedule[index]
+                next_index = (index + 1) % len(schedule)
+                next_schedule_delay = schedule[next_index]['start'] - cur_time
+                if next_schedule_delay < timedelta(0):
+                    next_schedule_delay += timedelta(86400)
+                next_schedule_delay = float(next_schedule_delay.seconds) / BWPersonality._tod_inits[self.spaceID]['gameSecondsPerSecond']
+                self._update_callback = BigWorld.callback(next_schedule_delay + 1, self._update_visual)
+            elif self._config['config_type'] == ConfigType.Weather:
+                weather_name = BWPersonality.game.lastWeatherSync.get(self.spaceID)
+                schedule_data = self._config['weather'].get(weather_name) or self._config['weather']['None']
+            if self._config['config_type'] == ConfigType.Mixed:
+                weather_name = BWPersonality.game.lastWeatherSync.get(self.spaceID)
+                if weather_name in schedule_data['weather']:
+                    model_name = schedule_data.get('model_success')
+                else:
+                    model_name = schedule_data.get('model_fail')
+            else:
+                model_name = schedule_data.get('model')
+            if self._cur_schedule_data != schedule_data or self._model_name != model_name:
+                self._cur_schedule_data = schedule_data
+                self._model_name = model_name
+
+                def on_schedule_data_changed():
+                    if self.isDestroyed:
+                        return
+                    sfx_path = self._cur_schedule_data.get('sfx')
+                    if sfx_path:
+                        if not self.model:
+                            self.model = BigWorld.Model('')
+                        FX.bufferedOneShotEffect(sfx_path, self.model)
+                    needed_player_pos = check_player_inside_entity(self)
+                    if needed_player_pos:
+                        BigWorld.player().cell.request_timeentity_teleport(needed_player_pos)
+
+                def on_model_loaded(res_ref):
+                    if self.isDestroyed:
+                        return
+                    self.model = res_ref.produce(0)
+                    self.model.isObstacle = True
+                    on_schedule_data_changed()
+
+                if self._model_name:
+                    ResourceLoader.asyncLoad([(ResourceLoader.MODEL, self._model_name)], on_model_loaded)
+                else:
+                    self.model = None
+                    on_schedule_data_changed()
+            particles_path = self._cur_schedule_data.get('particles')
+            if particles_path:
+                radius = self._cur_schedule_data.get('particles_radius', 2)
+                self._particle_spawner.start_spawn(self._particles_cache[particles_path], self.position, radius)
+            return
+
+    def _check_teleport_player(self):
+        if not self.model or not self.model.sources:
+            return
+        matrix = Matrix(self.matrix)
+        matrix.invert()
+        player = BigWorld.player()
+        player_local_pos = matrix.applyPoint(player.position)
+        bound1, bound2 = self.model.getMinMaxbounds
+        bound_min = Vector3(min(bound1[0], bound2[0]), min(bound1[1], bound2[1]), min(bound1[2], bound2[2]))
+        bound_max = Vector3(max(bound1[0], bound2[0]), max(bound1[1], bound2[1]), max(bound1[2], bound2[2]))
+        for i in xrange(3):
+            bound_min[i] -= 0.5
+            bound_max[i] += 0.5
+
+        def is_point_inside(p):
+            for i in xrange(3):
+                if not bound_min[i] <= p[i] <= bound_max[i]:
+                    return False
+
+            return True
+
+        needed_player_local_pos = Vector3(player_local_pos)
+        cur_dist = needed_player_local_pos.length
+        normal_direction = Vector3(player_local_pos)
+        normal_direction.normalise()
+        while is_point_inside(needed_player_local_pos):
+            cur_dist += 1.0
+            needed_player_local_pos = normal_direction * cur_dist
+
+        if (needed_player_local_pos - player_local_pos).length < 0.1:
+            return
+        needed_player_pos = Matrix(self.matrix).applyPoint(needed_player_local_pos)
+        player.cell.request_timeentity_teleport(needed_player_pos)
+
+    def onLeaveWorld(self):
+        self._particle_spawner.release()
+        BWPersonality.game.removeListener('on_local_timeofday_changed', self._on_time_changed)
+        BWPersonality.game.removeListener('on_weather_changed', self._on_weather_changed)
+        if self._update_callback:
+            BigWorld.cancelCallback(self._update_callback)
+            self._update_callback = None
+        self.model = None
+        return
+
+    def _parse_time_string(self, time_string):
+        formats = ('%H:%M:%S', '%H:%M', '%H')
+        for form in formats:
+            try:
+                return datetime.strptime(time_string, form)
+            except:
+                pass
+
+        raise RuntimeError(time_string)
+
+    @property
+    def _config(self):
+        return _configs_cache[self.config]
+
+    def get_observe_visible_quest_object_hash(self):
+        return CellListenerUtils.calc_visibleobject_hash(VOT.TimeEntity, self.config, self._model_name)
+
+    def get_observe_visible_quest_object_type(self):
+        return VOT.TimeEntity

@@ -1,0 +1,131 @@
+# Embedded file name: ./client/maputils/space_model.py
+from math_bw import clamp
+import traceback
+import BigWorld
+from maputils import config_parser
+from utils import Listenable
+from Helpers.BWCoroutine import BWMemberCoroutine, BWWaitForCondition, BWCoroutineTimeoutException
+from collections import namedtuple
+Zoom = namedtuple('Zoom', 'base min max')
+
+class EventType:
+    OnSpaceChanged, OnZoomChanged = ((r, 'map.spacemodel') for r in range(2))
+
+
+class SpaceModel(Listenable):
+    _default_range = 200.0
+
+    def __init__(self):
+        Listenable.__init__(self)
+        self._space_name = None
+        self._awaited_space_name = None
+        self._space_data = {}
+        self._load_data_coroutine = None
+        self._zoom = None
+        self._player_ready = False
+        return
+
+    @property
+    def zoom(self):
+        return self._zoom
+
+    @zoom.setter
+    def zoom(self, value):
+        if value:
+            value = clamp(value, *self._space_data['zoom_limits'])
+        if value == self._zoom:
+            return
+        self._zoom = value
+        data = {'zoom': self.zoom}
+        self.notify_listeners(EventType.OnZoomChanged, data)
+
+    def can_zoom_in(self):
+        return bool(self._space_data and self.zoom > self._space_data['zoom_limits'][0])
+
+    def can_zoom_out(self):
+        return bool(self._space_data and self.zoom < self._space_data['zoom_limits'][1])
+
+    def zoom_in(self):
+        if self.zoom:
+            self.zoom *= 0.5
+
+    def zoom_out(self):
+        if self.zoom:
+            self.zoom *= 2.0
+
+    @property
+    def space_name(self):
+        return self._space_name
+
+    @space_name.setter
+    def space_name(self, value):
+        if self._space_name == value:
+            return
+        else:
+            self._space_name = value
+            if self.space_name:
+                space_size, space_shift = config_parser.get_size_and_shift(self.space_name)
+                data = {'space_name': self.space_name,
+                 'texture': self._space_data['texture'],
+                 'space_size': space_size,
+                 'space_shift': space_shift}
+            else:
+                data = None
+            self.notify_listeners(EventType.OnSpaceChanged, data)
+            return
+
+    def _check_need_load(self):
+        if self._load_data_coroutine:
+            self._load_data_coroutine.stop()
+            self._load_data_coroutine = None
+        self._space_data.clear()
+        self.zoom = None
+        self.space_name = None
+        if self._player_ready:
+            need_load = self._awaited_space_name
+            self._load_data_coroutine = need_load and self._get_space_data_coroutine(self._awaited_space_name)
+            self._load_data_coroutine.run()
+        return
+
+    def on_player_ready(self, ready):
+        if self._player_ready == ready:
+            return
+        self._player_ready = ready
+        self._check_need_load()
+
+    def set_space(self, space_name):
+        if space_name:
+            map_path = config_parser.get_map_texture_name(space_name)
+            if not map_path:
+                space_name = None
+        if self._awaited_space_name == space_name:
+            return
+        else:
+            self._awaited_space_name = space_name
+            self._check_need_load()
+            return
+
+    @BWMemberCoroutine
+    def _get_space_data_coroutine(self, space_name):
+        texture = [None]
+
+        def path_loaded(resource):
+            texture[0] = resource[map_path]
+
+        map_path = config_parser.get_map_texture_name(space_name)
+        BigWorld.loadResourceListBG([map_path], path_loaded)
+        try:
+            yield BWWaitForCondition(lambda : bool(texture[0]), timeout=60.0)
+        except BWCoroutineTimeoutException:
+            traceback.print_stack()
+            traceback.print_exc()
+
+        if self._awaited_space_name == space_name and self._player_ready:
+            self._awaited_space_name = None
+            self._space_data['texture'] = texture[0]
+            zoom = config_parser.get_view_range(space_name) or SpaceModel._default_range
+            self._space_data['zoom_limits'] = (zoom * 0.25, zoom * 4)
+            self.zoom = zoom
+            self.space_name = space_name
+        self._load_data_coroutine = None
+        return

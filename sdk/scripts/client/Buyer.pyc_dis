@@ -1,0 +1,205 @@
+# Embedded file name: ./client/Buyer.py
+import BWPersonality
+import BigWorld
+from Localization import lc
+import Constants
+from Inventory import Inventory
+import ItemsUtils
+import math
+import RestrictionsUtils
+import TutorialUtils
+
+class TradeState:
+    NONE, PENDING, READY = xrange(3)
+
+
+class Buyer:
+    """ \xd0\xbf\xd0\xbe\xd0\xba\xd1\x83\xd0\xbf\xd0\xb0\xd1\x82\xd0\xb5\xd0\xbb\xd1\x8c, \xd0\xb8 \xd0\xb2\xd1\x81\xd1\x91, \xd1\x87\xd1\x82\xd0\xbe \xd1\x81\xd0\xb2\xd1\x8f\xd0\xb7\xd0\xb0\xd0\xbd\xd0\xbe \xd1\x81 \xd0\xbf\xd0\xbe\xd0\xba\xd1\x83\xd0\xbf\xd0\xba\xd0\xb0\xd0\xbc\xd0\xb8
+    """
+    _trade_screen = None
+
+    def __init__(self):
+        self._seller_id = None
+        self._trade_pot = None
+        self._trade_screen = None
+        self._trade_state = TradeState.NONE
+        self._relation_cache = {}
+        return
+
+    def start_buying(self, seller_id):
+        """ \xd0\xbf\xd1\x80\xd0\xbe\xd1\x81\xd0\xbc\xd0\xbe\xd1\x82\xd1\x80\xd0\xb5\xd1\x82\xd1\x8c \xd0\xb2\xd0\xb5\xd1\x89\xd0\xb8 """
+        self._trade_screen = BWPersonality.GUICore.trade_screen
+        self._seller_id = seller_id
+        seller = BigWorld.entities[self._seller_id]
+        BWPersonality.GUICore.tradepaint_screen.show(seller)
+        if self._trade_pot:
+            BigWorld.delPot(self._trade_pot)
+        self._trade_pot = BigWorld.addPot(seller.matrix, Constants.TRADE_DISTANCE, self._pot_handler)
+        space_name = BWPersonality.spaceName(self.spaceID)
+        if TutorialUtils.is_space_tutor_2(space_name):
+            BWPersonality.GUICore.showFlashHelp(self, help_type='trade')
+
+    def request_trade_data(self):
+        self.cell.request_assortment0(self._seller_id)
+
+    def _pot_handler(self, entered_trap, handle):
+        if not entered_trap:
+            if self._trade_pot:
+                BigWorld.delPot(self._trade_pot)
+                self._trade_pot = None
+            self._on_leave_seller()
+        return
+
+    def _on_leave_seller(self):
+        if BWPersonality.GUICore.is_tradepaint_screen_visible():
+            BWPersonality.GUICore.tradepaint_screen.hide()
+
+    def is_item_sell_locked(self, item_id):
+        if BWPersonality.GUICore.is_tradepaint_screen_visible():
+            return BWPersonality.GUICore.tradepaint_screen.is_item_locked(item_id)
+        return False
+
+    def commit_buy(self, transaction):
+        """ \xd1\x81\xd0\xbe\xd0\xb2\xd0\xb5\xd1\x80\xd1\x88\xd0\xb8\xd1\x82\xd1\x8c \xd1\x81\xd0\xb4\xd0\xb5\xd0\xbb\xd0\xba\xd1\x83 """
+        self.cell.commit_buy0(self._seller_id, transaction)
+
+    def got_assortment1(self, seller_id, buying_assortment, selling_assortment, keepitems, relation, rep_id):
+        if self.last_interlocutor_id and seller_id != self.last_interlocutor_id:
+            return
+        self._relation_cache[BigWorld.entities[seller_id].npcName] = relation
+        if self._trade_screen:
+            self._trade_screen.set_assortment(buying_assortment, selling_assortment, keepitems, rep_id)
+            if self._trade_state == TradeState.PENDING:
+                self._trade_state = TradeState.READY
+                self.UpdateInventory(0)
+
+    def buy_completed1(self, result, buy_assortment, sell_assortment, keepitems, relation, rep_id):
+        self._relation_cache[self.get_last_trader_name()] = relation
+        self._trade_screen.buy_completed(result, buy_assortment, sell_assortment, keepitems, rep_id)
+
+    def validate_buying(self, transaction):
+        """ \xd0\xb2\xd0\xbe\xd0\xb7\xd0\xb2\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd1\x82\xd0\xb5\xd0\xba\xd1\x81\xd1\x82 \xd0\xbe\xd1\x88\xd0\xb8\xd0\xb1\xd0\xba\xd0\xb8 \xd0\xb8\xd0\xbb\xd0\xb8 None (\xd0\xb5\xd1\x81\xd0\xbb\xd0\xb8 \xd0\xb1\xd0\xb5\xd0\xb7 \xd0\xbe\xd1\x88\xd0\xb8\xd0\xb1\xd0\xbe\xd0\xba) """
+        if -transaction['money'] > self.money:
+            return lc('soTradeInterface.tradescreen.NEEDMORE')
+        unique_count = len(transaction['unique'])
+        item_types = [ item['item_type'] for item in transaction['unexhausted'] ]
+        if not self.CanAcceptItemTypesAdvanced(item_types, unique_count=unique_count):
+            return lc('soTradeInterface.tradescreen.INVENTORYFULL')
+        items_to_sell_ids = {}
+        for item in transaction['selling']:
+            items_to_sell_ids[item['itemID']] = item
+
+        if transaction['credits'] < 0 and self.get_personal_relation() + transaction['credits'] < 0:
+            return lc('soTradeInterface.tradescreen.BAD_PERSONAL_REPUTATION')
+        amount = 0
+        for item in self.CarryingItems:
+            if item['complexItemID'] in items_to_sell_ids:
+                if ItemsUtils.isStackedItemType(item['complexItemType']):
+                    real_number = ItemsUtils.GetItemNumber(item)
+                    sell_number = items_to_sell_ids[item['complexItemID']]['count']
+                    if real_number < sell_number:
+                        return lc('soTradeInterface.tradescreen.BADSELLITEM')
+                amount += 1
+
+        if amount != len(items_to_sell_ids):
+            return lc('soTradeInterface.tradescreen.BADSELLITEM')
+        elif not self.CheckRestriction(RestrictionsUtils.CHANNEL_ITEMS):
+            return lc('soTradeInterface.tradescreen.BUSY')
+        else:
+            return None
+
+    def validate_withdraw(self, gold, money):
+        if money > self.money:
+            return lc('soTradeInterface.tradescreen.NEEDMORE')
+        elif gold > self.gold:
+            return lc('soTradeInterface.tradescreen.NEEDMORE')
+        else:
+            return None
+
+    def on_sell_items_updated(self, items):
+        self.UpdateInventory(0)
+
+    def on_paint_items_updated(self, items):
+        self.UpdateInventory(0)
+
+    def apply_item_sell_filter(self, item):
+        """ \xd1\x81\xd0\xba\xd1\x80\xd1\x8b\xd0\xb2\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xb8\xd0\xb7 \xd0\xb8\xd0\xbd\xd0\xb2\xd0\xb5\xd0\xbd\xd1\x82\xd0\xb0\xd1\x80\xd1\x8f \xd1\x82\xd0\xbe, \xd1\x87\xd1\x82\xd0\xbe \xd0\xbb\xd0\xb5\xd0\xb6\xd0\xb8\xd1\x82 \xd0\xb2 \xd0\xbe\xd0\xba\xd0\xbe\xd0\xbd\xd0\xb5 \xd1\x81 \xd0\xb2\xd1\x8b\xd1\x81\xd1\x82\xd0\xb0\xd0\xb2\xd0\xbb\xd0\xb5\xd0\xbd\xd0\xbd\xd1\x8b\xd0\xbc\xd0\xb8 \xd0\xbf\xd1\x80\xd0\xb5\xd0\xb4\xd0\xbc\xd0\xb5\xd1\x82\xd0\xb0\xd0\xbc\xd0\xb8 """
+        if not BWPersonality.GUICore.is_tradepaint_screen_visible():
+            return item
+        return BWPersonality.GUICore.tradepaint_screen.apply_item_sell_filter(item)
+
+    def get_potential_encumbered_state(self, append_weight):
+        return self.potential_encumbered_state(self.ItemsWeight + append_weight)
+
+    def onLeaveWorld(self):
+        if self._trade_pot:
+            BigWorld.delPot(self._trade_pot)
+            self._trade_pot = None
+        if self._trade_screen:
+            self._trade_screen.hide()
+        return
+
+    def get_paint_data(self):
+        self.base.getMyEmblems()
+        return (ItemsUtils.get_equipped_items(self),
+         self.EquippedArmor,
+         self.personality,
+         self.gold)
+
+    def get_item_desc(self, item_data):
+        result = Inventory.GetItemString(item_data, self)
+        credits = item_data.get('credits', 0)
+        if credits:
+            result += '\n' + lc('soTradeInterface.tradescreen.PREPPRICE_CONTEXT').format(credits)
+        if 'date' in item_data:
+            time_left = item_data['expire'] - BWPersonality.gpd.server_time
+            if time_left > 0:
+                time_left = int(math.ceil(time_left / 60.0))
+                result += '\n' + lc('soTradeInterface.tradescreen.TIMELEFT').format(time_left)
+        return result
+
+    def execute_seller_command(self, command, seller_id):
+        self.cell.execute_seller_command(command, seller_id)
+
+    def get_personal_relation(self, npc_name = None):
+        """ \xd0\xbe\xd0\xb1\xd0\xbd\xd0\xbe\xd0\xb2\xd0\xbb\xd1\x8f\xd0\xb5\xd1\x82\xd1\x81\xd1\x8f \xd0\xbf\xd1\x80\xd0\xb8 \xd1\x81\xd1\x82\xd0\xb0\xd1\x80\xd1\x82\xd0\xb5 \xd0\xb8 \xd0\xb2 \xd0\xbf\xd1\x80\xd0\xbe\xd1\x86\xd0\xb5\xd1\x81\xd1\x81\xd0\xb5 \xd1\x82\xd0\xbe\xd1\x80\xd0\xb3\xd0\xbe\xd0\xb2\xd0\xbb\xd0\xb8,
+                \xd1\x82\xd0\xb0\xd0\xba \xd1\x87\xd1\x82\xd0\xbe \xd0\xbd\xd0\xb8\xd0\xb3\xd0\xb4\xd0\xb5, \xd0\xba\xd1\x80\xd0\xbe\xd0\xbc\xd0\xb5 \xd0\xba\xd0\xb0\xd0\xba \xd0\xb2 \xd1\x82\xd0\xbe\xd1\x80\xd0\xb3\xd0\xbe\xd0\xb2\xd0\xbb\xd0\xb5 \xd0\xb8\xd1\x81\xd0\xbf\xd0\xbe\xd0\xbb\xd1\x8c\xd0\xb7\xd0\xbe\xd0\xb2\xd0\xb0\xd1\x82\xd1\x8c \xd1\x81\xd0\xbc\xd1\x8b\xd1\x81\xd0\xbb\xd0\xb0 \xd0\xbc\xd0\xb0\xd0\xbb\xd0\xbe
+        """
+        return self._relation_cache.get(npc_name or self.get_last_trader_name())
+
+    def get_last_trader_name(self):
+        npc = BigWorld.entities.get(self.last_interlocutor_id)
+        return npc and npc.npcName
+
+    def on_trade_shown(self):
+        if self._trade_screen.has_selling_assortment():
+            self._trade_state = TradeState.READY
+            self.UpdateInventory(0)
+        else:
+            self._trade_state = TradeState.PENDING
+
+    def on_trade_hidden(self):
+        self._trade_state = TradeState.NONE
+        self.UpdateInventory(0)
+
+    @property
+    def is_trading(self):
+        return self._trade_state == TradeState.READY
+
+    def validate_item(self, complex_item):
+        if self._trade_state != TradeState.READY:
+            return None
+        else:
+            return self._trade_screen.validate_item(complex_item)
+
+    def calculate_give_item_margin(self, complex_item):
+        if self._trade_state != TradeState.READY:
+            return None
+        pure_cost = ItemsUtils.GetPureItemCost(complex_item['complexItemType'])
+        if not pure_cost:
+            return None
+        item_cost, credits = self._trade_screen.calculate_give_item_price(complex_item)
+        if not item_cost:
+            return None
+        else:
+            return float(item_cost) / pure_cost

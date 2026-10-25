@@ -1,0 +1,664 @@
+# Embedded file name: ./common/perks_system/perks_parser.py
+from math import sqrt
+import bisect
+import traceback
+import os
+import ResMgr
+import pyson
+import json
+from collections import defaultdict
+import actions_utils
+from actions_utils import PerkVisual
+from copy import deepcopy
+from itertools import chain
+import random
+
+def get_perk_cleaning_val_and_level(bitmask, action_name):
+    """ \xd0\xb2\xd0\xbe\xd0\xb7\xd0\xb2\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xba\xd0\xbe\xd1\x80\xd1\x82\xd0\xb5\xd0\xb6 (value, level) """
+    action_data = _action_by_alias[action_name]
+    value = 0
+    level = 0
+    for perk_id in _perks_by_action[action_data['id']]:
+        if not _get_bitvalue(perk_id, bitmask):
+            continue
+        perk_data = _perk_by_id[perk_id]
+        for perk_action_data in perk_data['params']['actions']:
+            if perk_action_data['id'] != action_data['id']:
+                continue
+            value += perk_action_data['value'][0]
+            level = max(level, perk_action_data['filters'][0])
+
+    return (value, level)
+
+
+def get_perk_action_val(alias, bitmask, **bit_filters):
+    """ \xd0\xba\xd0\xbb\xd1\x8e\xd1\x87\xd0\xb8 \xd0\xb4\xd0\xbb\xd1\x8f \xd1\x84\xd0\xb8\xd0\xbb\xd1\x8c\xd1\x82\xd1\x80\xd0\xbe\xd0\xb2: weapon, player, gun, item_class, item_level, damage_type, creatureType, body_zone, perk_name, category, workbench
+    """
+    action_data = _action_by_alias[alias]
+    action_data_filters = action_data.get('filters', [])
+    valid_values = []
+    for perk_id in _perks_by_action[action_data['id']]:
+        if not _get_bitvalue(perk_id, bitmask):
+            continue
+        perk_data = _perk_by_id[perk_id]
+        for perk_action_data in perk_data['params']['actions']:
+            if perk_action_data['id'] != action_data['id']:
+                continue
+            perk_action_filters = perk_action_data.get('filters', [])
+            while len(perk_action_filters) < len(action_data_filters):
+                perk_action_filters.append(0)
+
+            for i, action_data_filter in enumerate(action_data_filters):
+                filter_name = _filterclassname_to_filterkey[action_data_filter]
+                needed_mask = perk_action_filters[i]
+                player_value = bit_filters.get(filter_name)
+                if player_value is None:
+                    break
+                if filter_name == 'item_level':
+                    if player_value > needed_mask:
+                        break
+                else:
+                    bits = getattr(actions_utils, action_data_filter).bits
+                    player_mask = bits.get(player_value, 0)
+                    if not needed_mask & player_mask:
+                        break
+            else:
+                if 'value' in perk_action_data:
+                    valid_values.append(perk_action_data['value'])
+
+    value_types = action_data['value_types']
+    values = []
+    kv_dict = None
+    for i, vt in enumerate(value_types):
+        type_values = [ v[i] for v in valid_values ]
+        if vt['type'] == 'float01':
+            if len(type_values) == 0:
+                value = 0
+            elif len(type_values) == 1:
+                value = type_values[0] / 100.0
+            else:
+                value = 1.0 - reduce(lambda x, y: x * y, [ 1.0 - v / 100.0 for v in type_values ])
+        elif vt['type'] == 'float+%':
+            value = sum(type_values) * 0.01
+        elif vt['type'] == 'key':
+            if kv_dict is None:
+                kv_dict = {}
+            kv_dict['keys'] = type_values
+            kv_dict['index'] = i
+            continue
+        elif vt['type'] == 'value':
+            if kv_dict is None:
+                kv_dict = {}
+            kv_dict['values'] = type_values
+            continue
+        elif vt['type'] == 'count':
+            value = len(type_values)
+        elif vt['type'] == 'intmax':
+            value = max(type_values) if type_values else 0
+        elif vt['type'] == 'gmean':
+            if type_values:
+                value = sqrt(sum((v * v for v in type_values)))
+            else:
+                value = 0
+        elif vt['type'] in ('intlist', 'floatlist'):
+            value = type_values
+        else:
+            value = sum(type_values)
+        values.append(value)
+
+    if kv_dict:
+        value = {}
+        for k, v in zip(kv_dict['keys'], kv_dict['values']):
+            if k not in value:
+                value[k] = 0
+            value[k] += v
+
+        values.insert(kv_dict['index'], value)
+    if len(values) == 1:
+        return values[0]
+    else:
+        return values
+
+
+def has_perk(perk_alias, bitmask):
+    perk = _perk_by_alias.get(perk_alias)
+    return perk and _get_bitvalue(perk['id'], bitmask) or False
+
+
+def has_perk_id(perk_id, bitmask):
+    return _get_bitvalue(perk_id, bitmask)
+
+
+def is_perk_valid(perk_id):
+    return perk_id in _index_by_pid
+
+
+def set_perk_by_alias(perk_alias, bitmask):
+    perk = _perk_by_alias.get(perk_alias)
+    if perk:
+        _set_bitvalue(perk['id'], bitmask)
+
+
+def get_perk_by_alias(perk_alias, bitmask):
+    perk = _perk_by_alias.get(perk_alias)
+    return _get_bitvalue(perk['id'], bitmask)
+
+
+def set_perk_by_id(perk_id, bitmask):
+    _set_bitvalue(perk_id, bitmask)
+
+
+def del_perk_by_id(perk_id, bitmask):
+    _del_bitvalue(perk_id, bitmask)
+
+
+def clear_perks(bitmask):
+    bitmask[:] = []
+
+
+def calc_perks_count(bitmask):
+    MASK_LEN = 64
+    result = 0
+    for n, b in enumerate(bitmask):
+        i = 0
+        while b:
+            if bool(b & 1):
+                pid = _bit_mask_order[n * MASK_LEN + i]
+                result += _perk_by_id[pid]['params']['main'].get('spoints', 0)
+            b >>= 1
+            i += 1
+
+    return result
+
+
+def clear_clan_perks(bitmask):
+    cleared = []
+    for perk_id in _clan_perk_ids:
+        if has_perk_id(perk_id, bitmask):
+            del_perk_by_id(perk_id, bitmask)
+            cleared.append(perk_id)
+
+    return cleared
+
+
+def has_any_clan_perk(bitmask):
+    for perk_id in _clan_perk_ids:
+        if has_perk_id(perk_id, bitmask):
+            return True
+
+    return False
+
+
+def get_clanaura_perks(bitmask):
+    return [ perk_id for perk_id in _clanaura_perk_ids if has_perk_id(perk_id, bitmask) and get_effect_aura(perk_id) ]
+
+
+def is_perkaura(effect_id):
+    return effect_id in _aura_effects
+
+
+def _set_bitvalue(perk_id, bitmask):
+    MASK_LEN = 64
+    bit_index = _index_by_pid.get(perk_id)
+    if bit_index is None:
+        print 'Perk parser (ERROR): perk not found', repr(perk_id)
+        traceback.print_stack()
+        return
+    else:
+        int_index = bit_index / MASK_LEN
+        while len(bitmask) <= int_index:
+            bitmask.append(0)
+
+        bit_index = bit_index % MASK_LEN
+        bitmask[int_index] |= 1 << bit_index
+        return
+
+
+def _del_bitvalue(perk_id, bitmask):
+    MASK_LEN = 64
+    bit_index = _index_by_pid.get(perk_id)
+    if bit_index is None:
+        print 'Perk parser (ERROR): perk not found', repr(perk_id)
+        traceback.print_stack()
+        return
+    else:
+        int_index = bit_index / MASK_LEN
+        if len(bitmask) <= int_index:
+            return
+        bit_index = bit_index % MASK_LEN
+        bitmask[int_index] &= ~(1 << bit_index)
+        return
+
+
+def _get_bitvalue(perk_id, bitmask):
+    if perk_id == original_perk_id:
+        return True
+    else:
+        MASK_LEN = 64
+        bit_index = _index_by_pid.get(perk_id)
+        if bit_index is None:
+            return False
+        int_index = bit_index / MASK_LEN
+        if len(bitmask) <= int_index:
+            return False
+        bit_index = bit_index % MASK_LEN
+        return bool(bitmask[int_index] & 1 << bit_index)
+
+
+def get_action_alias_by_id(action_id):
+    action = _action_by_id.get(action_id)
+    return action and action.get('alias')
+
+
+def get_perk_level(perk_id):
+    return get_perk_data_by_id(perk_id)['params']['main']['level']
+
+
+def get_cost(perk_id):
+    return get_perk_data_by_id(perk_id)['params']['main'].get('cost', 0)
+
+
+def get_effect_aura(perk_id):
+    return get_perk_data_by_id(perk_id)['params']['main'].get('clan_effect')
+
+
+def has_clan_perks_from_cost_change(points, prev_points):
+    max_points = max(points, prev_points)
+    min_points = min(points, prev_points)
+    for cost in _clan_perk_costs:
+        if max_points >= cost and min_points < cost:
+            return True
+
+    return False
+
+
+def get_diff_clan_perks_from_points(perkpath, bitmask):
+    add_perks = []
+    del_perks = []
+    for p_id in perkpath:
+        if not has_perk_id(p_id, bitmask):
+            add_perks.append(p_id)
+
+    perkpath = set(perkpath)
+    for p_id in _clan_perk_ids:
+        if has_perk_id(p_id, bitmask) and p_id not in perkpath:
+            del_perks.append(p_id)
+
+    return (add_perks, del_perks)
+
+
+def get_perk_data_by_id(perk_id):
+    return _perk_by_id[perk_id]
+
+
+def get_perk_id_by_alias(alias):
+    perk = _perk_by_alias.get(alias)
+    if perk:
+        return perk['id']
+    else:
+        return None
+
+
+_bit_mask_order = [2,
+ 4,
+ 6,
+ 8,
+ 17,
+ 25,
+ 27,
+ 31,
+ 33,
+ 50,
+ 56,
+ 58,
+ 59,
+ 70,
+ 75,
+ 77,
+ 81,
+ 86,
+ 88,
+ 94,
+ 96,
+ 99,
+ 103,
+ 105,
+ 109,
+ 111,
+ 113,
+ 115,
+ 117,
+ 123,
+ 125,
+ 127,
+ 129,
+ 131,
+ 134,
+ 136,
+ 144,
+ 148,
+ 155,
+ 166,
+ 170,
+ 172,
+ 176,
+ 193,
+ 206,
+ 210,
+ 219,
+ 223,
+ 225,
+ 229,
+ 231,
+ 233,
+ 235,
+ 237,
+ 247,
+ 249,
+ 255,
+ 257,
+ 290,
+ 294,
+ 296,
+ 298,
+ 312,
+ 315,
+ 318,
+ 322,
+ 325,
+ 327,
+ 329,
+ 331,
+ 340,
+ 345,
+ 350,
+ 354,
+ 356,
+ 358,
+ 367,
+ 437,
+ 553,
+ 555,
+ 557,
+ 570,
+ 574,
+ 576,
+ 578,
+ 581,
+ 583,
+ 585,
+ 587,
+ 589,
+ 622,
+ 625,
+ 645,
+ 648,
+ 651,
+ 669,
+ 672,
+ 674,
+ 679,
+ 686,
+ 690,
+ 705,
+ 707,
+ 709,
+ 711,
+ 713,
+ 715,
+ 724,
+ 730,
+ 754,
+ 757,
+ 816,
+ 820,
+ 830,
+ 832,
+ 834,
+ 836,
+ 841,
+ 860,
+ 864,
+ 866,
+ 868,
+ 876,
+ 879,
+ 895,
+ 897,
+ 899,
+ 904,
+ 914,
+ 916,
+ 918,
+ 923,
+ 927,
+ 929,
+ 931,
+ 934,
+ 942,
+ 1006,
+ 1018,
+ 1020,
+ 1022,
+ 1024,
+ 1028,
+ 1101,
+ 1103,
+ 1105,
+ 1107,
+ 1149,
+ 1200,
+ 1202,
+ 1234,
+ 1294,
+ 1367,
+ 1369,
+ 1392,
+ 1419,
+ 1424,
+ 1426,
+ 1442,
+ 1446,
+ 1456,
+ 1459,
+ 1483,
+ 1485,
+ 1538,
+ 1540,
+ 1542,
+ 1609,
+ 1624,
+ 1626,
+ 1653,
+ 1682,
+ 1690,
+ 1694,
+ 1698,
+ 1696,
+ 1700,
+ 1430,
+ 1973,
+ 1975,
+ 1982,
+ 1999,
+ 2001,
+ 2169,
+ 2176,
+ 2178,
+ 2418,
+ 2420,
+ 2422,
+ 2424,
+ 2426,
+ 2963,
+ 2965,
+ 3018,
+ 3036,
+ 3040,
+ 3127,
+ 3129,
+ 3168,
+ 3386,
+ 3895,
+ 3897,
+ 3981,
+ 3983,
+ 3985,
+ 3995,
+ 3997,
+ 3999,
+ 4001,
+ 4011,
+ 4015,
+ 4017,
+ 4019,
+ 4021,
+ 4023,
+ 4025,
+ 4027,
+ 4029,
+ 4279,
+ 4280,
+ 4281,
+ 4282,
+ 4283,
+ 4284,
+ 4285,
+ 4286,
+ 4287,
+ 4288,
+ 4289]
+
+def get_perks_raw_data():
+    return _p_data
+
+
+def get_clan_perks_raw_data():
+    return _clan_p_data
+
+
+def set_persk_raw_data(data):
+    data = deepcopy(data)
+    data['nodes'].extend(_hidden_nodes.values())
+    data['edges'].extend(_hidden_edges.values())
+    data['nodes'] = sorted(data['nodes'], key=lambda k: k['id'])
+    data['edges'] = sorted(data['edges'], key=lambda k: k['id'])
+    os.getcwd()
+    file_path = os.path.join(os.getcwd(), '../res/scripts/common/perks_system/perks.pyson')
+    with open(file_path, 'w') as f:
+        f.write(pyson.dumps(data))
+
+
+section = ResMgr.openSection('scripts/common/perks_system/perks.pyson')
+_p_data = pyson.loads(section.asBinary)
+perks_version = _p_data.get('version', 0)
+clan_section = ResMgr.openSection('scripts/common/perks_system/clan_perks.pyson')
+_clan_p_data = pyson.loads(clan_section.asBinary)
+_hidden_nodes = {}
+_hidden_edges = {}
+
+def filter_node(node):
+    if node['params']['main'].get('visual') == PerkVisual.Hidden:
+        _hidden_nodes[node['id']] = node
+        return False
+    return True
+
+
+def filter_edge(edge):
+    if not edge.get('node0') or not edge.get('node1'):
+        _hidden_edges[edge['id']] = edge
+        return False
+    if edge['node0'] in _hidden_nodes or edge['node1'] in _hidden_nodes:
+        _hidden_edges[edge['id']] = edge
+        return False
+    return True
+
+
+_p_data['nodes'] = filter(filter_node, _p_data['nodes'])
+_p_data['edges'] = filter(filter_edge, _p_data['edges'])
+_clan_p_data['nodes'] = filter(filter_node, _clan_p_data['nodes'])
+_clan_perk_ids = set((n['id'] for n in _clan_p_data['nodes']))
+_perk_by_alias = {}
+_perk_by_id = {}
+_perks_by_action = defaultdict(list)
+_registered_perks = set(_bit_mask_order)
+raise len(_registered_perks) == len(_bit_mask_order) or AssertionError
+for node in chain(_p_data['nodes'], _clan_p_data['nodes']):
+    pid = node['params']['main'].get('pID')
+    if pid:
+        _perk_by_alias[pid] = node
+    _perk_by_id[node['id']] = node
+    if node['params']['main'].get('visual') == PerkVisual.Original:
+        original_perk_id = node['id']
+    actions = node['params'].get('actions', [])
+    for action in actions:
+        if node['id'] not in _perks_by_action[action['id']]:
+            _perks_by_action[action['id']].append(node['id'])
+
+    if node['id'] not in _registered_perks:
+        print 'perks_parser (Warning): not registred perk', node['id']
+
+_index_by_pid = {}
+for index, pid in enumerate(_bit_mask_order):
+    _index_by_pid[pid] = index
+    if pid not in _perk_by_id:
+        print "perks_parser (ERROR): perk doesn't exist", pid
+
+_clan_perk_costs = list()
+for p_id in _clan_perk_ids:
+    _clan_perk_costs.append(get_cost(p_id))
+
+_clan_perk_costs.sort()
+section = ResMgr.openSection('scripts/common/perks_system/actions.json')
+a_data = json.loads(section.asBinary)
+_action_by_alias = {}
+_action_by_id = {}
+for branch in a_data:
+    for action in branch['actions']:
+        alias = action.get('alias')
+        _action_by_id[action['id']] = action
+        if alias:
+            _action_by_alias[alias] = action
+
+for perk in _perk_by_id.values():
+    actions = perk['params'].get('actions', [])
+    for action in actions:
+        action_data = _action_by_id[action['id']]
+        for vt in action_data.get('value_types', []):
+            if vt['type'] == 'count':
+                action['value'] = [1]
+
+_filterclassname_to_filterkey = {'CreatureType': 'creatureType',
+ 'WeaponStateFilter': 'weapon',
+ 'GunTypeFilter': 'gun',
+ 'PlayerStateFilter': 'player',
+ 'ItemClassFilter': 'item_class',
+ 'ItemLevelFilter': 'item_level',
+ 'DamageTypesFilter': 'damage_type',
+ 'PerkNames': 'perk_name',
+ 'ItemCategoryFilter': 'category',
+ 'CreatureBodyZone': 'body_zone',
+ 'WorkbenchFilter': 'workbench',
+ 'DeviceTypeFilter': 'device_type'}
+MAX_LEVEL = 150
+_exp_to_level = [0]
+for l in xrange(1, MAX_LEVEL + 1):
+    value = int(round(pow(l + 4, 3.27) + _exp_to_level[l - 1] + 757))
+    _exp_to_level.append(value)
+
+def exp_to_level(exp):
+    """ \xd0\xbf\xd1\x80\xd0\xb5\xd0\xbe\xd0\xb1\xd1\x80\xd0\xb0\xd0\xb7\xd1\x83\xd0\xb5\xd1\x82 \xd0\xba\xd0\xbe\xd0\xbb\xd0\xb8\xd1\x87\xd0\xb5\xd1\x81\xd1\x82\xd0\xb2\xd0\xbe \xd0\xbe\xd0\xbf\xd1\x8b\xd1\x82\xd0\xb0 \xd0\xb2 \xd1\x81\xd0\xbe\xd0\xbe\xd1\x82\xd0\xb2\xd0\xb5\xd1\x82\xd1\x81\xd1\x82\xd0\xb2\xd1\x83\xd1\x8e\xd1\x89\xd0\xb8\xd0\xb9 \xd1\x83\xd1\x80\xd0\xbe\xd0\xb2\xd0\xb5\xd0\xbd\xd1\x8c
+            \xd0\xb2\xd0\xbe\xd0\xb7\xd0\xb2\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xba\xd0\xbe\xd1\x80\xd1\x82\xd0\xb5\xd0\xb6:https://discord.com/channels/@me/691955492058038334
+                    (\xd1\x83\xd1\x80\xd0\xbe\xd0\xb2\xd0\xb5\xd0\xbd\xd1\x8c, \xd0\xbe\xd1\x81\xd1\x82\xd0\xb0\xd1\x82\xd0\xbe\xd0\xba \xd0\xbe\xd0\xbf\xd1\x8b\xd1\x82\xd0\xb0, \xd0\xb2\xd1\x81\xd0\xb5\xd0\xb3\xd0\xbe \xd0\xbe\xd0\xbf\xd1\x8b\xd1\x82\xd0\xb0 \xd0\xb4\xd0\xbe \xd1\x81\xd0\xbb\xd0\xb5\xd0\xb4\xd1\x83\xd1\x8e\xd1\x89\xd0\xb5\xd0\xb3\xd0\xbe \xd1\x83\xd1\x80\xd0\xbe\xd0\xb2\xd0\xbd\xd1\x8f)
+    """
+    if exp >= MAX_EXP_VALUE:
+        return (MAX_LEVEL, exp - MAX_EXP_VALUE, None)
+    else:
+        exp_index = bisect.bisect_right(_exp_to_level, exp)
+        level = exp_index - 1
+        return (level, exp - _exp_to_level[level], _exp_to_level[exp_index] - _exp_to_level[exp_index - 1])
+
+
+MAX_EXP_VALUE = _exp_to_level[-1]
+_clanaura_perk_ids = set(filter(get_effect_aura, _clan_perk_ids))
+_aura_effects = map(get_effect_aura, _clanaura_perk_ids)

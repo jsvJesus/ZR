@@ -1,0 +1,102 @@
+# Embedded file name: ./client/soGUI/npc_reload_ui/model.py
+from Items import ItemsCatalog
+import ItemsUtils
+from utils import Listenable, PY
+
+class EventType:
+    OnExtended, OnCleared, OnRemoved, OnBullet = ((r, 'npcreloadwinmodel') for r in range(4))
+
+
+class Model(Listenable):
+    LIMIT = 30
+
+    def __init__(self):
+        Listenable.__init__(self)
+        self.items = []
+        self._bullet = None
+        self._item_ids_cache = set()
+        return
+
+    def clear(self):
+        dirty = False
+        if self.items:
+            self.items[:] = []
+            self._item_ids_cache.clear()
+            dirty = True
+        if self.bullet:
+            self._bullet = None
+            dirty = True
+        if dirty:
+            self.notify_listeners(EventType.OnCleared)
+        return
+
+    def set_bullet_count(self, count):
+        count = max(0, count)
+        if not count:
+            self.bullet = None
+            return
+        else:
+            bullet = PY(self.bullet)
+            ItemsUtils.SetItemNumber(bullet, count)
+            self.bullet = bullet
+            return
+
+    @property
+    def bullet(self):
+        return self._bullet
+
+    @bullet.setter
+    def bullet(self, value):
+        old_id = None
+        old_count = None
+        new_id = None
+        new_count = None
+        if value:
+            if ItemsCatalog.GetItemClass(value['complexItemType']) != ItemsCatalog.AMMO:
+                return
+            new_id = value['complexItemID']
+            new_count = ItemsUtils.GetItemNumber(value)
+        if self._bullet:
+            old_id = self._bullet['complexItemID']
+            old_count = ItemsUtils.GetItemNumber(self._bullet)
+        if (new_id, new_count) != (old_id, old_count):
+            self._bullet = value and PY(value) or None
+            self.notify_listeners(EventType.OnBullet)
+        return
+
+    def remove_items(self, item_ids):
+        item_ids = set(item_ids)
+        for i in range(len(self.items) - 1, -1, -1):
+            complex_item_id = self.items[i]['complexItemID']
+            if complex_item_id not in item_ids:
+                continue
+            del self.items[i]
+            self._item_ids_cache.remove(complex_item_id)
+
+        self.notify_listeners(EventType.OnRemoved)
+
+    def extend_items(self, items):
+
+        def is_item_valid(item):
+            if item['complexItemID'] in self._item_ids_cache:
+                return False
+            if not ItemsUtils.is_item_magazine(item['complexItemType']):
+                return False
+            return True
+
+        items = filter(is_item_valid, items)
+        items_space = Model.LIMIT - len(self.items)
+        if items_space < len(items):
+            items = items[:items_space]
+        self.items.extend(items)
+        self._item_ids_cache.update([ item['complexItemID'] for item in items ])
+        self.notify_listeners(EventType.OnExtended)
+
+    def has_item(self, item_id):
+        if not item_id:
+            return False
+        if item_id in self._item_ids_cache:
+            return True
+        if self.bullet and self.bullet['complexItemID'] == item_id:
+            return True
+        return False

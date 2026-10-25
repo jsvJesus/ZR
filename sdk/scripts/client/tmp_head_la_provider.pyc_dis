@@ -1,0 +1,218 @@
+# Embedded file name: ./client/tmp_head_la_provider.py
+import BigWorld
+import BWPersonality
+import Math
+from Math import Matrix, Vector3
+import math
+import time
+import random
+from random import uniform
+from math_bw import angle_between_vectors
+import draw_utils_extend
+drawer = draw_utils_extend.LinesHolder(500)
+SELFCAM = 0
+CAM = 1
+FWD = 2
+ANGLE_SELFCAM_ON = math.radians(45)
+ANGLE_SELFCAM_OFF = math.radians(90)
+ANGLE_CAM_OFF = math.radians(90)
+ANGLE_CAM_ON = math.radians(140)
+CHANCE_OFFFWD = 0.2
+TIME_OFFFWD = 0.2
+OFF_FWD_AFTER_FIRE_ENABLE = True
+TIME_OFF_FWD_AFTER_FIRE = 5.0
+OFF_SELFCAM_BY_TIME_ENABLE = True
+OFF_SELFCAM_BY_TIME_LIM = (5.0, 15.0)
+OFF_SELFCAM_BY_TIME_BACK = (3.5, 10)
+DEBUG = False
+
+class HeadLArovider(object):
+
+    def __init__(self, entity):
+        self._status = -1
+        self._lock_fwd = False
+        self._time = time.time()
+        self._fire_time = 0
+        self._timefwd = 0
+        self._can_selfcam = False
+        self.player = entity
+        self._dirs = {}
+        self._self_cam_need_end = 0
+        self._self_cam_need_on = 0
+        self._dirs[SELFCAM] = Vector3(0, 0, 1)
+        self._dirs[CAM] = Vector3(0, 0, 1)
+        self._dirs[FWD] = Vector3(0, 0, 1)
+        self._time_start = {FWD: 0,
+         CAM: 0,
+         SELFCAM: 0}
+        self._dirs_weights = {FWD: 1,
+         CAM: 0,
+         SELFCAM: 0}
+        self._dirs_cur_weights = {FWD: 1.0,
+         CAM: 0.0,
+         SELFCAM: 0.0}
+
+    def attach(self, headProvider_special):
+        headProvider_special.pDebugCall = self.pDebugCall
+
+    def onLeftMouseClick(self):
+        if not OFF_FWD_AFTER_FIRE_ENABLE:
+            return
+        self._fire_time = time.time()
+        self.reset()
+
+    def onCahngeTrakerKey(self, tracker_key):
+        self._lock_fwd = False
+        self._can_selfcam = tracker_key[1] == 'bored'
+        if tracker_key[2] in ('crouch_walk', 'crouch_run'):
+            self._lock_fwd = True
+
+    def reset(self):
+        self._self_cam_need_on = 0
+        self._self_cam_need_end = 0
+        self.setStatus(FWD)
+        self._dirs_cur_weights = {FWD: 1.0,
+         CAM: 0.0,
+         SELFCAM: 0.0}
+        self._time = time.time()
+
+    def setStatus(self, val):
+        if self._lock_fwd:
+            val = FWD
+        if OFF_SELFCAM_BY_TIME_ENABLE:
+            if val in (FWD, CAM):
+                self._self_cam_need_on = 0
+                self._self_cam_need_end = 0
+            if self._status == SELFCAM == val:
+                if not self._self_cam_need_end:
+                    self._self_cam_need_end = self._time_start[self._status] + uniform(*OFF_SELFCAM_BY_TIME_LIM)
+                if self._self_cam_need_end > time.time():
+                    return
+                self._self_cam_need_on = time.time() + uniform(*OFF_SELFCAM_BY_TIME_BACK)
+                self._self_cam_need_end = 0
+                val = FWD
+            elif self._status == FWD and val == SELFCAM:
+                if self._self_cam_need_on > time.time():
+                    return
+                self._self_cam_need_on = 0
+        if self._status == val:
+            return
+        else:
+            if self._status == FWD:
+                if not self._timefwd:
+                    self._timefwd = time.time()
+                delay = time.time() - self._timefwd
+                if delay < TIME_OFFFWD:
+                    return
+                if OFF_FWD_AFTER_FIRE_ENABLE:
+                    if time.time() - self._fire_time < TIME_OFF_FWD_AFTER_FIRE:
+                        return
+                    if self.player._left_mouse_button:
+                        return
+                if random.random() < CHANCE_OFFFWD:
+                    return
+            self._timefwd = 0
+            self._status = val
+            self._time_start[self._status] = time.time()
+            for key in self._dirs_weights.keys():
+                self._dirs_weights[key] = 1 if key == self._status else 0
+
+            if val == SELFCAM:
+                if getattr(self.player, 'eyes_controller', None):
+                    self.player.eyes_controller.track_bone(BigWorld.camera().invViewMatrix)
+            elif getattr(self.player, 'eyes_controller', None):
+                self.player.eyes_controller.track_bone(None)
+            return
+
+    def update(self):
+        t = time.time()
+        dtime = t - self._time
+        self._time = t
+        t = max(t, 1.0)
+        t = min(t, 0.0)
+        for key, value in self._dirs_cur_weights.items():
+            need = 1.0
+            if self._dirs_weights[key] < 1:
+                need = 0.0
+            delta_val = need - value
+            value = value + delta_val * 5 * dtime
+            value = max(value, 0)
+            value = min(value, 1)
+            self._dirs_cur_weights[key] = value
+
+    def getCurrentDir(self):
+        ret = None
+        count_ = 0
+        for key, value in self._dirs_cur_weights.items():
+            if value < 0.001:
+                continue
+            if value > 0.999:
+                return self._dirs[key]
+            if not ret:
+                ret = self._dirs[key] * value
+                count_ = 1
+            else:
+                count_ += 1
+                ret = ret + self._dirs[key] * value
+
+        if count_ > 0:
+            ret = ret / count_
+            ret.normalise()
+        else:
+            return Vector3(0, 0, 1)
+        return ret
+
+    def pDebugCall(self, Head, Spine3, cammode):
+        pl = self.player
+        cam = pl.AvatarCam
+        cam_pos = cam.position
+        head_pos_real = Head.translation
+        head_pos = Vector3(self.player.position)
+        head_pos.y = head_pos_real.y
+        yaw_model = Spine3.applyToAxis(1).yaw
+        yaw_cam = (cam_pos - head_pos).yaw
+        dir_pl = Vector3()
+        dir_pl.setPitchYaw(0, yaw_model)
+        dir_cam = Vector3()
+        dir_cam.setPitchYaw(0, yaw_cam)
+        if DEBUG:
+            drawer.clear()
+            drawer.add(head_pos, head_pos + dir_pl)
+        angle_ = angle_between_vectors(dir_pl, dir_cam)
+        self.update()
+
+        def getBest():
+            if self.player.isFPSmode():
+                return FWD
+            if not self.player.lookingaround:
+                return FWD
+            if self._can_selfcam and self._status == SELFCAM and angle_ < ANGLE_SELFCAM_OFF:
+                return SELFCAM
+            if self._status == CAM and angle_ > ANGLE_CAM_OFF:
+                return CAM
+            if self._can_selfcam and angle_ < ANGLE_SELFCAM_ON:
+                return SELFCAM
+            if angle_ > ANGLE_CAM_ON:
+                return CAM
+            return FWD
+
+        status = getBest()
+        self.setStatus(status)
+        if status == SELFCAM:
+            dir_ = cam_pos - head_pos
+            dir_.normalise()
+            self._dirs[SELFCAM] = Vector3(dir_)
+        if status == CAM:
+            self._dirs[CAM] = Vector3(cam.direction)
+        orig_prov = Matrix(pl.headProvider_entity)
+        self._dirs[FWD].setPitchYaw(orig_prov.pitch, orig_prov.yaw)
+        if DEBUG:
+            BWPersonality.gpd.sendHightMessage('%.1f  %s %s' % (math.degrees(angle_), status, self._status))
+        dir_ = self.getCurrentDir()
+        if not dir_:
+            return orig_prov
+        m = Matrix()
+        dir_.normalise()
+        m.lookAt((0, 0, 0), dir_, (0, 1, 0))
+        m.invert()
+        return m

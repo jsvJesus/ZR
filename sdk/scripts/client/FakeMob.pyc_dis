@@ -1,0 +1,472 @@
+# Embedded file name: ./client/FakeMob.py
+import BigWorld
+import ResourceLoader
+import SFXer
+import FX
+import Math
+import math
+import random
+import BWPersonality
+import traceback
+import utils_bw
+from utils_bw import if_not_destroyed
+from math_bw import clamp
+from functools import partial
+from PostProcessing import addPPChainByName, removePPChain
+from utils_bw import IGNORE_MATERIAL
+import sounds_manager
+MODEL_SPIDER, MODEL_BEAR, MODEL_DOG = xrange(3)
+MODEL_INDEX_TO_PATH = {MODEL_SPIDER: 'characters/creatures/spider/spider.model',
+ MODEL_BEAR: 'characters/creatures/bear/bear_polar.model',
+ MODEL_DOG: 'characters/creatures/dog/dog.model'}
+DIST_AVATAR_TO_DESTROY = 1
+V_UP = Math.Vector3(0, 1, 0)
+ALLOWED_ANGLE = math.pi / 4
+
+def is_allowed_angle(triangle):
+    normal = SFXer.tri_normal(triangle)
+    dotprod = min(max(normal.dot(V_UP), -1), 1)
+    angle = math.acos(dotprod)
+    if angle <= ALLOWED_ANGLE:
+        return normal
+
+
+class FakeMob(object):
+    KILL_FAKE_SPIDER_SFX = 'sfx/hits/body_hit_green_max.xml'
+    APPEAR_FAKE_DOG_SFX = 'sfx/Mob/Dog/fake_appear.xml'
+    DISAPPEAR_FAKE_DOG_SFX = 'sfx/Mob/Dog/fake_disappear.xml'
+    FAKE_DOG_SOUND_NAME = 'mob/dog/fog_attack'
+    S_MAXSTEPS = 3000
+    S_MODELHEIGHT = 1.0
+    S_STEP_SIZE = 0.02
+    S_STEP_TIME = 0.01
+    S_DAMAGE = True
+    S_SPAWNMINTIME = 0.5
+    S_SPAWNMAXTIME = 2.0
+    S_SPAWNMIN = 1
+    S_SPAWNMAX = 10
+    S_MAXMODELS = 200
+    S_CAMUP = Math.Vector3(0.01, 1.0, 0.01)
+    _timerFakeDamageID = 0
+    _timerSpSpawnID = 0
+    _isShosDamage = False
+    __isSpiderEffect = False
+    __spider_pp_effect = []
+    _fake_dog_spawn_cid = 0
+
+    def onEnterWorld(self):
+        self._fake_mob_model_dict = {}
+        self._fake_mob_model2sound = {}
+        self.fakeDamage()
+
+    def onLeaveWorld(self):
+        self._clear_fake_mobs()
+        BigWorld.cancelCallback(self._timerFakeDamageID)
+        self.stopSpiderHallucianations()
+        self.stop_fake_dog_spawn()
+
+    def onSpaceChangeRoutie(self, name):
+        self._clear_fake_mobs()
+
+    def _clear_fake_mobs(self):
+        for model in self._fake_mob_model_dict:
+            try:
+                self.delModel(model)
+                if hasattr(model, 'spider_walk_fashion'):
+                    model.spider_walk_fashion = None
+            except:
+                traceback.print_exc()
+
+        self._fake_mob_model_dict.clear()
+        self._fake_mob_model2sound.clear()
+        return
+
+    def startSpiderHallucianations(self):
+        self.__isSpiderEffect = True
+        self._isShosDamage = True
+        if not self._timerSpSpawnID:
+            self._spiderHallucianationsSpawnTick()
+
+    def stopSpiderHallucianations(self):
+        self.__isSpiderEffect = False
+        self._isShosDamage = False
+        if self._timerSpSpawnID:
+            BigWorld.cancelCallback(self._timerSpSpawnID)
+            self._timerSpSpawnID = 0
+        try:
+            self.AvatarCam.uprightDirection = (0, 1, 0)
+        except:
+            traceback.print_exc()
+
+    def _spiderHallucianationsSpawnTick(self):
+        timeResp = random.randrange(1, 5, int=float)
+        self._timerSpSpawnID = BigWorld.callback(timeResp, self._spiderHallucianationsSpawnTick)
+        if not self.isInWorld:
+            return
+        self.AvatarCam.uprightDirection = self.S_CAMUP
+        cpos = self.AvatarCam.position
+        cdir = self.AvatarCam.direction
+        for x in xrange(random.randrange(self.S_SPAWNMIN, self.S_SPAWNMAX)):
+            cdir = Math.Vector3(cdir.x + random.random() / 5 * random.choice([1, -1, 0]), cdir.y + random.random() / 5 * random.choice([1, -1, 0]), cdir.z + random.random() / 5 * random.choice([1, -1, 0]))
+            self.add_spider_by_collision(cpos, cdir)
+
+    def start_fake_dog_spawn(self):
+        self._isShosDamage = True
+        if not self._fake_dog_spawn_cid:
+            self._fake_dog_spawn_tick()
+
+    def stop_fake_dog_spawn(self):
+        self._isShosDamage = False
+        if self._fake_dog_spawn_cid:
+            BigWorld.cancelCallback(self._fake_dog_spawn_cid)
+            self._fake_dog_spawn_cid = 0
+        try:
+            self.AvatarCam.uprightDirection = (0, 1, 0)
+        except:
+            traceback.print_exc()
+
+    def _fake_dog_spawn_tick(self):
+        timeResp = random.randrange(0.2, 1, int=float)
+        self._fake_dog_spawn_cid = BigWorld.callback(timeResp, self._fake_dog_spawn_tick)
+        if not self.isInWorld:
+            return
+        self.AvatarCam.uprightDirection = self.S_CAMUP
+        cpos = self.AvatarCam.position
+        cdir = self.AvatarCam.direction
+        for x in xrange(random.randrange(1, 3)):
+            cdir = Math.Vector3(cdir.x + random.random() / 2 * random.choice([1, -1, 0]), cdir.y + random.random() / 2 * random.choice([1, -1, 0]), cdir.z + random.random() / 2 * random.choice([1, -1, 0]))
+            self.add_dog_by_collision(cpos, cdir)
+
+    def add_dog_by_collision(self, start_pos, direction, distance = 10.0, scale = 1.0):
+        if not self.isInWorld:
+            return
+
+        def try_collide():
+            end_pos = start_pos + direction * distance
+            col = BigWorld.collideIgnoreFlags(self.spaceID, start_pos, end_pos, IGNORE_MATERIAL)
+            if not col or not col[0]:
+                return None
+            normal = is_allowed_angle(col[1])
+            if normal:
+                return (col[0], normal)
+            start_pos2 = start_pos + direction * distance * 0.5
+            end_pos2 = start_pos2 - V_UP * distance
+            col = BigWorld.collideIgnoreFlags(self.spaceID, start_pos2, end_pos2, IGNORE_MATERIAL)
+            if not col or not col[0]:
+                return None
+            normal = is_allowed_angle(col[1])
+            if normal:
+                return (col[0], normal)
+            else:
+                return None
+
+        res = try_collide()
+        if res:
+            self.add_mob_by_position(res[0], normal=res[1], distance=distance, scale=scale, model_index=MODEL_DOG)
+
+    _fake_mob_move_cid = 0
+
+    def _start_move_model(self):
+        if self._fake_mob_move_cid:
+            BigWorld.cancelCallback(self._fake_mob_move_cid)
+        self._move_model()
+
+    def _move_model(self):
+        if self.isDestroyed:
+            return
+        elif not hasattr(self, '_fake_mob_model_dict'):
+            self._fake_mob_move_cid = BigWorld.callback(1.0, self._move_model)
+            return
+        else:
+            _fake_mob_model_count = 0
+            for model in self._fake_mob_model_dict.keys():
+                nstep, step_size, event_listener, model_index = self._fake_mob_model_dict[model]
+                if model_index == MODEL_SPIDER:
+                    continue
+                if nstep > self.S_MAXSTEPS:
+                    self.kill_mob(model)
+                    continue
+                modeldirF = self.position - model.position
+                if modeldirF.length < DIST_AVATAR_TO_DESTROY:
+                    self.kill_mob(model)
+                    continue
+                matr = Math.Matrix(model.matrix)
+                modeldirUp = matr.applyToAxis(1)
+                modeldirUp.normalise()
+                modeldirF.normalise()
+                model.yaw = modeldirF.yaw
+                cpos = model.position + modeldirUp * self.S_MODELHEIGHT + modeldirF * step_size
+                cpos1 = model.position + modeldirUp * self.S_MODELHEIGHT
+                posto = cpos - modeldirUp * self.S_MODELHEIGHT * 2
+                col = utils_bw.collide(self.spaceID, cpos1, posto)
+                if not col:
+                    col = utils_bw.collide(self.spaceID, cpos, posto)
+                if not col:
+                    col = utils_bw.collide(self.spaceID, cpos, posto - modeldirF * step_size)
+                if col:
+                    target_normal = is_allowed_angle(col[1])
+                    if target_normal is None:
+                        self.kill_mob(model)
+                        continue
+                    lastpos = model.position
+                    newpos = col[0]
+                    if newpos.distTo(lastpos) > step_size * 2:
+                        newpos = lastpos + (newpos - lastpos) * step_size * 2
+                    model.position = newpos
+                    axis = modeldirUp * target_normal
+                    axis.normalise()
+                    cos = modeldirUp.dot(target_normal)
+                    cos = min(max(cos, -1), 1)
+                    angle = math.acos(cos)
+                    if random.random() > 0.6:
+                        angle = angle * (1 + random.random() * 0.05)
+                    angleV = 1 if angle > 0 else -1
+                    angle = min(abs(angle), 0.07) * angleV
+                    model.rotate(angle, axis, (0, 0, 0))
+                    nstep += 10
+                else:
+                    model.rotate(model.yaw + random.random(), modeldirUp, (0, 0, 0))
+                    nstep += 100
+                self._fake_mob_model_dict[model] = (nstep,
+                 step_size,
+                 event_listener,
+                 model_index)
+                _fake_mob_model_count += 1
+
+            if _fake_mob_model_count:
+                self._fake_mob_move_cid = BigWorld.callback(self.S_STEP_TIME, self._move_model)
+            return
+
+    @if_not_destroyed
+    def fakeDamage(self):
+        self._timerFakeDamageID = BigWorld.callback(random.randrange(1, 5, int=float), self.fakeDamage)
+        if not self.isInWorld:
+            return
+        if self.S_DAMAGE and self._isShosDamage and self._fake_mob_model_dict:
+            if random.random() > 0.6:
+                direct = random.randrange(0, 5)
+                BWPersonality.GUICore.showDamage(random.randrange(0.5, 3, int=float), direct, 1)
+                if direct < 5:
+                    self.AvatarCam.shake(0.04, (0.01, 0.01, 0.01))
+
+    def add_spider_by_collision(self, scrFrom, direction, distance = 30.0, scale = 1.0):
+        if not self.isInWorld:
+            return
+        posTo = scrFrom + direction * distance
+        col = BigWorld.collideIgnoreFlags(self.spaceID, scrFrom, posTo, IGNORE_MATERIAL)
+        if not col or not col[0]:
+            return False
+        target_normal = SFXer.tri_normal(col[1])
+        target_normal.normalise()
+        self.add_mob_by_position(col[0], normal=target_normal, distance=distance, scale=scale)
+
+    def add_mob_by_position(self, position, normal = Math.Vector3(0, 1, 0), step_size = None, distance = 30.0, scale = 1.0, model_index = 0, tint = None, event_listener = None):
+        if not self.isInWorld:
+            return
+        if len(self._fake_mob_model_dict) > self.S_MAXMODELS:
+            return
+        model_path = MODEL_INDEX_TO_PATH[model_index]
+        if model_index == MODEL_SPIDER:
+            FX.prepare_buffer(self.KILL_FAKE_SPIDER_SFX)
+
+        def on_load(prereqs):
+            if self.isDestroyed:
+                return
+            model = prereqs.produce(0)
+            self.addModel(model)
+            if tint:
+                try:
+                    model.body = tint
+                except:
+                    print 'FakeMob (ERROR): not tint named {0} for {1}'.format(tint, model_path)
+                    traceback.print_exc()
+
+            matr = Math.Matrix(model.matrix)
+            modeldir = matr.applyToAxis(1)
+            modeldir.normalise()
+            model.position = position
+            axis = modeldir * normal
+            axis.normalise()
+            angle = math.acos(modeldir.dot(normal))
+            model.rotate(angle, axis, (0, 0, 0))
+            matr = Math.Matrix(model.matrix)
+            modeldirUp = matr.applyToAxis(1)
+            if model_index == MODEL_SPIDER:
+                model.rotate(random.random() * 6, modeldirUp, (0, 0, 0))
+                _scale = 0.1 + random.random() / 10
+            else:
+                _dir = self.position - position
+                _dir.normalise()
+                model.yaw = _dir.yaw
+                _scale = scale
+            model.scale = (_scale, _scale, _scale)
+            model.newScaleTest = (_scale, _scale, _scale)
+            try:
+                if model_index == MODEL_SPIDER:
+                    model.Spider_DigOut().Spider_walk_fake2()
+                elif model_index == MODEL_DOG:
+                    model.Dog_SprintForward_fake()
+                    model.visible = False
+            except:
+                traceback.print_exc()
+
+            def addWalker():
+                if self.isDestroyed:
+                    return
+                walker = BigWorld.SpiderWalkFashion(self.S_MAXSTEPS, self.S_STEP_TIME, self.S_STEP_SIZE, self.S_MODELHEIGHT, model, self.onFinishSpiderWalk, 0, IGNORE_MATERIAL)
+                model.spider_walk_fashion = walker
+
+            if model_index == MODEL_SPIDER:
+                BigWorld.callback(1.0, addWalker)
+                self._fake_mob_model_dict[model] = (0,
+                 self.S_STEP_SIZE,
+                 event_listener,
+                 model_index)
+            else:
+                step_size = 0.15
+
+                def add_to_dict():
+                    if self.isDestroyed:
+                        return
+                    model.visible = True
+                    model.stipple = True
+                    self._fake_mob_model_dict[model] = (0,
+                     step_size,
+                     event_listener,
+                     model_index)
+
+                add_to_dict()
+                self._fake_mob_model2sound[model] = sounds_manager.playSound(self.FAKE_DOG_SOUND_NAME, model)
+                FX.bufferedOneShotEffect(self.APPEAR_FAKE_DOG_SFX, model)
+                self._start_move_model()
+
+        ResourceLoader.asyncLoad([(ResourceLoader.MODEL, model_path)], on_load)
+
+    def onFinishSpiderWalk(self, model, walker):
+        BigWorld.callback(0, partial(self.kill_mob, model))
+
+    def traceBulletSpiders(self, shot_directions, max_dist = None):
+        if not self._fake_mob_model_dict:
+            return
+        if not shot_directions:
+            return
+        scrFrom = self.get_firing_point()[1]
+        direction = shot_directions[0]
+        for model in self._fake_mob_model_dict.keys():
+            mpos = model.position
+            cm = mpos - scrFrom
+            distM = cm.length
+            if max_dist and distM > max_dist:
+                continue
+            cm.normalise()
+            d = math.acos(direction.dot(cm))
+            d = math.sin(d)
+            distBullet = d * distM
+            if distBullet < 0.5:
+                self.kill_mob(model)
+
+    def kill_mob(self, model):
+
+        def delete_model(m):
+            if self.isDestroyed:
+                return
+            self.delModel(m)
+
+        t = self._fake_mob_model_dict.pop(model, None)
+        if t is not None:
+            _, _, event_listener, model_index = t
+            if model_index == MODEL_SPIDER:
+                hitPos = model.position + (0, 0.2, 0)
+                blood_orientation = self.AvatarCam.direction
+                SFXer.BloodBodyHit(self, hitPos, blood_orientation, self.KILL_FAKE_SPIDER_SFX)
+            else:
+                m2 = BigWorld.Model('')
+                m2.position = model.position + (0, 0.2, 0)
+                self.addModel(m2)
+                FX.bufferedOneShotEffect(self.DISAPPEAR_FAKE_DOG_SFX, m2)
+                BigWorld.callback(5, lambda : delete_model(m2))
+                sound = self._fake_mob_model2sound.pop(model, None)
+                if sound:
+                    sound.stop()
+            if event_listener and not event_listener.isDestroyed:
+                event_listener.on_spider_dead()
+        try:
+            if hasattr(model, 'spider_walk_fashion'):
+                model.spider_walk_fashion = None
+        except:
+            traceback.print_exc()
+
+        if model_index == MODEL_SPIDER:
+            self.delModel(model)
+        else:
+            BigWorld.callback(0.1, lambda : delete_model(model))
+        return
+
+    def updateDrunkEffect(self, stacks):
+        self.__stop_drink_post_poroc()
+        pp = POST_PROC_DRUNK.get(stacks, 'drink_2')
+        self.__spider_pp_effect.append(addPPChainByName(pp))
+        self.drink_stacks = stacks
+        self.camera_drink_size = {1: 0.1,
+         2: 0.2,
+         3: 0.25,
+         4: 0.3,
+         5: 0.4}.get(self.drink_stacks, 0.4)
+        self.__tick_camera()
+
+    def __stop_drink_post_poroc(self):
+        for i in self.__spider_pp_effect:
+            removePPChain(i)
+
+        self.__spider_pp_effect = []
+        BigWorld.cancelCallback(self.camera_drink_tick_id)
+
+    def removeDrunkEffect(self):
+        self._drink_fov = 0.0
+        self.camera_drink_fov_tagert = 0.0
+        self.__stop_drink_post_poroc()
+        BigWorld.projection().rampFov(self._player_current_fov, 0.3)
+        self.AvatarCam.uprightDirection = (0, 1, 0)
+
+    camera_drink_tagert = Math.Vector3(0, 1, 0)
+    camera_drink_fov_tagert = 0.78
+    camera_drink_tick_id = 0
+    drink_stacks = 0
+    camera_drink_size = 0.1
+    _drink_fov = 0.0
+
+    def __tick_camera(self):
+        if self.isDestroyed:
+            return
+        if not hasattr(self, 'AvatarCam'):
+            self.camera_drink_tick_id = BigWorld.callback(1, self.__tick_camera)
+            return
+        cam = self.AvatarCam
+        dt = self.camera_drink_tagert - cam.uprightDirection
+        if dt.length < 0.03:
+
+            def getRandom():
+                return self.camera_drink_size * random.random() * random.choice([-1, 1])
+
+            self.camera_drink_tagert = Math.Vector3(getRandom(), 1, getRandom())
+            dt = self.camera_drink_tagert - cam.uprightDirection
+        fvdt = self.camera_drink_fov_tagert - self._drink_fov
+        if abs(fvdt) < 0.001:
+            self.camera_drink_fov_tagert = random.random() * self.camera_drink_size * random.choice([-1, 1])
+            fvdt = self.camera_drink_fov_tagert - self._drink_fov
+        self._drink_fov += fvdt * 0.01
+        BigWorld.projection().fov = clamp(self._player_current_fov + self._drink_fov, 0.001, 2.0)
+        cam.uprightDirection += dt * 0.02
+        self.camera_drink_tick_id = BigWorld.callback(0, self.__tick_camera)
+
+
+POST_PROC_DRUNK = {1: 'drink_0',
+ 2: 'drink_0',
+ 3: 'drink_1',
+ 4: 'drink_2',
+ 5: 'drink_3'}
+RAND_DRUNK = {1: 0.1,
+ 2: 0.2,
+ 3: 0.25,
+ 4: 0.3,
+ 5: 0.4}

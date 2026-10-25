@@ -1,0 +1,196 @@
+# Embedded file name: ./client/ClientFiguredTrapInterface.py
+import math
+import math_bw
+import BigWorld
+from utils import lazyproperty
+from Math import Matrix, Vector3
+
+class ClientFiguredTrapInterface:
+    ETERNAL_CYLINDER, CYLINDER, CUBE, SPHERE, POLYGONAL = xrange(5)
+    TICK_INTERVAL = 0.2
+
+    def __init__(self):
+        self.TICK_INTERVAL = 0.2
+        self.player_in_area = False
+        self.player_in_trap = False
+        self.player_position = None
+        self._pot_id = None
+        self.controller_id = None
+        if self.figure_type == ClientFiguredTrapInterface.CUBE:
+            radius = math.sqrt(self.sizeX * self.sizeX + self.sizeY * self.sizeY + self.sizeZ * self.sizeZ)
+        elif self.figure_type == ClientFiguredTrapInterface.POLYGONAL:
+            radius = self.get_radius()
+        else:
+            radius = self.radius
+        self.radius = radius
+        self.enable_pot()
+        return
+
+    def disable_pot(self):
+        if self._pot_id:
+            BigWorld.delPot(self._pot_id)
+            self._pot_id = None
+        return
+
+    def enable_pot(self):
+        if not self._pot_id and self.radius > 0:
+            self._pot_id = BigWorld.addPot(self.matrix, self.radius, self.onEnterTrap)
+
+    def get_radius(self):
+        max_dist = 0
+        for point in self.border_points_list:
+            dist = self.position.flatDistTo(point)
+            max_dist = max(max_dist, dist)
+
+        return max_dist
+
+    def onPlayerInside(self):
+        pass
+
+    def onPlayerOutside(self):
+        pass
+
+    def onCheckEntityInPolygon(self, pos):
+
+        def inPolygon(x, z, x_list, z_list):
+            inside = 0
+            for i in xrange(len(x_list)):
+                if (z_list[i] <= z and z < z_list[i - 1] or z_list[i - 1] <= z and z < z_list[i]) and x > (x_list[i - 1] - x_list[i]) * (z - z_list[i]) / (z_list[i - 1] - z_list[i]) + x_list[i]:
+                    inside = 1 - inside
+
+            return bool(inside)
+
+        if not self.border_points_list:
+            return False
+        x, z = pos[0], pos[2]
+        pos_x_list, pos_z_list = [], []
+        for point in self.border_points_list:
+            pos_x_list.append(point[0])
+            pos_z_list.append(point[2])
+
+        return bool(inPolygon(x, z, pos_x_list, pos_z_list))
+
+    def onLeaveWorld(self):
+        if self.controller_id:
+            BigWorld.cancelCallback(self.controller_id)
+            self.controller_id = None
+        if self.player_in_area:
+            self.onPlayerOutside()
+        self.disable_pot()
+        return
+
+    def onTimer(self):
+        if self.isDestroyed:
+            return
+        else:
+            need_remove = False
+            entity = BigWorld.player()
+            if not entity or entity.isDestroyed:
+                need_remove = True
+            elif self.is_entity_inside(entity):
+                if not self.player_in_trap:
+                    self.player_in_trap = True
+                    self.onPlayerInside()
+            elif self.player_in_trap:
+                self.player_in_trap = False
+                self.onPlayerOutside()
+            if need_remove:
+                self.player_in_area = False
+                if self.player_in_trap:
+                    self.player_in_trap = False
+                    self.onPlayerOutside()
+            if not self.player_in_area:
+                BigWorld.cancelCallback(self.controller_id)
+                self.controller_id = None
+                return
+            self.controller_id = BigWorld.callback(self.TICK_INTERVAL, self.onTimer)
+            return
+
+    def onEnterTrap(self, has_enter, controllerId):
+        if self.isDestroyed:
+            return
+        entity = BigWorld.player()
+        if not entity or entity.__class__.__name__ != 'PlayerAvatar':
+            return
+        if has_enter:
+            self.player_in_area = True
+            if self.is_entity_inside(entity) and not self.player_in_trap:
+                self.player_in_trap = True
+                self.onPlayerInside()
+                if self.isDestroyed:
+                    return
+            if not self.controller_id:
+                self.controller_id = BigWorld.callback(self.TICK_INTERVAL, self.onTimer)
+        else:
+            self.onLeaveTrap()
+
+    def onLeaveTrap(self):
+        self.player_in_area = False
+        if self.player_in_trap:
+            self.player_in_trap = False
+            self.onPlayerOutside()
+        self.player_position = None
+        if self.controller_id:
+            BigWorld.cancelCallback(self.controller_id)
+            self.controller_id = None
+        return
+
+    def is_entity_inside(self, entity):
+        if self.figure_type == ClientFiguredTrapInterface.ETERNAL_CYLINDER:
+            return self.position.flatDistTo(entity.position) <= self.radius
+        if self.figure_type == ClientFiguredTrapInterface.CYLINDER:
+            if self.position.y - entity.get_height() <= entity.position.y <= self.position.y + self.height:
+                return self.position.flatDistTo(entity.position) <= self.radius
+            return self.figure_type == ClientFiguredTrapInterface.SPHERE and self.position.distTo(entity.position) <= self.radius
+        local_position = self.figure_type == ClientFiguredTrapInterface.CUBE and self.get_local_position(entity.position)
+        if abs(local_position.x) <= self.sizeX * 0.5 and abs(local_position.z) <= self.sizeZ * 0.5:
+            inside_result = -entity.get_height() <= local_position.y <= self.sizeY
+            if not inside_result:
+                return self.check_previous_position(local_position)
+            return self.figure_type == ClientFiguredTrapInterface.POLYGONAL and self.onCheckEntityInPolygon(entity.position)
+        print 'ClientFiguredTrapInterface (ERROR): unknown Figure type', self.figure_type, self
+        raise Exception('unknown Figure type')
+
+    def is_pos_inside(self, pos):
+        height_eps = 0.1
+        if self.figure_type == ClientFiguredTrapInterface.ETERNAL_CYLINDER:
+            return self.position.flatDistTo(pos) <= self.radius
+        if self.figure_type == ClientFiguredTrapInterface.CYLINDER:
+            if self.position.y - height_eps <= pos.y <= self.position.y + self.height:
+                return self.position.flatDistTo(pos) <= self.radius
+            return self.figure_type == ClientFiguredTrapInterface.SPHERE and self.position.distTo(pos) <= self.radius
+        if self.figure_type == ClientFiguredTrapInterface.CUBE:
+            local_position = self.get_local_position(pos)
+            if abs(local_position.x) <= self.sizeX * 0.5 and abs(local_position.z) <= self.sizeZ * 0.5:
+                inside_result = -height_eps <= local_position.y <= self.sizeY
+                return inside_result
+            return self.figure_type == ClientFiguredTrapInterface.POLYGONAL and self.onCheckEntityInPolygon(pos)
+        print 'ClientFiguredTrapInterface (ERROR): unknown Figure type', self.figure_type, self
+        raise Exception('unknown Figure type')
+
+    def check_previous_position(self, local_position):
+        """ \xd0\xb4\xd0\xbb\xd1\x8f \xd1\x83\xd1\x81\xd1\x82\xd1\x80\xd0\xb0\xd0\xbd\xd0\xb5\xd0\xbd\xd0\xb8\xd1\x8f \xd1\x82\xd1\x83\xd0\xbd\xd0\xbd\xd0\xb5\xd0\xbb\xd1\x8c\xd0\xbd\xd0\xbe\xd0\xb3\xd0\xbe \xd1\x8d\xd1\x84\xd1\x84\xd0\xb5\xd0\xba\xd1\x82\xd0\xb0
+                \xd0\xbf\xd1\x80\xd0\xbe\xd0\xb2\xd0\xb5\xd1\x80\xd1\x8f\xd0\xb5\xd1\x82\xd1\x81\xd1\x8f \xd0\xbf\xd1\x80\xd0\xb5\xd0\xb4\xd1\x8b\xd0\xb4\xd1\x83\xd1\x89\xd0\xb0\xd1\x8f \xd0\xba\xd0\xbe\xd0\xbe\xd1\x80\xd0\xb4\xd0\xb8\xd0\xbd\xd0\xb0\xd1\x82\xd0\xb0 \xd0\xb8 \xd0\xb2\xd1\x8b\xd1\x87\xd0\xb8\xd1\x81\xd0\xbb\xd1\x8f\xd0\xb5\xd1\x82\xd1\x81\xd1\x8f \xd0\xbf\xd0\xb5\xd1\x80\xd0\xb5\xd1\x81\xd0\xb5\xd1\x87\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5 \xd0\xbe\xd1\x82\xd1\x80\xd0\xb5\xd0\xb7\xd0\xba\xd0\xb0 \xd0\xb8 \xd1\x82\xd0\xb5\xd0\xbb\xd0\xb5\xd0\xbf\xd0\xbe\xd1\x80\xd0\xb0
+        """
+        if not self.player_position:
+            self.player_position = local_position
+            return
+        intersections = math_bw.box_intersect_line(self.player_position, local_position, Vector3(0, 0, 0), Vector3(self.sizeX, self.sizeY, self.sizeZ))
+        self.player_position = local_position
+        return bool(intersections)
+
+    def get_local_position(self, pos):
+        return self._inverted_matrix.applyPoint(pos)
+
+    @lazyproperty
+    def _inverted_matrix(self):
+        """ \xd0\xbc\xd0\xb8\xd1\x80\xd0\xbe\xd0\xb2\xd0\xb0\xd1\x8f \xd0\xb8\xd0\xbd\xd0\xb2\xd0\xb5\xd1\x80\xd1\x82\xd0\xb8\xd1\x80\xd0\xbe\xd0\xb2\xd0\xb0\xd0\xbd\xd0\xbd\xd0\xb0\xd1\x8f \xd0\xbc\xd0\xb0\xd1\x82\xd1\x80\xd0\xb8\xd1\x86\xd0\xb0 \xd1\x82\xd0\xb5\xd0\xbb\xd0\xb5\xd0\xbf\xd0\xbe\xd1\x80\xd1\x82\xd0\xb0 """
+        rotation_matrix = Matrix()
+        rotation_matrix.setRotateYPR((self.yaw, self.pitch, self.roll))
+        translation_matrix = Matrix()
+        translation_matrix.setTranslate(self.position)
+        total_matrix = Matrix()
+        total_matrix.postMultiply(rotation_matrix)
+        total_matrix.postMultiply(translation_matrix)
+        total_matrix.invert()
+        return total_matrix

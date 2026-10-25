@@ -1,0 +1,122 @@
+# Embedded file name: ./client/soGUI/login/toggle.py
+import BigWorld
+from math_bw import lerp, smooth_damp, lerp_rgb_colors
+import Keys
+import GUI
+from Helpers.PyGUI.PyGUIBase import Interceptor
+from Helpers.BWCoroutine import BWMemberCoroutine, BWWaitForPeriod
+from Helpers.PyGUI import Utils
+
+class State:
+    Undefined, On, Off = range(3)
+
+
+class Toggle(Interceptor):
+
+    def __init__(self):
+        self.on_state_changed = lambda state: None
+        comp = GUI.Window('soGUI/frame/loginwin/plane.dds')
+        comp.materialFX = 'BLEND'
+        comp.colour = (150, 100, 100, 255)
+        comp.filterType = 'LINEAR'
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = comp.texture.width, comp.texture.height
+        comp.ha, comp.va = ('LEFT', 'TOP')
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        Interceptor.__init__(self, comp)
+        self._state = State.Undefined
+        self._velocity = 0.0
+        ball_pos = 14
+        self._coroutine = None
+        self._ball_positions = (ball_pos, self.component.width - ball_pos)
+        self._ball_colours = ((0, 0, 0, 255), (13, 67, 4, 255))
+        comp = GUI.Window('soGUI/frame/loginwin/base.dds')
+        comp.materialFX = 'BLEND'
+        comp.filterType = 'LINEAR'
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = comp.texture.width, comp.texture.height
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.position = (0, 0, 0.5)
+        self.component.addChild(comp)
+        comp = GUI.Window('soGUI/frame/loginwin/ball.dds')
+        comp.materialFX = 'BLEND'
+        comp.filterType = 'LINEAR'
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = comp.texture.width, comp.texture.height
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.hpm, comp.vpm = ('PIXEL', 'CLIP')
+        comp.position = (self.component.width * 0.5, 0, 0.4)
+        self.component.addChild(comp, 'ball')
+        self.set_state(State.Undefined, animated=False, notify=False)
+        return
+
+    def on_hide(self):
+        self._velocity = 0.0
+        if self._coroutine:
+            self._coroutine.stop()
+            self._coroutine = None
+        return
+
+    def handleMouseButtonEvent(self, comp, event):
+        result = Interceptor.handleMouseButtonEvent(self, comp, event)
+        if event.key == Keys.KEY_LEFTMOUSE and event.isKeyDown():
+            if self.state == State.On:
+                self.set_state(State.Off)
+            elif self.state == State.Off:
+                self.set_state(State.On)
+        return result
+
+    def set_state(self, state, animated = True, notify = True):
+        if notify:
+            self.state = state
+        else:
+            self._state = state
+        if state == State.On:
+            self._desired_position = 1
+        elif state == State.Off:
+            self._desired_position = 0
+        else:
+            self._desired_position = 0.5
+        if animated:
+            if self._coroutine is None:
+                self._coroutine = self._animate_coroutine()
+                self._coroutine.run()
+        else:
+            if self._coroutine:
+                self._coroutine.stop()
+                self._coroutine = None
+            self.visual_position = self._desired_position
+        return
+
+    @property
+    def state(self):
+        return self._state
+
+    @state.setter
+    def state(self, value):
+        if self._state == value:
+            return
+        self._state = value
+        self.on_state_changed(self.state)
+
+    @property
+    def visual_position(self):
+        return self._visual_position
+
+    @visual_position.setter
+    def visual_position(self, value):
+        self._visual_position = value
+        self.component.ball.position[0] = lerp(self._ball_positions[0], self._ball_positions[1], self._visual_position)
+        self.component.colour = lerp_rgb_colors(self._ball_colours[0], self._ball_colours[1], self._visual_position)
+
+    @BWMemberCoroutine
+    def _animate_coroutine(self):
+        while self.visual_position != self._desired_position and Utils.is_visible_in_hierarchy(self.component):
+            self.visual_position, self._velocity = smooth_damp(self.visual_position, self._desired_position, self._velocity, 0.1, 100000.0, BigWorld.getTimeDelta())
+            if abs(self.visual_position - self._desired_position) < 0.001:
+                self.visual_position = self._desired_position
+            yield BWWaitForPeriod(0)
+
+        self._coroutine = None
+        return

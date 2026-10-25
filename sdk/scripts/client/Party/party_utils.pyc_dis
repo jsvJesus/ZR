@@ -1,0 +1,138 @@
+# Embedded file name: ./client/Party/party_utils.py
+import BigWorld
+import colorCodes as cc
+from party_common import MemberStatus as S
+from Localization import lc
+from Math import Vector4
+import colorCodes
+import gui_jokes
+
+class NameColors:
+    AGR = Vector4(colorCodes.rgba_mark_AGR)
+    PK = Vector4(colorCodes.rgba_mark_name_PK)
+    DEFAULT = Vector4(220, 220, 220, 255)
+    UNKNOWN = Vector4(50, 50, 50, 255)
+
+
+class InviteTimer:
+    TIME_LIMIT = 30
+
+    def __init__(self):
+        self._last_invoke_time = {}
+        self._clear_callback = None
+        return
+
+    def get_time(self, entity_name):
+        if self._clear_callback:
+            BigWorld.cancelCallback(self._clear_callback)
+        self._clear_callback = BigWorld.callback(InviteTimer.TIME_LIMIT * 1.5, self._autoclear)
+        cur_time = BigWorld.time()
+        if entity_name not in self._last_invoke_time:
+            self._last_invoke_time[entity_name] = cur_time
+            return 0
+        last_invoke_time = self._last_invoke_time[entity_name]
+        wait_time = cur_time - last_invoke_time
+        if not self._can_ignore_wait() and wait_time < InviteTimer.TIME_LIMIT:
+            return InviteTimer.TIME_LIMIT - int(wait_time) + 1
+        self._last_invoke_time[entity_name] = cur_time
+        return 0
+
+    def _autoclear(self):
+        cur_time = BigWorld.time()
+        for entity_name, last_invoke_time in self._last_invoke_time.items():
+            wait_time = cur_time - last_invoke_time
+            if wait_time > InviteTimer.TIME_LIMIT:
+                del self._last_invoke_time[entity_name]
+
+        if self._last_invoke_time:
+            self._clear_callback = BigWorld.callback(InviteTimer.TIME_LIMIT * 1.5, self._autoclear)
+        else:
+            self._clear_callback = None
+        return
+
+    def _can_ignore_wait(self):
+        return BigWorld.isKeyDown(BigWorld.stringToKey('F2')) and BigWorld.player().isAdminAccess()
+
+
+class InviteSequence:
+
+    def __init__(self, accept_callback):
+        self._sequence = []
+        self._pending = False
+        self.accept_callback = accept_callback
+
+    def add_invitation(self, inviter_name, need_teleport):
+        key = (inviter_name, need_teleport)
+        if key in self._sequence:
+            raise RuntimeError
+        self._sequence.append(key)
+        if not self._pending:
+            self._pop_invitation()
+
+    def _callback(self, inviter_name, result):
+        if not result:
+            BigWorld.callback(0, self._pop_invitation)
+            return
+        self._sequence = []
+        self._pending = False
+        self.accept_callback(inviter_name)
+
+    def _pop_invitation(self):
+        if not self._sequence:
+            self._pending = False
+            return
+        self._pending = True
+        inviter_name, need_teleport = self._sequence.pop(0)
+        prefix = cc.highlighted_xml + inviter_name + cc.inactive_xml + u' '
+        if need_teleport:
+            msg = prefix + lc('Groups.Interface.INVITE_QUESTION_INST_TELEPORT').format(inviter_name)
+        else:
+            msg = prefix + lc('Groups.Interface.INVITE_QUESTION')
+
+        def local_callback(event):
+            self._callback(inviter_name, event == gui_jokes.askUserYesNo.YES)
+
+        gui_jokes.askUserYesNoDelayDeafultNo(lc('Groups.Interface.INVITE_HEADER'), msg, callback=local_callback, timer=10.0, show_timer_btn=True, modal=False)
+
+
+class ActionsCompiler:
+    REMOVE_PARTY, LEAVE_PARTY, KICK_MEMBER, GIVE_LIDERSHIP, SHOW_BUFFS, HIDE_BUFFS = xrange(11, 17)
+
+    def __init__(self):
+        self.remove_party_callback = lambda : None
+        self.leave_party_callback = lambda : None
+        self.kick_member_callback = lambda entity_name: None
+        self.give_leadership_callback = lambda entity_name: None
+        self.show_buffs_callback = lambda show: None
+
+    def get_party_hbbar_actions(self, party_status):
+        actions = {}
+        if party_status == S.Leader:
+            actions[ActionsCompiler.REMOVE_PARTY] = lc('Groups.Interface.COMMAND_REMOVE_GROUP')
+        elif party_status == S.Combatant:
+            actions[ActionsCompiler.LEAVE_PARTY] = lc('Groups.Interface.COMMAND_LEAVE_GROUP')
+        if party_status != S.Lone:
+            actions[ActionsCompiler.SHOW_BUFFS] = lc('Groups.Interface.COMMAND_SHOW_EFFECT')
+            actions[ActionsCompiler.HIDE_BUFFS] = lc('Groups.Interface.COMMAND_HIDE_EFFECT')
+        return actions
+
+    def get_party_member_actions(self, status):
+        actions = {}
+        if status == S.Leader:
+            actions[ActionsCompiler.KICK_MEMBER] = lc('Groups.Interface.COMMAND_KICK_GROUP')
+            actions[ActionsCompiler.GIVE_LIDERSHIP] = lc('Groups.Interface.COMMAND_GET_LEADER')
+        return actions
+
+    def run_action(self, action, data):
+        if action == ActionsCompiler.REMOVE_PARTY:
+            self.remove_party_callback()
+        elif action == ActionsCompiler.LEAVE_PARTY:
+            self.leave_party_callback()
+        elif action == ActionsCompiler.KICK_MEMBER:
+            self.kick_member_callback(data['name'])
+        elif action == ActionsCompiler.GIVE_LIDERSHIP:
+            self.give_leadership_callback(data['name'])
+        elif action == ActionsCompiler.SHOW_BUFFS:
+            self.show_buffs_callback(True)
+        elif action == ActionsCompiler.HIDE_BUFFS:
+            self.show_buffs_callback(False)

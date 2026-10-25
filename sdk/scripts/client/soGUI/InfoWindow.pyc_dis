@@ -1,0 +1,861 @@
+# Embedded file name: ./client/soGUI/InfoWindow.py
+import BigWorld
+import BWPersonality
+import copy
+import time
+import os
+import functools
+import GUI
+import random
+from Items import ItemsCatalog
+from utils import groupNumber
+import ItemsUtils
+import Keys
+import colorCodes
+import traceback
+import item_info_text_generator
+from Localization import lc
+from Helpers.PyGUI.PyGUIBase import PyGUIBase
+from soGUI.soButton import soButton
+from soGUI.ComplexTextField import ComplexTextField
+import clweapon
+from Inventory import Inventory
+import Helpers.PyGUI.DraggableComponent
+import soGUI
+import ItemIcon
+import client_utils
+import grades_utils
+from Settings import Settings
+from soGUI.info_dummy_window import DummyWindow, DummyWinMode, EventType
+DraggableComponent = Helpers.PyGUI.DraggableComponent.DraggableComponent
+
+class InfoWindow(PyGUIBase, DraggableComponent):
+    factoryString = 'soGUI.InfoWindow'
+
+    def __init__(self, component, imanger = None, WID = 'WID', is_inventory_item = True):
+        PyGUIBase.__init__(self, component)
+        DraggableComponent.__init__(self, 1, 1, 1, xoffset=0.9, yoffset=0.9)
+        self._isDebugInfo = False
+        self._is_new_window = True
+        self._half_height = Settings().getSetting('info_win_half_height', True)
+        self._dummy_win_mode = DummyWinMode.Inside
+        component.script = self
+        self.WID = WID
+        self.imanger = imanger
+        self.component.visible = False
+        self.component.dragFocus = 1
+        self.component.mouseButtonFocus = 1
+        self.component.focus = 1
+        self.component.crossFocus = 1
+        self.component.propagateAnyway = True
+        self._isAttach = False
+        self._is_inventory_item = is_inventory_item
+        self.last_depth = 0.0
+        self.setupRoot()
+        self.setupContent()
+        self.createTextNode()
+        self.doReposition()
+        self.onBound()
+
+    def doReposition(self):
+        self.component.closeBox.position = (self.width - 25, 7, 0.0)
+        self.component.btnToggleHeight.position = (self.width - 29, 7, 0.0)
+        try:
+            self.component.dev_button.position = (self.width - 50, 70, 0.0)
+        except:
+            pass
+
+        self.component.slotitem.position = (2, 30, 0)
+        self._do_dummy_win_reposition()
+        sW, sH = BigWorld.screenSize()
+        old = self.component.height
+        height = max(sH - 30, 50)
+        if self._half_height:
+            height = height / 2.0
+        self.height = self.component.height = height
+        if old != height:
+            self.component.delChild('ctext')
+            self.createTextNode()
+            if self._item:
+                text = ItemInfoText(self._item, isAttach=self._isAttach, isDebugInfo=self._isDebugInfo, color_text=colorCodes.tf3_gray_text)
+                text = client_utils.colorise_text(text)
+                self.component.ctext.script.setText(text, self._item['complexItemType'])
+                BigWorld.callback(0.2, functools.partial(self.component.ctext.script.setGradeItem, self._item))
+        self.onBound()
+
+    def setupRoot(self):
+        sW, sH = BigWorld.screenSize()
+        cmp = GUI.Text('')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'CENTER'
+        cmp.font = 'RobotoCondensedRegular_16.font'
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.multiline = False
+        cmp.colourFormatting = False
+        cmp.text = u'caption'
+        cmp.position = (18, 15, 0.8)
+        self.component.addChild(cmp, 'caption')
+        cmp = self.component
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.widthMode = 'PIXEL'
+        cmp.heightMode = 'PIXEL'
+        cmp.horizontalAnchor = 'CENTER'
+        cmp.verticalAnchor = 'CENTER'
+        cmp.colour = (255, 255, 255, 210)
+        cmp.materialFX = 'BLEND'
+        self.width = cmp.width = 601
+        self.height = sH - 30
+        if self._half_height:
+            self.height = self.height / 2.0
+        cmp.height = self.height
+        closeBox = soButton(GUI.Window())
+        cmp = closeBox.component
+        cmp.horizontalPositionMode = 'PIXEL'
+        cmp.verticalPositionMode = 'PIXEL'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.width = 18
+        cmp.height = 18
+        closeBox.initVSC('soGUI/elements/closeBox.xml')
+        closeBox.onBound()
+        closeBox.setVisualState('normal')
+        closeBox.onClick = self.destroy
+        self.component.addChild(cmp, 'closeBox')
+        if BigWorld.isKeyDown(BigWorld.stringToKey('F2')) and BigWorld.player().isAdminAccess():
+            self._isDebugInfo = True
+            dev_button = soButton(GUI.Window())
+            cmp = dev_button.component
+            cmp.horizontalPositionMode = 'PIXEL'
+            cmp.verticalPositionMode = 'PIXEL'
+            cmp.widthMode = cmp.heightMode = 'PIXEL'
+            cmp.horizontalAnchor = 'LEFT'
+            cmp.verticalAnchor = 'TOP'
+            cmp.colour = (255, 255, 255, 255)
+            cmp.materialFX = 'BLEND'
+            cmp.width = 18
+            cmp.height = 18
+            dev_button.initVSC('soGUI/elements/plusBtn.xml')
+            dev_button.onBound()
+            dev_button.setVisualState('normal')
+            dev_button.onClick = self.devClick
+            self.component.addChild(cmp, 'dev_button')
+        if BigWorld.isKeyDown(BigWorld.stringToKey('F2')):
+            btn = soButton(GUI.Window(''))
+            cmp = btn.component
+            cmp.verticalPositionMode = cmp.horizontalPositionMode = 'PIXEL'
+            cmp.widthMode = cmp.heightMode = 'PIXEL'
+            cmp.horizontalAnchor = 'RIGHT'
+            cmp.verticalAnchor = 'TOP'
+            cmp.width = 130
+            cmp.height = 29
+            cmp.position = (self.width - 55, 1, 0.0)
+            btn.initVSC('soGUI/elements/button_medium.xml')
+            btn.onBound()
+            btn.onClick = lambda *e: BigWorld.player().dumpItemToHDD(self._item)
+            cmp.label.text = '<Dump item>'
+            btn._updateVisualState()
+            self.component.addChild(cmp, 'dev_dump_btn')
+        btnToggleHeight = soButton(GUI.Window())
+        cmp = btnToggleHeight.component
+        cmp.horizontalPositionMode = 'PIXEL'
+        cmp.verticalPositionMode = 'PIXEL'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.horizontalAnchor = 'RIGHT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.width = 18
+        cmp.height = 18
+        btnToggleHeight.initVSC('soGUI/elements/full.xml')
+        btnToggleHeight.onBound()
+        btnToggleHeight.setVisualState('normal')
+        btnToggleHeight.onClick = self.onDblClick
+        self.component.addChild(cmp, 'btnToggleHeight')
+        showhide_dw = soButton(GUI.Window())
+        cmp = showhide_dw.component
+        cmp.horizontalPositionMode = 'PIXEL'
+        cmp.verticalPositionMode = 'PIXEL'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.width = 18
+        cmp.height = 18
+        cmp.position = (71, 31, 0.0)
+        showhide_dw.initVSC('soGUI/elements/eye.xml')
+        showhide_dw.onBound()
+        showhide_dw.setVisualState('normal')
+        showhide_dw.onClick = self.switchDW
+        self.component.addChild(cmp, 'hideDummy')
+        comp = GUI.Text(lc('Inventory.client.inspect3dmodel'), 'RobotoCondensedRegular_14.font')
+        comp.colour = (60, 60, 60, 255)
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('LEFT', 'TOP')
+        comp.position = (100, 31, 0.5)
+        self.component.addChild(comp)
+
+    def devClick(self):
+        from gui_const import MESSAGEBOX
+
+        def spoilCondition(event, data):
+            try:
+                condition = int(data['add_controls']['condition'])
+            except:
+                return
+
+            entity.cell.setItemCondition(self._item['complexItemID'], condition)
+
+        def setGasMaskFilterCondition(event, data):
+            try:
+                condition = int(data['add_controls']['gm_filter_cond'])
+            except:
+                return
+
+            filter_type = item_inconstant_param.get(ItemsCatalog.INC_GASMASK_FILTER_TYPE)
+            value = ItemsUtils.ConditionToINCCondition(filter_type, condition)
+            entity.cell.setGasMaskFilterCondition(self._item['complexItemID'], value)
+
+        def changeAmount(event, data):
+            pass
+
+        def setMunitionAmount(event, data):
+            try:
+                value = int(data['add_controls']['munition'])
+            except:
+                return
+
+            entity.cell.setItemMunitionAmount(self._item['complexItemID'], 0, value)
+
+        def setRepairsAmount(event, data):
+            try:
+                value = int(data['add_controls']['repairs'])
+            except:
+                return
+
+            entity.cell.setItemRepairsAmount(self._item['complexItemID'], value)
+
+        def setPollution(event, data):
+            try:
+                value1 = int(round(float(data['add_controls']['pollution1']) * ItemsCatalog.POLLUTION_PERCENT_MODIFYER))
+                value2 = int(round(float(data['add_controls']['pollution2']) * ItemsCatalog.POLLUTION_PERCENT_MODIFYER))
+                value3 = int(round(float(data['add_controls']['pollution3']) * ItemsCatalog.POLLUTION_PERCENT_MODIFYER))
+            except Exception:
+                traceback.print_stack()
+                traceback.print_exc()
+                return
+
+            entity.cell.setItemPollution(self._item['complexItemID'], [value1, value2, value3])
+
+        def setMunitionGreandeAmount(event, data):
+            try:
+                value = int(data['add_controls']['munition_grenade'])
+            except:
+                return
+
+            entity.cell.setItemMunitionAmount(self._item['complexItemID'], 1, value)
+
+        def setLifeTime(event, data):
+            try:
+                value = int(data['add_controls']['charge'])
+            except:
+                print 'InfoWindow (ERROR), only integer values allowed', data['add_controls']['charge']
+                return
+
+            timeToLive = item_param['TimeToLive']
+            delta = 0
+            creation_time = int(value - BWPersonality.gpd.time_diff + time.time() - timeToLive - delta)
+            entity.cell.setArtefactTime(self._item['complexItemID'], creation_time)
+
+        def setItemLifeTime(event, data):
+            try:
+                value = int(data['add_controls']['destroy_time'])
+            except:
+                print 'InfoWindow (ERROR), only integer values allowed', data['add_controls']['destroy_time']
+                return
+
+            TTL = item_param['TTL']
+            creation_time = int(value - BWPersonality.gpd.time_diff + time.time() - TTL)
+            entity.cell.setItemLifeTime(self._item['complexItemID'], creation_time)
+
+        def CBsetWaterSipsPot(event, data):
+            try:
+                value = int(data['add_controls']['WaterSipsPot'])
+            except:
+                print 'InfoWindow (ERROR), only integer values allowed', data['add_controls']['WaterSipsPot']
+                return
+
+            entity.cell.CBsetWaterSipsPot(self._item['complexItemID'], value)
+
+        def CBsetPackageUse(event, data):
+            try:
+                value = int(data['add_controls']['PackageUse'])
+            except:
+                print 'InfoWindow (ERROR), only integer values allowed', data['add_controls']['PackageUse']
+                return
+
+            entity.cell.CBsetPackageUse(self._item['complexItemID'], value)
+
+        def CBsetUseArtefact(event, data):
+            try:
+                value = int(data['add_controls']['UseArtf'])
+            except:
+                print 'InfoWindow (ERROR), only integer values allowed', data['add_controls']['UseArtf']
+                return
+
+            entity.cell.CBsetUseArtefact(self._item['complexItemID'], value)
+
+        def setBatteryLevel(event, data):
+            try:
+                value = int(data['add_controls']['charge'])
+            except:
+                print 'InfoWindow (ERROR), only integer values allowed', data['add_controls']['charge']
+                return
+
+            entity.cell.setBatteryLevel(self._item['complexItemID'], value)
+
+        def setBlockEndTime(event, data):
+            human_time = data['add_controls']['block end time'].strip()
+            if not human_time:
+                return
+            human_time = str(human_time)
+            import datetime
+            time.tzname = ('RTZ 4 (\xe7\xe8\xec\xe0)', 'RTZ 4 (\xeb\xe5\xf2\xee)')
+            d = datetime.datetime.strptime(human_time, '%d/%m/%Y %H:%M:%S')
+            timestamp = time.mktime(d.timetuple())
+            timestamp = int(timestamp)
+            item_inconstant_param = ItemsUtils.GetComplexItemInconstanParams(self._item)
+            if timestamp == int(item_inconstant_param[ItemsCatalog.INC_FROM_STEAM]):
+                return
+            player = BigWorld.player()
+            cmd = '/changeItemBlockEndTime %s %s' % (item_id, timestamp)
+            if self._isAttach:
+                cmd += ' %s' % self._isAttach
+            player.runCommand(cmd)
+
+        def callbackHandler(event, data):
+            if event != MESSAGEBOX.EVENT_BTNPRESS:
+                return
+            if data['btn'] in (MESSAGEBOX.BTN_OK, MESSAGEBOX.BTN_YES):
+                for localCallback in localCallbacks:
+                    localCallback(event, data)
+
+        controls = []
+        entity = BigWorld.player()
+        localCallbacks = []
+
+        def createLabel(id, caption):
+            return {'type': MESSAGEBOX.ADDCONTROL_TEXTFIELD,
+             'ID': id,
+             'text': caption,
+             'hAnchor': MESSAGEBOX.ANCHOR_CENTER}
+
+        def createEdit(id, text = ''):
+            return {'type': MESSAGEBOX.ADDCONTROL_EDIT,
+             'ID': id,
+             'hAnchor': MESSAGEBOX.ANCHOR_CENTER,
+             'active': False,
+             'default': text}
+
+        item_type = self._item['complexItemType']
+        item_id = self._item['complexItemID']
+        item_param = ItemsCatalog.GetItemParam(item_type)
+        item_inconstant_param = ItemsUtils.GetComplexItemInconstanParams(self._item, entity)
+        item_class = ItemsCatalog.GetItemClass(item_type)
+        try:
+            condition = str(ItemsUtils.GetItemCondition(None, self._item, item_inconstant_param, item_param))
+        except:
+            print item_type, self._item, item_inconstant_param
+            traceback.print_exc()
+
+        condition_caption = lc('Inventory.client.STATE').format('')
+        condition_caption += ' /from ' + str(grades_utils.get_current_param('MaxCondition', self._item, entity) or '0')
+        if item_inconstant_param.get(ItemsCatalog.INC_FROM_STEAM):
+            human_time = time.strftime('%d/%m/%Y %H:%M:%S', time.gmtime(item_inconstant_param[ItemsCatalog.INC_FROM_STEAM]))
+            controls.append(createLabel('block end time', u'block end time(GMT):'))
+            controls.append(createEdit('block end time', human_time))
+            localCallbacks.append(setBlockEndTime)
+        if item_class == ItemsCatalog.WEAPON:
+            weapon = clweapon.ClWeapon(self._item, parent_entity=entity)
+            munition_caption = lc('Inventory.client.NUM_ARMED').format('', '')
+            controls.append(createLabel('repairs', 'repairs'))
+            controls.append(createEdit('repairs', str(item_inconstant_param.get(ItemsCatalog.INC_REPAIRS_NUMBER, 0))))
+            controls.append(createLabel('condition', condition_caption))
+            controls.append(createEdit('condition', str(weapon.getCondition())))
+            pollut = ItemsUtils.GetItemPollution(self._item, entity=BigWorld.player())
+            controls.append(createLabel('pollution1', lc('Inventory.client.POLLUTION_SCORCHING')))
+            controls.append(createEdit('pollution1', str(pollut[ItemsCatalog.INC_POLLUTION_SCORCHING])))
+            controls.append(createLabel('pollution2', lc('Inventory.client.POLLUTION_LEADING')))
+            controls.append(createEdit('pollution2', str(pollut[ItemsCatalog.INC_POLLUTION_LEADING])))
+            controls.append(createLabel('pollution3', lc('Inventory.client.POLLUTION_COPPERING')))
+            controls.append(createEdit('pollution3', str(pollut[ItemsCatalog.INC_POLLUTION_COPPERING])))
+            controls.append(createLabel('munition', munition_caption))
+            controls.append(createEdit('munition', str(weapon.getAmmoNumber() or 0)))
+            if weapon.getLauncherParam():
+                controls.append(createLabel('munition_grenade', u'\u0417\u0430\u0440\u044f\u0436\u0435\u043d\u043e \u0432 \u043f\u043e\u0434\u0441\u0442\u0432. \u0433\u0440.'))
+                controls.append(createEdit('munition_grenade', str(weapon.getCurrentGrenadeNumber() or 0)))
+            localCallbacks.append(setRepairsAmount)
+            localCallbacks.append(spoilCondition)
+            localCallbacks.append(setMunitionAmount)
+            localCallbacks.append(setPollution)
+            localCallbacks.append(setMunitionGreandeAmount)
+        elif item_class == ItemsCatalog.PART and item_param['PartType'] == ItemsCatalog.MAGAZINE:
+            munition_caption = lc('Inventory.client.NUM_ARMED').format('', '')
+            controls.append(createLabel('munition', munition_caption))
+            controls.append(createEdit('munition', str(item_inconstant_param.get(ItemsCatalog.INC_MUNITION_NUMBER, 0))))
+            localCallbacks.append(setMunitionAmount)
+        elif item_class == ItemsCatalog.CLOTH:
+            controls.append(createLabel('condition', condition_caption))
+            controls.append(createEdit('condition', condition))
+            localCallbacks.append(spoilCondition)
+            if item_param.get('GasMaskFilterClass'):
+                filter_type = item_inconstant_param.get(ItemsCatalog.INC_GASMASK_FILTER_TYPE)
+                filter_cond = item_inconstant_param.get(ItemsCatalog.INC_GASMASK_FILTER_COND)
+                if entity.EquippedGasMaskCond['gasmask_id'] == item_id:
+                    filter_cond = entity.EquippedGasMaskCond['cond']
+                filter_max_cond = 0
+                if filter_type:
+                    filter_max_cond = ItemsCatalog[filter_type].get('MaxCondition')
+                    int_filter_cond = ItemsUtils.INCConditionToCondition(filter_type, filter_cond)
+                controls.append(createLabel('filter_condition', 'GasMaskiIlter cond: /from %s' % filter_max_cond))
+                if filter_type:
+                    controls.append(createEdit('gm_filter_cond', str(int_filter_cond)))
+                    localCallbacks.append(setGasMaskFilterCondition)
+        elif item_class in [ItemsCatalog.AMMO, ItemsCatalog.BUFF]:
+            pass
+        elif item_class == ItemsCatalog.ARTIFACT:
+            charge_caption = lc('Inventory.client.ARTIFACT_CHARGE_REMAINING')
+            controls.append(createLabel('charge', charge_caption))
+            depletion_time = ItemsUtils.GetArtefactDepleetionTime(self._item, item_param, BWPersonality.gpd.time_diff)
+            if depletion_time:
+                depletion_time = str(int(depletion_time))
+            else:
+                depletion_time = u'broken'
+            controls.append(createEdit('charge', depletion_time))
+            localCallbacks.append(setLifeTime)
+        elif item_class in [ItemsCatalog.GADGET, ItemsCatalog.PART]:
+            controls.append(createLabel('condition', condition_caption))
+            controls.append(createEdit('condition', condition))
+            localCallbacks.append(spoilCondition)
+        elif item_class in [ItemsCatalog.EXPLOSION]:
+            controls.append(createLabel('destroy_time', 'destroy_time'))
+            destroy_time = ItemsUtils.GetItemDestroyTime(self._item, item_param)
+            if destroy_time:
+                destroy_time = int(destroy_time)
+            destroy_time = str(destroy_time)
+            controls.append(createEdit('destroy_time', destroy_time))
+            localCallbacks.append(setItemLifeTime)
+        if 'ManualFuel' in item_param:
+            charge_caption = lc('Inventory.client.BATTERY_LEVEL')
+            charge = str(int(float(ItemsUtils.GetBatteryLevel(self._item)) / ItemsUtils.GetMaxBatteryLevel(self._item) * 100.0))
+            controls.append(createLabel('charge', charge_caption))
+            controls.append(createEdit('charge', charge))
+            controls.append(createLabel('condition', condition_caption))
+            controls.append(createEdit('condition', condition))
+            localCallbacks.append(setBatteryLevel)
+            localCallbacks.append(spoilCondition)
+        if item_param.get('waterNumberOfSips'):
+            controls.append(createLabel('WaterSipsPot', 'water sips /%s' % item_param['waterNumberOfSips']))
+            controls.append(createEdit('WaterSipsPot', ItemsUtils.getWaterSipsPot(self._item)))
+            localCallbacks.append(CBsetWaterSipsPot)
+        if item_param.get('PackageSize'):
+            max_package_size = ItemsUtils.GetItemPackageSize(item_type, item=self._item)
+            uses = ItemsUtils.GetItemNumberOrUses(self._item)
+            controls.append(createLabel('PackageUse', 'PackageUse/%s' % max_package_size))
+            controls.append(createEdit('PackageUse', uses))
+            localCallbacks.append(CBsetPackageUse)
+        if item_param.get('MaxUseArtefact'):
+            max_use = item_param['MaxUseArtefact']
+            number_use = item_inconstant_param.get(ItemsCatalog.INC_USES_CONTAINER_NUMBER, 0)
+            controls.append(createLabel('UseArtf', 'UseArtefact/%s' % max_use))
+            controls.append(createEdit('UseArtf', number_use))
+            localCallbacks.append(CBsetUseArtefact)
+        cache = set()
+        for i in xrange(len(controls) - 1, -1, -1):
+            control = controls[i]
+            unique = (control['ID'], control['type'])
+            if unique in cache:
+                del controls[i]
+                continue
+            cache.add(unique)
+
+        BWPersonality.GUICore.showMsgBox(id or 'inputBox.default', isModal=False, x=0.0, y=0.0, width=300, caption='cheatbox', forcePos=False, parent_gui_id=None, bind_to_parent=False, btn_set=[{'type': MESSAGEBOX.BTN_OK,
+          'width': 80}, {'type': MESSAGEBOX.BTN_CANCEL,
+          'width': 80}], timeout=-1, closeBox=True, defaultAction=MESSAGEBOX.BTN_YES, addControls=controls, callback=callbackHandler)
+        return
+
+    def _do_dummy_win_reposition(self):
+        if self.dummy_win_mode == DummyWinMode.Inside:
+            self._dw.do_reposition(self.component.width, 400, self.dummy_win_mode)
+            self._dw.component.position[1] = 98
+        elif self.dummy_win_mode == DummyWinMode.Outside:
+            self._dw.component.position[1] = 0
+            sw, sh = BigWorld.screenSize()
+            self._dw.do_reposition(sw, sh, self.dummy_win_mode)
+        else:
+            raise NotImplementedError
+
+    @property
+    def dummy_win_mode(self):
+        return self._dummy_win_mode
+
+    @dummy_win_mode.setter
+    def dummy_win_mode(self, value):
+        if self._dummy_win_mode == value:
+            return
+        self._dummy_win_mode = value
+        if self.dummy_win_mode == DummyWinMode.Inside:
+            BWPersonality.GUICore.worldLayer.delChild(self._dw.component)
+            self._dw.component.position[2] = 0
+            self.component.addChild(self._dw.component)
+        elif self.dummy_win_mode == DummyWinMode.Outside:
+            self.component.delChild(self._dw.component)
+            self._dw.component.position[2] = 0.1
+            BWPersonality.GUICore.worldLayer.addChild(self._dw.component)
+        else:
+            raise RuntimeError
+        self._do_dummy_win_reposition()
+
+    def setupContent(self):
+        comp = GUI.Window('soGUI/frame/paint/white.dds')
+        comp.materialFX = 'SOLID'
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('LEFT', 'BOTTOM')
+        comp.wm, comp.hm = ('CLIP', 'PIXEL')
+        comp.width, comp.height = self.component.width, 1
+        comp.position = (0, 98, 0.2)
+        comp.colour = (60, 60, 60, 255)
+        self.component.addChild(comp)
+        comp = GUI.Window('soGUI/elements/background_3dmodel.dds')
+        comp.materialFX = 'SOLID'
+        comp.clippable = False
+        self._dw = DummyWindow(comp)
+        self._dw.add_listener(self._on_dummywin_event)
+        comp.position = (0, 0, 0)
+        self.component.addChild(comp, 'dummy')
+        cmp = GUI.Frame2('soGUI/frame/basic_frame_no_footer.dds')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'CLIP'
+        cmp.widthMode = cmp.heightMode = 'CLIP'
+        cmp.horizontalAnchor = cmp.verticalAnchor = 'CENTER'
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.width = cmp.height = 2.0
+        cmp.position = (0.0, 0.0, 0.9)
+        self.component.addChild(cmp, 'skin')
+        cmp = GUI.Simple('textures/default/white.dds')
+        cmp.horizontalPositionMode = 'CLIP'
+        cmp.verticalPositionMode = 'PIXEL'
+        cmp.widthMode = 'CLIP'
+        cmp.heightMode = 'PIXEL'
+        cmp.horizontalAnchor = 'CENTER'
+        cmp.verticalAnchor = 'TOP'
+        cmp.width = 2
+        cmp.height = 3
+        cmp.position = (0, 27, 0.05)
+        cmp.colour = (150, 0, 0, 150)
+        cmp.materialFX = 'BLEND'
+        self.component.addChild(cmp, 'red_indicator')
+        self.red_indicator_shader = GUI.AlphaShader()
+        self.red_indicator_shader.mode = 'ALL'
+        self.red_indicator_shader.speed = 3
+        self.red_indicator_shader.alpha = 1.0
+        self.component.red_indicator.addShader(self.red_indicator_shader, 'fader')
+        self.red_indicator_shader.reset()
+        self.red_indicator_shader.alpha = 0.0
+        slot = ItemIcon.ItemIcon(GUI.Window(), width=self.width - 8, height=65, WID=self.WID, is_inventory_item=self._is_inventory_item)
+        cmp = slot.component
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.position = (2, 30, 0)
+        self.component.addChild(cmp, 'slotitem')
+        cmp = GUI.Text('TTL: --')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.horizontalAnchor = 'RIGHT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.font = 'RobotoCondensedRegular_14.font'
+        cmp.colour = (255, 200, 120, 200)
+        cmp.materialFX = 'BLEND'
+        cmp.multiline = False
+        cmp.position = (self.width - 5, 70, 0.0)
+        self.component.addChild(cmp, 'ttl')
+
+    def createTextNode(self):
+        txt = ComplexTextField(self.width - 10, self.height - 89 - 15, self.component)
+        cmp = txt.component
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.position = (5, 99, 0.2)
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        self.component.addChild(cmp, 'ctext')
+
+    def _on_dummywin_event(self, event_type, data):
+        if event_type == EventType.OnFullClick:
+            if self.dummy_win_mode == DummyWinMode.Inside:
+                self.dummy_win_mode = DummyWinMode.Outside
+            else:
+                self.dummy_win_mode = DummyWinMode.Inside
+        elif event_type == EventType.OnCloseClick:
+            self.destroy()
+
+    def handleDragStartEvent(self, component):
+        return True
+
+    def handleDragStopEvent(self, component):
+        return True
+
+    def handleMouseEvent(self, component, event):
+        if self._dw.component.visible:
+            return False
+        if event.dz:
+            if event.dz > 0:
+                self.component.ctext.script.scrolledUP()
+            elif event.dz < 0:
+                self.component.ctext.script.scrolledDOWN()
+            return True
+        return False
+
+    def onDblClick(self):
+        if BigWorld.isKeyDown(BigWorld.stringToKey('F2')) and BigWorld.player().isAdminAccess():
+            if not self._isDebugInfo:
+                self.setupRoot()
+                self._isDebugInfo = True
+        self._half_height = not self._half_height
+        Settings().setSetting('info_win_half_height', self._half_height)
+        self.doReposition()
+
+    lastPressed = 0
+
+    def handleMouseButtonEvent(self, comp, event):
+        key = event.key
+        down = event.isKeyDown()
+        if event.isKeyDown() and event.key == Keys.KEY_LEFTMOUSE:
+            if BigWorld.time() - self.lastPressed <= 0.2:
+                self.onDblClick()
+            self.lastPressed = BigWorld.time()
+        if key == Keys.KEY_LEFTMOUSE:
+            if down:
+                self.last_depth = self.imanger.getTopPosition()
+                self.component.position[2] = self.last_depth
+                GUI.reSort()
+                BWPersonality.GUICore.worldLayer.reSort()
+        if key == Keys.KEY_RIGHTMOUSE and not down:
+            if BigWorld.player().isAdminAccess() and BigWorld.isKeyDown(BigWorld.stringToKey('F2')):
+                self.createContextMenu()
+                return True
+        return DraggableComponent.handleMouseButtonEvent(self, comp, event)
+
+    def createContextMenu(self):
+        if not self._item:
+            return
+        else:
+            item_type = self._item['complexItemType']
+            item_id = self._item['complexItemID']
+            param = ItemsCatalog[item_type]
+            BW_PATH = '../res/'
+            BW_PATH = os.path.abspath(BW_PATH)
+            BW_PATH = os.path.normpath(BW_PATH)
+            from ordereddict import OrderedDict
+            actions = OrderedDict()
+            actions['copy_type'] = 'copy type %s' % item_type
+            actions['copy_id'] = 'copy unical ID %s' % item_id
+            actions['open_ItemsEditor'] = 'ItemsEditor edit %s' % item_type
+            var_name = ItemsCatalog.GetItemVarName(item_type)
+            if var_name:
+                actions['copy_var_name'] = 'copy var: %s' % var_name
+            self._model_path = param.get('ModelPath')
+            if not self._model_path and param.get('ModelNames'):
+                self._model_path = param['ModelNames'].values()[0]
+            if self._model_path:
+                self._model_full_path = os.path.join(BW_PATH, self._model_path)
+                self._model_full_path = os.path.normpath(self._model_full_path)
+                lc_name = os.path.basename(self._model_path)
+                actions['copy_full_path'] = 'copy full path:   %s' % lc_name
+                actions['copy_path'] = 'copy game path'
+                actions['open_path'] = 'open folder model'
+            all_models = [param.get('ModelPath', None)]
+            all_models += param.get('ModelNames', {}).values()
+            all_models += [ m[1] for m in param.get('AlternativeModelsList', []) ]
+            for models in all_models:
+                if type(models) not in (list, tuple):
+                    models = [models]
+                for m in models:
+                    if not m:
+                        continue
+                    full_path = os.path.join(BW_PATH, m)
+                    full_path = os.path.normpath(full_path)
+                    actions['me_path', full_path] = "ModelEditor '%s'" % os.path.basename(m)
+
+            if not actions:
+                return
+            BWPersonality.GUICore.addListener('contextMenuEvent', self.contextMenuEvent)
+            BWPersonality.GUICore.showContextMenu(987, actions, sort_keys=False)
+            return
+
+    def _contextAction(self, ev_id):
+        import subprocess
+        if not self._item:
+            return
+        item_type = self._item['complexItemType']
+        item_id = self._item['complexItemID']
+        if ev_id == 'copy_type':
+            BigWorld.clipboardSetPlainText(str(item_type))
+        elif ev_id == 'copy_id':
+            BigWorld.clipboardSetPlainText(str(item_id))
+        elif ev_id == 'open_ItemsEditor':
+            import __debug.debug_utils
+            __debug.debug_utils.openItemsEditor(item_type)
+        elif ev_id == 'copy_var_name':
+            BigWorld.clipboardSetPlainText(str(ItemsCatalog.GetItemVarName(item_type)))
+        elif ev_id == 'copy_path':
+            BigWorld.clipboardSetPlainText(self._model_path)
+        elif ev_id == 'copy_full_path':
+            BigWorld.clipboardSetPlainText(self._model_full_path)
+        elif ev_id == 'open_path':
+            subprocess.Popen('explorer /select,"%s"' % self._model_full_path)
+        elif type(ev_id) is tuple:
+            if ev_id[0] == 'me_path':
+                full_path = ev_id[1]
+                print 'modelEditor->', repr(full_path)
+                editor = '../sys/tools/modeleditor/x64/modeleditor.exe'
+                editor = os.path.abspath(editor)
+                cwd = os.path.split(editor)[0]
+                subprocess.Popen('%s "%s"' % (editor, full_path), cwd=cwd)
+
+    def contextMenuEvent(self, interface_id, ev_id, caption, event, data):
+        if interface_id not in (987,):
+            return
+        if event == soGUI.soContextMenuComponent.EVENT_SELECT:
+            try:
+                self._contextAction(ev_id)
+            except:
+                traceback.print_exc()
+
+            BWPersonality.GUICore.removeListener('contextMenuEvent', self.contextMenuEvent)
+        elif event == soGUI.soContextMenuComponent.EVENT_SHOW:
+            pass
+        elif event == soGUI.soContextMenuComponent.EVENT_CANCEL:
+            try:
+                BWPersonality.GUICore.removeListener('contextMenuEvent', self.contextMenuEvent)
+            except:
+                traceback.print_exc()
+
+    def handleMouseClickEvent(self, component):
+        return False
+
+    def handleMouseEnterEvent(self, component):
+        return True
+
+    def handleMouseLeaveEvent(self, component):
+        return True
+
+    def switchDW(self):
+        if self._dw.component.visible:
+            self._dw.hide()
+        else:
+            self._dw.show(self._item)
+        self.component.moveFocus = not self._dw.component.visible
+
+    def moveSelfToTop(self):
+        self.last_depth = self.imanger.getTopPosition()
+        self.component.position[2] = self.last_depth
+        BWPersonality.GUICore.worldLayer.delChild(self.WID)
+        BWPersonality.GUICore.worldLayer.addChild(self.component, self.WID)
+        GUI.reSort()
+        BWPersonality.GUICore.worldLayer.reSort()
+
+    def show(self, item = None, isAttach = False, _is_inventory_item = True, move_top = True):
+        self._isAttach = isAttach
+        if not self.component.visible:
+            self.component.position[0] += random.randint(-20, 20)
+            self.component.position[1] += random.randint(1, 5)
+        self.component.visible = 1
+        self._item = item
+        try:
+            self.component.slotitem.script.setItem(item, isAttach)
+        except:
+            traceback.print_exc()
+
+        sW, sH = BigWorld.screenSize()
+        if self._is_new_window:
+            self.component.position[0] += random.randint(-1, 10)
+            self.component.position[1] += random.randint(1, 4)
+        else:
+            self.red_indicator_shader.alpha = 1.0
+            self.red_indicator_shader.reset()
+            self.red_indicator_shader.alpha = 0.0
+        if move_top:
+            self.moveSelfToTop()
+        self.doReposition()
+        self.component.horizontalPositionMode = 'CLIP'
+        self.component.verticalPositionMode = 'CLIP'
+        text = ItemInfoText(self._item, isAttach=self._isAttach, isDebugInfo=self._isDebugInfo, color_text=colorCodes.tf3_gray_text)
+        try:
+            text = client_utils.colorise_text(text)
+        except:
+            traceback.print_exc()
+            print repr(text)
+
+        self.component.ctext.script.setText(text, self._item['complexItemType'])
+        BigWorld.callback(0.2, functools.partial(self.component.ctext.script.setGradeItem, self._item))
+        caption = u'INFO'
+        ttlstr = u''
+        if item:
+            item_type = item['complexItemType']
+            item_param = copy.deepcopy(ItemsCatalog.GetItemParam(item_type))
+            item_class = ItemsCatalog.GetItemClass(item_type)
+            caption = Inventory.GetItemName(item)
+            item_ttl = ItemsUtils.GetItemDestroyTime(item, item_param)
+            if item_ttl is not None:
+                ttlstr = lc('Inventory.client.ITEM_TIME_TO_LIVE').format(ItemsUtils.timeToStringTTL(item_ttl))
+            if item_class in [ItemsCatalog.GADGET, ItemsCatalog.CLOTH]:
+                if item_param.has_key('ManualFuel'):
+                    battery_level = ItemsUtils.GetBatteryLevel(item)
+                    max_battery_level = ItemsUtils.GetMaxBatteryLevel(item)
+                    battery_level_percent = round(100.0 * battery_level / max_battery_level, 1)
+                    battery_level = groupNumber(battery_level, '`')
+                    max_battery_level = groupNumber(max_battery_level, '`')
+                    ttlstr = lc('Inventory.client.BATTERY_LEVEL').format(battery_level_percent)
+        self.component.ttl.text = ttlstr
+        self.component.caption.text = caption
+        self._is_new_window = False
+        self.onBound()
+        return
+
+    def hide(self):
+        self.component.visible = False
+        self.dummy_win_mode = DummyWinMode.Inside
+        self._dw.hide()
+
+    def destroy(self):
+        self.hide()
+        if self.component.parent:
+            BWPersonality.GUICore.worldLayer.delChild(self.WID)
+        if self.imanger:
+            self.imanger.onDestoyItemInfoWindow(self.WID)
+        self.component.closeBox.script.onClick = None
+        self.component.hideDummy.script.onClick = None
+        self.component.btnToggleHeight.script.onClick = None
+        self.component.script = None
+        self.component = None
+        BWPersonality.GUICore.setBestCursor()
+        return
+
+    def equipItem(self, *e):
+        return False
+
+
+def ItemInfoText(item, isAttach = False, isDebugInfo = False, color_text = None):
+    try:
+        player = BigWorld.player()
+        return item_info_text_generator.GetItemInfoText(player, item['complexItemType'], item, isAttach=isAttach, isDebugInfo=isDebugInfo, color=color_text)
+    except:
+        traceback.print_exc()
+        return u'upss, see error in python.log'

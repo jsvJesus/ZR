@@ -1,0 +1,114 @@
+# Embedded file name: ./client/soGUI/pda_ui/anomaly_seeker.py
+import math_bw
+import ItemsUtils
+import BigWorld
+import sys
+from utils import Listenable
+from Constants import ScanArtsMode
+import pda_constants as pc
+import sounds_manager
+
+class EventType:
+    OnAnomalyChanged, = ((r, 'anomaly_seeker') for r in range(1))
+
+
+class AnomalySeeker(Listenable):
+
+    def __init__(self):
+        Listenable.__init__(self)
+        self._last_scan_time = 0
+        self._nearest_anomaly = None
+        self._active_anomaly = None
+        self._frequency = 0
+        self._last_bip_time = 0
+        return
+
+    def on_show(self):
+        self.nearest_anomaly = None
+        return
+
+    def tick(self):
+        if BigWorld.time() >= self._last_scan_time + 2:
+            BigWorld.player().cell.get_anomalies_for_extractor(ScanArtsMode.Pda)
+            self._last_scan_time = BigWorld.time()
+        if self.nearest_anomaly:
+            if not self._check_dector_distance(self.nearest_anomaly):
+                self.nearest_anomaly = None
+        self._update_active_anomaly()
+        if self.frequency:
+            period = math_bw.lerp(2, 0.2, self.frequency)
+            if BigWorld.time() >= self._last_bip_time + period:
+                sound = sounds_manager.playSound(pc.SOUND_TO_BEEP, BigWorld.player())
+                pitch = self.frequency
+                sound.set_param('proximity', pitch)
+                self._last_bip_time = BigWorld.time()
+        return
+
+    def _check_dector_distance(self, anomaly):
+        return anomaly.position.distTo(BigWorld.player().position) <= ItemsUtils.DETECTOR_RANGE
+
+    def _check_extract_distance(self, anomaly):
+        return anomaly.position.distTo(BigWorld.player().position) <= ItemsUtils.EXTRACTION_RANGE
+
+    def got_scan_result(self, anomaly_ids):
+        nearest_anomaly = None
+        smallest_dist = sys.float_info.max
+        for anomaly_id in anomaly_ids:
+            anomaly = BigWorld.entities.get(anomaly_id)
+            if not anomaly or not self._check_dector_distance(anomaly):
+                continue
+            distance = anomaly.position.distTo(BigWorld.player().position)
+            if distance < smallest_dist:
+                nearest_anomaly = anomaly
+                smallest_dist = distance
+
+        self.nearest_anomaly = nearest_anomaly
+        return
+
+    def on_hide(self):
+        self.nearest_anomaly = None
+        return
+
+    def _update_active_anomaly(self):
+        frequency = 0
+        if self.nearest_anomaly and self._check_extract_distance(self.nearest_anomaly):
+            self.anomaly = self.nearest_anomaly
+        else:
+            self.anomaly = None
+        if self.nearest_anomaly and not self.anomaly:
+            distance = self.nearest_anomaly.position.distTo(BigWorld.player().position)
+            ratio = math_bw.inverse_lerpclam(ItemsUtils.DETECTOR_RANGE, ItemsUtils.EXTRACTION_RANGE, distance)
+            frequency = ratio
+        self.frequency = frequency
+        return
+
+    @property
+    def frequency(self):
+        return self._frequency
+
+    @frequency.setter
+    def frequency(self, value):
+        if self._frequency != value:
+            self._frequency = value
+
+    @property
+    def nearest_anomaly(self):
+        return self._nearest_anomaly
+
+    @nearest_anomaly.setter
+    def nearest_anomaly(self, value):
+        if self._nearest_anomaly == value:
+            return
+        self._nearest_anomaly = value
+        self._update_active_anomaly()
+
+    @property
+    def anomaly(self):
+        return self._active_anomaly
+
+    @anomaly.setter
+    def anomaly(self, value):
+        if self._active_anomaly == value:
+            return
+        self._active_anomaly = value
+        self.notify_listeners(EventType.OnAnomalyChanged)

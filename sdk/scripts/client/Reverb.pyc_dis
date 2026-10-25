@@ -1,0 +1,130 @@
+# Embedded file name: ./client/Reverb.py
+import BigWorld
+import GUI
+from sounds_manager import getSnapshot
+from ClientFiguredTrapInterface import ClientFiguredTrapInterface
+import BWPersonality
+DEBUG = False
+
+def switchDebugMode():
+    global DEBUG
+    DEBUG = not DEBUG
+    for e in BigWorld.entities.values():
+        if isinstance(e, Reverb):
+            e.updateDebugMode()
+
+    return DEBUG
+
+
+class Reverb(BigWorld.Entity, ClientFiguredTrapInterface):
+
+    def __init__(self):
+        BigWorld.Entity.__init__(self)
+        ClientFiguredTrapInterface.__init__(self)
+        self.snapshot = None
+        self.model_debug = None
+        self.model_bound = None
+        self._textnode = None
+        self.desc_text = ''
+        return
+
+    def updateDebugMode(self):
+        if DEBUG and not self.model_debug:
+            model_name, sizeX, sizeZ = self.get_model_and_size()
+            if model_name:
+                self.model_bound = BigWorld.Model(model_name)
+                self.model_bound.setWorldTransform(self.matrix)
+                self.addModel(self.model_bound)
+                self.model_bound.position = self.position + (0, 1, 0)
+                self.model_bound.scale = (sizeX, 0.5, sizeZ)
+                self.model_bound.newScaleTest = (sizeX, 0.5, sizeZ)
+            self.model_debug = BigWorld.Model('models/bolvan/helpers/sound_node.model')
+            textnode = GUI.Text(self.desc_text)
+            textnode.explicitSize = True
+            textnode.multiline = True
+            textnode.size = (5, 1)
+            textnode.colour = (255, 0, 0, 255)
+            textnode.filterType = 'LINEAR'
+            textnode.verticalAnchor = 'BOTTOM'
+            textnode.position = (0, 1, 0)
+            atch = GUI.Attachment()
+            atch.component = textnode
+            atch.faceCamera = True
+            self.model_debug.root.attach(atch)
+            self.model_debug.position = self.position
+            self.model_debug.newScaleTest = (0.3, 0.3, 0.3)
+            self.addModel(self.model_debug)
+            self._attach = atch
+            self._textnode = textnode
+            self._update_debug_text()
+        elif not DEBUG and self.model_debug:
+            self._clear_debug_attaches()
+
+    def _update_debug_text(self, is_active = False):
+        if all((not self.isDestroyed,
+         DEBUG,
+         self.model_debug,
+         self._textnode,
+         self.snapshot)):
+            self._textnode.text = self.desc_text if is_active else 'reverb stopped'
+            self._textnode.colour = (25, 118, 210, 255)
+
+    def _clear_debug_attaches(self):
+        if self.model_debug:
+            self.model_debug.root.detach(self._attach)
+            self._attach.component = None
+            self.delModel(self.model_debug)
+            self.model_debug = None
+            self._attach = None
+            self._textnode = None
+        if self.model_bound:
+            self.delModel(self.model_bound)
+            self.model_bound = None
+        return
+
+    def get_model_and_size(self):
+        model_name = None
+        sizeX, sizeZ = (None, None)
+        reverb_size = ''
+        if self.figure_type == 2:
+            model_name = 'models/bolvan/frame.model'
+            sizeX, sizeZ = self.sizeX, self.sizeZ
+            reverb_size = ', size: ({0:.3f}, {1:.3f})'.format(sizeX, sizeZ)
+        elif self.figure_type in (1, 3):
+            model_name = 'models/Test/cylinder_1m.model'
+            sizeX = sizeZ = self.radius
+            reverb_size = ', size: {0:.3f}'.format(sizeX)
+        self.desc_text = 'Reverb: {0}{1}'.format(self.presetName, reverb_size)
+        return (model_name, sizeX, sizeZ)
+
+    def onEnterWorld(self, prereqs):
+        if not self.snapshot:
+            self.snapshot = getSnapshot(self.presetName)
+            if not self.snapshot:
+                print 'ERROR: snapshot Reverb %r' % self.presetName, self.position, BWPersonality.currentSpace
+            self.updateDebugMode()
+
+    def onPlayerInside(self):
+        self.play()
+
+    def onPlayerOutside(self):
+        self.stop()
+
+    def play(self):
+        if self.snapshot:
+            self.snapshot.play()
+            self._update_debug_text(True)
+
+    def stop(self):
+        if self.snapshot:
+            self.snapshot.stop()
+            self._update_debug_text(False)
+
+    def onLeaveWorld(self):
+        ClientFiguredTrapInterface.onLeaveWorld(self)
+        self.stop()
+        if self.snapshot:
+            self.snapshot.destroy()
+        self.snapshot = None
+        self._clear_debug_attaches()
+        return

@@ -1,0 +1,134 @@
+# Embedded file name: ./client/SFX_UDO.py
+import FX
+import json
+import ResMgr
+import BigWorld
+import ResourceLoader
+from client_utils import set_pos_dir_model
+from FX.persistent_ext_bg import loadPersistentExtBG
+section = ResMgr.openSection('scripts/common/EnumProps/SFX_UDO.json')
+CONFIG = json.loads(section.asBinary)['model_index']['values']
+
+class SFX_UDO(BigWorld.UserDataObject):
+
+    def __init__(self):
+        BigWorld.UserDataObject.__init__(self)
+        self._model_path = str(next((model for index, model in CONFIG if index == self.model_index), None))
+        if self._model_path == 'None':
+            self._model_path = None
+        self.model = None
+        self.sfx_pt = None
+        self.sfx_shot = None
+        self.callback_id = None
+        self.active = False
+        self.init_anim = True
+        if self.event_phase == -1:
+            self.init_anim = False
+            self.activate()
+        return
+
+    def deactivate(self, force = False):
+        if not self.event_end_remove and not force:
+            return
+        else:
+            self.cancel_callbacks()
+            self.active = False
+            if self.sfx_pt:
+                self.sfx_pt.detach()
+                self.sfx_pt.stop()
+                self.sfx_pt = None
+            if self.sfx_shot:
+                self.sfx_shot = None
+            if self.model:
+                BigWorld.delModel(self.model)
+                self.model = None
+            for next_udo in self.next_udos:
+                if not hasattr(next_udo, 'deactivate'):
+                    continue
+                next_udo.deactivate()
+
+            return
+
+    def activate(self, time = 0):
+        self.cancel_callbacks()
+        self.play_anim()
+        self.active = True
+        if self.delay <= time:
+            self.on_activated(time - self.delay)
+        else:
+            self.callback_id = BigWorld.callback(self.delay - time, self.on_activated)
+
+    def __del__(self):
+        try:
+            self.cancel_callbacks()
+            self.deactivate(True)
+        except BigWorld.UnresolvedUDORefException:
+            pass
+
+    def cancel_callbacks(self):
+        if self.callback_id:
+            BigWorld.cancelCallback(self.callback_id)
+            self.callback_id = None
+        return
+
+    def play_anim(self):
+        if not self.init_anim:
+            return
+        elif not self.model:
+            return
+        elif not self.animation:
+            return
+        else:
+            action = self.model.action(self.animation)
+            if action:
+                frame_rate = self.animation_speed * action.frameRate
+                action(0, None, 0, -1, -1, frame_rate)
+            return
+
+    def on_activated(self, time = 0):
+
+        def on_load_model(model):
+            if self.model:
+                BigWorld.delModel(self.model)
+                self.model = None
+            self.model = model
+            self.model.isObstacle = True
+            set_pos_dir_model(self.model, self.position, (self.yaw, self.pitch, self.roll))
+
+            def onLoadPersistentSFX(fx_obj):
+                if not getattr(self, 'active', None):
+                    return
+                else:
+                    if self.sfx_pt:
+                        self.sfx_pt.detach()
+                        self.sfx_pt.stop()
+                        self.sfx_pt = None
+                    self.sfx_pt = fx_obj
+                    self.sfx_pt.attach(self.model)
+                    self.sfx_pt.go()
+                    return
+
+            BigWorld.addModel(self.model)
+            if not self._model_path:
+                bb = self.particlesVisBoundBox
+                self.model.scale = (bb, bb, bb)
+            self.play_anim()
+            self.init_anim = True
+            if self.sfx_persistent:
+                loadPersistentExtBG(self.sfx_persistent, onLoadPersistentSFX)
+            if self.sfx_oneshot:
+                self.sfx_shot = FX.bufferedOneShotEffect(self.sfx_oneshot, self.model)
+            return
+
+        def on_load_ref(prereqs):
+            on_load_model(prereqs.produce(0))
+
+        if self._model_path:
+            ResourceLoader.asyncLoad([(ResourceLoader.MODEL, self._model_path)], on_load_ref)
+        else:
+            model = BigWorld.Model('')
+            on_load_model(model)
+        for next_udo in self.next_udos:
+            if not hasattr(next_udo, 'activate'):
+                continue
+            next_udo.activate(time)

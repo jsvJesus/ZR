@@ -1,0 +1,204 @@
+# Embedded file name: ./client/AbilTrenEntity.py
+import BigWorld
+import FX
+import ResMgr
+from FX.persistent_ext_bg import loadPersistentExtAsync
+from Localization import lc
+from soGUI.soInworldMarkers import soInworldMarker
+from Helpers.Caps import CAP_INTERACT
+import set_abil_utils
+from set_abil_utils import TrenUtil
+import RestrictionsUtils
+from Victim import Victim
+from utils import plog
+from client_utils import readable_space_pos
+from sounds_manager import playSound
+import Config
+DEBUG_MODE = False
+
+class AbilTrenEntity(BigWorld.Entity, Victim):
+
+    def __init__(self):
+        BigWorld.Entity.__init__(self)
+        self.config = set_abil_utils.get_abil_config_by_abil_id(self.abil_id)
+        self.targetCaps = [CAP_INTERACT]
+        self.__current_action = None
+        self._sfx_state = 0
+        self._sfx_activated = None
+        self._set_title()
+        self.invulnerable = False
+        self.canTakeDamage = True
+        return
+
+    def __repr__(self):
+        if self.isDestroyed:
+            return 'AbilTrenEntity[%s]Destroyed' % self.id
+        return 'AbilTrenEntity[%s] at %s' % (self.id, readable_space_pos(self))
+
+    def _set_title(self):
+        self.name = lc('abils.abil_tren.name')
+        entity = BigWorld.entities.get(self.owner_id)
+        if not entity or entity.isDestroyed:
+            return
+        self.name += u' [%s]' % entity.name
+
+    def prerequisites(self):
+        return [TrenUtil.MODEL_PATH]
+
+    def onEnterWorld(self, prereqs):
+        if DEBUG_MODE:
+            plog('[DEBUG] onEnterWorld', self)
+        self.model = prereqs[TrenUtil.MODEL_PATH]
+        scale = self.config['tren_ef_radius'] * 2.0
+        self.model.scale = (scale, scale, scale)
+        self.add_collider()
+        self._update_visual_state()
+
+    def onLeaveWorld(self):
+        if DEBUG_MODE:
+            plog('[DEBUG] onLeaveWorld', self)
+        self._stop_anim()
+        if self._sfx_activated:
+            self._sfx_activated.stop()
+            self._sfx_activated.detach()
+            self._sfx_activated = None
+        self._sfx_state = 0
+        self.model = None
+        return
+
+    def interact(self, player):
+        player_id = player.id
+        if DEBUG_MODE:
+            plog('[DEBUG] interact %s player_id=%s owner_id=%s', self, player_id, self.owner_id)
+        if player_id != self.owner_id:
+            return
+        if self.state == TrenUtil.STATE_DEACTIVATED:
+            return
+        player.cancel_action_release()
+        if not player.CheckRestriction(RestrictionsUtils.CHANNEL_ITEMS) or player.control_locked or player.dead:
+            return
+        self.cell.interact()
+
+    def set_health_ratio(self, old_value):
+        if self.health_ratio < old_value:
+            playSound(TrenUtil.SOUND_HIT, model=self.model)
+            if not self.dead and self.health_ratio <= 0:
+                playSound(TrenUtil.SOUND_DESTROY, model=self.model)
+        if DEBUG_MODE:
+            plog('[DEBUG] health_ratio %s -> %s', old_value, self.health_ratio)
+            player = BigWorld.player()
+            if player:
+                player.systemMsgChat('[DEBUG] health_ratio %s -> %s' % (old_value, self.health_ratio))
+
+    def set_state(self, old_value):
+        if DEBUG_MODE:
+            plog('[DEBUG] state %s -> %s', old_value, self.state)
+        self._update_visual_state()
+
+    def _update_visual_state(self):
+        if DEBUG_MODE:
+            plog('[DEBUG] _update_visual_state', self.state)
+        if self.state == TrenUtil.STATE_CREATED:
+            self.on_created()
+        elif self.state == TrenUtil.STATE_ACTIVATED:
+            self._play_activated()
+        elif self.state == TrenUtil.STATE_DEACTIVATED:
+            self._stop_activated()
+            self.on_deactivated()
+
+    def _play_activated(self):
+        if self._sfx_state & TrenUtil.SFX_ACTIVATED:
+            return
+        self._sfx_state ^= TrenUtil.SFX_ACTIVATED
+        if not self.model:
+            return
+        self._play_anim(TrenUtil.ANIM_LOOP, duration=0)
+        if TrenUtil.SFX_ACTIVATED_PERSISTENT:
+            if self._sfx_activated:
+                self._sfx_activated.go()
+            else:
+
+                def on_load(prereqs):
+                    if self.isDestroyed:
+                        return
+                    self._sfx_activated = FX.PersistentExt(TrenUtil.SFX_ACTIVATED_PERSISTENT, prereqs)
+                    self._sfx_activated.attach(self.model)
+                    self._sfx_activated.go()
+
+                loadPersistentExtAsync([TrenUtil.SFX_ACTIVATED_PERSISTENT], on_load)
+
+    def _stop_activated(self):
+        if not self._sfx_state & TrenUtil.SFX_ACTIVATED:
+            return
+        self._sfx_state ^= TrenUtil.SFX_ACTIVATED
+        if self._sfx_activated:
+            self._sfx_activated.stop_particles_spawn()
+
+    def get_mark_name(self):
+        return self.name
+
+    def get_target_mark(self, distance):
+        if distance > TrenUtil.INTERACTION_DIST:
+            return None
+        else:
+            return soInworldMarker.MARKER_USE
+
+    def get_hightlight(self, distance):
+        if distance > TrenUtil.INTERACTION_DIST:
+            return None
+        else:
+            return True
+
+    def on_created(self):
+        if DEBUG_MODE:
+            plog('[DEBUG] on_created', self)
+        playSound(TrenUtil.SOUND_PLACING, model=self.model)
+        self._play_anim(TrenUtil.ANIM_START, TrenUtil.ANIM_START_DURATION)
+
+    def on_deactivated(self):
+        if DEBUG_MODE:
+            plog('[DEBUG] on_deactivated', self)
+        playSound(TrenUtil.SOUND_DEACTIVATED, model=self.model)
+        self._play_anim(TrenUtil.ANIM_FINISH, TrenUtil.ANIM_FINISH_DURATION)
+
+    def _play_anim(self, action_name, duration = 0, stretch = True):
+        if self.isDestroyed:
+            return
+        else:
+            action = getattr(self.model, action_name, None)
+            if not action:
+                plog('[ERROR] not action [%s] %s', action_name, self)
+                return
+            self._stop_anim()
+            self.__current_action = action
+            if self.__current_action and stretch and duration:
+                framerate = action.frameRate * action.duration / duration
+                if framerate < 1:
+                    framerate = 1
+                self.__current_action(0, None, 0, -1, -1, framerate)
+                return
+            if self.__current_action:
+                self.__current_action()
+            return
+
+    def _stop_anim(self):
+        if self.__current_action:
+            self.__current_action.stop()
+            self.__current_action = None
+        return
+
+    def add_collider(self):
+        Victim.add_collider(self)
+        colliders_config = ResMgr.openSection(TrenUtil.HITBOXES_PATH)
+        for entry in colliders_config.values():
+            bone = entry['nodeName'].asString
+            minBounds = entry['minBounds'].asVector3
+            maxBounds = entry['maxBounds'].asVector3
+            transform = entry['transform'].asMatrix if entry.has_key('transform') else None
+            body_zone = Config.Damage.get_body_zone(entry['bodyZone'].asString)
+            self.attach_collider_box(bone, bone, body_zone, minBounds, maxBounds, transform)
+
+        return
+
+    def bleedFromShoot(self, pos, blood_orientation, collider_name, ammo_type, damager_id):
+        pass

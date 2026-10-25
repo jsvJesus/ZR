@@ -1,0 +1,389 @@
+# Embedded file name: ./client/soGUI/storinventory/storgrid.py
+from utils import PY
+import Keys
+from Items import ItemsCatalog
+import soGUI
+from Helpers.PyGUI import PyGUIBase
+from utils import Listenable
+import BWPersonality
+import BigWorld
+import GUI
+from soGUI.soItemView import soItemView, soItemSlot, LOCKED_COLOR, WHITE_COLOR
+from model import EventType as ModelET
+from soGUI.soTextField import soTextField3
+import ItemsUtils
+import colorCodes as cc
+from Localization import lc
+from ui.button import Button
+from filter_line import FilterLine
+from gui_const import MESSAGEBOX, ITSLOT
+from soGUI.soToolTipComponent import soToolTipComponent
+import msgbox_templates
+
+class SlotET:
+    OnInventoryDrop, = ((r, 'storinventory.slot') for r in range(1))
+
+
+class GridET:
+    OnCollapseRequest = ((r, 'storgrid') for r in range(1))
+
+
+class Slot(soItemSlot):
+    EVENT_MOVE_TO_INVENTORY, EVENT_MOVE_COUNT_TO_INVENTORY, EVENT_INFO = xrange(3)
+    SLOTWIDTH = 64
+    SLOTHEIGHT = 64
+    factoryString = 'storgridslot'
+
+    def __init__(self, component, slot_index, item_data = None):
+        soItemSlot.__init__(self, component, slot_index, item_data, centerDProxy=True)
+        self._dragged = False
+        self._interface_id = self.factoryString + str(self.slotIndex)
+        self._create_multiselector()
+        self._create_multidrag_proxy()
+        self.dragProxy = self.component.dragProxy
+        self.proxyHolder = self.component
+        self.proxyName = 'dragProxy'
+        self.dragProxy = self.component.dragProxy
+        self._onDragStart = self.on_drag_start
+        self._onDragStop = self.on_drag_stop
+
+    def on_inventory_drop(self):
+        if not self._dragged:
+            return
+        if not self._can_apply_interact():
+            return
+        data = {'item_ids': self.get_multiselection()}
+        self.component.parent.script.on_slot_event(SlotET.OnInventoryDrop, data)
+
+    def on_drag_start(self):
+        if not self._can_start_interact():
+            return False
+        if self.component.parent.script.can_drag(self):
+            self.dragProxy.visible = True
+            self._dragged = True
+            self._applyItemData()
+            return True
+        return False
+
+    def on_drag_stop(self):
+        self.dragProxy.visible = False
+        self._dragged = False
+        self._applyItemData()
+        return True
+
+    def setupRoot(self):
+        comp = self.component
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = self.SLOTWIDTH, self.SLOTHEIGHT
+        comp.dragFocus = True
+        comp.dropFocus = True
+        comp.crossFocus = True
+        comp.moveFocus = True
+        comp.mouseButtonFocus = True
+
+    def setupContent(self):
+        comp = GUI.Frame2('soGUI/items/cell.dds')
+        comp.vpm, comp.hpm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('LEFT', 'TOP')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = self.SLOTWIDTH, self.SLOTHEIGHT
+        comp.materialFX = 'BLEND'
+        comp.position = (0, 0, 0.9)
+        self.component.addChild(comp, 'frameCmp')
+        comp = GUI.Window()
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.materialFX = 'BLEND'
+        comp.width, comp.height = self.SLOTWIDTH, self.SLOTHEIGHT
+        comp.position = (0, 0, 0.45)
+        self.component.addChild(comp, 'icon')
+        comp = GUI.Text('')
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('RIGHT', 'TOP')
+        comp.font = 'ArialNarrow_10.family'
+        comp.colour = (175, 166, 112, 255)
+        comp.materialFX = 'BLEND'
+        comp.position = (self.SLOTWIDTH - 3, 1, 0.3)
+        self.component.addChild(comp, 'count')
+        comp = GUI.Window()
+        comp.textureName = 'soGUI/frame/journal/load_anim/load_pips'
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = comp.texture.width, comp.texture.height
+        comp.position = (0, 0, 0.1)
+        self.component.addChild(comp, 'loading')
+
+    def _can_start_interact(self):
+        return self._can_apply_interact() and not self._dragged
+
+    def _can_apply_interact(self):
+        return self.itemData and not self.itemData.get('pending') and self.component.parent.script.is_available(self)
+
+    def _applyItemData(self):
+        soItemSlot._applyItemData(self)
+        self.component.loading.visible = False
+        self.component.count.visible = False
+        if self.haveItem():
+            item_type = self.itemData['complexItemType']
+            if not ItemsUtils.GetIconName(None, item_type=item_type):
+                icon_name = 'nottexture.dds'
+                self.component.icon.texture = BWPersonality.GUICore.get_icon_from_cache(icon_name)
+                pending = self.itemData.get('pending')
+                if pending or self._dragged or not self.component.parent.script.is_available(self):
+                    self.component.icon.colour = LOCKED_COLOR
+                    if pending:
+                        self.component.loading.visible = True
+                else:
+                    self.component.icon.colour = WHITE_COLOR
+                number = ItemsUtils.GetItemNumber(self.itemData)
+                self.component.count.text = number > 1 and str(number)
+                self.component.count.visible = True
+        else:
+            self.component.icon.textureName = ''
+        self.set_drag_proxy_visual(self.component.icon.texture, self.multiselected)
+        return
+
+    def onRClick(self):
+        if not self._can_start_interact():
+            return
+        BWPersonality.GUICore.addListener('contextMenuEvent', self._context_menu_event)
+        BWPersonality.GUICore.showContextMenu(self._interface_id, self.get_context_menu_actions())
+
+    def get_context_menu_actions(self):
+        actions = {Slot.EVENT_MOVE_TO_INVENTORY: lc('GUI.Inventory.STOR_MOVE'),
+         Slot.EVENT_INFO: lc('GUI.Inventory.STOR_INFO')}
+        selection = self.get_multiselection()
+        if len(selection) == 1 and selection[0] == self.itemData['complexItemID']:
+            if BigWorld.isKeyDown(BigWorld.stringToKey('F2')) and BigWorld.player().isAdminAccess():
+                actions['copy_id'] = u'\u043a\u043e\u043f\u0438\u0440\u043e\u0432\u0430\u0442\u044c ItemID %s' % self.itemData['complexItemID']
+                if self.itemData.has_key('steam_quanity'):
+                    actions['copy_id'] = u'\u043a\u043e\u043f\u0438\u0440\u043e\u0432\u0430\u0442\u044c ItemID %s [STEAM]' % self.itemData['complexItemID']
+                actions['copy_type'] = u'\u043a\u043e\u043f\u0438\u0440\u043e\u0432\u0430\u0442\u044c ItemType %s' % self.itemData['complexItemType']
+                actions['refresh'] = u'\u041e\u0431\u043d\u043e\u0432\u0438\u0442\u044c...'
+            if ItemsUtils.GetItemNumber(self.itemData) > 1:
+                actions[Slot.EVENT_MOVE_COUNT_TO_INVENTORY] = lc('GUI.Inventory.STOR_MOVE_COUNT')
+        return actions
+
+    def _context_menu_event(self, interface_id, eventid, caption, event, data = None):
+        if event == soGUI.soContextMenuComponent.EVENT_SHOW and self._interface_id == interface_id:
+            return
+        BWPersonality.GUICore.removeListener('contextMenuEvent', self._context_menu_event)
+        if interface_id != self._interface_id:
+            return
+        if eventid == Slot.EVENT_MOVE_TO_INVENTORY:
+            if self.component.parent.script.can_drag(self):
+                data = {'item_ids': self.get_multiselection()}
+                self.component.parent.script.on_slot_event(SlotET.OnInventoryDrop, data)
+        elif eventid == 'copy_id':
+            BigWorld.clipboardSetPlainText(str(self.itemData['complexItemID']))
+        elif eventid == 'refresh':
+            BigWorld.player().getStoreHouseItems()
+        elif eventid == Slot.EVENT_INFO:
+            complex_item = PY(self.itemData)
+            ItemsUtils.nullifyTimeItem(complex_item)
+            BWPersonality.GUICore.infoWindowManger.showInfo(complex_item)
+        elif eventid == 'copy_type':
+            BigWorld.clipboardSetPlainText(str(self.itemData['complexItemType']))
+        elif eventid == Slot.EVENT_MOVE_COUNT_TO_INVENTORY:
+
+            def callback(event, data):
+                if event == MESSAGEBOX.EVENT_BTNPRESS:
+                    if data['btn'] == MESSAGEBOX.BTN_ALL:
+                        count = ItemsUtils.GetItemNumber(self.itemData)
+                        edit_box = msg_box.component.edit_edit_box.script
+                        edit_box.setValue(str(count))
+                    elif data['btn'] == MESSAGEBOX.BTN_OK:
+                        text = data['add_controls']['edit_box']
+                        if text.isdigit():
+                            count = int(text)
+                            if count > 0 and self._can_apply_interact():
+                                data = {'item_ids': [self.itemData['complexItemID']],
+                                 'counts': [count]}
+                                self.component.parent.script.on_slot_event(SlotET.OnInventoryDrop, data)
+
+            def number_input_validator(newStr, wholeText, offset):
+                total_text = wholeText + newStr
+                if not total_text.isdigit() or len(total_text) >= 16:
+                    return False
+                if ItemsUtils.GetItemNumber(self.itemData) < int(total_text):
+                    return False
+                return True
+
+            msg_box = msgbox_templates.input_box_ok_all_cancel('storinventory', lc('GUI.Inventory.STOR_MOVE_CAPTION'), u'', callback=callback, default='1', input_validator=number_input_validator)
+
+            def intercept_input(event):
+                if event.key == Keys.KEY_F:
+                    edit_box.setValue(str(ItemsUtils.GetItemNumber(self.itemData)))
+                    return True
+                return False
+
+            edit_box = msg_box.component.edit_edit_box.script
+            edit_box.select([0, 0], [0, 1])
+            edit_box.keys_interceptor = intercept_input
+
+
+class ItemView(soItemView, Listenable):
+
+    def __init__(self, cols, rows, model):
+        self._model = model
+        self._available = False
+        self.interfaceID = BWPersonality.GUICore.GUI_ID_STORINVENTORY
+        Listenable.__init__(self)
+        soItemView.__init__(self, GUI.Window(), Slot, rowWidth=cols, rows=rows, cols=cols, hScroll=False)
+        self.set_multiselectable()
+
+    def _slot_handler(self, event, data):
+        soItemView._slot_handler(self, event, data)
+        if event == ITSLOT.SLOTEVENT_MOUSELEAVE:
+            if isinstance(data, Slot):
+                BWPersonality.GUICore.hideToolTip(self.interfaceID)
+                return True
+        elif event == ITSLOT.SLOTEVENT_MOUSEENTER:
+            if isinstance(data, Slot) and data.itemData:
+                fake_item = PY(data.itemData)
+                ItemsUtils.nullifyTimeItem(fake_item)
+                BWPersonality.GUICore.toolTipEvent(fake_item, self.interfaceID, soToolTipComponent.EVENT_SHOW)
+                return True
+        return True
+
+    def is_available(self, slot):
+        if not slot.haveItem():
+            return False
+        return self._is_item_available(slot.itemData)
+
+    def _is_item_available(self, item):
+        if not item:
+            return False
+        item_params = ItemsCatalog.GetItemParam(item['complexItemType'])
+        if 'Premium_id' in item_params or 'Booster_id' in item_params:
+            return True
+        if ItemsUtils.canTakeStoreHouseItemToAvatar(item['complexItemType']):
+            return True
+        return self._available
+
+    def set_saferesp_available(self, available):
+        if self._available != available:
+            self._available = available
+            self._applyItems()
+            if not self._available:
+                cmenu = BWPersonality.GUICore.contextMenu
+                if cmenu and cmenu.isVisible and cmenu.iid.startswith(Slot.factoryString):
+                    BWPersonality.GUICore.hideContextMenu()
+
+    def can_drag(self, slot):
+        item_ids = set(slot.get_multiselection())
+        if not item_ids:
+            return False
+        for item in self._model.items:
+            if item['complexItemID'] not in item_ids:
+                continue
+            if item.get('pending'):
+                return False
+
+        return True
+
+    def on_slot_event(self, event_type, data):
+        if event_type == SlotET.OnInventoryDrop:
+            data['available'] = True
+            item_ids = set(data['item_ids'])
+            for item in self._model.items:
+                if item['complexItemID'] not in item_ids:
+                    continue
+                if not self._is_item_available(item):
+                    data['available'] = False
+                    break
+
+        self.notify_listeners(event_type, data)
+
+    def onScroll(self):
+        BWPersonality.GUICore.hideToolTip(self.interfaceID)
+
+
+class Storgrid(Listenable, PyGUIBase):
+    _cols = 5
+    base_width = 356
+
+    def __init__(self, model, rows):
+        Listenable.__init__(self)
+        comp = GUI.Window('')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('LEFT', 'TOP')
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.position = (0, 0, 0.5)
+        PyGUIBase.__init__(self, comp)
+        comp.script = self
+        comp.width = Storgrid.base_width
+        self._model = model
+        self._model.add_listener(self._on_model_event)
+        self._item_view = ItemView(Storgrid._cols, rows, self._model)
+        self._item_view.add_listener(self._on_view_event)
+        comp = self._item_view.component
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('LEFT', 'TOP')
+        comp.position = (18, 60, 0.9)
+        self.component.addChild(comp)
+        self._item_view.onBound()
+        self._item_view.setItems(None)
+        comp = GUI.Text(lc('GUI.Inventory.STOR_CAPTION'), 'RobotoCondensedRegular_16.font')
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('LEFT', 'TOP')
+        comp.materialFX = 'BLEND'
+        comp.position = (18, 6, 0.3)
+        self.component.addChild(comp)
+        comp = GUI.Window('')
+        btn = Button(self.component, 'collapse', frame=True)
+        btn.set_visual('soGUI/frame/buttons/collapsebutton.json')
+        btn.set_image('soGUI/frame/right_arrow.dds', clip_pos=1)
+        pivot = (1, 0)
+        clip_pos = (1, 0)
+        pixel_pos = (-22, 0)
+        btn.transform.set_base_resolution(None)
+        btn.set_text(lc('GUI.Inventory.COLLAPSE'))
+        btn.set_font_unscalable()
+        btn.on_click = self._on_collapse_click
+        string_width = btn.text.get_string_width()
+        image_width = btn.image.component.width
+        size = (string_width + image_width + 6, 32)
+        btn.transform.set_pixel_mode(pivot, clip_pos, size, pixel_pos=pixel_pos)
+        comp = GUI.Window('')
+        comp.ha, comp.va = ('LEFT', 'TOP')
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = (200, 16)
+        comp.position = (self._item_view.component.position[0], 38, 0.5)
+        self.component.addChild(comp)
+        FilterLine(comp, model)
+        comp = GUI.Window('')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('LEFT', 'TOP')
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.height = 200
+        width = Storgrid._cols * Slot.SLOTWIDTH
+        tf = soTextField3(comp, width, textWidth=width, height=comp.height)
+        tf.setText(cc.inactive_xml + '<font=RobotoCondensedRegular_16.font>' + lc('GUI.Inventory.STOR_DISCLAMER'))
+        self.component.addChild(comp, 'disclaimer')
+        return
+
+    def set_saferesp_available(self, available):
+        self._item_view.set_saferesp_available(available)
+
+    def _on_collapse_click(self):
+        self.notify_listeners(GridET.OnCollapseRequest)
+
+    def on_show(self):
+        self._align_disclamer()
+
+    def _align_disclamer(self):
+        comp = self._item_view.component
+        pos_y = comp.position[1] + comp.height
+        self.component.disclaimer.position = (comp.position[0], pos_y, 0.5)
+
+    def _on_view_event(self, event_type, data):
+        self.notify_listeners(event_type, data)
+
+    def _on_model_event(self, event_type, data):
+        if event_type in (ModelET.OnItemsSet, ModelET.OnItemPending):
+            self._item_view.setItems(self._model.items)
+
+    def set_rows(self, rows):
+        if self._item_view.rows != rows:
+            self._item_view.change_size(Storgrid._cols, rows)
+            self._align_disclamer()

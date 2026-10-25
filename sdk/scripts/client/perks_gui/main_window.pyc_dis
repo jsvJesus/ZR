@@ -1,0 +1,213 @@
+# Embedded file name: ./client/perks_gui/main_window.py
+import GUI
+import BigWorld
+import BWPersonality
+from ui.panel import Panel
+from ui.button import Button
+from ui.transform import clip_params, pixel_params
+from ui.text import Text
+from props.props_window import PropsWindow
+from dev_window import DevWindow
+from workplace.workplace_win import WorkPlace
+from tooltiper import Tooltiper
+from exp_block import ExpBlock
+from reset_controller import ResetController
+from Localization import lc
+from workplace.visuals import visuals
+from workplace.node import get_tooltip_panel
+from parallax import Parallax
+import sounds_manager
+import AudioMixer
+from Helpers.PyGUI.PyGUIBase import WinBehaviour
+
+class TooltipButton(Button):
+
+    def get_tooltip_panel(self):
+        tp = get_tooltip_panel()
+        tp.set_text(lc('Perks.ui.reset.buttontooltip'))
+        return tp
+
+
+class MainWindow(Panel):
+
+    def __init__(self, parent_component, name):
+        Panel.__init__(self, parent_component, name, depth=0)
+        self.set_behaviours(WinBehaviour.Full)
+        self.component.visible = False
+        self._device_dirty = False
+        self.component.textureName = 'soGUI/frame/paint/black.dds'
+        anchors = (0, 0, 1, 1)
+        self.transform.set_clip_mode(anchors)
+        self._parallax = Parallax(self.component, 'content', depth=1.0)
+        self._parallax.transform.set_clip_mode((0, 0, 1, 1))
+        t = Text(self.component, 'header', 23, depth=0.7)
+        t.transform.set_base_resolution(None)
+        pivot = (0.5, 0)
+        clip_pos = (0.5, 0)
+        size = (500, 35)
+        t.transform.set_pixel_mode(pivot, clip_pos, size, pixel_pos=(9, 0))
+        self._m_button = Button(self.component, 'mode_button', frame=True, depth=0.8)
+        self._m_button.set_visual('soGUI/frame/buttons/classicbutton.json')
+        pivot = (0.5, 0)
+        clip_pos = (0.75, 0)
+        size = (200, 35)
+        self._m_button.transform.set_base_resolution(None)
+        self._m_button.transform.set_pixel_mode(pivot, clip_pos, size)
+        self._m_button.on_click = lambda : self._set_dev_mode(not self._dev_mode)
+        button = Button(self.component, 'close_button', depth=0.8)
+        button.set_visual('soGUI/frame/buttons/closebutton.json')
+        button.transform.set_base_resolution(None)
+        pivot = (0.65, 0.5)
+        clip_pos = (1, 0)
+        size = (18, 18)
+        pixel_pos = (-18, 18)
+        button.transform.set_pixel_mode(pivot, clip_pos, size, pixel_pos)
+        button.on_click = self.hide
+        button = Button(self.component, 'help_button', depth=0.8)
+        button.set_visual('soGUI/frame/buttons/helpbutton.json')
+        button.transform.set_base_resolution(None)
+        pivot = (0.65, 0.5)
+        clip_pos = (1, 0)
+        size = (18, 18)
+        pixel_pos = (-40, 18)
+        button.transform.set_pixel_mode(pivot, clip_pos, size, pixel_pos)
+        workplace_background = Panel(self.component, 'workplaceback', depth=0.9)
+        workplace_background.transform.set_base_resolution(None)
+        clip_anchors = (0, 0, 1, 1)
+        workplace_background.transform.set_clip_mode(clip_anchors)
+        component = GUI.Frame2('soGUI/frame/perks/pixel_frame_tr.dds')
+        worplace_frame = Panel(workplace_background.component, 'frame', depth=0.9, component=component)
+        worplace_frame.transform.set_clip_mode((0, 0, 1, 1))
+        worplace_frame.component.materialFX = 'BLEND'
+        self._exp_block = ExpBlock(self.component.workplaceback, 'expblock', depth=0.1)
+        cpx = clip_params((0, 1), pixel_anchors=(16, 0))
+        cpy = pixel_params(0, 0.05, 80)
+        self._exp_block.transform.set_mixed_mode(cpx, cpy)
+        component = GUI.Window('soGUI/frame/perks/gradient.dds')
+        p = Panel(workplace_background.component, 'gradient', component=component)
+        component.materialFX = 'BLEND'
+        p.transform.set_clip_mode((0, 0, 1, 0.1))
+        self._workplace = WorkPlace(workplace_background.component, 'workplace', depth=1.0)
+        pivot = (0.5, 0.49)
+        clip_pos = (0.5, 0.5)
+        size = (1800, 1800)
+        self._workplace.transform.set_pixel_mode(pivot, clip_pos, size)
+        self._workplace.set_draggable()
+        self._workplace.set_scalable()
+        self._props_window = PropsWindow(self.component.workplaceback, self._workplace._graph, self._workplace._node_by_id, 'props', depth=0.8)
+        self._dev_window = DevWindow(self.component.workplaceback, 'devwin', depth=0.7)
+        self._dev_window.component.visible = False
+        cpx = pixel_params(1, 1, 400)
+        cpy = clip_params((0, 1))
+        self._dev_window.transform.set_mixed_mode(cpx, cpy)
+        button = TooltipButton(self.component, 'reset_button', depth=0.1)
+        button.set_visual('soGUI/frame/buttons/perkreset.json')
+        pivot = (0.5, 0.5)
+        clip_pos = (0.035, 0.945)
+        size = (48, 48)
+        button.transform.set_pixel_mode(pivot, clip_pos, size)
+        self._reset_controller = ResetController(button)
+        button.on_click = self._reset_controller.start_reset
+        self._tooltiper = Tooltiper(self)
+        self._tooltiper.extend_tootip_providers(self._workplace.get_tooltip_providers() + [button])
+        self._dev_window.on_load_callback = self._workplace.reload_from_file
+        self._dev_window.on_save_callback = self._workplace.save_to_file
+        self._props_window.on_perk_take_callback = self._on_buy_perk_click
+        self._workplace.on_node_selected_callback = self._props_window.set_node
+        return
+
+    def _on_perks_updated(self, perks):
+        self._workplace.on_perks_updated()
+        self._props_window.on_perks_updated()
+        self._update_exp_block()
+
+    def _on_buy_perk_click(self, node, callback):
+        self._workplace.animate_buy(node, callback)
+        self._user.take_perk(node.id)
+
+    def show(self):
+        super(MainWindow, self).show()
+        if BigWorld.isKeyDown(BigWorld.stringToKey('F2')):
+            self._m_button.component.visible = self._user.isAdminAccess(level=6)
+            self._device_dirty = self._device_dirty and False
+            self.transform.apply_mode()
+        BWPersonality.GUICore.setBestCursor()
+        BigWorld.worldDrawEnabled(False)
+        self._set_dev_mode(False)
+        self._user.add_perk_changed_callback(self._on_perks_updated)
+        self._workplace.on_show()
+        self._update_exp_block()
+        self._props_window.on_show(self._exp_block.get_free_perks)
+        self._reset_controller.on_show()
+        self._parallax.on_show()
+        self.component.header.script.set_text(lc('Perks.ui.main_win.title') + BWPersonality.get_action_key('ToggleSkillGUI'))
+        AudioMixer.blend_volume_to(0, 'PERKS_GUI', blend_time=3.0, bus_ids=AudioMixer.NO_UI_BUS_IDS)
+        self._sound = sounds_manager.playSound('ui/perks/ambient')
+        self._snapshot = sounds_manager.playSnapshot('perks_window')
+
+    def hide(self):
+        self.component.visible = False
+        BWPersonality.GUICore.setBestCursor()
+        BigWorld.worldDrawEnabled(True)
+        self._tooltiper.on_win_hide()
+        self._reset_controller.on_hide()
+        self._user.remove_perk_changed_callback(self._on_perks_updated)
+        self._props_window.on_hide()
+        self._parallax.on_hide()
+        AudioMixer.blend_volume_to(1.0, 'PERKS_GUI', blend_time=3.0, bus_ids=AudioMixer.NO_UI_BUS_IDS)
+        if getattr(self, '_sound', None):
+            self._sound.stop()
+            self._sound = None
+        if getattr(self, '_snapshot', None):
+            self._snapshot.destroy()
+            self._snapshot = None
+        return
+
+    def _set_dev_mode(self, mode):
+        self._dev_mode = mode
+        if mode:
+            self._m_button.set_text(u'\u0412\u044b\u0439\u0442\u0438 \u0438\u0437 \u0440\u0435\u0436\u0438\u043c \u0440\u0430\u0437\u0440\u0430\u0431\u0430')
+            self._workplace.transform.set_scale_clamp_scale(None, None)
+        else:
+            scale_limits = visuals['scale_limits']
+            self._workplace.transform.set_scale_clamp_scale((scale_limits[0], scale_limits[0]), (scale_limits[1], scale_limits[1]))
+            self._m_button.set_text(u'\u0412\u043e\u0439\u0442\u0438 \u0432 \u0440\u0435\u0436\u0438\u043c\u0430 \u0440\u0430\u0437\u0440\u0430\u0431\u0430')
+        self._props_window.set_dev_mode(mode)
+        self._workplace.set_dev_mode(mode)
+        self._dev_window.component.visible = mode
+        return
+
+    def on_new_device(self):
+
+        def delayed_on_new_device():
+            self._device_dirty = True
+            if self.visible:
+                self._device_dirty = False
+                self.transform.apply_mode()
+
+        BigWorld.callback(0, delayed_on_new_device)
+
+    def handleKeyEvent(self, event):
+        if event.key in BWPersonality.settings.keyBindings.getBindingsForAction('ToggleSkillGUI')[0] and event.isKeyDown():
+            self.hide()
+            return True
+        return Panel.handleKeyEvent(self, event)
+
+    @property
+    def visible(self):
+        return self.component.visible
+
+    def _update_exp_block(self):
+        self._exp_block.update(self._user.playerExperience, self._user.perks)
+
+    def on_exp_updated(self):
+        self._update_exp_block()
+        self._props_window.on_exp_updated()
+
+    def update_consumables(self, consumables, inventory_consumables):
+        if self.component.visible:
+            self._reset_controller.update_consumables(consumables, inventory_consumables)
+
+    @property
+    def _user(self):
+        return BigWorld.player()

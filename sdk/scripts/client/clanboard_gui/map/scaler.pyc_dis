@@ -1,0 +1,94 @@
+# Embedded file name: ./client/clanboard_gui/map/scaler.py
+import math_bw
+from MapNotes import get_npcmarks_config
+from ui.panel import Panel, EventType as PanelET
+from utils import Listenable
+
+class EventType:
+    OnScaleChanged, = ((r, 'mapscaler') for r in range(1))
+
+
+class Scaler(Panel, Listenable):
+
+    def __init__(self, parent, component):
+        Panel.__init__(self, parent, 'scaler', component=component)
+        Listenable.__init__(self)
+        self.pixelperfect = False
+        self.set_draggable(True)
+        self.set_scalable()
+        self.component.filterType = 'LINEAR'
+        self.transform.set_base_resolution(None)
+        self.transform.set_pixel_mode((0.5, 0.5), (0.5, 0.5), (300, 300))
+        self.component.visible = False
+        return
+
+    def clear(self):
+        self.bounds = None
+        self._space_name = None
+        self.component.visible = False
+        return
+
+    def set_texture(self, space_name, texture):
+        self._space_name = space_name
+        self.bounds = get_npcmarks_config(space_name)['bounds']
+        min_x, min_y, max_x, max_y = self.bounds
+        self._aspect = (max_x - min_x) / (max_y - min_y)
+        self.component.visible = True
+        self.component.texture = texture
+        if space_name not in self._view_data:
+            self._view_data[space_name] = {'size': (self._parent_width, self._parent_height),
+             'pixpos': (0, 0)}
+        size = self._view_data[space_name].get('size', (self._parent_width, self._parent_height))
+        pixpos = self._view_data[space_name].get('pixpos', (0, 0))
+        self.transform.set_pixel_mode((0.5, 0.5), (0.5, 0.5), size, pixpos)
+        self._update_clamp_values()
+        self._clamp()
+
+    def _update_clamp_values(self):
+        min_width = self._parent_width
+        min_height = self._parent_height
+        min_width = max(min_width, min_height * self._aspect)
+        min_height = max(min_height, min_width / self._aspect)
+        max_width, max_height = min_width * 3, min_height * 3
+        self.transform.set_scale_clamp_scale((min_width, min_height), (max_width, max_height))
+
+    def on_event(self, event_type, data = None):
+        Panel.on_event(self, event_type, data)
+        if not self.component.visible:
+            return
+        if event_type in (PanelET.Drag, PanelET.Scale):
+            self._clamp()
+            if self._space_name not in self._view_data:
+                self._view_data[self._space_name] = {}
+            self._view_data[self._space_name]['pixpos'] = self.transform._mode[-1]
+            self._view_data[self._space_name]['size'] = (self.component.width, self.component.height)
+            if event_type == PanelET.Scale:
+                self.notify_listeners(EventType.OnScaleChanged)
+
+    def _clamp(self):
+        width, height = self.transform._mode[3]
+        parent_width, parent_height = self.component.parent.width, self.component.parent.height
+        space_x = max(0, (width - parent_width) * 0.5)
+        space_y = max(0, (height - parent_height) * 0.5)
+        pixel_anchors = self.transform._mode[-1]
+        x = math_bw.clamp(pixel_anchors[0], -space_x, space_x)
+        y = math_bw.clamp(pixel_anchors[1], -space_y, space_y)
+        pixel_anchors = (x, y)
+        self.transform._mode[-1] = pixel_anchors
+        self.transform.apply_mode()
+
+    @property
+    def _parent_width(self):
+        return self.component.parent.width
+
+    @property
+    def _parent_height(self):
+        return self.component.parent.height
+
+    def do_reposition(self):
+        self._view_data = {}
+        if not self.component.visible:
+            return
+        self.transform.apply_mode()
+        self._update_clamp_values()
+        self._clamp()

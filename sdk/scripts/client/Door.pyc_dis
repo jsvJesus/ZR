@@ -1,0 +1,100 @@
+# Embedded file name: ./client/Door.py
+import FX
+import json
+import ResMgr
+import BigWorld
+from time import time
+from Math import Matrix, Vector3
+from FX.persistent_ext_bg import loadPersistentExtAsync
+from DoorMoverInterface import DoorMoverInterface
+from client_utils import readable_space_pos
+section = ResMgr.openSection('scripts/common/EnumProps/Door.json')
+CONFIG = json.loads(section.asBinary)['model_index']['values']
+
+class Door(BigWorld.Entity, DoorMoverInterface):
+
+    def __init__(self):
+        BigWorld.Entity.__init__(self)
+        DoorMoverInterface.__init__(self)
+        self._model_path = next((model for index, model in CONFIG if index == self.model_index), None)
+        self.door_model = None
+        self.anim_index = 0
+        self.callback_id = None
+        self.effect = None
+        self.filter = BigWorld.NoneFilter()
+        return
+
+    def __repr__(self):
+        if self.isDestroyed:
+            return 'Door[%s]Destroyed' % self.id
+        return 'Door[%s] at %s' % (self.id, readable_space_pos(self))
+
+    def set_activated(self, old_value):
+        self.saved_time = time()
+        self.play_animation(not self.activated)
+        if self.activated:
+            self.play_sfx()
+
+    def play_sfx(self):
+        if not self.sfx or not self.door_model:
+            return
+        self.stop_sfx()
+
+        def on_load(prereqs):
+            self.effect = FX.PersistentExt(self.sfx, prereqs)
+            self.effect.attach(self.door_model)
+            self.effect.go()
+            BigWorld.callback(30, self.stop_sfx)
+
+        loadPersistentExtAsync([self.sfx], on_load)
+
+    def stop_sfx(self):
+        if self.isDestroyed:
+            return
+        else:
+            if self.effect:
+                self.effect.stop()
+            self.effect = None
+            return
+
+    def prerequisites(self):
+        if self._model_path:
+            return [self._model_path]
+        return []
+
+    def onEnterWorld(self, prereqs):
+        if self._model_path:
+            scale = self.scale
+            self.door_model = prereqs[self._model_path]
+            self.door_model.scale = (scale, scale, scale)
+            self.door_model.newScaleTest = (scale, scale, scale)
+            self.door_model.visible = True
+            self.door_model.isObstacle = True
+            self.door_model.position = self.position
+            self.door_model.yaw = self.yaw
+            direction = Vector3()
+            direction.setPitchYaw(self.pitch, self.yaw)
+            BigWorld.addModel(self.door_model)
+            rotation_matrix = Matrix()
+            rotation_matrix.setRotateYPR((self.yaw, self.pitch, self.roll))
+            scale_matrix = Matrix()
+            scale_matrix.setScale((self.scale, self.scale, self.scale))
+            translation_matrix = Matrix()
+            translation_matrix.setTranslate(self.position)
+            total_matrix = Matrix()
+            total_matrix.postMultiply(rotation_matrix)
+            total_matrix.postMultiply(scale_matrix)
+            total_matrix.postMultiply(translation_matrix)
+            self.door_model.setWorldTransform(total_matrix)
+            if hasattr(self.door_model, 'no_draw'):
+                self.door_model.no_draw = 'no_draw'
+            if self.activated:
+                self.play_animation()
+            else:
+                self.play_animation(to_static=True)
+
+    def onLeaveWorld(self):
+        if self.door_model:
+            BigWorld.delModel(self.door_model)
+            self.door_model = None
+        return

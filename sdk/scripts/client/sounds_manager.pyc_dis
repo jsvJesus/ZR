@@ -1,0 +1,698 @@
+# Embedded file name: ./client/sounds_manager.py
+import pyson
+import BigWorld
+import traceback
+import ResMgr
+import _BWSound
+import os
+from Math import Matrix
+from rainConstant import sounds_volume_in_shell, time_sounds_blend
+from functools import partial
+from blender_object import Blender
+import AudioMixer
+from Localization import lc
+from sound_subtitles_config import SUBTITLES_MAX_DIST, SOUND_NAME_TO_SUBTITLES
+DEBUG_PRINT = False
+
+class _CallbackHolder():
+
+    def __init__(self):
+        self._callbacks = []
+
+    def __call__(self):
+        for calb in self._callbacks:
+            try:
+                calb()
+            except:
+                traceback.print_stack()
+                traceback.print_exc()
+
+        self._callbacks[:] = []
+
+    def register(self, c):
+        self._callbacks.append(c)
+
+    def deregister(self, c):
+        if not self._callbacks:
+            return
+        try:
+            self._callbacks.remove(c)
+        except:
+            traceback.print_stack()
+            traceback.print_exc()
+
+
+def registerOnLeaveWorld(model, callback):
+    if not model.onModelLeaveWorld:
+        model.onModelLeaveWorld = _CallbackHolder()
+    model.onModelLeaveWorld.register(callback)
+
+
+def deregisterOnLeaveWorld(model, callback):
+    if model.onModelLeaveWorld:
+        try:
+            model.onModelLeaveWorld.deregister(callback)
+        except:
+            print '[ERROR] Failed deregisterOnLeaveWorld', model, callback
+            traceback.print_stack()
+            traceback.print_exc()
+
+
+mgr = _BWSound.Manager()
+_manager_volume_coef = 0.0
+
+def getSnapshot(name):
+    return _sounds_manager.get_snapshot(name)
+
+
+def getSound(sound = None, volumeFactor = 1.0, is_music = False, model = None):
+    return _sounds_manager.get_sound(sound, model, volumeFactor, is_music)
+
+
+def getMusic(sound):
+    return _sounds_manager.get_music(sound, None, 1.0, True)
+
+
+def playSnapshot(name):
+    return _sounds_manager.play_snapshot(name)
+
+
+def playSound(sound = None, model = None, volumeFactor = 1.0, is_music = False):
+    return _sounds_manager.play_sound(sound, model, volumeFactor, is_music)
+
+
+def playMusic(sound = None, model = None):
+    return playSound(sound, model, 1.0, True)
+
+
+blender_volume = Blender(0.2, time_sounds_blend)
+
+def player_shell_changed():
+    tmp = tuple(_active_sounds) + tuple(_active_music)
+
+    def on_change_weight(w):
+        for sound in tmp:
+            sound.update_volume(w)
+
+    for sound in tmp:
+        sound._calc_delta_shell_volume_factor()
+
+    blender_volume.run_blend(on_change_weight)
+
+
+def _extract_model(value):
+    if not value:
+        return None
+    elif type(value) == BigWorld.Model:
+        return value
+    else:
+        try:
+            return value.model
+        except:
+            print 'ERROR FOR:', value
+            traceback.print_stack()
+            traceback.print_exc()
+
+        return None
+
+
+class SoundsManager():
+
+    def __init__(self):
+        self._all_banks_ready = False
+        self._load_all_banks()
+        self._pending_sounds = []
+        self._bank_info = []
+
+    def dump_bank_sounds(self):
+        path = os.path.abspath('sounds_fmod.txt')
+        with open(path, 'w') as f:
+            for bank, events, groups in self._bank_info:
+                f.write(str(bank) + '  groups:\n')
+                for s in groups:
+                    f.write('  ' + repr(s) + '\n')
+
+                f.write('\n')
+                f.write(str(bank) + '  events:\n')
+                for s in events:
+                    f.write('  ' + repr(s) + '\n')
+
+                f.write('\n\n')
+
+        print 'save to ', path
+
+    def play_sound(self, sound_name, model, volume, is_music):
+        model = _extract_model(model)
+        snd = self.get_sound(sound_name, model, volume, is_music)
+        if snd:
+            snd.play()
+        return snd
+
+    def get_music(self, sound_name, model, volume, is_music):
+        model = _extract_model(model)
+        return self.get_sound(sound_name, model, volume, is_music)
+
+    def play_snapshot(self, name):
+        snapshot = self.get_snapshot(name)
+        if snapshot:
+            snapshot.play()
+        return snapshot
+
+    def get_snapshot(self, name):
+        name = name.lower()
+        if self._all_banks_ready:
+            if not mgr.isEventExists('snapshot:/%s' % name):
+                print 'SoundsManager (ERROR): snapshot not exists:', name
+                traceback.print_stack()
+                return
+            try:
+                return Snapshot(name)
+            except:
+                traceback.print_stack()
+                traceback.print_exc()
+                return
+
+        else:
+            psound = PendingSnapshot(name)
+            self._pending_sounds.append(psound)
+            return psound
+
+    def get_sound(self, sound_name, model, volume, is_music):
+        if not sound_name:
+            return None
+        else:
+            sound_name = sound_name.lower()
+            if DEBUG_PRINT:
+                print '\n get_sound: %r' % sound_name, model, getattr(model, 'position', '---')
+                traceback.print_stack()
+                print
+            model = _extract_model(model)
+            exists = mgr.isEventExists('event:/' + sound_name)
+            if self._all_banks_ready or exists:
+                if not exists:
+                    print 'SoundsManager (ERROR): sound not exists:', repr(sound_name)
+                    return None
+                else:
+                    try:
+                        sound = Sound(sound_name, model, volume, is_music)
+                    except:
+                        traceback.print_stack()
+                        traceback.print_exc()
+                        return None
+
+                    return sound
+            else:
+                psound = PendingSound(sound_name, model, volume, is_music)
+                self._pending_sounds.append(psound)
+                return psound
+            return None
+
+    def _all_banks_ready_callback(self):
+        self._all_banks_ready = True
+        AudioMixer.apply_all_fmod_bus_volumes()
+        for psound in self._pending_sounds:
+            psound.apply_conversion()
+
+        del self._pending_sounds
+
+    def reloadBanks(self):
+        mgr.unloadAllBanks()
+        self._pending_sounds = []
+        self._bank_info = []
+        self._load_all_banks()
+
+    def _load_all_banks(self):
+        section = ResMgr.openSection('audio')
+        banks_names1 = ['MasterBank.bank',
+         'MasterBank.strings.bank',
+         'fd_sound_stream_music_05.bank',
+         'fd_sound_GUI.bank',
+         'fd_sound_player.bank']
+        banks_names2 = [ os.path.join('audio', p) for p in section.keys() if p.endswith('.bank') and p not in banks_names1 ]
+        banks_names1 = [ os.path.join('audio', p) for p in banks_names1 ]
+
+        def load_sequence(banks_names, callback, step = ''):
+            pending_banks = set(banks_names)
+
+            def on_completed():
+                print BigWorld.time(), 'SOUNDMANAGER: LOAD COMPLETE %s N=%s' % (step, len(banks_names))
+                mgr.unregisterOnBankLoadCallback(cb1)
+                mgr.unregisterOnBankFailedLoadallback(cb2)
+                callback()
+
+            def load_callback(bank, events, groups):
+                self._bank_info.append([bank, events, groups])
+                for i in xrange(len(self._pending_sounds) - 1, -1, -1):
+                    psound = self._pending_sounds[i]
+                    if psound.sound_path and 'event:/' + psound.sound_path in events:
+                        psound.apply_conversion()
+                        del self._pending_sounds[i]
+
+                AudioMixer.apply_all_fmod_bus_volumes()
+                pending_banks.remove(bank)
+                if not pending_banks:
+                    BigWorld.callback(0, on_completed)
+
+            def fail_callback(bank):
+                print BigWorld.time(), 'SOUNDMANAGER: ERROR LOAD SOUND BANK', bank
+                pending_banks.remove(bank)
+                if not pending_banks:
+                    BigWorld.callback(0, on_completed)
+                raise RuntimeError('sounds_manager (ERROR): bank loading failed ({0})'.format(bank))
+
+            cb1 = mgr.registerOnBankLoadCallback(load_callback)
+            cb2 = mgr.registerOnBankFailedLoadCallback(fail_callback)
+            print BigWorld.time(), 'SOUNDMANAGER: START LOAD %s N=%s' % (step, len(banks_names))
+            mgr.loadBanks(banks_names)
+
+        def on_first_priority_loaded():
+            BigWorld.callback(0, partial(load_sequence, banks_names2, self._all_banks_ready_callback, 'step2'))
+
+        load_sequence(banks_names1, on_first_priority_loaded, 'step1')
+
+
+_sounds_manager = SoundsManager()
+_active_sounds = set()
+_active_music = set()
+
+class MuteChannels():
+    Base = 1
+    Load = 2
+
+
+class Sound(object):
+
+    def __init__(self, sound_name, model, volume, is_music, pitch = 1.0):
+        self._params = {'sound_name': sound_name,
+         'model_matrix': None,
+         'params': {},
+         'volume': volume,
+         'pitch': pitch,
+         'is_music': is_music,
+         'muted': set(),
+         'paused': False,
+         'cursorAt': 0,
+         'model': model}
+        if model:
+            self._params['model_matrix'] = model.matrix
+            registerOnLeaveWorld(model, self.on_model_left)
+        self._fsound = None
+        self._end_callback = None
+        self._subs_cid = None
+        self._shell_volume_factor = None
+        self._start_shell_volume_factor = None
+        self._end_shell_volume_factor = None
+        self._delta_shell_volume_factor = None
+        return
+
+    def on_model_left(self):
+        self.stop()
+
+    def set_end_callback(self, end_callback):
+        self._end_callback = end_callback
+
+    def _stopped_callback(self, sound):
+        self._temp_zim_log('stopcallback')
+        self._destroy()
+
+    def _finished_callback(self, sound):
+        self._temp_zim_log('finishcallback')
+        self._destroy()
+
+    def _startfailed_callback(self, sound):
+        self._temp_zim_log('startfailed')
+        self._destroy()
+
+    def _started_callback(self, sound):
+        self._try_show_subtitles()
+
+    def _destroy(self):
+        if self._end_callback:
+            self._end_callback()
+            self._end_callback = None
+        if self._fsound:
+            self._temp_zim_log('destroy')
+            self._fsound.setCallback(_BWSound.CALLBACK_STARTED, None)
+            self._fsound.setCallback(_BWSound.CALLBACK_STOPPED, None)
+            self._fsound.setCallback(_BWSound.CALLBACK_FINISHED, None)
+            self._fsound.setCallback(_BWSound.CALLBACK_START_FAILED, None)
+            self._fsound = None
+            if self._params['is_music']:
+                _active_music.remove(self)
+            else:
+                _active_sounds.remove(self)
+        if self._params['model']:
+            deregisterOnLeaveWorld(self._params['model'], self.on_model_left)
+            self._params['model'] = None
+            self._params['model_matrix'] = None
+        self._try_hide_subtitles()
+        return
+
+    def set_param(self, param_name, value, ignore_error = False):
+        self._params['params'][param_name] = (value, ignore_error)
+        if self._fsound:
+            try:
+                if type(value) is str:
+                    self._fsound.setParamLabel(param_name, value)
+                else:
+                    self._fsound.setParamValue(param_name, value)
+            except:
+                if not ignore_error:
+                    print 'sounds_manager (ERROR): can set param', self._params['sound_name'], repr(param_name), repr(value)
+                    traceback.print_stack()
+                    traceback.print_exc()
+                    return False
+
+        return True
+
+    def get_param_names(self):
+        if self._fsound:
+            return self._fsound.getParamNames()
+        return []
+
+    def _calc_end_shell_volume_factor(self):
+        self._end_shell_volume_factor = 1.0
+        if self._params['model_matrix']:
+            player = BigWorld.player()
+            if getattr(player, 'spaceID', None):
+                position = Matrix(self._params['model_matrix']).applyToOrigin()
+                if player.in_shell_player_xor_point(position):
+                    self._end_shell_volume_factor = sounds_volume_in_shell
+        return self._end_shell_volume_factor
+
+    def _calc_delta_shell_volume_factor(self):
+        self._calc_end_shell_volume_factor()
+        if self._shell_volume_factor is None:
+            self._shell_volume_factor = self._end_shell_volume_factor
+        self._start_shell_volume_factor = self._shell_volume_factor
+        self._delta_shell_volume_factor = self._end_shell_volume_factor - self._start_shell_volume_factor
+        return
+
+    def update_volume(self, weight):
+        self._shell_volume_factor = self._start_shell_volume_factor + self._delta_shell_volume_factor * weight
+        if abs(self._shell_volume_factor - self._end_shell_volume_factor) < 0.001:
+            self._shell_volume_factor = self._end_shell_volume_factor
+        if self._fsound:
+            self._fsound.volume = self.total_volume
+
+    def play(self):
+        self._temp_zim_log('play')
+        if not self._fsound:
+            try:
+                self._fsound = _BWSound.Event('event:/' + self._params['sound_name'])
+                self._temp_zim_log('create')
+            except IOError:
+                print 'sounds_manager (ERROR): sound not found', repr(self._params['sound_name'])
+                traceback.print_stack()
+                traceback.print_exc()
+                return
+
+            self._temp_zim_log('setcallback')
+            self._fsound.setCallback(_BWSound.CALLBACK_STARTED, self._started_callback)
+            self._fsound.setCallback(_BWSound.CALLBACK_STOPPED, self._stopped_callback)
+            if self._fsound.isOneShot:
+                self._fsound.setCallback(_BWSound.CALLBACK_FINISHED, self._finished_callback)
+            self._fsound.setCallback(_BWSound.CALLBACK_START_FAILED, self._startfailed_callback)
+            self._fsound.volume = self.total_volume
+            self._fsound.paused = self._params['paused']
+            self._fsound.cursorAt = self._params['cursorAt']
+            apply_config_specs(self._params['sound_name'], self._fsound)
+            if self._params['model_matrix']:
+                self._fsound.matrixProvider = self._params['model_matrix']
+            if self._params['is_music']:
+                _active_music.add(self)
+            else:
+                _active_sounds.add(self)
+            for param_name, (param_value, ignore_error) in self._params['params'].iteritems():
+                self.set_param(param_name, param_value, ignore_error)
+
+        self._fsound.play()
+
+    def _try_show_subtitles(self):
+        local_key = SOUND_NAME_TO_SUBTITLES.get(self._params['sound_name'])
+        if not local_key:
+            return
+        text = lc(local_key, default='')
+        duration = self.duration
+        if not text or duration <= 0:
+            return
+        if self._params['model_matrix']:
+            position = Matrix(self._params['model_matrix']).applyToOrigin()
+            player = BigWorld.player()
+            if player.position.distTo(position) > SUBTITLES_MAX_DIST:
+                return
+        from soGUI.SubsWindow import instance as subs_window
+        self._subs_cid = subs_window.output_subs('%s' % text, duration)
+
+    def _try_hide_subtitles(self):
+        if not self._subs_cid:
+            return
+        from soGUI.SubsWindow import instance as subs_window
+        subs_window.hide_subtitles(self._subs_cid)
+
+    def stop(self, disable_fade = False):
+        self._temp_zim_log('stop')
+        if self._fsound:
+            self._fsound.stop(disable_fade)
+        else:
+            self._destroy()
+
+    @property
+    def paused(self):
+        return self._params['paused']
+
+    @paused.setter
+    def paused(self, value):
+        self._params['paused'] = value
+        if self._fsound:
+            self._fsound.paused = value
+
+    @property
+    def volume(self):
+        return self._params['volume']
+
+    @volume.setter
+    def volume(self, value):
+        self.set_volume(value)
+
+    def set_volume(self, volume):
+        self._params['volume'] = volume
+        if self._fsound:
+            self._fsound.volume = self.total_volume
+
+    def set_pitch(self, pitch):
+        self._params['pitch'] = pitch
+
+    def set_cursor(self, value):
+        cursorAt = max(0, value)
+        self._params['cursorAt'] = cursorAt
+        if self._fsound:
+            try:
+                self._fsound.cursorAt = cursorAt
+            except:
+                print 'sounds_manager (ERROR): Failed set_cursor:', repr(self._params['sound_name']), cursorAt
+                traceback.print_stack()
+                traceback.print_exc()
+
+    @property
+    def isVirtual(self):
+        if self._fsound:
+            return self._fsound.isVirtual
+
+    def releaseSound(self):
+        self._temp_zim_log('release')
+        self.stop()
+
+    def _temp_zim_log(self, text):
+        return
+        if self._params['sound_name'] != u'mob/crows/idle':
+            return
+        if not hasattr(BigWorld, 'zim_sm'):
+            BigWorld.zim_sm = []
+        BigWorld.zim_sm.append((self._params['sound_name'], text, id(self)))
+
+    @property
+    def duration(self):
+        if self._fsound:
+            if self._fsound.isOneShot:
+                return self._fsound.duration
+            return -1.0
+        self._temp_zim_log('tempsound')
+        try:
+            temp_sound = _BWSound.Event('event:/' + self._params['sound_name'])
+        except IOError:
+            print 'sounds_manager (ERROR): Failed get duration, sound not found', repr(self._params['sound_name']), self
+            traceback.print_stack()
+            traceback.print_exc()
+            return 0
+
+        if temp_sound.isOneShot:
+            return temp_sound.duration
+        return -1.0
+
+    @property
+    def muted(self):
+        return bool(self._params['muted'])
+
+    @muted.setter
+    def muted(self, value):
+        self.set_muted(value, channel=MuteChannels.Base)
+
+    def set_muted(self, value, channel = MuteChannels.Base):
+        if value:
+            self._params['muted'].add(channel)
+        elif channel in self._params['muted']:
+            self._params['muted'].remove(channel)
+        if self._fsound:
+            self._fsound.volume = self.total_volume
+
+    def smoothMute(self, muted, delay = 0.5, channel = MuteChannels.Base):
+        self.set_muted(muted, channel=channel)
+
+    @property
+    def sound_path(self):
+        return self._params['sound_name']
+
+    @property
+    def total_volume(self):
+        if self._params['muted']:
+            return 0
+        else:
+            if self._shell_volume_factor is None:
+                self._shell_volume_factor = self._calc_end_shell_volume_factor()
+            return self._params['volume'] * self._shell_volume_factor
+
+    @property
+    def in_world(self):
+        if not self._params['model']:
+            return True
+        return self._params['model'].inWorld
+
+
+class PendingSound(Sound):
+    """ \xd0\xb5\xd1\x81\xd0\xbb\xd0\xb8 FMOD \xd0\xbd\xd0\xb5 \xd1\x83\xd1\x81\xd0\xbf\xd0\xb5\xd0\xbb \xd0\xb8\xd0\xbd\xd0\xb8\xd1\x86\xd0\xb8\xd0\xb0\xd0\xbb\xd0\xb8\xd0\xb7\xd0\xb8\xd1\x80\xd0\xbe\xd0\xb2\xd0\xb0\xd1\x82\xd1\x8c\xd1\x81\xd1\x8f, \xd0\xb0 \xd0\xb7\xd0\xb2\xd1\x83\xd0\xba \xd1\x81\xd0\xbe\xd0\xb7\xd0\xb4\xd0\xb0\xd0\xb2\xd0\xb0\xd1\x82\xd1\x8c \xd0\xbd\xd0\xb0\xd0\xb4\xd0\xbe,
+            \xd1\x82\xd0\xbe \xd1\x81\xd0\xbe\xd0\xb7\xd0\xb4\xd0\xb0\xd1\x91\xd1\x82\xd1\x81\xd1\x8f \xd1\x8d\xd1\x82\xd0\xb0 \xd1\x88\xd1\x82\xd1\x83\xd0\xba\xd0\xb0, \xd0\xba\xd0\xbe\xd1\x82\xd0\xbe\xd1\x80\xd0\xb0\xd1\x8f \xd0\xbf\xd0\xbe\xd1\x81\xd0\xbb\xd0\xb5 \xd0\xb8\xd0\xbd\xd0\xb8\xd1\x86\xd0\xb8\xd0\xb0\xd0\xbb\xd0\xb8\xd0\xb7\xd0\xb0\xd1\x86\xd0\xb8\xd0\xb8 FMOD
+            \xd0\xbf\xd1\x80\xd0\xb5\xd0\xb2\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82\xd1\x81\xd1\x8f \xd0\xb2 \xd0\xbe\xd0\xb1\xd1\x8b\xd1\x87\xd0\xbd\xd1\x8b\xd0\xb9 \xd0\xb7\xd0\xb2\xd1\x83\xd0\xba
+    """
+
+    def __init__(self, sound_name, model, volume, is_music):
+        self._fsound = None
+        self._params = {'sound_name': sound_name,
+         'played': False,
+         'model': model,
+         'volume': volume,
+         'pitch': 1.0,
+         'is_music': is_music}
+        self._other_params = {}
+        return
+
+    def play(self):
+        self._params['played'] = True
+
+    def set_volume(self, value):
+        self._params['volume'] = value
+
+    def set_pitch(self, value):
+        self._params['pitch'] = value
+
+    def set_param(self, param_name, value, ignore_error = False):
+        self._other_params[param_name] = value
+
+    def stop(self, disable_fade = False):
+        self._params['played'] = False
+
+    def apply_conversion(self):
+        params = self._params
+        del self._params
+        Sound.__init__(self, params['sound_name'], params['model'], params['volume'], params['is_music'], pitch=params['pitch'])
+        self.__class__ = Sound
+        other_params = self._other_params
+        del self._other_params
+        for key, value in other_params.items():
+            self.set_param(key, value)
+
+        if params['played']:
+            self.play()
+
+
+class Snapshot(object):
+
+    def __init__(self, name):
+        self.name = name
+        self._fsound = None
+        return
+
+    def destroy(self):
+        self.stop()
+        self._fsound = None
+        return
+
+    def play(self):
+        if not self._fsound:
+            try:
+                self._fsound = _BWSound.Event('snapshot:/%s' % self.name)
+            except IOError as e:
+                print 'sounds_manager (ERROR): snapshot not found', repr(self.name), e
+                traceback.print_stack()
+                traceback.print_exc()
+                return
+
+            self._fsound.volume = 1.0
+            self._fsound.paused = False
+        self._fsound.play()
+
+    def stop(self, disable_fade = False):
+        if self._fsound:
+            self._fsound.stop(disable_fade)
+
+    @property
+    def sound_path(self):
+        return None
+
+
+class PendingSnapshot(Snapshot):
+    """like PendingSound"""
+
+    def __init__(self, name):
+        self.name = name
+        self.played = False
+
+    def play(self):
+        self.played = True
+
+    def stop(self, disable_fade = False):
+        self.played = False
+
+    def apply_conversion(self):
+        Snapshot.__init__(self, self.name)
+        self.__class__ = Snapshot
+        if self.played:
+            self.play()
+
+
+def apply_config_specs(sound_name, sound):
+    try:
+        if sound_name not in _config_cache:
+            keys = sound_name.split('/')
+            params = _raw_config_data
+            for key in keys:
+                if not key:
+                    continue
+                if key not in _raw_config_data:
+                    break
+                params = _raw_config_data.get(key)
+
+            _config_cache[sound_name] = params
+        params = _config_cache[sound_name]
+        sound.channelPriority = params['channelPriority']
+        sound.scheduleDelay = params['scheduleDelay']
+        sound.scheduleLookAhead = params['scheduleLookAhead']
+        sound.cooldown = params['cooldown']
+    except:
+        print "sounds_manager (ERROR): can't apply config", sound_name
+        traceback.print_exc()
+        traceback.print_stack()
+
+
+_config_cache = {}
+_raw_config_data = pyson.loads(ResMgr.openSection('scripts/client/data/sounds_params.pyson').asBinary)

@@ -1,0 +1,355 @@
+# Embedded file name: ./client/soGUI/StorehouseGUI/ShopUtils.py
+import BigWorld
+import GUI
+from functools import partial
+from soGUI.UtilsGUI.TextScaler import TextScaler
+from Helpers.PyGUI.PyGUIBase import PyGUIBase
+from soGUI.UtilsGUI.PaintButton import PaintButton
+import Keys
+from soGUI.soTextField import soTextField3
+import client_utils
+from math_bw import clamp
+SHOP_MODE, STORE_MODE = xrange(2)
+SHOP_MODE_FACEMODIFICATION, SHOP_MODE_PAINTMODIFICATION = xrange(2)
+SHOPTAB_ERROR_TIMEOUT, = xrange(1)
+
+class AccumulateButton(PaintButton):
+
+    def __init__(self, comp, visual_state):
+        PaintButton.__init__(self, comp, visual_state)
+        self._tick_handler = None
+        self._max_wait_time = 0.5
+        self._wait_time = 0
+        self._time = 0
+        return
+
+    def handleMouseButtonEvent(self, comp, event):
+        result = PaintButton.handleMouseButtonEvent(self, comp, event)
+        if event.key == Keys.KEY_LEFTMOUSE and event.isKeyDown() and not self._tick_handler:
+            self._time = self._wait_time = self._max_wait_time
+            self._tick_counter()
+        return result
+
+    def _tick_counter(self):
+        if self.pressed and self.visible:
+            self._tick_handler = BigWorld.callback(0, self._tick_counter)
+            self._time -= BigWorld.getTimeDelta()
+            while self._time <= 0.0:
+                self._wait_time = max(0.05, self._wait_time * 0.8)
+                self._time += self._wait_time
+                self.on_click()
+
+        else:
+            self._tick_handler = None
+        return
+
+    def handleMouseClickEvent(self, comp):
+        return PaintButton.handleMouseClickEvent(self, comp)
+
+
+class AmountButton(PyGUIBase):
+
+    def __init__(self, component):
+        component.script = self
+        self._count = 1
+        self._repositioners = []
+        self.on_count_changed_by_button = lambda : None
+        PyGUIBase.__init__(self, component)
+        self._setup_content()
+
+    def _setup_content(self):
+        sign_width = 0.5
+        comp = GUI.Window()
+        comp.horizontalAnchor, comp.verticalAnchor = ('RIGHT', 'CENTER')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.width, comp.height = sign_width, 2
+        comp.position = (1.0, 0, 0.5)
+        button = AccumulateButton(comp, visual_state='soGUI/frame/storehouse/storeImageButton.xml')
+        button.image = 'soGUI/frame/storehouse/right_arrow.dds'
+        button.on_click = partial(self._change_count, +1)
+        button.hover_sound = None
+        button.press_down_sound = 'ui/click'
+        self.component.addChild(comp, 'plus_sign')
+        self._repositioners.append(button)
+        comp = GUI.Window()
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'CENTER')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.width, comp.height = sign_width, 2
+        comp.position = (-1.0, 0, 0.5)
+        button = AccumulateButton(comp, visual_state='soGUI/frame/storehouse/storeImageButton.xml')
+        button.image = 'soGUI/frame/storehouse/left_arrow.dds'
+        button.on_click = partial(self._change_count, -1)
+        button.hover_sound = None
+        button.press_down_sound = 'ui/click'
+        self.component.addChild(comp, 'minus_sign')
+        self._repositioners.append(button)
+        comp = GUI.Text()
+        amount_text = TextScaler(comp, 'RobotoCondensedRegular_18')
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.width, comp.height = (2, 2)
+        comp.position = (0, 0, 0.5)
+        comp.text = str(self._count)
+        self.component.addChild(comp, 'amount')
+        self._repositioners.append(amount_text)
+        return
+
+    def set_text_color(self, color):
+        self.component.amount.colour = color
+
+    def set_count(self, count):
+        self._count = clamp(count, 1, 999)
+        self.component.amount.text = str(self._count)
+
+    def _change_count(self, amount):
+        self._count = clamp(self._count + amount, 1, 999)
+        self.component.amount.text = str(self._count)
+        self.on_count_changed_by_button()
+
+    def do_reposition(self):
+        for r in self._repositioners:
+            r.do_reposition()
+
+    @property
+    def count(self):
+        return self._count
+
+
+class ComplexAmountButton(PaintButton):
+
+    def __init__(self, component):
+        PaintButton.__init__(self, component, visual_state='soGUI/frame/storehouse/binButton.xml')
+        self.on_amount_changed_callback = lambda amount: None
+        self._repositioners = []
+        self._setup_content()
+        self._linked_button = None
+        return
+
+    def _setup_content(self):
+        right_margin = 0.2
+        comp = GUI.Window()
+        comp.horizontalAnchor, comp.verticalAnchor = ('RIGHT', 'CENTER')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.width, comp.height = (0.6, 2)
+        comp.position = (1.0 - right_margin, 0, 0.5)
+        comp.crossFocus = True
+        self._amount_button = AmountButton(comp)
+        self._amount_button.on_count_changed_by_button = self._on_count_changed_by_button
+        self._repositioners.append(self._amount_button)
+        self.component.addChild(comp, 'amount_button')
+
+    def _on_count_changed_by_button(self):
+        if self._linked_button:
+            self._linked_button.set_count(self.count)
+            self._linked_button.on_amount_changed_callback(self.count)
+        self.on_amount_changed_callback(self.count)
+
+    def do_reposition(self):
+        PaintButton.do_reposition(self)
+        for r in self._repositioners:
+            r.do_reposition()
+
+        label = self.component.label
+        label.horizontalAnchor = 'CENTER'
+        label.horizontalPositionMode = 'CLIP'
+        amount_comp = self._amount_button.component
+        label.position[0] = (amount_comp.position[0] - amount_comp.width - 1) / 2
+
+    @property
+    def count(self):
+        return self._amount_button.count
+
+    def set_count(self, value):
+        self._amount_button.set_count(value)
+
+    def link(self, other):
+        self._linked_button = other
+        other._linked_button = self
+        other.set_count(self.count)
+        other.on_click = self.on_click
+
+    def unlink(self):
+        if self._linked_button:
+            self._linked_button._linked_button = None
+        self._linked_button = None
+        self.on_click = lambda : None
+        return
+
+
+class MultilineText:
+    material_fx = 'BLEND'
+
+    def __init__(self, component, text, text_config, alignment = 'CENTER'):
+        if alignment not in ('CENTER', 'LEFT'):
+            raise NotImplementedError
+        self.component = component
+        self._base_text = GUI.Text(u'')
+        self._text = text
+        self._alignment = alignment
+        self._string_height = 0
+        self.height = 0
+        self._color = (255, 255, 255, 255)
+
+        class ScalerDummy(object):
+
+            @property
+            def font(self):
+                return self._font
+
+            @font.setter
+            def font(self, value):
+                self._font = value
+
+        self._scaler_dummy = ScalerDummy()
+        self._base_scaler = TextScaler(self._scaler_dummy, text_config)
+
+    def do_reposition(self):
+        self._base_scaler.do_reposition()
+        self._base_text.font = self._scaler_dummy.font
+        self._string_height = self._base_text.stringDimensions('')[1]
+        self._create_content()
+
+    def set_text(self, text):
+        self._text = text
+        self._create_content()
+
+    def set_color(self, color):
+        """ color - tuple """
+        self._color = color
+        for _, child in self.component.children:
+            child.colour = self._color
+
+    def _create_content(self):
+        need_resort = False
+        for _, child in self.component.children:
+            self.component.delChild(child, False)
+            need_resort = True
+
+        if not self._string_height:
+            if need_resort:
+                self.component.reSort()
+            return
+        parent_mode = (self.component.widthMode, self.component.heightMode)
+        self.component.widthMode, self.component.heightMode = ('PIXEL', 'PIXEL')
+        comp_width, comp_height = self.component.width, self.component.height
+        text = self._text
+        self.height = 0
+        while text:
+            cut_index = self._binary_cut(text, comp_width)
+            line_end_cut_index = text.rfind('\n', 0, cut_index)
+            if line_end_cut_index != -1:
+                cut_index = line_end_cut_index
+            elif cut_index == -1:
+                cut_index = len(text) + 1
+            else:
+                space_cut_index = text.rfind(' ', 0, cut_index)
+                if space_cut_index == -1:
+                    cut_index += 1
+                else:
+                    cut_index = space_cut_index
+            cut_text = text[:cut_index]
+            if not cut_text:
+                break
+            text_comp = GUI.Text(cut_text)
+            text_comp.materialFX = self.material_fx
+            text_comp.font = self._base_text.font
+            text_comp.widthMode, text_comp.heightMode = ('PIXEL', 'PIXEL')
+            text_comp.width, text_comp.height = comp_width, self._string_height
+            text_comp.horizontalPositionMode, text_comp.verticalPositionMode = ('CLIP', 'PIXEL')
+            if self._alignment == 'CENTER':
+                text_comp.horizontalAnchor, text_comp.verticalAnchor = ('CENTER', 'TOP')
+                text_comp.position = (0, self.height, 0.4)
+            elif self._alignment == 'LEFT':
+                text_comp.horizontalAnchor, text_comp.verticalAnchor = ('LEFT', 'TOP')
+                text_comp.position = (-1, self.height, 0.4)
+            text_comp.colour = self._color
+            self.component.addChild(text_comp, '', False)
+            need_resort = True
+            text = text[cut_index + 1:]
+            self.height += self._string_height
+            if self.height + self._string_height >= comp_height:
+                break
+
+        if need_resort:
+            self.component.reSort()
+        self.component.widthMode, self.component.heightMode = parent_mode
+
+    def _binary_cut(self, text, width):
+        """ \xd0\xb2\xd0\xbe\xd0\xb7\xd0\xb2\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xb8\xd0\xbd\xd0\xb4\xd0\xb5\xd0\xba\xd1\x81 \xd0\xb1\xd1\x83\xd0\xba\xd0\xb2\xd1\x8b
+                -1 - \xd0\xb7\xd0\xbd\xd0\xb0\xd1\x87\xd0\xb8\xd1\x82 \xd0\xb2\xd0\xbb\xd0\xb0\xd0\xb7\xd0\xb8\xd1\x82 \xd1\x86\xd0\xb5\xd0\xbb\xd0\xb8\xd0\xba\xd0\xbe\xd0\xbc
+        """
+        if self._base_text.stringDimensions(text)[0] <= width:
+            return -1
+        left, right = 0, len(text) - 1
+        while True:
+            if abs(left - right) <= 1:
+                return left
+            middle = (left + right) / 2
+            if self._base_text.stringDimensions(text[:middle + 1])[0] <= width:
+                left = middle
+            else:
+                right = middle
+
+
+class FontWrapper(soTextField3):
+    INTERFACE_ID = 'ShopUtils.FontWrapper'
+
+    def __init__(self, comp, text_config, color):
+        """ \xd1\x86\xd0\xb2\xd0\xb5\xd1\x82 \xd1\x81\xd1\x82\xd1\x80\xd0\xbe\xd0\xba\xd0\xbe\xd0\xb9 \xd0\xb2 \xd1\x84\xd0\xbe\xd1\x80\xd0\xbc\xd0\xb0\xd1\x82\xd0\xb5 \xd1\x82\xd0\xb8\xd0\xbf\xd0\xb0 '000000000255'
+                manual_color - \xd0\xb1\xd1\x83\xd0\xb4\xd0\xb5\xd1\x82 \xd0\xb8\xd1\x81\xd0\xba\xd0\xb0\xd1\x82\xd1\x8c \xd0\xb2 \xd1\x82\xd0\xb5\xd0\xba\xd1\x81\xd1\x82\xd0\xb5 \xd0\xb7\xd0\xb0\xd0\xb4\xd0\xb0\xd0\xbd\xd0\xbd\xd1\x8b\xd0\xb5 \xd0\xb2\xd1\x80\xd1\x83\xd1\x87\xd0\xbd\xd1\x83\xd1\x8e \xd1\x86\xd0\xb2\xd0\xb5\xd1\x82\xd0\xb0
+        """
+        text_comp = GUI.Window('')
+        text_comp.materialFX = 'SOLID'
+        self._ready = False
+        self.manual_color = False
+        text_comp.horizontalAnchor, text_comp.verticalAnchor = ('LEFT', 'TOP')
+        text_comp.horizontalPositionMode, text_comp.verticalPositionMode = ('CLIP', 'CLIP')
+        text_comp.position = (-1, 1, 0.5)
+        soTextField3.__init__(self, text_comp, 10, 10, hScroll=False, vScroll=False, borderWidth=0, vOffset=0, hOffset=0)
+        comp.addChild(text_comp, 'textcomp')
+        text_comp.crossFocus = False
+        text_comp.moveFocus = False
+        self._text = ''
+        self._color = color
+        self._base_comp = comp
+        self._ts = TextScaler(self, text_config)
+        self._ts.do_reposition()
+
+    def set_text(self, text):
+        self._text = text
+        if self._ready:
+            self.do_reposition()
+
+    def do_reposition(self):
+        prev_mode = (self._base_comp.widthMode, self._base_comp.heightMode)
+        self._base_comp.widthMode, self._base_comp.heightMode = ('PIXEL', 'PIXEL')
+        width, height = self._base_comp.width, 8000
+        self.setHeight(height)
+        self.width = width
+        self.height = height
+        self.component.width, self.component.height = self.width, self.height
+        self.setTextWidth(self.component.width)
+        self.widthLimit = width
+        self._base_comp.widthMode, self._base_comp.heightMode = prev_mode
+        self._ts.do_reposition()
+        self._ready = True
+        total_text = u'<font={0}><color={1}>'.format(self.font, self._color) + self._text
+        if self.manual_color:
+            total_text = client_utils.colorise_text(total_text)
+        soTextField3.setText(self, total_text, immidiate=True)
+        self.height = self.textDimensions()[1] + 16
+        self.component.height = self.height
+        self.renderText()
+        self.onBound()
+
+    @property
+    def font(self):
+        return self._font
+
+    @font.setter
+    def font(self, value):
+        self._font = value

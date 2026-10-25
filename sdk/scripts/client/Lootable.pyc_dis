@@ -1,0 +1,121 @@
+# Embedded file name: ./client/Lootable.py
+import BigWorld
+from functools import partial
+STEPS = 40.0
+
+class Lootable:
+    __lootable_callback_id = None
+
+    def change_model_butch(self, duration):
+        dye_list = self.get_butch_dye()
+        if not dye_list:
+            return
+        if isinstance(dye_list, str):
+            dye_list = [dye_list]
+        tint_name = self.get_butch_tint()
+        for dye_name in dye_list:
+            try:
+                dye = getattr(self.model, dye_name)
+            except Exception as err:
+                print 'ERROR FOR', self, err
+                print self.model.sources
+                raise
+
+            if dye.tint != self.get_butch_tint():
+                setattr(self.model, dye_name, tint_name)
+                self.apply_spots(dye_name, tint_name)
+                dye = getattr(self.model, dye_name)
+                setattr(dye, '_factor2', (0, 0, 0, 0))
+
+        step_time = duration / STEPS
+        self.__lootable_callback_id = BigWorld.callback(step_time, partial(self._change_model_butch_step, 0, STEPS, step_time))
+
+    def set_max_butch_tint(self):
+        dye_list = self.get_butch_dye()
+        if not dye_list:
+            return
+        if isinstance(dye_list, str):
+            dye_list = [dye_list]
+        for dye_name in dye_list:
+            tint_name = self.get_butch_tint()
+            setattr(self.model, dye_name, tint_name)
+            self.apply_spots(dye_name, tint_name)
+            dye = getattr(self.model, dye_name)
+            setattr(dye, '_factor2', (1, 0, 0, 0))
+
+    def _change_model_butch_step(self, cur_step, max_step, step_time):
+        if self.isDestroyed:
+            return
+        if cur_step >= max_step:
+            return
+        dye_list = self.get_butch_dye()
+        if not dye_list:
+            return
+        if isinstance(dye_list, str):
+            dye_list = [dye_list]
+        for dye_name in dye_list:
+            dye = getattr(self.model, dye_name)
+            old_blend = getattr(dye, '_factor2', (0, 0, 0, 0))[0]
+            new_blend = 2 / STEPS * cur_step
+            new_blend = new_blend if new_blend >= old_blend else old_blend
+            try:
+                setattr(dye, '_factor2', (new_blend,
+                 0,
+                 0,
+                 0))
+            except:
+                print 'ERROR FOR', self
+                print 'model:', self.model.sources
+                raise
+
+        self.__lootable_callback_id = BigWorld.callback(step_time, partial(self._change_model_butch_step, cur_step + 1, max_step, step_time))
+
+    def stop_model_butch(self):
+        if self.__lootable_callback_id:
+            BigWorld.cancelCallback(self.__lootable_callback_id)
+            self.__lootable_callback_id = None
+        return
+
+    def get_butch_dye(self):
+        return None
+
+    def get_butch_tint(self):
+        return None
+
+    def getSeekPos(self, avatar):
+        if not self.model:
+            return self.position
+        model_width = self.model.getBoundingBox()[1][0]
+        dir_ = avatar.position - self.position
+        dir_.y = 0
+        dir_.normalise()
+        best_pos = self.position + dir_ * model_width
+        from climb import collideBoxGeometry
+        from_pos = avatar.position + (0, 1.0, 0)
+        direction = best_pos - from_pos
+        direction.y = 0
+        av_phys_width = avatar.physics.modelDepth
+        depth = direction.length + av_phys_width
+        direction.normalise()
+        if direction.length < 1e-05:
+            return avatar.position
+        col_dist = collideBoxGeometry(avatar.spaceID, from_pos, direction, width=0.51, height=1, depth=depth, forcedarw=False)
+        if col_dist:
+            if col_dist >= av_phys_width:
+                best_pos = from_pos + direction * (col_dist - av_phys_width)
+            else:
+                best_pos = avatar.position
+        res = BigWorld.collide(self.spaceID, best_pos, best_pos - (0, 2, 0))
+        if res:
+            best_pos = res[0]
+        return best_pos
+
+    def getHeightContainer(self, avatar, looting_type):
+        """
+         \xd0\xb2\xd1\x8b\xd1\x81\xd0\xbe\xd1\x82\xd0\xb0 \xd0\xb2\xd0\xb5\xd1\x80\xd1\x85\xd0\xbd\xd0\xb5\xd0\xb9 \xd1\x82\xd0\xbe\xd1\x87\xd0\xba\xd0\xb8 \xd1\x8f\xd1\x89\xd0\xb8\xd0\xba\xd0\xb0 \xd0\xbe\xd1\x82\xd0\xbd\xd0\xbe\xd1\x81\xd0\xb8\xd1\x82\xd0\xb5\xd0\xbb\xd1\x8c\xd0\xbd\xd0\xbe \xd0\xbd\xd0\xbe\xd0\xb3 \xd0\xb8\xd0\xb3\xd1\x80\xd0\xbe\xd0\xba\xd0\xb0
+        """
+        if not self.model:
+            return 0
+        min_, max_ = self.model.getBoundingBox()
+        model_height = min_.y + (max_.y - min_.y) / 2
+        return self.position.y + model_height - avatar.position.y

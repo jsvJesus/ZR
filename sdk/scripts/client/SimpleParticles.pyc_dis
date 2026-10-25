@@ -1,0 +1,117 @@
+# Embedded file name: ./client/SimpleParticles.py
+import BigWorld
+import Pixie
+from bwdebug import ERROR_MSG, WARNING_MSG
+
+class Particles:
+    """docstring for Particle"""
+    _loaded = False
+    _attached = False
+    _metapartsystem = None
+
+    def __init__(self, path):
+        if not path:
+            raise ValueError, 'empty path'
+        self.path = path
+        self._spawn_rates = {}
+        self._spawn_stopped = False
+        self._played = True
+        self._model_node = None
+        return
+
+    def loadBG(self):
+
+        def _onLoad(resourceRefs):
+            failed = resourceRefs.failedIDs
+            if self.path in failed:
+                ERROR_MSG("Could not load particle '%s'" % (self.path,))
+                return
+            keys = resourceRefs.keys()
+            if not keys:
+                ERROR_MSG("Could not load particle '%s'" % (self.path,))
+                __import__('__main__').resourceRefs = resourceRefs
+                return
+            if keys[0] != self.path:
+                WARNING_MSG("path different '%s' '%s'" % (self.path, keys))
+                self.path = keys[0]
+            self._metapartsystem = resourceRefs[self.path]
+            self._loaded = True
+            self._checkAttach()
+
+        BigWorld.loadResourceListBG((self.path,), _onLoad)
+        return self
+
+    def load(self):
+        self._metapartsystem = Pixie.create(self.path)
+        self._loaded = True
+        return self
+
+    def attach(self, model_node):
+        if self._attached:
+            self.detach()
+        self._model_node = model_node
+        self._checkAttach()
+
+    def detach(self):
+        if self._attached:
+            self._attached = False
+            self._model_node.detach(self._metapartsystem)
+        self._model_node = None
+        return
+
+    def go(self, force = False):
+        self._played = True
+        if not self._loaded:
+            return
+        self._resume_particles_spawn()
+
+    def stopEmit(self):
+        self._played = False
+        if not self._loaded:
+            return
+        self._stop_particles_spawn()
+
+    def _checkAttach(self):
+        if not self._loaded:
+            return
+        if self._metapartsystem and self._model_node and not self._attached:
+            self._attached = True
+            self._model_node.attach(self._metapartsystem)
+        if not self._played:
+            self.stopEmit()
+
+    def _iterate_particle_systems(self):
+        """Iterator through all PyParticleSystems of actor."""
+        for system_ind, system in enumerate([ self._metapartsystem.system(i) for i in range(self._metapartsystem.nSystems()) ]):
+            key = ('-', system_ind)
+            yield (key, system)
+
+    def _iterate_particle_sources(self):
+        """Iterator through all SourcePSA in all particle systems of actor."""
+        for (actor_name, system_ind), system in self._iterate_particle_systems():
+            for action_ind, action in enumerate(system.actions):
+                if isinstance(action, Pixie.SourcePSA):
+                    key = (actor_name, system_ind, action_ind)
+                    yield (key, action)
+
+    def _stop_particles_spawn(self):
+        if not self._spawn_stopped:
+            for action_key, action in self._iterate_particle_sources():
+                self._spawn_rates[action_key] = action.rate
+                action.rate = 0
+
+            self._spawn_stopped = True
+
+    def _resume_particles_spawn(self):
+        if self._spawn_stopped:
+            for action_key, action in self._iterate_particle_sources():
+                try:
+                    action.rate = self._spawn_rates[action_key]
+                except KeyError:
+                    pass
+
+            self._spawn_stopped = False
+
+
+def getParticleBG(path):
+    return Particles(path).loadBG()

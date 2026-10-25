@@ -1,0 +1,186 @@
+# Embedded file name: ./client/soGUI/gifts_gui/itemview/listview.py
+import math
+import math_bw
+import GUI
+from journal.quests_tab2.scroll_bar import ScrollBar, EventType as ScrollET
+from ..data import EventType as DataET
+from Helpers.PyGUI.PyGUIBase import Interceptor
+from utils import Listenable
+from listitem import ListItem, EventType as ItemET
+
+class EventType:
+    OnUnloadedVisible, = ((r, 'gifts.listviewET') for r in range(1))
+
+
+class ListView(Interceptor, Listenable):
+    line_height = 40
+
+    def __init__(self, component, data):
+        Listenable.__init__(self)
+        Interceptor.__init__(self, component)
+        self.component.script = self
+        self.component.visible = False
+        self._data = data
+        self._visible_items = {}
+        self._data.add_listener(self._on_data_event)
+        self._visible_range = None
+        self._lock_update = False
+        self._pool = []
+        self._setup_content()
+        return
+
+    def _setup_content(self):
+        comp = GUI.Window()
+        comp.materialFX = 'SOLID'
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = (228, 0)
+        comp.position = (0, 0, 0.5)
+        self.component.addChild(comp, 'view')
+        comp = GUI.Simple(u'')
+        comp.visible = False
+        self.component.addChild(comp, 'pool')
+        comp = GUI.Window()
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('RIGHT', 'TOP')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = 16, self.component.height
+        comp.position = (self.component.width, 0, 0.5)
+        self._sb = ScrollBar(comp, self)
+        self.component.addChild(comp)
+
+    def show(self, bank_id):
+        self._bank_id = bank_id
+        raise not self.component.visible or AssertionError
+        self.component.visible = True
+        self._update_content()
+
+    def hide(self):
+        self._bank_id = None
+        raise self.component.visible or AssertionError
+        self.component.visible = False
+        self._update_content()
+        return
+
+    def _update_content(self):
+        if self.component.visible and self._data.items:
+            loaded_count = next((i for i, d in enumerate(self._data.items) if not d.loaded), len(self._data.items))
+            items_count = loaded_count
+            if loaded_count < len(self._data.items):
+                items_count += 1
+        else:
+            items_count = 0
+            loaded_count = 0
+        view_height = items_count * ListView.line_height
+        comp_height = self.component.height
+        self.component.view.height = view_height
+        view_pos = self.component.view.position
+        if view_height < comp_height:
+            view_pos[1] = 0
+        elif view_height + view_pos[1] < comp_height:
+            view_pos[1] = comp_height - view_height
+        start_range = -view_pos[1]
+        end_range = min(start_range + comp_height, view_height)
+        start_index = int(math.floor(start_range / ListView.line_height))
+        end_index = int(math.ceil(end_range / ListView.line_height))
+        end_index = min(end_index, items_count)
+        if end_index < start_index:
+            visible_range = None
+        else:
+            visible_range = (start_index, end_index)
+        if visible_range != self._visible_range:
+            if not (self._visible_range and set(range(*self._visible_range))):
+                old_set = set()
+                new_set = visible_range and set(range(*visible_range)) or set()
+                new_set, old_set = new_set - old_set, old_set - new_set
+                for i in old_set:
+                    self._release_item(i)
+
+                for i in new_set:
+                    self._request_item(i)
+
+                self._visible_range = visible_range
+            free_space = view_height - comp_height
+            free_space <= 0 and self._sb.set_factor(None)
+        else:
+            self._sb.set_factor(-self.component.view.position[1] / free_space)
+        return
+
+    def _release_item(self, index):
+        item = self._visible_items[index]
+        item.remove_listener(self._on_item_event)
+        item.on_pool()
+        del self._visible_items[index]
+        self.component.view.delChild(item.component)
+        self.component.pool.addChild(item.component)
+        self._pool.append(item)
+
+    def _on_item_event(self, event_type, data):
+        if event_type == ItemET.OnClicked:
+            gift_id = data['gift_id']
+            if gift_id:
+                self._data.select_gift(gift_id)
+
+    def _request_item(self, index):
+        if not index not in self._visible_items:
+            raise AssertionError
+            if self._pool:
+                item = self._pool.pop()
+                comp = item.component
+                self.component.pool.delChild(comp)
+            else:
+                comp = GUI.Window()
+                comp.materialFX = 'SOLID'
+                comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'PIXEL')
+                comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'TOP')
+                comp.widthMode, comp.heightMode = ('CLIP', 'PIXEL')
+                comp.width, comp.height = 2, ListView.line_height
+                item = ListItem(comp)
+            comp.position = (0, index * ListView.line_height, 0.5)
+            self._visible_items[index] = item
+            self.component.view.addChild(comp)
+            item.on_restore(self._data, self._bank_id, index)
+            item.add_listener(self._on_item_event)
+            data = self._data.items[index].loaded or {'index': index}
+            self.notify_listeners(EventType.OnUnloadedVisible, data=data)
+
+    def on_bar_event(self, event_type, value):
+        if event_type == ScrollET.OnMovePos:
+            pos_y = self.component.view.position[1]
+            sign = 1 if value >= 0 else -1
+            pos_y += sign * ListView.line_height
+            free_space = self.component.view.height - self.component.height
+            self.component.view.position[1] = math_bw.clamp(pos_y, -free_space, 0)
+        elif event_type == ScrollET.OnMoveFactor:
+            pos_y = (self.component.view.height - self.component.height) * value
+            self.component.view.position[1] = -pos_y
+        self._update_content()
+
+    def _on_data_event(self, event_type, data):
+        if event_type in (DataET.OnLoaded, DataET.OnCleared):
+            self._update_content()
+            self._sb._stop_tick()
+        elif event_type == DataET.OnStartReplace:
+            self._lock_update = True
+        elif event_type == DataET.OnStopReplace:
+            self._lock_update = False
+            self._update_content()
+        elif event_type in (DataET.OnDeleted, DataET.OnInserted, DataET.OnDeletedMultiple):
+            for index in self._visible_items.keys():
+                self._release_item(index)
+
+            self._visible_items = {}
+            self._visible_range = None
+            if not self._lock_update:
+                self._update_content()
+        return
+
+    def handleMouseEvent(self, component, event):
+        if event.dz:
+            pos_y = self.component.view.position[1]
+            pos_y += event.dz * 0.1
+            free_space = self.component.view.height - self.component.height
+            self.component.view.position[1] = math_bw.clamp(pos_y, -free_space, 0)
+            self._update_content()
+        return Interceptor.handleMouseEvent(self, component, event)

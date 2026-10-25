@@ -1,0 +1,107 @@
+# Embedded file name: ./client/creature_stipple.py
+import BigWorld
+DAMAGE_VISIBLE_TIME = 5.0
+
+class CreatureStipple:
+    _stipple_in_id = None
+    _stipple_out_id = None
+    _stipple_blink_id = None
+    _stipple = False
+    _player_inside = False
+    _damage_time = 0
+    _damage_timer = None
+
+    def onEnterWorld(self):
+        stipple_distance = self.get_config('stipple_distance')
+        if self.get_config('permanent_stipple'):
+            self.model.stipple = True
+        elif stipple_distance:
+            if not self.dead and self.position.distTo(BigWorld.player().position) > stipple_distance:
+                self.model.stipple = True
+                self._stipple = True
+            self._stipple_in_id = BigWorld.addPot(self.matrix, stipple_distance, self.__onPlayerInside)
+
+    def onLeaveWorld(self):
+        if self._stipple_in_id:
+            BigWorld.delPot(self._stipple_in_id)
+            self._stipple_in_id = None
+        if self._stipple_out_id:
+            BigWorld.delPot(self._stipple_out_id)
+            self._stipple_out_id = None
+        if self._stipple_blink_id:
+            BigWorld.cancelCallback(self._stipple_blink_id)
+        return
+
+    def onDamaged(self, source_data, damagetaken_data):
+        if not self.get_config('stipple_distance'):
+            return
+        self._damage_time = BigWorld.time()
+        if self._damage_timer:
+            BigWorld.cancelCallback(self._damage_timer)
+        BigWorld.callback(DAMAGE_VISIBLE_TIME + 0.1, self.updateStipple)
+        BigWorld.callback(0.1, self.updateStipple)
+
+    def onSetDead(self):
+        if self.get_config('permanent_stipple'):
+            if self.model:
+                self.model.stipple = True
+        elif self.get_config('stipple_distance'):
+            if self.dead:
+                self._stipple = False
+                if self.model:
+                    self.model.stipple = False
+
+    def __onPlayerOutside(self, enteredTrap, handle):
+        if not enteredTrap:
+            self._player_inside = False
+            BigWorld.delPot(handle)
+            self._stipple_out_id = None
+            self.updateStipple()
+        return
+
+    def __onPlayerInside(self, enteredTrap, handle):
+        if enteredTrap:
+            self._player_inside = True
+            self.updateStipple()
+            if not self._stipple_out_id:
+                radius_out = self.get_config('stipple_distance') + 5.0
+                self._stipple_out_id = BigWorld.addPot(self.matrix, radius_out, self.__onPlayerOutside)
+
+    def __blink(self, count = 25):
+        if self.isDestroyed:
+            return
+        else:
+            self._stipple_blink_id = None
+            if count <= 0:
+                self.model.stipple = self._stipple
+                return
+            self.model.stipple = bool(count % 2)
+            self._stipple_blink_id = BigWorld.callback(0.01, lambda : self.__blink(count=count - 1))
+            return
+
+    def updateStipple(self):
+        if self.isDestroyed:
+            return
+        if not self.get_config('stipple_distance'):
+            return
+        last_damage = BigWorld.time() - self._damage_time
+        if not self.dead and last_damage > DAMAGE_VISIBLE_TIME:
+            stipple = not self._player_inside
+            if self._stipple == stipple:
+                return
+            self._stipple = stipple
+            self.model.stipple = self._stipple
+
+            def blink(count = 25):
+                if self.isDestroyed:
+                    return
+                if count <= 0:
+                    self.model.stipple = self._stipple
+                    return
+                self.model.stipple = bool(count % 2)
+                BigWorld.callback(0.01, lambda : blink(count=count - 1))
+
+            blink(count=20)
+            stipple and self.spawn_isolated_effect(self.get_config('enter_stipple_sfx'))
+        else:
+            self.spawn_isolated_effect(self.get_config('leave_stipple_sfx'))

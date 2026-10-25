@@ -1,0 +1,2275 @@
+# Embedded file name: ./client/AvatarTrackers.py
+import BigWorld
+import BWPersonality
+import Math
+from Math import Matrix, Vector3
+import math
+import time
+from Items import ItemsCatalog
+from ItemsUtils import nodebyslot
+import ResourceLoader
+from StalkerModel import PISTOL_HOLSTER_PATH
+import Constants
+import traceback
+import ResMgr
+import random
+from functools import partial
+import sounds_manager as sounds
+import recoil_and_spread_table
+from hand_control import HandControl
+import AnimationCaps
+import tmp_head_la_provider
+import FX
+import foot_tmp2 as foot_tmp
+from math_bw import random_vector
+from ChatChannelConfig import CHANNEL_CONSTS
+from math_bw import clamp
+import tmp_weapon_node_info_and_gunrw
+import player_speed_settings
+import StalkerModel
+import tracker_lod_settings
+from clweapon import ClWeapon
+from Fabric.EyesController import EyesController
+from Fabric.FaceController import FaceController
+from EquipSlotsConfigs import EquipSlotTypes as EST
+from DressInterface import VISOR_OPEN_LOOP_ACTION
+from DressInterface import GASMASK_FILTER_OFF_LOOP_ACTION
+from Fabric.FaceSettings import LimitsConfigurator as LC
+import ItemsUtils
+import utils_bw
+from utils_bw import IGNORE_MATERIAL, PORTALS_DEPTH_COLLIDE
+
+def ignoreError(foo):
+
+    def bar(*w, **kw):
+        try:
+            return foo(*w, **kw)
+        except:
+            print '\n\n' + '----------'
+            print 'foo:', foo
+            print 'arg:', (w, kw)
+            traceback.print_stack()
+            print '-----'
+            traceback.print_exc()
+            print '----------\n\n'
+
+    return bar
+
+
+def isTackerInit(foo):
+
+    @ignoreError
+    def wraper(self, *w, **kw):
+        if self.isDestroyed:
+            return
+        if not self._tracker_is_init:
+            return
+        return foo(self, *w, **kw)
+
+    return wraper
+
+
+class AvatarTrackers(HandControl):
+    clientAccessLevel = 0
+    lookingaround = False
+    lookingaround_smooth = False
+    npcSuit = False
+    dead = 0
+    _torso_disbale_by_lookaround = False
+    sprinting = False
+    _pushing_with_tilt = False
+    _pushing_with_tilt2 = False
+    _velocity = Vector3(0, 0, 0)
+    _tmp_look_to_cam_diasable = False
+    _inAir = False
+    _after_jump_landing_state = False
+    _headLArovider = None
+    fix_roll_left_hand = False
+    head_look_cam = False
+    enable_tracker = 1
+    _tracker_is_init = False
+    offline_mode = False
+    active_melee = None
+    active_transform = None
+    active_weapon_model = None
+    active_weapon = None
+    heli_weapon = None
+    belly_weapon = None
+    test_nodeInfo_gunrw = None
+    STEP_HANDS_BLEND = 0.01
+    HANDS_POROG = 2.0
+    ENABLE_MovingActionMather = True
+    USE_MovingActionMather = True
+    isMovingTest = False
+    _playing_animation_loot = False
+    _interact_action_callback = None
+    _model_pistol_holster = None
+    isBreathHolding = False
+    last_pitch = 0
+    last_yaw = 0
+    is_gunpoint = False
+    CAM_WEAPON_MIN_YAW = math.radians(-50)
+    CAM_WEAPON_MAX_YAW = math.radians(50)
+    delay_free_prov_to_anim = 0.3
+    delay_anim_to_free_prov_ = 2
+    delay_unlock_hvat_after_slope = 0.6
+    _tofree_calb_id = None
+    _hand_free_prov_active = False
+    _hand_blend_prov_complete = True
+    __turn_status = 0
+    __lock_left_hvat = False
+    __lock_right_hvat = False
+    STEPA = 1.0
+    _last_action_type = 'idle'
+    _is_fix_action_sprint = False
+    last_hand_actionHvatR = ''
+    last_hand_actionHvatL = ''
+    __last_tracker_key = None
+    __last_complexItemType = None
+    weaponSnipingCam = None
+    isSnipingCam = False
+    __last_data_trackers = None
+    __saved_action_queue = None
+    __saved_action_responses = None
+    __saved_hands = None
+    __last_xtorso_data = None
+    __saved_yaw = None
+    _leg_rotate_inside = 0
+    _leg_rotate_outside = 0
+    _foot_rotate_limit = 0
+    _hips_offset_by_rotate = 0
+    left_weapon_prov = None
+    right_weapon_prov = None
+    xTorso = None
+
+    def __init__(self):
+        self._hvat_actions = {'left': dict(name='', played=False, lock=False),
+         'right': dict(name='', played=False, lock=False)}
+        HandControl.__init__(self)
+
+    @property
+    def prereqs(self):
+        """ \xd0\xb2\xd0\xbe\xd0\xb7\xd0\xb2\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xbf\xd0\xbe\xd1\x81\xd0\xbb\xd0\xb5\xd0\xb4\xd0\xbd\xd0\xb8\xd0\xb5 \xd0\xb7\xd0\xb0\xd0\xb3\xd1\x80\xd1\x83\xd0\xb6\xd0\xb5\xd0\xbd\xd0\xbd\xd0\xbd\xd1\x8b\xd0\xb5 \xd0\xbf\xd1\x80\xd0\xb5\xd1\x80\xd0\xb5\xd0\xba\xd0\xb2\xd0\xb8\xd0\xb7\xd0\xb8\xd1\x82\xd1\x8b
+                \xd0\xb1\xd0\xb0\xd0\xb7\xd0\xbe\xd0\xb2\xd1\x83\xd1\x8e \xd0\xbc\xd0\xbe\xd0\xb4\xd0\xb5\xd0\xbb\xd1\x8c \xd0\xb2\xd1\x8b\xd0\xba\xd0\xbe\xd0\xb2\xd1\x8b\xd1\x80\xd0\xb8\xd0\xb2\xd0\xb0\xd1\x82\xd1\x8c \xd1\x87\xd0\xb5\xd1\x80\xd0\xb5\xd0\xb7 get_base_model_from_prereqs
+        """
+        return getattr(self, '_prereqs', {})
+
+    @prereqs.setter
+    def prereqs(self, value):
+        """ \xd0\xbf\xd1\x80\xd0\xb5\xd1\x80\xd0\xb5\xd0\xba\xd0\xb2\xd0\xb8\xd0\xb7\xd0\xb8\xd1\x82\xd1\x8b \xd1\x81\xd0\xb0\xd0\xbc\xd0\xbe\xd1\x83\xd0\xb4\xd0\xb0\xd0\xbb\xd1\x8f\xd1\x8e\xd1\x82\xd1\x81\xd1\x8f \xd1\x87\xd0\xb5\xd1\x80\xd0\xb5\xd0\xb7 \xd1\x82\xd1\x80\xd0\xb8 \xd1\x81\xd0\xb5\xd0\xba\xd1\x83\xd0\xbd\xd0\xb4\xd1\x8b """
+        self._prereqs = value
+
+        def clear_preqs():
+            if hasattr(self, '_prereqs'):
+                del self._prereqs
+
+        BigWorld.callback(30.0, clear_preqs)
+
+    def onEnterWorld(self, prereqs = None):
+        self.prereqs = prereqs
+
+    def onLeaveWorld(self):
+        HandControl.onLeaveWorld(self)
+        self.clearTrakers()
+
+    def prerequisites(self):
+        compose_data = StalkerModel.compose_player_model_list(self)
+        self._prereqs_model_key = compose_data['models']
+        models_list = [self._prereqs_model_key]
+        for slot_name in self.ActiveWeaponSet2.keys():
+            models_list.extend(ClWeapon.get_all_models_path(self, slot_name))
+
+        for hair_slot in EST.get_face_slots():
+            if hair_slot in compose_data['hidden_slots']:
+                continue
+            item_type = EST.get_slot_data(self, hair_slot)['itemType']
+            if item_type:
+                hair_texture = ItemsCatalog.GetItemParam(item_type).get('Substrate')
+                models_list.append(hair_texture)
+
+        return models_list
+
+    def get_base_model_from_prereqs(self):
+        if not self.prereqs:
+            return
+        elif self._prereqs_model_key in self.prereqs.failedIDs:
+            print '---------------'
+            print 'ERROR LOAD MODEL', self._prereqs_model_key
+            print self, self.id, self.position
+            traceback.print_stack()
+            return
+        else:
+            try:
+                result = self.prereqs[self._prereqs_model_key]
+                self.prereqs = None
+                return result
+            except:
+                print '---------------'
+                print self, self.id, self.position
+                print 'key:', repr(self._prereqs_model_key)
+                print 'failedIDs:', self.prereqs.failedIDs
+                print 'keys:', self.prereqs.keys()
+                traceback.print_stack()
+
+            return
+
+    @ignoreError
+    def __show_tracker_error(self, msg):
+        print msg
+        if getattr(BigWorld.player(), 'clientAccessLevel', 0) > 2:
+            BWPersonality.gpd.sendHightMessage(msg)
+
+    def _clear_lod_animations(self, section):
+        if section is None:
+            return
+        else:
+            for name, action in section.items():
+                if name == 'action' and action['name'].asString.startswith('LOD_'):
+                    section.deleteSection(action)
+                elif name == 'action' and action['name'].asString.startswith('use_stone'):
+                    section.deleteSection(action)
+
+            return section
+
+    def _clear_saved_action(self, action_name):
+        """
+        \xd0\x95\xd1\x81\xd0\xbb\xd0\xb8 \xd0\xba\xd0\xb0\xd0\xba\xd0\xbe\xd0\xb9-\xd1\x82\xd0\xbe \xd1\x8d\xd0\xba\xd1\x88\xd0\xb5\xd0\xbd \xd0\xb1\xd1\x83\xd0\xb4\xd0\xb5\xd1\x82 \xd1\x83\xd0\xb4\xd0\xb0\xd0\xbb\xd1\x91\xd0\xbd, \xd1\x82\xd0\xbe \xd0\xba\xd0\xbe\xd0\xbb\xd0\xbb\xd0\xb1\xd0\xb5\xd0\xba \xd0\xb4\xd0\xbb\xd1\x8f \xd1\x8d\xd1\x82\xd0\xbe\xd0\xb3\xd0\xbe \xd1\x8d\xd0\xba\xd1\x88\xd0\xb5\xd0\xbd\xd0\xb0 \xd0\xbd\xd0\xb5 \xd0\xb1\xd1\x83\xd0\xb4\xd0\xb5\xd1\x82 \xd0\xb2\xd0\xbe\xd1\x81\xd1\x81\xd1\x82\xd0\xb0\xd0\xbd\xd0\xb0\xd0\xb2\xd0\xbb\xd0\xb8\xd0\xb2\xd0\xb0\xd1\x82\xd1\x8c\xd1\x81\xd1\x8f
+        """
+        if self.__saved_action_queue is None:
+            return
+        else:
+            for name, action in self.__saved_action_queue.items():
+                if name == 'action' and action['name'].asString == action_name:
+                    self.__saved_action_queue.deleteSection(action)
+
+            return
+
+    def check_visor(self, section):
+        """ \xd0\xb2\xd0\xbe\xd1\x81\xd1\x81\xd1\x82\xd0\xb0\xd0\xbd\xd0\xbe\xd0\xb2\xd0\xb8\xd1\x82\xd1\x8c (\xd1\x83\xd0\xb1\xd1\x80\xd0\xb0\xd1\x82\xd1\x8c) \xd0\xb0\xd0\xbd\xd0\xb8\xd0\xbc\xd0\xb8\xd1\x80\xd0\xbe\xd0\xb2\xd0\xb0\xd0\xbd\xd0\xbd\xd0\xbe\xd0\xb5 \xd0\xb7\xd0\xb0\xd0\xb1\xd1\x80\xd0\xb0\xd0\xbb\xd0\xbe """
+        need_visor = EST.is_mode_on(self, EST.MODE_VISOR)
+        visor_action = None
+        if section is not None:
+            for name, action in section.items():
+                if name == 'action' and action['name'].asString == VISOR_OPEN_LOOP_ACTION:
+                    visor_action = action
+                    break
+
+        if need_visor and not visor_action:
+            if section is None:
+                section = ResMgr.DataSection('saved_action_queue')
+                visor_action = section.createSection('action')
+                visor_action.writeString('name', 'Vladov_kostyl')
+            visor_action = section.createSection('action')
+            visor_action.writeString('name', VISOR_OPEN_LOOP_ACTION)
+            visor_action.writeFloat('finish', -1)
+            visor_action.writeInt('firstFrame', -1)
+            visor_action.writeInt('lastFrame', -1)
+            visor_action.writeInt('frameRate', -1)
+            visor_action.writeFloat('passed', 100)
+            visor_action.writeFloat('played', 100)
+            visor_action.writeFloat('lastPlayed', 100)
+            visor_action.writeBool('promoteMotion', False)
+        elif not need_visor and visor_action:
+            section.deleteSection(visor_action)
+        return section
+
+    def check_gasmask_filter(self, section):
+        """ \xd1\x81\xd0\xba\xd1\x80\xd1\x8b\xd1\x82\xd1\x8c/\xd0\xbf\xd0\xbe\xd0\xba\xd0\xb0\xd0\xb7\xd0\xb0\xd1\x82\xd1\x8c \xd1\x84\xd0\xb8\xd0\xbb\xd1\x8c\xd1\x82\xd1\x80 \xd0\xbd\xd0\xb0 \xd0\xbf\xd1\x80\xd0\xbe\xd1\x82\xd0\xb8\xd0\xb2\xd0\xbe\xd0\xb3\xd0\xb0\xd0\xb7\xd0\xb5 """
+        need_hide_filter = EST.is_mode_on(self, EST.MODE_GASMASK_FILTER_OFF)
+        anim_action = None
+        if section is not None:
+            for name, action in section.items():
+                if name == 'action' and action['name'].asString == GASMASK_FILTER_OFF_LOOP_ACTION:
+                    anim_action = action
+                    break
+
+        if need_hide_filter and not anim_action:
+            if section is None:
+                section = ResMgr.DataSection('saved_action_queue')
+                anim_action = section.createSection('action')
+                anim_action.writeString('name', 'Vladov_kostyl')
+            anim_action = section.createSection('action')
+            anim_action.writeString('name', GASMASK_FILTER_OFF_LOOP_ACTION)
+            anim_action.writeFloat('finish', -1)
+            anim_action.writeInt('firstFrame', -1)
+            anim_action.writeInt('lastFrame', -1)
+            anim_action.writeInt('frameRate', -1)
+            anim_action.writeFloat('passed', 100)
+            anim_action.writeFloat('played', 100)
+            anim_action.writeFloat('lastPlayed', 100)
+            anim_action.writeBool('promoteMotion', False)
+        elif not need_hide_filter and anim_action:
+            section.deleteSection(anim_action)
+        return section
+
+    def check_saved_animations(self, section):
+        """ \xd0\xbf\xd0\xb5\xd1\x80\xd0\xb5\xd0\xbe\xd0\xbf\xd1\x80\xd0\xb5\xd0\xb4\xd0\xb5\xd0\xbb\xd0\xb5\xd0\xbd\xd0\xbe \xd0\xb2 \xd0\xbd\xd0\xbf\xd1\x86
+        """
+        return section
+
+    @ignoreError
+    def onPreModelChange(self):
+        if self.model:
+            self.__saved_action_queue = ResMgr.DataSection('saved_action_queue')
+            self.__saved_action_responses = ResMgr.ActionResponceState()
+            self.model.saveActionQueue(self.__saved_action_queue, self.__saved_action_responses)
+            self.__saved_yaw = self.model.yaw
+            self.__saved_hands = {}
+            if getattr(self, 'nodeInfoL', None):
+                self.__saved_hands['left'] = dict(angleRollForce=self.nodeInfoL.angleRollForce, angleRoll=self.nodeInfoL.angleRoll)
+                self.__saved_hands['right'] = dict(angleRollForce=self.nodeInfoR.angleRollForce, angleRoll=self.nodeInfoR.angleRoll)
+            self.__last_data_trackers = {}
+
+            def saveState(tracker):
+                ds = ResMgr.DataSection('saved_tracker')
+                tracker.saveState(ds)
+                return ds
+
+            if getattr(self, 'tracker_torso', None) and self.tracker_torso.nodeInfo:
+                self.__last_data_trackers['tracker_torso'] = saveState(self.tracker_torso)
+            if getattr(self, 'tracker_head', None) and self.tracker_head.nodeInfo:
+                self.__last_data_trackers['tracker_head'] = saveState(self.tracker_head)
+            if getattr(self, 'tracker_gun', None) and self.tracker_gun.nodeInfo:
+                self.__last_data_trackers['tracker_gun'] = saveState(self.tracker_gun)
+            if getattr(self, 'tracker_gun_mover', None) and self.tracker_gun_mover.nodeInfo:
+                self.__last_data_trackers['tracker_gun_mover'] = saveState(self.tracker_gun_mover)
+            if getattr(self, 'active_weapon_model', None) and getattr(self.active_weapon_model, 'test_tracker_gunrw', None):
+                self.__last_data_trackers['test_tracker_gunrw'] = saveState(self.active_weapon_model.test_tracker_gunrw)
+            if self.xTorso:
+                self.__last_xtorso_data = self.xTorso.getSaveState()
+            HandControl.onPreModelChangeHand(self)
+        return
+
+    @ignoreError
+    def onPostModelChange(self):
+        if getattr(self, 'transformationID', None):
+            self.__saved_action_queue = None
+            self.__last_data_trackers = None
+        if getattr(self, 'inject_repostmodel_crutch', False):
+            self.__saved_action_queue = None
+            self.__last_data_trackers = None
+            self._last_action_type = 'idle'
+            self.SetWeaponStatus(Constants.WEAPON_INCOMABAT)
+        self.__saved_action_queue = self.check_visor(self.__saved_action_queue)
+        self.__saved_action_queue = self.check_gasmask_filter(self.__saved_action_queue)
+        self.__saved_action_queue = self._clear_lod_animations(self.__saved_action_queue)
+        self.__saved_action_queue = self.check_saved_animations(self.__saved_action_queue)
+        if self.model and self.__saved_action_queue:
+            self.model.restoreActionQueue(self.__saved_action_queue, self.__saved_action_responses)
+            if self.__saved_yaw is not None:
+                self.model.yaw = self.__saved_yaw
+            if self.__last_data_trackers:
+                if getattr(self, 'torso_nodeinfo', None) and self.__last_data_trackers.get('tracker_torso'):
+                    self.tracker_torso.restoreState(self.__last_data_trackers['tracker_torso'])
+                    self.torso_nodeinfo.restoreNodeState(self.__last_data_trackers['tracker_torso'])
+                if getattr(self, 'tracker_head', None) and self.__last_data_trackers.get('tracker_head'):
+                    self.tracker_head.restoreState(self.__last_data_trackers['tracker_head'])
+                    self.head_nodeInfo.restoreNodeState(self.__last_data_trackers['tracker_head'])
+                if getattr(self, 'tracker_gun', None) and self.__last_data_trackers.get('tracker_gun'):
+                    self.tracker_gun.restoreState(self.__last_data_trackers['tracker_gun'])
+                    self.tracker_gun.nodeInfo.restoreNodeState(self.__last_data_trackers['tracker_gun'])
+                if getattr(self, 'tracker_gun_mover', None) and self.__last_data_trackers.get('tracker_gun_mover'):
+                    self.tracker_gun_mover.restoreState(self.__last_data_trackers['tracker_gun_mover'])
+                    self.tracker_gun_mover.nodeInfo.restoreNodeState(self.__last_data_trackers['tracker_gun_mover'])
+                if getattr(self, 'active_weapon_model', None) and self.__last_data_trackers.get('test_tracker_gunrw'):
+                    self.active_weapon_model.test_tracker_gunrw.restoreState(self.__last_data_trackers['test_tracker_gunrw'])
+                    self.active_weapon_model.test_tracker_gunrw.nodeInfo.restoreNodeState(self.__last_data_trackers['test_tracker_gunrw'])
+            if self.__saved_hands:
+                if getattr(self, 'nodeInfoL', None):
+                    self.nodeInfoL.angleRollForce = self.__saved_hands['left']['angleRollForce']
+                    self.nodeInfoR.angleRollForce = self.__saved_hands['right']['angleRollForce']
+                    self.nodeInfoL.angleRoll = self.__saved_hands['left']['angleRoll']
+                    self.nodeInfoR.angleRoll = self.__saved_hands['right']['angleRoll']
+            if self.__last_xtorso_data and self.xTorso:
+                self.xTorso.restoreState(self.__last_xtorso_data)
+            HandControl.onPostModelChangeHand(self)
+        self.__last_data_trackers = None
+        self.__saved_action_queue = None
+        self.__saved_action_responses = None
+        self.__last_xtorso_data = None
+        self.__saved_hands = None
+        self.__saved_yaw = None
+        self.right_hand_model_sound_node = None
+        self.updateModelRotateMod()
+        StalkerModel.update_tuck(self)
+        StalkerModel.update_filter_mask(self)
+        return
+
+    _orig_serverLook = None
+    __head_from_server = False
+    __head_from_server_timer = 0
+
+    @isTackerInit
+    def onChangedServerHeadDirection(self, head_direction):
+        """
+                \xd0\xbd\xd0\xb0\xd0\xb1\xd0\xbb\xd1\x8e\xd0\xb4\xd0\xb0\xd0\xb5\xd0\xbc\xd1\x8b\xd0\xb9 \xd0\xb0\xd0\xb2\xd0\xb0\xd1\x82\xd0\xb0\xd1\x80 \xd0\xb2\xd0\xba\xd0\xbb\\\xd0\xb2\xd1\x8b\xd0\xba\xd0\xbb lookAround
+        """
+
+        def autoStopServerHead():
+            if self.isDestroyed:
+                return
+            self.__head_from_server_timer = 0
+            self.__head_from_server = False
+            self.tracker_head.directionProvider = self.headProvider_entity
+
+        if self.__head_from_server_timer:
+            BigWorld.cancelCallback(self.__head_from_server_timer)
+            self.__head_from_server_timer = 0
+        if head_direction.x < -50:
+            self.__head_from_server = False
+            self.tracker_head.directionProvider = self.headProvider_entity
+        else:
+            if not self.__head_from_server:
+                self.headProvider_serverLook = Matrix()
+                self._orig_serverLook = None
+                if self.transport_seat and not BigWorld.entities.get(self.transport_seat):
+                    return
+                self.__head_from_server = True
+                if self.in_helicopter or self.is_gunpoint:
+                    self.headProvider_serverLook = Math.MatrixProduct()
+                    self._orig_serverLook = Matrix()
+                    self._orig_serverLook.setRotateYPR((head_direction.x, head_direction.y, 0))
+                    if self.is_gunpoint:
+                        self.headProvider_serverLook.a = self._orig_serverLook
+                        self.headProvider_serverLook.b = Matrix()
+                    else:
+                        self.headProvider_serverLook.a = self._orig_serverLook
+                        self.headProvider_serverLook.b = BigWorld.entities[self.transport_seat].matrix
+                    self.updateGunProvider()
+                    self.updateTorsoHeadProvider()
+                self.tracker_head.directionProvider = self.headProvider_serverLook
+            if self._orig_serverLook:
+                self._orig_serverLook.setRotateYPR((head_direction.x, head_direction.y, 0))
+            else:
+                self.headProvider_serverLook.setRotateYPR((head_direction.x, head_direction.y, 0))
+            self.__head_from_server_timer = BigWorld.callback(60, autoStopServerHead)
+        return
+
+    torso_roll_value = 0
+
+    @ignoreError
+    def updateTorsoRoll(self):
+        self.torso_nodeinfo.addRoll = self.torso_roll_value
+        self.updateCameraPosition()
+        self.update_turn_states()
+
+    def weaponStatusUpdated(self, old = None):
+        self.UpdateAvatarAnimationCaps()
+        self.setDirectionProviderParam()
+        if old is None:
+            return
+        elif old == self.weaponStatus:
+            return
+        else:
+            self.updateBreathHolding(False)
+            states = set([old, self.weaponStatus])
+            if states.issubset([Constants.WEAPON_SNIPING, Constants.WEAPON_INCOMABAT]):
+                return
+            sounds.playSound('guns/weapon_shift', self)
+            return
+
+    def updateBreathHolding(*e):
+        pass
+
+    _hand_wepon_providers_recreted = True
+
+    @ignoreError
+    def attachHandToWeaponTMP(self, weapon_model = None, weapon = None):
+        if not self.active_weapon_model:
+            print
+            print 'not self.active_weapon_model!!'
+            traceback.print_stack()
+            print
+            return
+        else:
+            if not weapon:
+                weapon = self.active_weapon
+                self._hand_wepon_providers_recreted = True
+                pWeapon_hilt_provider = self.active_weapon_model.node('HP_Lhand')
+                pWeapon_gunrw_provider = self.active_weapon_model.node('HP_GUNRW')
+                enable_adhering = 1
+                self.left_weapon_prov = BigWorld.HandToWeaponProvider(self.model, pWeapon_hilt_provider, pWeapon_gunrw_provider, enable_adhering)
+                pWeapon_hilt_provider = self.active_weapon_model.node('HP_Rhand')
+                self.right_weapon_prov = BigWorld.HandToWeaponProvider(self.model, pWeapon_hilt_provider, pWeapon_gunrw_provider, enable_adhering)
+                if weapon and weapon._custom_hilt:
+                    weapon.attachHandToCustomHilt(self.left_weapon_prov, self.right_weapon_prov)
+                if getattr(self, 'nodeInfoR', None):
+                    self.nodeInfoR.rotateHand = True
+                self.nodeInfoL.rotateHand = getattr(self, 'nodeInfoL', None) and True
+            self.updateHandToWeaponOffset()
+            self.onCreateHandToWeaponProvider()
+            return
+
+    def onCreateHandToWeaponProvider(self):
+        HandControl.onCreateHandToWeaponProvider(self)
+
+    @ignoreError
+    def detachHandToWeaponTMP(self):
+        pass
+
+    def updateTrackerBySprinting(self):
+        pass
+
+    def setActiveWeaponModel(self, model, weapon = None, update = True):
+        self.__last_complexItemType = None
+        self.__last_tracker_key = None
+        self.active_weapon_model = model
+        self._setHeapTagertVisible(False)
+        if update:
+            if model:
+                self.createTrakers(only_gun=True)
+            self.createDiffDirProviders()
+            if model:
+                self.attachHandToWeaponTMP(self.active_weapon_model, weapon=weapon)
+            self.setDirectionProviderParam()
+            self.UpdateAvatarAnimationCaps()
+        return
+
+    def _updateHeapTagertMatrix(self):
+        pass
+
+    DEBUG_HEAP_ENABLED = False
+
+    def _setHeapTagertVisible(self, visible):
+        pass
+
+    def switchRecoilDebug(self):
+        self._pygunnode._debug_show_recoil = not self._pygunnode._debug_show_recoil
+        self._pygunnode._updateCircleLimits()
+
+    def getActiveWeaponItemType(self):
+        if self.transform_weapon and self.transform_weapon.trackerOverrideItemType:
+            return self.transform_weapon.trackerOverrideItemType
+        if self.active_weapon:
+            return self.active_weapon.getItemType()
+        return 0
+
+    @ignoreError
+    def updateTrackerLookArround(self, lookAround):
+        if self != BigWorld.player():
+            raise UserWarning
+        if self._headLArovider:
+            self._headLArovider.reset()
+        self.updateCameraPosition()
+        self.updateTorsoHeadProvider()
+        if not lookAround:
+            self.updateBlendNodeByImpacting()
+        self.updateSmoothEnable()
+        if not self.active_weapon_model:
+            return
+        self.updateGunProvider()
+
+    def torsoRecoil(self, launcher = None):
+        if not self.torso_nodeinfo:
+            return
+        param, item_override_param = self.getRecoilAndSpreadParam()
+        if launcher and item_override_param:
+            param = item_override_param
+        recoil_mul, recoil_speed_mul = recoil_and_spread_table.getRecoilTorsoCoef(self)
+        step_yaw0, step_yaw1, min_yaw, max_yaw = param.get('torso_recoil_addYaw_LIM', (0, 0, 0, 0))
+        step_pitch0, step_pitch1, min_pitch, max_pitch = param.get('torso_recoil_addPitch_LIM', (0, 0, 0, 0))
+        add_yaw = recoil_mul * random.uniform(step_yaw0, step_yaw1)
+        add_pitch = recoil_mul * random.uniform(step_pitch0, step_pitch1)
+        add_yaw = self.torso_nodeinfo.recoilYaw + math.radians(add_yaw)
+        add_pitch = self.torso_nodeinfo.recoilPitch + math.radians(add_pitch)
+        self.torso_nodeinfo.recoilYaw = clamp(add_yaw, math.radians(min_yaw) * recoil_mul, math.radians(max_yaw) * recoil_mul)
+        self.torso_nodeinfo.recoilPitch = clamp(add_pitch, math.radians(min_pitch) * recoil_mul, math.radians(max_pitch) * recoil_mul)
+        self.torso_nodeinfo.recoilYawSpeed = param['torso_recoil_addYawSpeed'] * 0.01 * recoil_speed_mul
+        self.torso_nodeinfo.recoilPitchSpeed = param['torso_recoil_addPitchSpeed'] * 0.01 * recoil_speed_mul
+
+    def AM_errorStringNotifier(self, string):
+        msg = unicode(string)
+        caps = '    caps:\n'
+        for cap_id in self.model.motors[0].matchCaps:
+            caps += '%s: %s\n' % (cap_id, AnimationCaps.getCapNameById(cap_id))
+
+        msg += '     ' + caps
+        print '-----'
+        print msg.encode('utf-8')
+        if BigWorld.isConsumer() and getattr(BigWorld.player(), 'clientAccessLevel', 0) < 3:
+            return
+        if self == BigWorld.player():
+            self.putMessage(CHANNEL_CONSTS.NEWS, msg)
+        else:
+            name = self.name
+            self.putMessage(CHANNEL_CONSTS.NEWS, u'%s:  %s' % (name, msg))
+
+    @ignoreError
+    def clearTrakers(self):
+        self._tracker_is_init = False
+        try:
+            FaceController.destroy_controller(self)
+        except:
+            traceback.print_exc()
+
+        try:
+            EyesController.destroy_controller(self)
+        except:
+            traceback.print_exc()
+
+        try:
+            import spring_fabric
+            spring_fabric.removeFromEntity(self)
+        except:
+            traceback.print_exc()
+
+        if getattr(self, 'npcSuit', False):
+            return
+        else:
+            try:
+                FaceController.destroy_controller(self)
+                self.tracker_arm_left = None
+                self.tracker_arm_right = None
+                self.tracker_gun_mover = None
+                self.tracker_gun = None
+                self.tracker_head = None
+                if getattr(self, 'fniLeft', None):
+                    self.fniLeft.pTorso = None
+                    self.fniLeft.pCallBackTestPython = None
+                if getattr(self, 'fniRight', None):
+                    self.fniRight.pTorso = None
+                    self.fniRight.pCallBackTestPython = None
+                if getattr(self, 'torso_nodeinfo', None):
+                    self.torso_nodeinfo.postTrackedTorsoCallback = None
+                    self.torso_nodeinfo.pCallBackTickPython = None
+                    self.torso_nodeinfo.pHipsTransformAtPython = None
+                    self.torso_nodeinfo.pEntity = None
+                self.fniLeft = None
+                self.fniRight = None
+                if getattr(self, '_pygunnode', None):
+                    self._pygunnode.destroy()
+                    self._pygunnode = None
+                if getattr(self, '_pygunRWnode', None):
+                    self._pygunRWnode.destroy()
+                    self._pygunRWnode = None
+                if getattr(self, 'xTorso', None):
+                    self.xTorso.onLeaveWorld()
+                if getattr(self, 'foots', None):
+                    self.foots[0].onLeaveWorld()
+                    self.foots[1].onLeaveWorld()
+                self.xTorso = None
+                self.foots = None
+                self.active_weapon = None
+                self.belly_weapon = None
+                self.active_weapon_model = None
+                self.left_weapon_prov = None
+                self.right_weapon_prov = None
+                if getattr(self, 'GUNMover_nodeInfo', None):
+                    self.GUNMover_nodeInfo.GunNode = None
+                self.test_tracker_gunrw = None
+                self.GUNMover_nodeInfo = None
+                self.test_nodeInfo_gunrw = None
+                self.torso_nodeinfo = None
+                self.head_nodeInfo = None
+                self.gunnodeInfo = None
+                self._leftFreeHandProvider = None
+                self._rightFreeHandProvider = None
+                self.tracker_torso = None
+                self.torsoProvider_entity = None
+                self.weaponProvider_entity = None
+                self.headProvider_entity = None
+                self.headProvider_cam_dcursor = None
+                self.headProvider_cam_self = None
+                self.headProvider_serverLook = None
+                self.headProvider_to_target = None
+                if self.model:
+                    self.model.GUNR = None
+                    self.model.weaponback = None
+                    self.model.weaponback2 = None
+                    self.model.Pistol = None
+                    self.model.belly = None
+                    self.model.Lhand = None
+                    self.model.Rhand = None
+                    self.model.backpack = None
+                    if hasattr(self.model, 'torso'):
+                        self.model.torso = None
+                    if hasattr(self.model, 'tracker_arm_left'):
+                        self.model.tracker_arm_left = None
+                    if hasattr(self.model, 'tracker_arm_right'):
+                        self.model.tracker_arm_right = None
+                    if hasattr(self.model, 'tracker_gun_mover'):
+                        self.model.tracker_gun_mover = None
+                    if hasattr(self.model, 'tracker_gun'):
+                        self.model.tracker_gun = None
+                    if hasattr(self.model, 'tracker_head'):
+                        self.model.tracker_head = None
+                weapon_slots = getattr(self, 'weapon_slots', {})
+                for w in weapon_slots.values():
+                    w.destroyWeapon()
+
+                self.weapon_slots = {}
+                if self.heli_weapon:
+                    self.heli_weapon.destroy()
+                self.heli_weapon = None
+            except:
+                print '\n ERROR FOR', self
+                traceback.print_exc()
+
+            return
+
+    @ignoreError
+    def createTrakers(self, only_gun = False):
+        if only_gun:
+            self._createTrackerGun()
+            return
+        else:
+            self._tracker_is_init = False
+            if not getattr(self, 'npcSuit', False):
+                self.add_collider()
+            if not self.enable_tracker:
+                if self.active_transform:
+                    self._createScaleBones()
+                    self._createScaleBonesPost()
+                return
+            if self.active_transform:
+                self._createScaleBones()
+                if self.active_transform.isCustomModel:
+                    return
+            self._createTrackerTorso()
+            self._createTrackerGunMover()
+            self._createTrackerLeftArm()
+            self._createTrackerRightArm()
+            self._createTrackerHead()
+            self._createTrackerGun()
+            self._hand_blend_prov_complete = True
+            self.foots = [foot_tmp.Foot('Left', 'Lstep', self), foot_tmp.Foot('Right', 'Rstep', self)]
+            self.xTorso = foot_tmp.TorsoX(self)
+            if getattr(self, 'fniLeft', None):
+                self.fniLeft.pTorso = None
+            if getattr(self, 'fniRight', None):
+                self.fniRight.pTorso = None
+            self.fniLeft = BigWorld.FootNodeInfo(self.model, 'Hips', 'Pelvis', 'LeftUpLeg', 'LeftLeg', 'LeftFoot')
+            self.torso_nodeinfo.leftFootNodeInfo = self.fniLeft
+            self.fniLeft.pTorso = self.torso_nodeinfo
+            self.fniLeft.isLeft = True
+            self.fniLeft.maxWorkingDistanceToCamera = tracker_lod_settings.tracker_foot_lod
+            self.fniRight = BigWorld.FootNodeInfo(self.model, 'Hips', 'Pelvis', 'RightUpLeg', 'RightLeg', 'RightFoot')
+            self.torso_nodeinfo.rightFootNodeInfo = self.fniRight
+            self.fniRight.pTorso = self.torso_nodeinfo
+            self.fniRight.isLeft = False
+            self.fniRight.maxWorkingDistanceToCamera = tracker_lod_settings.tracker_foot_lod
+            self.fniLeft.pCallBackTestPython = self.foots[0].call
+            self.fniRight.pCallBackTestPython = self.foots[1].call
+            self.torso_nodeinfo.postTrackedTorsoCallback = self.xTorso.postTrackedTorsoCallback
+            self.torso_nodeinfo.pCallBackTickPython = self.xTorso.onTick
+            self.torso_nodeinfo.rightLeftHands = (self.nodeInfoL, self.nodeInfoR)
+            self.model.motors[0].matchNotifier = self.modelMatchNotifier
+            self.model.motors[0].errorStringNotifier = self.AM_errorStringNotifier
+            self.model.motors[0].matchNotifierLodDistance = 100.0
+            self._tracker_is_init = True
+            self.updateCrawlMode()
+            self.onCreateTrackers()
+            HandControl.onCreateTrackers(self)
+            if self.enable_tracker and not self.is_old_npc:
+                try:
+                    import spring_fabric
+                    spring_fabric.applyToEntity(self)
+                    if self.isHeadExist():
+                        EyesController.create_controller(self).start()
+                except:
+                    print '----------'
+                    print self
+                    traceback.print_exc()
+
+            isCustomModel = False
+            if self.active_transform and self.active_transform.isCustomModel:
+                isCustomModel = True
+            if not isCustomModel and self.isHeadExist():
+                face_controller = FaceController.create_controller(self, justOnePythonDraw=self.just_one_face_draw)
+                StalkerModel.apply_face(self, face_controller)
+            if self.active_transform:
+                self._createScaleBonesPost()
+            return
+
+    @property
+    def face_limits_type(self):
+        return LC.PLAYER
+
+    @property
+    def just_one_face_draw(self):
+        """ True - \xd0\xba\xd0\xbe\xd0\xbd\xd1\x82\xd1\x80\xd0\xbe\xd0\xbb\xd0\xbb\xd0\xb5\xd1\x80 \xd0\xbb\xd0\xb8\xd1\x86\xd0\xb0 \xd0\xbd\xd0\xb5 \xd0\xbe\xd0\xb1\xd0\xbd\xd0\xbe\xd0\xb2\xd0\xbb\xd1\x8f\xd0\xb5\xd1\x82\xd1\x81\xd1\x8f """
+        return True
+
+    def apply_ignore_bones_items(self):
+        """ \xd0\xbf\xd0\xbe\xd0\xb7\xd0\xb2\xd0\xbe\xd0\xbb\xd1\x8f\xd1\x82\xd1\x8c \xd0\xbf\xd1\x80\xd0\xb5\xd0\xb4\xd0\xbc\xd0\xb5\xd1\x82\xd0\xb0\xd0\xbc \xd0\xbd\xd0\xb0 \xd0\xbb\xd0\xb8\xd1\x86\xd0\xb5 \xd0\xbc\xd0\xb5\xd0\xbd\xd1\x8f\xd1\x82\xd1\x8c \xd0\xbb\xd0\xb8\xd1\x86\xd0\xbe """
+        return True
+
+    def onCreateTrackers(self):
+        pass
+
+    def foundActionType(self, action_name):
+        if not action_name:
+            return ''
+        action_name = action_name.lower()
+        if 'stop' in action_name:
+            return ''
+        if 'slope' in action_name:
+            return ''
+        action_keys = action_name.split('_')
+        if len(action_keys) != 4:
+            return ''
+        act, info, pose, state = action_keys
+        tranf_stay_act = {'idle': 'idle',
+         'walk': 'walk',
+         'run': 'run',
+         'sprint': 'sprint',
+         'turn': 'idle',
+         'slope': 'run'}
+        if act not in tranf_stay_act:
+            return ''
+        if pose == 'crouch':
+            if act == 'idle':
+                return 'crouch_idle'
+            if act == 'run':
+                return 'crouch_run'
+            return 'crouch_walk'
+        if pose == 'crawl':
+            if act == 'idle':
+                return 'crawl_idle'
+            return 'crawl_walk'
+        if pose == 'stay':
+            return tranf_stay_act[act]
+        print 'foundActionType:: error for', repr(action_name)
+        return ''
+
+    def modelMatchNotifier(self, action_name):
+        prev_fix_action_sprint = self._is_fix_action_sprint
+        self._is_fix_action_sprint = action_name == 'run_meleeFixSprint_stay_unarmed'
+        new_type = self.foundActionType(action_name)
+        fix_change = prev_fix_action_sprint != self._is_fix_action_sprint
+        if new_type and (new_type != self._last_action_type or fix_change):
+            prev_type = self._last_action_type
+            self._last_action_type = new_type
+            self.setDirectionProviderParam()
+            self._check_tired()
+            self.onChangePrimaryAction(self._last_action_type)
+            if self.active_transform:
+                self.onChangePrimaryActionForTransf(prev_type, new_type)
+
+    def onChangePrimaryAction(self, action_name):
+        pass
+
+    __start_sprint = 0
+    __tired_end_timer_id = 0
+
+    @ignoreError
+    def _check_tired(self):
+        SPRINT_TIME = 5.0
+        TIRED_AFTER_SPRINT_TIME = 7.0
+        t = time.time()
+
+        def _endtired():
+            if self.isDestroyed:
+                return
+            self.__tired_end_timer_id = 0
+            self.setTiredCapsAfterSprint(False)
+
+        if self._last_action_type == 'sprint':
+            self.__start_sprint = t
+        elif self.__start_sprint:
+            if t - self.__start_sprint > SPRINT_TIME:
+                if self.__tired_end_timer_id:
+                    BigWorld.cancelCallback(self.__tired_end_timer_id)
+                self.__tired_end_timer_id = BigWorld.callback(TIRED_AFTER_SPRINT_TIME, _endtired)
+                self.setTiredCapsAfterSprint(True)
+            self.__start_sprint = 0
+
+    def getLastActionType(self):
+        return self._last_action_type
+
+    def isSprintPlayed(self):
+        return self._is_fix_action_sprint or self._last_action_type == 'sprint'
+
+    def getTrackerKey(self):
+        return self._getTrackerKey()
+
+    def getGlobalTrackerKey(self):
+        key = self._getTrackerKey()
+        return ('tracker_global', key[1], key[2])
+
+    def _getTrackerKey(self):
+        status_names = {Constants.WEAPON_BORED: 'bored',
+         Constants.WEAPON_INCOMABAT: 'incombat',
+         Constants.WEAPON_SNIPING: 'aim'}
+        weaponStatus = self.weaponStatus
+        action_type = self._last_action_type
+        if self.weaponStatus != Constants.WEAPON_BORED:
+            if self._last_action_type == 'sprint':
+                action_type = 'run'
+        status_name = status_names[weaponStatus]
+        return ('tracker', status_name, action_type)
+
+    @ignoreError
+    def onCameraChange(self):
+        pass
+
+    @isTackerInit
+    def createDiffDirProviders(self):
+        self.torsoProvider_entity = BigWorld.EntityDirProvider(self, 1, 0)
+        self.weaponProvider_entity = self.torsoProvider_entity
+        self.headProvider_entity = self.torsoProvider_entity
+        self.headProvider_cam_dcursor = self.torsoProvider_entity
+        self.headProvider_cam_self = self.torsoProvider_entity
+        self.headProvider_serverLook = Math.Matrix()
+        self.headProvider_to_target = None
+        if BigWorld.player() == self:
+            self.torsoProvider_entity.playerAvatarMode = 1
+            self.torsoProvider_entity.playerAvatarModeSwitchSpeed = 0.1
+            self.headProvider_cam_self = BigWorld.DiffDirProvider(self.model.node('Head'), self.AvatarCam.invViewMatrix)
+            self.headProvider_cam_dcursor = BigWorld.dcursor().matrixYawFree
+            self.headProvider_special = BigWorld.DiffDirProvider(self.model.node('Head'), self.model.node('Spine3'))
+            if not self._headLArovider:
+                self._headLArovider = tmp_head_la_provider.HeadLArovider(self)
+            self._headLArovider.attach(self.headProvider_special)
+            self._headLArovider.reset()
+            BWPersonality.GUICore.targettingGUI.update()
+        self.nodeInfoL.pProviderElbowTargert = self.model.node('HP_GUNR_LIMIT')
+        self.nodeInfoR.pProviderElbowTargert = self.model.node('HP_GUNR_LIMIT')
+        if self.test_nodeInfo_gunrw:
+            self.test_nodeInfo_gunrw.vecAddPosGun = (0, 0, 0)
+            self.test_nodeInfo_gunrw.weponRoll = 0
+        if self.active_weapon_model:
+            self.active_weapon_model.node('HP_barrel').disableDrawInReflection = True
+            self.active_weapon_model.node('HP_AIMSYS').disableDrawInReflection = True
+            self.gunnodeInfo.barrelProvider = self.active_weapon_model.node('HP_barrel')
+            self.gunnodeInfo.sysProvider = self.active_weapon_model.node('HP_AIMSYS')
+            if not hasattr(self.active_weapon_model, 'test_tracker_gunrw'):
+                self._createTestTrackerGUN()
+            elif not self.test_tracker_gunrw or not self.test_nodeInfo_gunrw or self.test_tracker_gunrw != self.active_weapon_model.test_tracker_gunrw or self.test_nodeInfo_gunrw != self.active_weapon_model.test_tracker_gunrw.nodeInfo:
+                tnode = self.active_weapon_model.test_tracker_gunrw.nodeInfo
+                if tnode and tnode.__class__.__name__ != 'BaseNodeInfo':
+                    self.test_tracker_gunrw = self.active_weapon_model.test_tracker_gunrw
+                    self.test_nodeInfo_gunrw = self.test_tracker_gunrw.nodeInfo
+                else:
+                    self._createTestTrackerGUN()
+        if not self.active_weapon_model:
+            self.GUNMover_nodeInfo.GunNode = None
+            self.test_nodeInfo_gunrw = None
+            self.test_tracker_gunrw = None
+        self.updateModelRotateMod()
+        if BigWorld.player() == self:
+            self.model.motors[0].rotateFootByCollideSlide = False
+        return
+
+    def updateModelRotateMod(self):
+        if not self.model:
+            return
+        body_twist = player_speed_settings.MODEL_SMOOTH.STAY_BODY_TWIST
+        body_twist_lim_speed = player_speed_settings.MODEL_SMOOTH.STAY_BODY_TWIST_LIM_SPEED
+        body_twist_lim_value = player_speed_settings.MODEL_SMOOTH.STAY_BODY_TWIST_LIM_VALUE
+        foot_twist = player_speed_settings.MODEL_SMOOTH.STAY_FOOT_TWIST
+        foot_twist_lim_speed = player_speed_settings.MODEL_SMOOTH.STAY_FOOT_TWIST_LIM_SPEED
+        foot_twist_lim_value = player_speed_settings.MODEL_SMOOTH.STAY_FOOT_TWIST_LIM_VALUE
+        rememberlastFootTwist = player_speed_settings.MODEL_SMOOTH.STAY_REMEMBER_LAST_FOOT_TWIST
+        if self.IsAvatarCrawling():
+            body_twist = player_speed_settings.MODEL_SMOOTH.CRAWL_BODY_TWIST
+            body_twist_lim_speed = player_speed_settings.MODEL_SMOOTH.CRAWL_BODY_TWIST_LIM_SPEED
+            body_twist_lim_value = player_speed_settings.MODEL_SMOOTH.CRAWL_BODY_TWIST_LIM_VALUE
+            foot_twist = player_speed_settings.MODEL_SMOOTH.CRAWL_FOOT_TWIST
+            foot_twist_lim_speed = player_speed_settings.MODEL_SMOOTH.CRAWL_FOOT_TWIST_LIM_SPEED
+            foot_twist_lim_value = player_speed_settings.MODEL_SMOOTH.CRAWL_FOOT_TWIST_LIM_VALUE
+            rememberlastFootTwist = player_speed_settings.MODEL_SMOOTH.CRAWL_REMEMBER_LAST_FOOT_TWIST
+        if self.active_transform:
+            body_twist = self.active_transform.getparam('body_twist') or body_twist
+        amatcher = self.model.motors[0]
+        amatcher.bodyTwistSpeed = body_twist
+        amatcher.bodyTwistrLlenMin = body_twist_lim_speed[0]
+        amatcher.bodyTwistrLlenMax = body_twist_lim_speed[1]
+        amatcher.bodyTwistrLlenMinVal = body_twist_lim_value[0]
+        amatcher.bodyTwistrLlenMaxVal = body_twist_lim_value[1]
+        amatcher.footTwistSpeed = foot_twist
+        amatcher.footTwistrLlenMin = foot_twist_lim_speed[0]
+        amatcher.footTwistrLlenMax = foot_twist_lim_speed[1]
+        amatcher.footTwistrLlenMinVal = foot_twist_lim_value[0]
+        amatcher.footTwistrLlenMaxVal = foot_twist_lim_value[1]
+        self.rememberlastFootTwist(rememberlastFootTwist)
+
+    @isTackerInit
+    def updateCrawlMode(self, old = None):
+        if self.IsAvatarCrawling() or self.dead:
+            self.xTorso.resetHipsDir()
+            self.ENABLE_MovingActionMather = False
+        else:
+            self.ENABLE_MovingActionMather = self.USE_MovingActionMather
+        self.xTorso.setCrawlMode(self.crouching_or_crawling, self.dead)
+        self.torso_nodeinfo.setCrawlMode(self.crouching_or_crawling, self.dead)
+
+    def getTrackerParam(self):
+        return self._get_tracker_param()
+
+    def hasCapWeaponRightHand(self):
+        if self.weaponStatus != Constants.WEAPON_BORED:
+            return False
+        if not self.active_weapon:
+            return False
+        item_param, item_override_param = self.active_weapon.getParamsAndOverrideParamsWeapon()
+        to_attach_weapon = item_param['tracker']['bored']['sprint'].get('to_attach_weapon')
+        return to_attach_weapon == 'Right'
+
+    def _get_tracker_param(self):
+        """\xd0\x98\xd0\xb7\xd0\xb2\xd0\xbb\xd0\xb5\xd1\x87\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5 \xd0\xbd\xd0\xb0\xd1\x81\xd1\x82\xd1\x80\xd0\xbe\xd0\xb5\xd0\xba \xd1\x82\xd1\x80\xd0\xb5\xd0\xba\xd0\xb5\xd1\x80\xd0\xb0 \xd0\xbf\xd0\xbe \xd0\xba\xd0\xbb\xd1\x8e\xd1\x87\xd1\x83
+        \xd0\xb2\xd0\xbe\xd0\xb7\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xba\xd0\xbe\xd0\xbd\xd1\x84\xd0\xb8\xd0\xb3 \xd0\xb4\xd0\xbb\xd1\x8f \xd1\x82\xd0\xb5\xd0\xba\xd1\x83\xd1\x89\xd0\xb5\xd0\xb3\xd0\xbe \xd1\x81\xd0\xbe\xd1\x81\xd1\x82\xd0\xbe\xd1\x8f\xd0\xbd\xd0\xb8\xd1\x8f, \xd0\xb4\xd0\xbe\xd0\xbf\xd0\xbe\xd0\xbb\xd0\xbd\xd0\xb8\xd1\x82\xd0\xb5\xd0\xbb\xd1\x8c\xd0\xbd\xd1\x8b\xd0\xb9 \xd0\xba\xd0\xbe\xd0\xbd\xd1\x84\xd0\xb8\xd0\xb3 \xd0\xbe\xd1\x82 \xd0\xb3\xd1\x80\xd0\xb0\xd0\xbd\xd0\xb0\xd1\x82\xd0\xb0\xd0\xbc\xd0\xb5\xd1\x82\xd0\xb0
+        """
+        if self.transform_weapon and self.transform_weapon.trackerOverrideItemType:
+            item_param = ItemsCatalog.GetItemParam(self.transform_weapon.trackerOverrideItemType)
+            item_override_param = None
+        elif self.active_weapon and not self.active_melee:
+            item_param, item_override_param = self.active_weapon.getParamsAndOverrideParamsWeapon()
+        else:
+            item_param = ItemsCatalog.GetUnarmedParam()
+            item_override_param = None
+        tracker_key = self._getTrackerKey()
+        for key in tracker_key:
+            item_param = item_param[key]
+
+        if item_override_param:
+            for key in tracker_key:
+                item_override_param = item_override_param[key]
+
+        return (item_param, item_override_param or item_param)
+
+    def getRecoilAndSpreadMult(self):
+        tracker_key = self._getTrackerKey()
+        return recoil_and_spread_table.REC_SPR_MULT_BY_STATE[tracker_key]
+
+    def getRecoilAndSpreadParam(self):
+        if self.active_weapon:
+            item_param, item_override_param = self.active_weapon.getParamsAndOverrideParamsWeapon()
+        else:
+            item_param = ItemsCatalog.GetUnarmedParam()
+            item_override_param = item_param
+        return (item_param['recoil_and_spread'], item_override_param['recoil_and_spread'])
+
+    def _get_global_tracker_param(self):
+        """\xd0\x98\xd0\xb7\xd0\xb2\xd0\xbb\xd0\xb5\xd1\x87\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5 \xd0\xb3\xd0\xbb\xd0\xbe\xd0\xb1\xd0\xb0\xd0\xbb\xd1\x8c\xd0\xbd\xd1\x8b\xd1\x85 \xd0\xbd\xd0\xb0\xd1\x81\xd1\x82\xd1\x80\xd0\xbe\xd0\xb5\xd0\xba \xd1\x82\xd1\x80\xd0\xb5\xd0\xba\xd0\xb5\xd1\x80\xd0\xb0 \xd0\xbf\xd0\xbe \xd0\xba\xd0\xbb\xd1\x8e\xd1\x87\xd1\x83"""
+        item_param = ItemsCatalog.tracker_global_data
+        tracker_key = self.getGlobalTrackerKey()
+        for key in tracker_key:
+            try:
+                item_param = item_param[key]
+            except:
+                print self, 'tracker_key:', tracker_key, 'key:', key
+                raise
+
+        return item_param
+
+    def getActiveWeaponParam(self):
+        return self.__get_param_weapon()
+
+    def __get_param_weapon(self):
+        complexItemType = self.getActiveWeaponItemType()
+        if complexItemType:
+            param = ItemsCatalog.GetItemParam(complexItemType)
+        else:
+            param = ItemsCatalog.GetUnarmedParam()
+        return param
+
+    def canAttachWeaponBelly(self):
+        if self.belly_weapon:
+            return False
+        param = self.__get_param_weapon()
+        if param and param['GunType'] in [0, ItemsCatalog.PISTOL, ItemsCatalog.REVOLVER]:
+            return False
+        return True
+
+    __hand_free_prov_active = False
+    __hand_free_prov_complete = False
+    __hand_free_anim_active = False
+    __hand_free_anim_complete = True
+    hand_to_bored_to_free_delay = 0.1
+    hand_from_bored_to_anim_delay = 0.05
+
+    def onCahngeTrakerKey(self, tracker_key, weapon_type):
+        """\xd0\x9f\xd0\xb5\xd1\x80\xd0\xb5\xd0\xba\xd0\xbb\xd1\x8e\xd1\x87\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5 \xd1\x80\xd1\x83\xd0\xba [\xd0\xb0\xd0\xbd\xd0\xb8\xd0\xbc\xd0\xb0\xd1\x86\xd0\xb8\xd1\x8f<->\xd1\x80\xd1\x83\xd0\xba\xd0\xb8 \xd0\xba \xd0\xb7\xd0\xb5\xd0\xbc\xd0\xbb\xd0\xb5] \xd0\xbe\xd1\x82 \xd1\x81\xd0\xbe\xd1\x81\xd1\x82\xd1\x8f\xd0\xbd\xd0\xb8\xd1\x8f \xd1\x82\xd1\x80\xd0\xb5\xd0\xba\xd0\xb5\xd1\x80\xd0\xb0"""
+        self.updateModelRotateMod()
+        HandControl.onChangeTrackerStatus(self)
+
+    def updateHandToWeaponOffset(self, tr_param = None, tr_param_override = None):
+        if not tr_param or not tr_param_override:
+            tr_param, tr_param_override = self._get_tracker_param()
+        if self.left_weapon_prov:
+            self.left_weapon_prov.add_position = tuple(tr_param_override['hand_L_weapon_add_pos'])
+            self.left_weapon_prov.add_rotation = tuple(tr_param_override['hand_L_weapon_add_rotate'])
+        if self.right_weapon_prov:
+            self.right_weapon_prov.add_position = tuple(tr_param['hand_R_weapon_add_pos'])
+            self.right_weapon_prov.add_rotation = tuple(tr_param['hand_R_weapon_add_rotate'])
+
+    def updateCameraPosition(self):
+        pass
+
+    def getCameraImpSettings(self):
+        return None
+
+    def _headHitLimitYawCallBack(self, side):
+        return
+        cling_by_turn = self.tracker_head.cling_by_turn
+        if not self.lookingaround:
+            self.tracker_head.cling_by_turn = 0
+            return
+        if not side and not cling_by_turn:
+            return
+        if side and cling_by_turn:
+            return
+        if not cling_by_turn and side:
+            self.tracker_head.cling_by_turn = side
+            return
+        self.tracker_head.cling_by_turn = 0
+
+    def updateSmoothEnable(self):
+        if self != BigWorld.player():
+            return
+        smooth = self.lookingaround
+        if self.lookingaround_smooth and not self.IsAvatarSniping():
+            smooth = True
+        if self.tracker_torso:
+            self.tracker_torso.smooth_rotate = smooth
+        if self.tracker_gun:
+            self.tracker_gun.smooth_rotate = smooth
+        if self.tracker_head:
+            self.tracker_head.smooth_rotate = smooth
+
+    def updateHeadAddYPR(self, tr_global_param = None):
+        if not tr_global_param:
+            tr_global_param = self._get_global_tracker_param()
+        mod_add_ypr = 1.0
+        if not self._tmp_look_to_cam_diasable:
+            if self.lookingaround or self.head_look_cam or self.__head_from_server:
+                mod_add_ypr = 0.0
+        self.head_nodeInfo.addYaw = mod_add_ypr * tr_global_param['head_AddYaw']
+        self.head_nodeInfo.addPitch = mod_add_ypr * tr_global_param['head_AddPitch']
+        self.head_nodeInfo.addRoll = mod_add_ypr * tr_global_param['head_AddRoll']
+
+    def updateTorsoHeadProvider(self):
+        self.head_look_cam = False
+        self._torso_disbale_by_lookaround = False
+        if not self.tracker_torso:
+            return
+        if not self.tracker_head:
+            return
+        if self != BigWorld.player():
+            self.tracker_torso.directionProvider = self.torsoProvider_entity
+            if self.__head_from_server:
+                self.tracker_head.directionProvider = self.headProvider_serverLook
+                if self.heli_weapon:
+                    self.tracker_torso.directionProvider = self.headProvider_serverLook
+            elif self.headProvider_to_target:
+                self.tracker_head.directionProvider = self.headProvider_to_target
+            else:
+                self.tracker_head.directionProvider = self.headProvider_entity
+            return
+        self.tracker_torso.dirToZeroOnLimit = False
+
+        def set_head_dir_prov(prov):
+            if self._tmp_look_to_cam_diasable:
+                self.tracker_head.directionProvider = self.headProvider_entity
+                return False
+            self.tracker_head.directionProvider = prov
+            return True
+
+        if self.dead:
+            self.tracker_torso.directionProvider = self.torsoProvider_entity
+            set_head_dir_prov(self.headProvider_entity)
+            self.updateHeadAddYPR()
+            return
+        tr_global_param = self._get_global_tracker_param()
+        if self.lookingaround:
+            self.tracker_torso.directionProvider = self.torsoProvider_entity
+            if set_head_dir_prov(self.headProvider_special) and tr_global_param.get('head_blendFaktor', 0.0) > 0.1:
+                self.head_look_cam = True
+        elif self._inAir or self._after_jump_landing_state:
+            self.tracker_torso.directionProvider = self.torsoProvider_entity
+            set_head_dir_prov(self.headProvider_entity)
+        elif self.active_weapon and self.weaponStatus == Constants.WEAPON_BORED:
+            self.tracker_torso.directionProvider = self.torsoProvider_entity
+            set_head_dir_prov(self.headProvider_cam_dcursor)
+        else:
+            self.tracker_torso.directionProvider = self.torsoProvider_entity
+            set_head_dir_prov(self.headProvider_cam_dcursor)
+        self.updateHeadAddYPR(tr_global_param)
+
+    def changeFootsScaleFix(self, enable = False):
+        if not getattr(self, 'fniLeft', None) or not getattr(self, 'fniRight', None):
+            return
+        else:
+            matrixFixfoot = Matrix()
+            matrixFixfoot.setScale(self.model.scale)
+            self.fniLeft.fixScaleEnable = enable
+            self.fniRight.fixScaleEnable = enable
+            self.fniRight.fixScaleMatrix = matrixFixfoot
+            self.fniLeft.fixScaleMatrix = matrixFixfoot
+            self.foots[0].setFixScaleMatrix(matrixFixfoot if enable else None)
+            self.foots[1].setFixScaleMatrix(matrixFixfoot if enable else None)
+            return
+
+    def updateTorsoFlags(self):
+        tr_global_param = self._get_global_tracker_param()
+        if not self.torso_nodeinfo:
+            return
+        self.torso_nodeinfo.modelRollMouseWeight = player_speed_settings.MODEl_ROLL.MOUSE_WEIGHT
+        self.torso_nodeinfo.modelRollWASDWeight = player_speed_settings.MODEl_ROLL.WASD_WEIGHT
+        self.torso_nodeinfo.modelRollMinSpeed = player_speed_settings.MODEl_ROLL.MIN_SPEED
+        self.torso_nodeinfo.modelRollMaxSpeed = player_speed_settings.MODEl_ROLL.MAX_SPEED
+        self.torso_nodeinfo.modelRollMaxAngle = player_speed_settings.MODEl_ROLL.MAX_ANGLE
+        self.torso_nodeinfo.modelRollSmoothStep = player_speed_settings.MODEl_ROLL.SMOOTH_STEP
+        self.torso_nodeinfo.modelRollSmoothPorog = player_speed_settings.MODEl_ROLL.SMOOTH_POROG
+        self.torso_nodeinfo.modelRollSmoothStepBack = player_speed_settings.MODEl_ROLL.SMOOTH_STEP_BACK
+        self.torso_nodeinfo.modelRollSmoothPorogBack = player_speed_settings.MODEl_ROLL.SMOOTH_POROG_BACK
+        self.torso_nodeinfo.isFPSMode = self.isFPSmode()
+        self.torso_nodeinfo.isEntityInAir = self._inAir
+        self.torso_nodeinfo.isEntityIgnoreGravityAnimations = self._ignorGravityAnimation
+        self.torso_nodeinfo.isEntityPhysicsIsJump = self.physicsIsJump()
+        self.torso_nodeinfo.entityHipsOffsetByRotate = tr_global_param['hips_offset_by_rotate']
+        self.torso_nodeinfo.entityLegRotateInside = tr_global_param['leg_rotate_inside']
+        self.torso_nodeinfo.entityLegRotateOutside = tr_global_param['leg_rotate_outside']
+        self.torso_nodeinfo.entityFootRotateLimit = tr_global_param['foot_rotate_limit']
+
+    def updateGunProvider(self):
+        if self.lookingaround:
+            prov = self.weaponProvider_entity
+        elif self.isFPSmode() and (self.IsAvatarSniping() or self.heli_weapon):
+            self.torso_nodeinfo.addYawSecondary = 0.0
+            prov = self.AvatarCam.invViewMatrix
+        elif self.heli_weapon:
+            prov = self.torsoProvider_entity
+            if self is not BigWorld.player():
+                prov = self.headProvider_serverLook
+        else:
+            prov = self.weaponProvider_entity
+        self.tracker_gun.directionProvider = prov
+
+    ENABLE_WEAPON_COLLIDE = True
+
+    @isTackerInit
+    def setDirectionProviderParam(self, old = None, force = False):
+        try:
+            if BWPersonality.GUICore.dbg_window and self == BigWorld.player():
+                text = 'NONE'
+                text = '/'.join(self._getTrackerKey()[1:])
+                text = text + '  [%s]' % self.getActiveWeaponItemType()
+                BWPersonality.GUICore.dbg_window.updateModeTracker(self, text)
+        except:
+            print 'AvatarTrackers -> caption BWPersonality.GUICore.dbg_window error [%r]' % text
+
+        self.updateSmoothEnable()
+        self.updateTorsoHeadProvider()
+        self.updateGunProvider()
+        tracker_key = self._getTrackerKey()
+        complexItemType = self.getActiveWeaponItemType()
+        if self.active_melee:
+            complexItemType = 0
+        if not force:
+            if self.__last_complexItemType == complexItemType and self.__last_tracker_key == tracker_key:
+                return
+        self.onCahngeTrakerKey(tracker_key, complexItemType)
+        self.sendWTonAvatarChangeWeaponStatus()
+        self.__last_tracker_key = tracker_key
+        self.__last_complexItemType = complexItemType
+        param = self.__get_param_weapon()
+        tr_param, tr_param_override = self._get_tracker_param()
+        tr_global_param = self._get_global_tracker_param()
+        if self == BigWorld.player():
+            self.updateCameraPosition()
+        self.update_turn_states()
+        self.updateHandToWeaponOffset(tr_param, tr_param_override)
+        self._leg_rotate_inside = tr_global_param['leg_rotate_inside']
+        self._leg_rotate_outside = tr_global_param['leg_rotate_outside']
+        self._foot_rotate_limit = tr_global_param['foot_rotate_limit']
+        self._hips_offset_by_rotate = tr_global_param['hips_offset_by_rotate']
+        self._update_weapon_limits(tr_param)
+        self.nodeInfoL.angleRollMin = tr_param_override['hand_L_angleRoll'][0]
+        self.nodeInfoL.angleRollMax = tr_param_override['hand_L_angleRoll'][1]
+        self.nodeInfoL.angleRollStep = tr_param_override['hand_angleRollStep']
+        self.nodeInfoL.angleRollPorog = tr_param_override['hand_angleRollPorog']
+        self.nodeInfoR.angleRollMin = tr_param['hand_R_angleRoll'][0]
+        self.nodeInfoR.angleRollMax = tr_param['hand_R_angleRoll'][1]
+        self.nodeInfoR.angleRollStep = tr_param['hand_angleRollStep']
+        self.nodeInfoR.angleRollPorog = tr_param['hand_angleRollPorog']
+        self.gunnodeInfo.bulletSpreadGrad = param['gun_bulletSpreadGrad']
+        self.gunnodeInfo.debugBlend2Step = param.get('speed_gun_limits', 5.9)
+        self.tracker_gun.rotateInWS = self.weaponStatus != Constants.WEAPON_BORED
+        self.tracker_gun.accelerationStep = 0.22046
+        self.tracker_gun.accelerationPorog = 0.035
+        self.head_nodeInfo.minYaw = tr_global_param['head_yaw'][0]
+        self.head_nodeInfo.maxYaw = tr_global_param['head_yaw'][1]
+        self.head_nodeInfo.minPitch = tr_global_param['head_pitch'][0]
+        self.head_nodeInfo.maxPitch = tr_global_param['head_pitch'][1]
+        self.updateHeadAddYPR(tr_global_param)
+        self.tracker_head.accelerationStep = tr_global_param['head_accelerationStep']
+        self.tracker_head.accelerationPorog = tr_global_param['head_accelerationPorog']
+        try:
+            for node, yaw, pitch, roll in tr_global_param['head_weight']:
+                self.head_nodeInfo.setWeightNode(node, pitch, yaw, roll)
+
+        except:
+            print '\nERROR FOR', self
+            print self.model.sources if self.model else 'NO MODEL'
+            traceback.print_stack()
+            traceback.print_exc()
+
+        self.torso_nodeinfo.minYaw = 0.0 if self.dead else tr_global_param['torso_yaw'][0]
+        self.torso_nodeinfo.maxYaw = 0.0 if self.dead else tr_global_param['torso_yaw'][1]
+        self.torso_nodeinfo.minPitch = 0.0 if self.dead else tr_global_param['torso_pitch'][0]
+        self.torso_nodeinfo.maxPitch = 0.0 if self.dead else tr_global_param['torso_pitch'][1]
+        self.torso_nodeinfo.addYaw = 0.0 if self.dead else tr_param['torso_add_yaw']
+        self.torso_nodeinfo.addPitch = 0.0 if self.dead else tr_param['torso_add_pitch']
+        deadzone = tr_global_param.get('torso_deadzone_enable', 0)
+        self.tracker_torso.deadzone_enable = deadzone
+        if deadzone:
+            self.tracker_torso.deadzone_yaw_weights = tr_global_param.get('torso_deadzone_yaw_weights', [])
+            self.tracker_torso.deadzone_pitch_weights = tr_global_param.get('torso_deadzone_pitch_weights', [])
+        self.tracker_torso.accelerationStep = tr_global_param['torso_accelerationStep']
+        self.tracker_torso.accelerationPorog = tr_global_param['torso_accelerationPorog']
+        hvats = {'left': tr_param_override['hand_actionHvatL'],
+         'right': tr_param['hand_actionHvatR']}
+        if hvats['left'] and hvats['left'] == hvats['right']:
+            print 'WARNING actionHvatL = actionHvatR', hvats, self.active_weapon, self
+            hvats['right'] = ''
+            hvats['left'] = ''
+        for hand, new_action in hvats.items():
+            if self._hvat_actions[hand]['name'] == new_action:
+                continue
+            prev_action = self._hvat_actions[hand]['name']
+            prev_played = self._hvat_actions[hand]['played']
+            self._hvat_actions[hand]['name'] = new_action
+            self._hvat_actions[hand]['played'] = False
+            if prev_action and prev_played:
+                self._clear_saved_action(prev_action)
+                try:
+                    self.model.action(prev_action).stop()
+                except:
+                    self.__show_tracker_error('ERROR stop hvat action, model:%s, action:%s' % (self, repr(prev_action)))
+
+        self.updateHandHvatAnimation()
+        try:
+            for node_name, yaw, pitch, roll in tr_global_param['torso_weight']:
+                self.torso_nodeinfo.setWeightNode(node_name, pitch, yaw, roll)
+
+        except:
+            traceback.print_exc()
+
+        self.torso_nodeinfo.blendFaktorFoot = tr_global_param['foot_blendFaktor']
+        self.updateTorsoRoll()
+        self.updateBlendNodeByImpacting()
+        if getattr(self, '_pygunRWnode', None):
+            self.updateSpreadActiveWeapon()
+            self._pygunRWnode.onUpdatedWeaponStatus(self.weaponStatus)
+            if self.active_weapon:
+                self._pygunnode.weapon_motion_sens = param['recoil_and_spread'].get('weapon_motion_sens', 0.5)
+        self.onChangeWeaponStatus()
+        self.updateTorsoFlags()
+        return
+
+    def updateSpreadActiveWeapon(self):
+        if getattr(self, '_pygunRWnode', None):
+            self._pygunRWnode.updateSpread()
+            self._pygunnode.updateSpread()
+        return
+
+    _is_weapon_collide = False
+
+    @isTackerInit
+    def _update_weapon_limits(self, tr_param = None):
+        if not tr_param:
+            tr_param, tr_param_override = self._get_tracker_param()
+
+        def get_key(key):
+            if self._is_weapon_collide and self.active_weapon:
+                return key + '_coll'
+            return key
+
+        if self.gunnodeInfo:
+            gun_yaw = tr_param[get_key('gun_yaw_limits')]
+            gun_pitch = tr_param[get_key('gun_pitch')]
+            self.gunnodeInfo.minYaw = gun_yaw[0]
+            self.gunnodeInfo.maxYaw = gun_yaw[1]
+            self.gunnodeInfo.minPitch = gun_pitch[0]
+            self.gunnodeInfo.maxPitch = gun_pitch[1]
+        if self.GUNMover_nodeInfo:
+            self.GUNMover_nodeInfo.vecAddPos = tuple(tr_param[get_key('GUNPOS')])
+            if self.weaponStatus == Constants.WEAPON_BORED and self.belly_weapon and not self._is_weapon_collide and self._last_action_type == 'idle' and tr_param.get('to_attach_weapon') == 'Track':
+                self.GUNMover_nodeInfo.vecAddPos = tuple(tr_param['GUNPOS']) + Vector3(0, 0, 0.05)
+        if self.test_nodeInfo_gunrw:
+            self.test_nodeInfo_gunrw.vecAddPosGun = tuple(tr_param[get_key('GUNRWPOS')])
+            self.test_nodeInfo_gunrw.weponRoll = tr_param[get_key('GUNRWROLL')]
+
+    @isTackerInit
+    def onEndToSatyCrouchAnimPlay(self):
+        HandControl.onEndToSatyCrouchAnimPlay(self)
+        self.updateBlendNodeByImpacting(True)
+
+    @isTackerInit
+    def onStartToSatyCrouchAnimPlay(self, *w, **kw):
+        HandControl.onStartToSatyCrouchAnimPlay(self, *w, **kw)
+        self.updateBlendNodeByImpacting(True)
+
+    @ignoreError
+    def replayHandHvatAnimation(self):
+        for hand in self._hvat_actions:
+            self._hvat_actions[hand]['played'] = False
+
+        self.updateHandHvatAnimation()
+
+    @ignoreError
+    def updateHandHvatAnimation(self):
+        for hand in self._hvat_actions:
+            if not self._hvat_actions[hand]['name']:
+                continue
+            if self._hvat_actions[hand]['played'] != self._hvat_actions[hand]['lock']:
+                continue
+            try:
+                action_name = self._hvat_actions[hand]['name']
+                act = self.model.action(action_name)
+                if not self._hvat_actions[hand]['played']:
+                    self._hvat_actions[hand]['played'] = True
+                    act()
+                else:
+                    self._hvat_actions[hand]['played'] = False
+                    act.stop()
+            except:
+                self.__show_tracker_error('ERROR %s L hvat action:%s' % (self, repr(action_name)))
+
+    def lockHandHvatAnimation(self, left = True, right = True, update = True):
+        if self.isDestroyed:
+            return
+        if getattr(self, '_unlock_hvat_cid', 0):
+            BigWorld.cancelCallback(self._unlock_hvat_cid)
+            self._unlock_hvat_cid = 0
+        if left:
+            self._hvat_actions['left']['lock'] = True
+        if right:
+            self._hvat_actions['right']['lock'] = True
+        if update:
+            self.updateHandHvatAnimation()
+
+    @isTackerInit
+    def unLockHandHvatAnimation(self, left = True, right = True, update = True):
+        if getattr(self, '_slope', 0):
+            return
+        if left:
+            self._hvat_actions['left']['lock'] = False
+        if right:
+            self._hvat_actions['right']['lock'] = False
+        if update:
+            self.updateHandHvatAnimation()
+
+    @isTackerInit
+    def updateBlendNodeByImpacting(self, only_factor = False):
+        """
+        \xd0\xb2\xd0\xba\xd0\xbb-\xd0\xb2\xd1\x8b\xd0\xba\xd0\xbb \xd1\x82\xd1\x80\xd0\xb5\xd0\xba\xd0\xb5\xd1\x80\xd1\x8b \xd0\xb5\xd1\x81\xd0\xbb\xd0\xb8 \xd1\x80\xd0\xb0\xd0\xb1\xd0\xbe\xd1\x82\xd0\xb0\xd1\x8e\xd1\x82 \xd1\x81\xd0\xbf\xd0\xb5\xd1\x86 \xd0\xb0\xd0\xbd\xd0\xb8\xd0\xbc\xd0\xb0\xd1\x86\xd0\xb8\xd0\xb8(\xd0\xb2\xd0\xb5\xd1\x80\xd1\x82 \xd0\xbb\xd0\xb5\xd1\x81\xd0\xb5\xd0\xbd\xd0\xba\xd0\xb0 \xd0\xb8 \xd1\x82\xd0\xbf)
+        """
+        if not only_factor:
+            self.onCahngeTrakerKey(self._getTrackerKey(), None)
+        head_factor = 1.0
+        torso_factor = 1.0
+        foot_factor = 1.0
+        speed_off = False
+        if self.isImpactingPlayed():
+            head_factor = 0.0
+            torso_factor = 0.0
+            foot_factor = 0.0
+            speed_off = True
+            if self.isVerticalLadderPlayed():
+                head_factor = 0.0001
+                torso_factor = 0.0001
+            if self.isImpactingPlayedHeadFree():
+                head_factor = 1.0
+        if self.isGetupAnimationPlayed():
+            head_factor = 0
+        if self.isUseItemAnimationPlayed():
+            if self._todo_useanim_lock_head:
+                head_factor = 0
+            if self._todo_useanim_lock_torso:
+                torso_factor = 0
+            if self._todo_useanim_lock_foot:
+                foot_factor = 0
+        if self._playing_animation_loot:
+            head_factor = 0
+            torso_factor = 0
+        if self._interact_action_callback:
+            head_factor = 0
+            torso_factor = 0
+        if self.isRelaodWeaponProgress:
+            head_factor = head_factor * 0.01
+            torso_factor = torso_factor * 0.5
+        if self.isPutOnOffWeaponProgress:
+            head_factor = head_factor * 0.01
+        if self.isEquipWeaponProgress:
+            head_factor = head_factor * 0.8
+            torso_factor = torso_factor * 0.95
+        if self.isToStayCrouchAnimPlayed:
+            torso_factor = 0.0001
+            foot_factor = 0.0001
+        if self.dead:
+            head_factor = 0
+            torso_factor = 0
+        if self.lookingaround and self._torso_disbale_by_lookaround:
+            torso_factor = 0.0
+        if self.isJump():
+            head_factor = 0
+        tr_param, tr_param_override = self._get_tracker_param()
+        tr_global_param = self._get_global_tracker_param()
+        self.head_nodeInfo.blendFaktor = tr_global_param['head_blendFaktor'] * head_factor
+        self.torso_nodeinfo.blendFaktor = tr_param['spine_blendFaktor'] * torso_factor
+        self.torso_nodeinfo.blendFaktorFoot = tr_global_param['foot_blendFaktor'] * foot_factor
+        if speed_off:
+            self.torso_nodeinfo.blendFaktorCurrFoot = tr_global_param['foot_blendFaktor'] * foot_factor
+            if not torso_factor:
+                self.torso_nodeinfo.blendFaktorCurr = 0
+            if not head_factor:
+                self.head_nodeInfo.blendFaktorCurr = 0
+        return
+
+    def isImpactingPlayed(self):
+        return False
+
+    def isImpactingPlayedHeadFree(self):
+        return False
+
+    _todo_useanim_lock_head = False
+    _todo_useanim_lock_torso = False
+    _todo_useanim_lock_foot = False
+
+    def isUseItemAnimationPlayed(self):
+        return False
+
+    def isFPSmode(self):
+        return False
+
+    def isInsideShell(self):
+        return True
+
+    def _createScaleBones(self):
+        if not self.active_transform:
+            return
+        bones = self.active_transform.getScaleBones()
+        if not bones:
+            return
+        scale_tracker = BigWorld.Tracker()
+        scale_tracker.testTick = False
+        scale_tracker.fashionEraID = 0
+        scale_tracker.maxLod = tracker_lod_settings.tracker_torso_lod
+        scale_tracker.directionProvider = Matrix()
+        self.model.scale_tracker = scale_tracker
+        for node_name, scale in bones.items():
+            n = BigWorld.BoneScale(self.model, str(node_name))
+            scale_tracker.addAdditionalNode(n)
+            n.scale = float(scale)
+
+    def _createScaleBonesPost(self):
+        if not self.active_transform:
+            return
+        bones = self.active_transform.getScaleBonesPost()
+        if not bones:
+            return
+        scale_tracker = BigWorld.Tracker()
+        scale_tracker.testTick = False
+        scale_tracker.fashionEraID = 10
+        scale_tracker.maxLod = tracker_lod_settings.tracker_torso_lod
+        scale_tracker.directionProvider = Matrix()
+        self.model.scale_tracker_post = scale_tracker
+        for node_name, scale in bones.items():
+            n = BigWorld.BoneScale(self.model, str(node_name))
+            scale_tracker.addAdditionalNode(n)
+            n.scale = float(scale)
+
+    def _createTrackerTorso(self):
+        self.tracker_torso = BigWorld.Tracker()
+        self.tracker_torso.maxLod = tracker_lod_settings.tracker_torso_lod
+        for node_name in ('Hips', 'LeftHand', 'RightHand'):
+            node = self.model.node(node_name)
+            if not node.attachments:
+                node.attach(BigWorld.Model(''))
+
+        secondaryNodes = [('Hips', 100, 200, 1),
+         ('Spine', 200.0, 100, 1),
+         ('Spine1', 100.2, 100.5, 1),
+         ('Spine2', 0.9, 100.5, 1),
+         ('Spine3', 20, 10.5, 1)]
+        self.torso_nodeinfo = BigWorld.TorsoTrackerNodeInfo(self.model, 'Hips', secondaryNodes, 'HP_GUNR_LIMIT', '', 'LeftHand', 'RightHand', 'Head', -500, 500, 1000, -1000, 1500)
+        self.updateTorsoFlags()
+        self.torso_nodeinfo.lookAtDir = 1
+        self.torso_nodeinfo.maxYaw = 0.1
+        self.torso_nodeinfo.minYaw = -1.5
+        self.torso_nodeinfo.addYaw = 0.0
+        self.torso_nodeinfo.maxPitch = 2.0
+        self.torso_nodeinfo.minPitch = -2.1
+        self.torso_nodeinfo.angularThreshold = 0.5
+        self.torso_nodeinfo.angularHalflife = 0.02
+        self.torso_nodeinfo.blendFactor_blender_step = 0.01
+        self.torso_nodeinfo.blendFactor_blender_porog = 1.1
+        self.tracker_torso.relativeProvider = 0
+        self.model.torso = self.tracker_torso
+        self.tracker_torso.accelerationStep = 0.01
+        self.tracker_torso.accelerationPorog = 0.01
+        self.tracker_torso.accelerationIgnored = 0.0
+        self.tracker_torso.maxSpeed = 10.0
+        self.tracker_torso.fashionEraID = 0
+        self.tracker_torso.nodeInfo = self.torso_nodeinfo
+        self.tracker_torso.useBlendAccelerated = True
+        self.torso_nodeinfo.setLimitDirectionNode('Scene Root')
+        self.torso_nodeinfo.setParentNode(self.model, 'Scene Root')
+        self.tracker_torso.debuDrawLimitsAddPos = (0, 1.5, 0)
+        self.tracker_torso.rotateInWS = True
+        self.torso_nodeinfo.setDirectedNode(1, 'Scene Root', (0, 0, 1))
+        self.tracker_torso.debug_info_tracker = 'TORSO-%s' % self.id
+        self.torso_nodeinfo.addRollAS = 0.006
+        self.torso_nodeinfo.addRollAP = 0.025
+        self.torso_nodeinfo.pEntity = self
+        self.torso_nodeinfo.ladderFoundChangedNotifier = self.ladderNotifer
+        self.torso_nodeinfo.slopeChangedNotifier = self.slopeNotifer
+        self.torso_nodeinfo.tiltChangedNotifier = self.tiltChangedNotifier
+
+    def tiltChangedNotifier(self, value):
+        self._pushing_with_tilt2 = value
+
+    def ignorGravityAnimationNotifier(self, value):
+        self.torso_nodeinfo.isEntityIgnoreGravityAnimations = value
+
+    def _createTrackerLeftArm(self):
+        tr_param, tr_param_override = self._get_tracker_param()
+        min_roll = tr_param_override['hand_L_angleRoll'][0]
+        max_roll = tr_param_override['hand_L_angleRoll'][0]
+        angleRoll = (max_roll + max_roll) / 2.0
+        self.tracker_arm_left = BigWorld.Tracker()
+        self.tracker_arm_left.testTick = False
+        ArmNode1, ArmNode1r, ArmNode2, ArmNode2r, ArmNode3 = 'LeftArm LeftArmRoll LeftForeArm LeftForeArmRoll LeftHand'.split()
+        nodeInfoL = BigWorld.HandTrackerNodeInfo(self.model, ArmNode1, ArmNode1r, ArmNode2, ArmNode2r, ArmNode3, angleRoll)
+        nodeInfoL.idd = 1
+        nodeInfoL.angleRoll = angleRoll
+        nodeInfoL.angleRollLimitsEnable = 1
+        nodeInfoL.angleRollMin = min_roll
+        nodeInfoL.angleRollMax = max_roll
+        nodeInfoL.isLeftHand = True
+        self.tracker_arm_left.relativeProvider = 0
+        self.tracker_arm_left.nodeInfo = nodeInfoL
+        self.tracker_arm_left.maxLod = tracker_lod_settings.tracker_hands_lod
+        self.model.tracker_arm_left = self.tracker_arm_left
+        self.tracker_arm_left.fashionEraID = 4
+        self.nodeInfoL = nodeInfoL
+        self.tracker_arm_left.nodeMatrixUpdateType = 'UPDATE_SELECTED'
+        self.tracker_arm_left.nodeMatrixUpdateList = ['LeftArm']
+        self._leftFreeHandProvider = BigWorld.HandFreeProvider(self.model, 'LeftHand', 'LeftArm', 'Spine')
+        self._leftFreeHandProvider.pre_anim_ebnable = True
+        self._leftFreeHandProvider.limit_radius = 0.23
+        self._leftFreeHandProvider.smooth_to_gravity_accelerationPorog = 0.31
+        self._leftFreeHandProvider.smooth_to_gravity_accelerationStep = 10
+        self._leftFreeHandProvider.smooth_to_gravity_accelerationStepSpeed = 0.2
+        self.nodeInfoL.rotateElbow_debug_type = 1
+        self.nodeInfoL.rotateHandMatr = True
+        self.nodeInfoL.rotateHandMatrMaxDist = 0.03
+        if self.fix_roll_left_hand:
+            self.nodeInfoL.node2roll_weight = 1.0
+        else:
+            self.nodeInfoL.node2roll_weight = 0.5
+
+    def _createTrackerRightArm(self):
+        self.tracker_arm_right = BigWorld.Tracker()
+        self.tracker_arm_right.testTick = False
+        tr_param, tr_param_override = self._get_tracker_param()
+        min_roll = tr_param['hand_R_angleRoll'][0]
+        max_roll = tr_param['hand_R_angleRoll'][1]
+        angleRoll = (max_roll + max_roll) / 2.0
+        ArmNode1, ArmNode1r, ArmNode2, ArmNode2r, ArmNode3 = 'RightArm RightArmRoll RightForeArm RightForeArmRoll RightHand'.split()
+        nodeInfoR = BigWorld.HandTrackerNodeInfo(self.model, ArmNode1, ArmNode1r, ArmNode2, ArmNode2r, ArmNode3, angleRoll)
+        nodeInfoR.idd = 2
+        nodeInfoR.angleRoll = angleRoll
+        nodeInfoR.angleRollLimitsEnable = 1
+        nodeInfoR.angleRollMin = min_roll
+        nodeInfoR.angleRollMax = max_roll
+        self.tracker_arm_right.relativeProvider = 0
+        self.tracker_arm_right.nodeInfo = nodeInfoR
+        self.tracker_arm_right.maxLod = tracker_lod_settings.tracker_hands_lod
+        self.model.tracker_arm_right = self.tracker_arm_right
+        self.nodeInfoR = nodeInfoR
+        self.tracker_arm_right.fashionEraID = 4
+        self.tracker_arm_right.nodeMatrixUpdateType = 'UPDATE_SELECTED'
+        self.tracker_arm_right.nodeMatrixUpdateList = ['RightArm']
+        self.nodeInfoR.rotateElbow_debug_type = 1
+        self.nodeInfoR.rotateHandMatr = True
+        self.nodeInfoR.rotateHandMatrMaxDist = 0.03
+        self.nodeInfoR.node2roll_weight = 1.0
+        self._rightFreeHandProvider = BigWorld.HandFreeProvider(self.model, 'RightHand', 'RightArm', 'Spine')
+        self._rightFreeHandProvider.pre_anim_ebnable = True
+        self._rightFreeHandProvider.limit_radius = 0.23
+        self._rightFreeHandProvider.smooth_to_gravity_accelerationPorog = 0.4
+        self._rightFreeHandProvider.smooth_to_gravity_accelerationStep = 10
+        self._rightFreeHandProvider.smooth_to_gravity_accelerationStepSpeed = 0.15
+
+    def _createTrackerGunMover(self):
+        self.tracker_gun_mover = BigWorld.Tracker()
+        self.tracker_gun_mover.testTick = False
+        self.model.tracker_gun_mover = self.tracker_gun_mover
+        nodeInfo = BigWorld.GUNMover(self.model, 'HP_GUNR', 'HP_GUNR_LIMIT')
+        self.tracker_gun_mover.nodeInfo = nodeInfo
+        self.tracker_gun_mover.relativeProvider = 0
+        nodeInfo.maxYaw = 1.0
+        nodeInfo.minYaw = -1.0
+        nodeInfo.maxPitch = 0.5
+        nodeInfo.minPitch = -0.5
+        nodeInfo.angularThreshold = 0.5
+        nodeInfo.angularHalflife = 0.02
+        nodeInfo.stepA = 1
+        nodeInfo.stepB = 1
+        nodeInfo.targetProvider = Math.Matrix()
+        nodeInfo.swingStabilizer = False
+        nodeInfo.swingStabilizerStep = 0.1
+        self.tracker_gun_mover.maxLod = tracker_lod_settings.gun_mover_lod
+        self.tracker_gun_mover.nodeMatrixUpdateType = 'UPDATE_SELECTED'
+        self.tracker_gun_mover.nodeMatrixUpdateList = ['HP_GUNR_LIMIT', 'HP_GUNR']
+        self.tracker_gun_mover.fashionEraID = 1
+        self.GUNMover_nodeInfo = nodeInfo
+        self.GUNMover_nodeInfo.stepA = 7.0
+        self.GUNMover_nodeInfo.stepB = 4.0
+        self.GUNMover_nodeInfo.stepC = 5.0
+
+    def _createTrackerGun(self):
+        self.tracker_gun = BigWorld.Tracker()
+        self.model.tracker_gun = self.tracker_gun
+        secondaryNodes = []
+        nodeInfo2 = BigWorld.TrackerWeaponNodeInfo(self.model, 'HP_GUNR', secondaryNodes, 'HP_GUNR_LIMIT', -500, 500, 1000, -1000, 200)
+        nodeInfo2.lookAtDir = 2
+        nodeInfo2.maxYaw = 0.1
+        nodeInfo2.minYaw = -0.1
+        nodeInfo2.maxPitch = 1.5
+        nodeInfo2.minPitch = -1.5
+        nodeInfo2.angularThreshold = 0.0001
+        nodeInfo2.angularHalflife = 1e-05
+        self.tracker_gun.nodeInfo = nodeInfo2
+        self.tracker_gun.maxLod = tracker_lod_settings.gun_lod
+        self.tracker_gun.nodeMatrixUpdateType = 'UPDATE_SELECTED'
+        self.tracker_gun.nodeMatrixUpdateList = ['HP_GUNR_LIMIT', 'HP_GUNR']
+        self.tracker_gun.relativeProvider = 0
+        nodeInfo2.spread_stepXmin = 0.0001
+        nodeInfo2.spread_accelerate_X = 0.0001
+        nodeInfo2.spreadX = 0.0
+        nodeInfo2.spread_stepZmin = 0.001
+        nodeInfo2.spread_accelerate_Z = 0.1
+        nodeInfo2.spreadZ = 0.0
+        nodeInfo2.recoil_minZ = 0.0
+        nodeInfo2.recoil_maxZ = 0.1
+        nodeInfo2.recoil_StepZ = 0.02
+        nodeInfo2.recoil_minX = 0.0
+        nodeInfo2.recoil_maxX = 0.0
+        self.tracker_gun.accelerationStep = 0.01
+        self.tracker_gun.accelerationPorog = 0.01
+        self.tracker_gun.accelerationIgnored = 0.0
+        self.tracker_gun.useBlendAccelerated = True
+        self.tracker_gun.fashionEraID = 2
+        self.tracker_gun.rotateInWS = False
+        self.gunnodeInfo = nodeInfo2
+        self.gunnodeInfo.setParentNode(self.model, 'HP_GUNR_LIMIT')
+        tmp_weapon_node_info_and_gunrw.init(self)
+        self.onGunTrackerCreated()
+
+    def onGunTrackerCreated(self):
+        pass
+
+    def _createTestTrackerGUN(self):
+        tracker = BigWorld.Tracker()
+        tracker.testTick = False
+        nodeInfo = BigWorld.GUNRWCentrMover(self.active_weapon_model, 'HP_GUNRW')
+        nodeInfo.stepA = 0.001
+        nodeInfo.stepB = 12
+        self.active_weapon_model.test_tracker_gunrw = tracker
+        self.test_nodeInfo_gunrw = nodeInfo
+        self.test_tracker_gunrw = tracker
+        self.test_tracker_gunrw.maxLod = tracker_lod_settings.weapon_gunrw_lod
+        self.test_tracker_gunrw.nodeInfo = self.test_nodeInfo_gunrw
+        self.test_nodeInfo_gunrw.stepA = 7.0
+        self.test_nodeInfo_gunrw.stepB = 4.0
+        self.test_nodeInfo_gunrw.stepC = 5.0
+        self.test_nodeInfo_gunrw.wroll_astep = 0.2
+        self.test_nodeInfo_gunrw.wroll_aporog = 0.15
+        tmp_weapon_node_info_and_gunrw.init(self)
+
+    def _createTrackerHead(self):
+        self.tracker_head = BigWorld.Tracker()
+        self.tracker_head.maxLod = tracker_lod_settings.tracker_head_lod
+        sec = [('Neck', 1.5, 1.5, 1.5), ('Neck1', 1.5, 1.5, 1.5), ('Head', 5, 5, 5)]
+        self.head_nodeInfo = BigWorld.HeadNodeInfo(self.model, 'Spine3', sec, '', 'HP_GUNR_LIMIT', -500, 500, 1000, -1000, 1500)
+        self.tracker_head.nodeInfo = self.head_nodeInfo
+        self.tracker_head.relativeProvider = 0
+        self.head_nodeInfo.lookAtDir = 1
+        self.head_nodeInfo.maxYaw = 1.0
+        self.head_nodeInfo.minYaw = -1.0
+        self.head_nodeInfo.maxPitch = 1.5
+        self.head_nodeInfo.minPitch = -1.5
+        self.head_nodeInfo.angularThreshold = 0.5
+        self.head_nodeInfo.angularHalflife = 0.02
+        self.head_nodeInfo.add_ypr_accelerationPorog = 0.05
+        self.head_nodeInfo.add_ypr_accelerationStep = 0.01
+        self.tracker_head.accelerationStep = 0.01
+        self.tracker_head.accelerationPorog = 0.01
+        self.tracker_head.accelerationIgnored = 0.0
+        self.tracker_head.debuDrawLimitsAddPos = (0, 0.5, 0)
+        self.model.tracker_head = self.tracker_head
+        self.head_nodeInfo.blendFactor_blender_step = 0.001
+        self.head_nodeInfo.blendFactor_blender_porog = 0.5
+        self.tracker_head.fashionEraID = 3
+        self.tracker_head.rotateInWS = True
+        self.tracker_head.useBlendAccelerated = True
+        self.head_nodeInfo.setParentNode(self.model, 'Spine3')
+        self.head_nodeInfo.setDirectedNode(True, 'Head', (0, 1, 0))
+        self.head_nodeInfo.up_anim_weight = 1.0
+        self.tracker_head.cling_by_turn = 0
+        self.tracker_head.nodeMatrixUpdateType = 'UPDATE_SELECTED'
+        self.tracker_head.nodeMatrixUpdateList = ['Neck']
+
+    @ignoreError
+    def clearAvatarGuns(self):
+        if getattr(self, 'npcSuit', False):
+            return
+        else:
+            if self.model:
+                self.model.GUNR = None
+                self.model.weaponback = None
+                self.model.weaponback2 = None
+                self.model.Pistol = None
+                self.model.belly = None
+                self.model.Lhand = None
+                self.model.Rhand = None
+                self.setActiveWeaponModel(None)
+                self.active_weapon = None
+                self.belly_weapon = None
+            weapon_slots = getattr(self, 'weapon_slots', {})
+            for w in weapon_slots.values():
+                w.destroyWeapon()
+
+            self.weapon_slots = {}
+            if self.heli_weapon:
+                self.heli_weapon.destroy()
+            self.heli_weapon = None
+            return
+
+    @ignoreError
+    def _debugClearAvatarGuns(self):
+        self.model.GUNR = None
+        self.model.weaponback = None
+        self.model.weaponback2 = None
+        self.model.Pistol = None
+        self.model.belly = None
+        self.model.Lhand = None
+        self.model.Rhand = None
+        self.setActiveWeaponModel(None)
+        self.active_weapon = None
+        self.belly_weapon = None
+        self.hand_cotrol_wait_tmp = False
+        self._HandControl__isEquipProgress = False
+        self._HandControl__reload_weapon_progress = False
+        self._HandControl__reload_weapon_osn_anmation = False
+        for old_weapon in self.weapon_slots.values():
+            old_weapon.destroyWeapon()
+
+        self.weapon_slots = {}
+        self._prev_weapon_slots = {}
+        return
+
+    @ignoreError
+    def setAvatarGuns(self):
+        try:
+            self.model.GUNR = None
+            self.model.weaponback = None
+            self.model.weaponback2 = None
+            self.model.Pistol = None
+            self.model.belly = None
+            self.model.Lhand = None
+            self.model.Rhand = None
+        except AttributeError as err:
+            print 'setAvatarGuns clear nodes:', err, self
+
+        if self.heli_weapon:
+            self.heli_weapon.destroy()
+        self.heli_weapon = None
+        self.setActiveWeaponModel(None)
+        self.active_weapon = None
+        self.belly_weapon = None
+        self.hand_cotrol_wait_tmp = False
+        self._HandControl__isEquipProgress = False
+        self._HandControl__reload_weapon_progress = False
+        self._HandControl__reload_weapon_osn_anmation = False
+        if self.active_transform and self.active_transform.isCustomModel:
+            return
+        else:
+            self.weapon_slots = {}
+            for slot_name in nodebyslot.keys():
+                slot = self.ActiveWeaponSet2[slot_name]
+                if not slot['itemID']:
+                    continue
+                self.makeWeaponAndAttach(slot_name)
+
+            self._prev_weapon_slots = {}
+            self.UpdateWeaponIcon()
+            self.sendWTonAvatarChangeWeapon()
+            return
+
+    def need_hide_weapon(self):
+        return self.active_transform and self.active_transform.getparam('hide_weapon')
+
+    def makeWeaponFromSlot(self, slot, slot_name = None):
+        import clweapon
+        weapon = clweapon.create_clinet_weapon(parent_entity=self, slot=slot)
+        weapon.holster_node_name = nodebyslot[slot_name]
+        if slot_name:
+            weapon.slot_name = slot_name
+        return weapon
+
+    def makeWeaponAndAttach(self, slot_name):
+        need_to_belly = False
+        old_weapon = None
+        try:
+            prev_weapon_slots = getattr(self, '_prev_weapon_slots', {})
+            if slot_name in prev_weapon_slots:
+                old_weapon = prev_weapon_slots.pop(slot_name)
+                if old_weapon.holster_node_name:
+                    setattr(self.model, old_weapon.holster_node_name, None)
+                if self.active_weapon == old_weapon:
+                    self.model.Lhand = None
+                    self.model.Rhand = None
+                    self._weapon_to_attached = None
+                if old_weapon.isBelly:
+                    need_to_belly = True
+                    self.model.belly = None
+                if self.belly_weapon == old_weapon:
+                    self.belly_weapon = None
+                old_weapon.destroyWeapon()
+        except:
+            print self, 'slot_name', slot_name
+            traceback.print_exc()
+
+        if self.need_hide_weapon():
+            return
+        else:
+            slot = self.ActiveWeaponSet2[slot_name]
+            try:
+                weapon = self.makeWeaponFromSlot(slot, slot_name)
+                weapon.holster_node_name = nodebyslot[slot_name]
+                weapon.isBelly = False
+                if self.BellyItemID == weapon.getItemID():
+                    weapon.isBelly = True
+                    self.belly_weapon = weapon
+                if old_weapon and old_weapon.shooting_mode != weapon.shooting_mode:
+                    weapon.set_shooting_mode(old_weapon.shooting_mode)
+                self.weapon_slots[slot_name] = weapon
+                model = weapon.getModel()
+                if weapon.getItemID() == self.ActiveItemID and not weapon.isBelly:
+                    self.model.GUNR = model
+                    self.active_weapon = weapon
+                    self.setActiveWeaponModel(model, weapon)
+                    to_attach = self.getNodeNameActiveWeaponAttached()
+                    if to_attach:
+                        copy_model = weapon.createCopyModelWeapon()
+                        setattr(self.model, to_attach, copy_model)
+                        weapon.setVisibleModel(copy_model)
+                    if need_to_belly:
+                        belly_model = weapon.createCopyModelWeapon()
+                        setattr(self.model, 'belly', belly_model)
+                        weapon.setVisibleModel(belly_model)
+                        weapon.isBelly = True
+                elif weapon.isBelly:
+                    belly_model = weapon.createCopyModelWeapon()
+                    setattr(self.model, 'belly', belly_model)
+                    weapon.setVisibleModel(belly_model)
+                else:
+                    setattr(self.model, nodebyslot[slot_name], model)
+            except:
+                print self
+                print self.position, BWPersonality.spaceName(self.spaceID)
+                print 'slot_name', slot_name
+                print 'slot', dict(slot)
+                traceback.print_exc()
+                if self.ActiveItemID == self.ActiveWeaponSet2[slot_name]['itemID']:
+                    self.ActiveItemID = 0
+                print
+
+            if self == BigWorld.player():
+                self.applyWeaponSettings(weapon)
+            return
+
+    def get_firing_point(self):
+        """ \xd1\x82\xd0\xbe\xd1\x87\xd0\xba\xd0\xb0 \xd0\xb8\xd0\xb7 \xd0\xba\xd0\xbe\xd1\x82\xd0\xbe\xd1\x80\xd0\xbe\xd0\xb9 \xd0\xbd\xd1\x83\xd0\xb6\xd0\xbd\xd0\xbe \xd1\x81\xd1\x82\xd1\x80\xd0\xb5\xd0\xbb\xd1\x8f\xd1\x82\xd1\x8c
+                sys_point - ???
+                barrel_point - \xd1\x82\xd0\xbe\xd1\x87\xd0\xba\xd0\xb0 \xd0\xb8\xd0\xb7 \xd0\xba\xd0\xbe\xd1\x82\xd0\xbe\xd1\x80\xd0\xbe\xd0\xb9 \xd0\xbd\xd1\x83\xd0\xb6\xd0\xbd\xd0\xbe \xd1\x81\xd1\x82\xd1\x80\xd0\xb5\xd0\xbb\xd1\x8f\xd1\x82\xd1\x8c
+                direction - \xd0\xbd\xd0\xb0\xd0\xbf\xd1\x80\xd0\xb0\xd0\xb2\xd0\xbb\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5 \xd0\xb8\xd0\xb7 \xd1\x82\xd0\xbe\xd1\x87\xd0\xba\xd0\xb8
+        """
+        if self.active_weapon_model and self.active_weapon_model.node('HP_AIMSYS').isActualCoords and self.active_weapon_model.node('HP_barrel').isActualCoords:
+            sys_point_matrix = Matrix(self.active_weapon_model.node('HP_AIMSYS'))
+            direction = sys_point_matrix.applyToAxis(2)
+            sys_point = sys_point_matrix.translation
+            barrel_point_matrix = Matrix(self.active_weapon_model.node('HP_barrel'))
+            barrel_point = barrel_point_matrix.translation
+            if self.IsAvatarSniping() and (self.isFPSmode() or self != BigWorld.player()):
+                cam_node = self.active_weapon.getCameraNode()
+                if cam_node:
+                    m_wi = Matrix(barrel_point_matrix)
+                    m_wi.invert()
+                    cam_loc = m_wi.applyPoint(Matrix(cam_node).translation)
+                    barrel_point = barrel_point_matrix.applyPoint(Vector3(cam_loc.x, cam_loc.y, 0))
+        else:
+            direction = Vector3()
+            direction_model = Vector3()
+            direction.setPitchYaw(self.pitch, self.yaw)
+            if getattr(self, '_pygunRWnode', None):
+                add_rec = self._pygunnode.getCurrentRecoilYPR()
+                add_rec_w = self._pygunRWnode.getCurrentRecoilYPR()
+                direction.setPitchYaw(self.pitch + add_rec.y + add_rec_w.y, self.yaw + add_rec.x + add_rec_w.x)
+            direction_model.setPitchYaw(0, self.yaw)
+            if self.IsAvatarCrawling():
+                sys_point = self.position + (0, 0.15, 0)
+                barrel_point = sys_point + direction_model * 0.2
+            elif self.IsAvatarCrouched():
+                sys_point = self.position + (0, 0.8, 0)
+                barrel_point = sys_point + direction_model * 0.6
+            else:
+                sys_point = self.position + (0, 1.2, 0)
+                barrel_point = sys_point + direction_model * 0.6
+        return (sys_point, barrel_point, direction)
+
+    def getMaxBulletSpread(self, shot_number = 0):
+        bullet_spread = self.active_weapon.getBulletSpread(shot_number=shot_number)
+        if getattr(self, '_pygunnode', None):
+            if not self.isFPSmode():
+                bullet_spread += self._pygunnode.getCurrentRecoilCircle()
+        return bullet_spread
+
+    def getPlayerFireResult(self, shot_number = 0):
+        """ \xd0\xb2\xd0\xbe\xd0\xb7\xd0\xb2\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd1\x84\xd0\xbb\xd0\xb0\xd0\xb3 \xd0\xbd\xd0\xb0\xd1\x85\xd0\xbe\xd0\xb6\xd0\xb4\xd0\xb5\xd0\xbd\xd0\xb8\xd1\x8f \xd0\xbe\xd1\x80\xd1\x83\xd0\xb6\xd0\xb8\xd1\x8f \xd0\xb2 \xd0\xb2\xd0\xbe\xd0\xb4\xd0\xb5 \xd0\xb8 \xd0\xb2\xd0\xb5\xd0\xba\xd1\x82\xd0\xbe\xd1\x80\xd1\x8b \xd0\xbd\xd0\xb0\xd0\xbf\xd1\x80\xd0\xb0\xd0\xb2\xd0\xbb\xd0\xb5\xd0\xbd\xd0\xb8\xd1\x8f \xd0\xbf\xd1\x83\xd0\xbb\xd1\x8c """
+        if not self.active_weapon:
+            return
+        if not self.active_weapon_model:
+            return
+        if not self.active_weapon_model.visible:
+            return
+        sys_point, barrel_point, direction = self.get_firing_point()
+        weapon_in_water = bool(BigWorld.waterCollide(barrel_point, barrel_point))
+        wall_collision = BigWorld.naturalCollideIgnoreFlags(sys_point, barrel_point, PORTALS_DEPTH_COLLIDE, IGNORE_MATERIAL)
+        if wall_collision and wall_collision[0]:
+            return (weapon_in_water, [])
+        shot_directions = []
+        if self.offline_mode:
+            self.active_weapon.getAmmoType = lambda *e: 601
+        bullet_spread = self.getMaxBulletSpread(shot_number=shot_number)
+        for i in xrange(self.active_weapon.getNumberOfBullet()):
+            bullet_vector = random_vector(direction, bullet_spread)
+            shot_directions.append(bullet_vector)
+
+        return (weapon_in_water, shot_directions)
+
+    def drawPlayerFire(self, weapon_in_water, isBrust = False, weapon_in_shell = False, shot_number = 1, time_per_shot = 0):
+        self.active_weapon.shoot(weapon_in_water, weapon_in_shell, isBrust=isBrust, shot_number=shot_number)
+        self.playAnimationAfterFire()
+        if getattr(self, '_pygunRWnode', None):
+            self._pygunRWnode.onFire(isBrust=isBrust, shot_number=shot_number, time_per_shot=time_per_shot)
+            self._pygunnode.onFire(isBrust=isBrust, shot_number=shot_number, time_per_shot=time_per_shot)
+        self.torsoRecoil()
+        return
+
+    numberOfbullet = 1
+
+    @isTackerInit
+    def playerFire(self, isBrust = False, shot_number = 1):
+        raise
+
+    def tmpsetYP(self):
+        return
+        gunYaw, gunPitch = self.tracker_gun.yaw, self.tracker_gun.pitch
+        matrGR_Limit = Math.Matrix(self.model.node('HP_GUNR_LIMIT'))
+        toyaw = gunYaw - matrGR_Limit.yaw
+        potich = gunPitch - matrGR_Limit.pitch
+        if toyaw > math.pi:
+            toyaw = toyaw - math.pi * 2
+        if toyaw < -math.pi:
+            toyaw = toyaw + math.pi * 2
+        maxy, miny = toyaw + 0, toyaw - 0
+        maxp, minp = potich + 0, potich - 0
+        self.gunnodeInfo.test_SetLimitPY(maxp, minp, maxy, miny)
+
+    def is_sloping(self):
+        return bool(self._slope)
+
+    def is_sloping_and_caps(self):
+        return self._slope and self._slope_caps
+
+    def slopeNotifer(self, status):
+        self._slope = status
+        self.UpdateAvatarAnimationCaps()
+        if self is BigWorld.player():
+            self.try_reset_falling_velocity()
+        if self._slope and self._weapon_to_attached != 'Track':
+            self.lockHandHvatAnimation(left=1, right=0, update=True)
+        else:
+            self._unlock_hvat_cid = BigWorld.callback(self.delay_unlock_hvat_after_slope, partial(self.unLockHandHvatAnimation, 1, 0, True))
+
+    def ladderNotifer(self, isladder):
+        self._isladder = isladder
+        self.UpdateAvatarAnimationCaps()
+
+    def changeVisibleAttachModel(self, slot_type):
+        if not self.model:
+            return
+        if self.need_hide_weapon():
+            return
+        import ClothAttachSlotsConfig as CASC
+        node_name = CASC.get_slot_model_node_name(slot_type)
+        try:
+            node = self.model.node(node_name)
+        except Exception:
+            print 'ERROR changeVisibleAttachModel', slot_type, node_name
+            return
+
+        for attachment in node.attachments:
+            node.detach(attachment)
+
+        if not self.EquippedVisibleAttaches[slot_type]:
+            return
+        item_param = ItemsCatalog.GetItemParam(self.EquippedVisibleAttaches[slot_type])
+        if not item_param:
+            return
+        model_list = item_param.get('ModelNames', {}).values()
+        if not model_list:
+            return
+        model_list_copy = list(model_list)
+
+        def on_load(model):
+            if self.isDestroyed:
+                return
+            if not self.model:
+                return
+            if not model:
+                print 'changeVisibleAttachModel:error load model', repr(model_list), self
+                return
+            self.model.node(node_name).attach(model)
+
+        model_list_copy.append(on_load)
+        BigWorld.fetchModel(*model_list_copy)
+
+    def clearPistolHolster(self):
+        if self.model and self._model_pistol_holster:
+            try:
+                self.model.node('HP_Pistol').detach(self._model_pistol_holster)
+            except:
+                traceback.print_exc()
+
+        self._model_pistol_holster = None
+        return
+
+    def updatePistolHolster(self, prereqs = None):
+        if not self.havePistolHolster():
+            return self.clearPistolHolster()
+        if self._model_pistol_holster:
+            return
+        if prereqs and prereqs.has_key(PISTOL_HOLSTER_PATH):
+            self._onLoadPistolHolster(prereqs)
+        else:
+            ResourceLoader.asyncLoad([(ResourceLoader.MODEL, PISTOL_HOLSTER_PATH)], self._onLoadPistolHolster)
+
+    def havePistol(self):
+        """
+        \xd0\xb5\xd1\x81\xd1\x82\xd1\x8c \xd0\xbb\xd0\xb8 \xd1\x83 \xd0\xbc\xd0\xb5\xd0\xbd\xd1\x8f \xd0\xbf\xd0\xb8\xd1\x81\xd1\x82\xd0\xbe\xd0\xbb\xd0\xb5\xd1\x82
+        """
+        if self.need_hide_weapon():
+            return False
+        return bool(self.ActiveWeaponSet2['SecondarySlot']['itemID'])
+
+    def havePistolHolster(self):
+        if self.need_hide_weapon():
+            return False
+        itemType = self.ActiveWeaponSet2['SecondarySlot']['itemType']
+        if not itemType:
+            return False
+        return ItemsCatalog[itemType].get('pistolHolsterVisible', True)
+
+    def _onLoadPistolHolster(self, prereqs):
+        if self.isDestroyed:
+            return
+        if not self.model:
+            return
+        if not self.havePistolHolster():
+            return
+        if self._model_pistol_holster:
+            self.clearPistolHolster()
+        self._model_pistol_holster = prereqs[PISTOL_HOLSTER_PATH]
+        try:
+            self._model_pistol_holster.origin('HP_Pistol')
+            self.model.node('HP_Pistol').attach(self._model_pistol_holster)
+        except:
+            traceback.print_exc()
+
+    @property
+    def VisualArmor(self):
+        try:
+            if hasattr(self, 'getVisualArmor'):
+                return self.getVisualArmor()
+        except:
+            traceback.print_exc()
+
+        return self.EquippedArmor
+
+    @property
+    def VisualColoriseEmblems(self):
+        try:
+            if hasattr(self, 'getVisualColoriseEmblems'):
+                return self.getVisualColoriseEmblems()
+        except:
+            traceback.print_exc()
+
+        return self.coloriseEmblems
+
+    @property
+    def VisualColorDelegates(self):
+        try:
+            if hasattr(self, 'getVisualColorDelegates'):
+                return self.getVisualColorDelegates()
+        except:
+            traceback.print_exc()
+
+        return getattr(self, 'colorDelegates', [])
+
+    @property
+    def VisualEquipModes(self):
+        try:
+            if hasattr(self, 'getVisualEquipModes'):
+                return self.getVisualEquipModes()
+        except:
+            traceback.print_exc()
+
+        return self.EquipModes
+
+    @property
+    def VisualTuckForce(self):
+        try:
+            if hasattr(self, 'get_visual_tuck_force'):
+                return self.get_visual_tuck_force()
+        except:
+            traceback.print_exc()
+
+        return ItemsUtils.get_tuck_force(self)
+
+    @property
+    def VisualTuckAnimation(self):
+        try:
+            if hasattr(self, 'get_visual_tuck_animation'):
+                return self.get_visual_tuck_animation()
+        except:
+            traceback.print_exc()
+
+        return ItemsUtils.get_tuck_animation(self)
+
+    @property
+    def is_old_npc(self):
+        """ \xd1\x81\xd1\x82\xd0\xb0\xd1\x80\xd1\x8b\xd0\xb9 \xd0\x9d\xd0\x98\xd0\x9f """
+        return False
+
+    def sendWTonAvatarChangeWeaponStatus(self, *w):
+        pass
+
+    def sendWTonAvatarChangeWeapon(self, *w):
+        pass
+
+    def has_perk(self, alias):
+        return False
+
+    def get_perk_action_val(self, alias, **bit_filters):
+        return 0.0
+
+    def get_perk_cleaning_val_and_level(self, action_name):
+        return (0, 0)

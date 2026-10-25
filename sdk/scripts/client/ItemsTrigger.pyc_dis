@@ -1,0 +1,108 @@
+# Embedded file name: ./client/ItemsTrigger.py
+import FX
+import json
+import ResMgr
+import BigWorld
+import traceback
+import BWPersonality
+from time import time
+from Math import Vector3
+from Localization import lc
+from ItemHolder import ItemHolder
+from Helpers.Caps import CAP_CAN_OPEN_AND_EXPLORE
+from soGUI.soInworldMarkers import soInworldMarker
+from FX.persistent_ext_bg import loadPersistentExtAsync
+section = ResMgr.openSection('scripts/common/EnumProps/ItemsTrigger.json')
+CONFIG = json.loads(section.asBinary)['model_index']['values']
+
+class ItemsTrigger(BigWorld.Entity, ItemHolder):
+
+    def __init__(self):
+        BigWorld.Entity.__init__(self)
+        self.sfx_model_path = next((model for index, model in CONFIG if index == self.model_index), None)
+        self.model = None
+        self.sfx_model = None
+        self.callback_id = None
+        self.targetCaps = [CAP_CAN_OPEN_AND_EXPLORE]
+        self.name = lc('TriggerNames.event.{0}'.format(self.local_name))
+        self.effect = None
+        return
+
+    def prerequisites(self):
+        if self.sfx_model_path:
+            return [self.sfx_model_path]
+        return []
+
+    def onEnterWorld(self, prereqs):
+        if self.sfx_model_path:
+            scale = self.scale
+            self.model = prereqs[self.sfx_model_path]
+            self.model.isObstacle = True
+            self.model.visible = True
+            self.model.scale = (scale, scale, scale)
+            self.model.newScaleTest = (scale, scale, scale)
+
+    def setObstacle(self, value):
+        self.isObstacle = value
+        if self.model:
+            self.model.isObstacle = value
+            self.model.visible = value
+
+    def onLeaveWorld(self):
+        self.model = None
+        return
+
+    def set_CarryingItems(self, old):
+        self.update_gui()
+
+    def update_gui(self):
+        if not BWPersonality.GUICore.eventStarter:
+            return
+        BWPersonality.GUICore.eventStarter.update(self)
+
+    def get_interaction_dist(self):
+        return self.radius
+
+    def get_target_mark(self, distance):
+        if self.get_hightlight(distance):
+            return soInworldMarker.MARKER_USE
+        else:
+            return None
+
+    def get_hightlight(self, distance):
+        if distance > self.get_interaction_dist():
+            return None
+        else:
+            return True
+
+    def client_destroy(self):
+        self.play_sfx()
+        self.model.visible = False
+        self.model.isObstacle = False
+        self.targetCaps = []
+        BWPersonality.GUICore.showEventStarter(self, doShow=False)
+
+    def play_sfx(self):
+        if not self.on_end_sfx or not self.model:
+            return
+        self.stop_sfx()
+        self.sfx_model = BigWorld.Model('')
+        self.sfx_model.position = self.model.position
+        self.addModel(self.sfx_model)
+
+        def on_load(prereqs):
+            self.effect = FX.PersistentExt(self.on_end_sfx, prereqs)
+            self.effect.attach(self.sfx_model)
+            self.effect.go()
+            BigWorld.callback(5, self.stop_sfx)
+
+        loadPersistentExtAsync([self.on_end_sfx], on_load)
+
+    def stop_sfx(self):
+        if self.effect:
+            self.effect.stop()
+        self.effect = None
+        if self.sfx_model:
+            self.delModel(self.sfx_model)
+        self.sfx_model = None
+        return

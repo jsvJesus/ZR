@@ -1,0 +1,483 @@
+# Embedded file name: ./client/soGUI/equip_paint/paint_block/color_picker.py
+from Localization import lc
+import colorCodes as cc
+from utils import Listenable
+import DyeConstant
+import Keys
+import GUI
+from soGUI.equip_paint.equip_block.equip_tablegrid import ItemDataET as EquipItemDataET
+from Helpers.PyGUI.PyGUIBase import Interceptor
+from ui.text import calc_needed_font
+from soGUI.equip_paint.eqp_button import EqpButton
+from sounds_manager import playSound
+
+class SaveBtn(EqpButton):
+
+    def _create_content(self):
+        comp = GUI.Window('soGUI/frame/paint/save.dds')
+        comp.ha, comp.va = ('LEFT', 'CENTER')
+        comp.filterType = 'LINEAR'
+        comp.hpm, comp.vpm = ('PIXEL', 'CLIP')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.position = (0, 0, 0.5)
+        self.component.addChild(comp, 'img')
+        comp = GUI.Text(lc('PaintScreen.screen.LAYERS_SAVE'))
+        comp.ha, comp.va = ('LEFT', 'CENTER')
+        comp.hpm, comp.vpm = ('PIXEL', 'CLIP')
+        comp.position = (0, 0, 0.5)
+        self.component.addChild(comp, 'txt')
+
+    def update_visual(self, hovered, pressed):
+        if pressed:
+            col = cc.active_rgba
+        elif hovered:
+            col = (255, 255, 255, 255)
+        else:
+            col = cc.active_rgba
+        self.component.img.colour = col
+        self.component.txt.colour = col
+
+    def do_reposition(self, font):
+        EqpButton.do_reposition(self)
+        pos_x = 0
+        comp = self.component.txt
+        comp.font = font
+        pos_x += comp.stringDimensions(comp.text)[0]
+        comp = self.component.img
+        ratio = float(comp.texture.width) / comp.texture.height
+        comp.width, comp.height = self.component.height * ratio, self.component.height
+        comp.position[0] = pos_x
+        pos_x += comp.width
+        return pos_x
+
+
+class PaletteET:
+    OnClick, = ((r, 'equippalette') for r in range(1))
+
+
+class Palette(Interceptor, Listenable):
+
+    def __init__(self, component):
+        Listenable.__init__(self)
+        Interceptor.__init__(self, component)
+        self._slot_size = 0
+        self._cols = 0
+        self._colors = []
+        self._slots = []
+        self._selected = None
+        comp = GUI.Window('soGUI/frame/paint/white.dds')
+        comp.materialFX = 'SOLID'
+        comp.filterType = 'POINT'
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('LEFT', 'TOP')
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.position[2] = 0.9
+        comp.visible = False
+        self.component.addChild(comp, 'selector')
+        return
+
+    def _set_slot(self, index, col):
+        if len(self._slots) == index:
+            comp = GUI.Window('soGUI/frame/paint/white.dds')
+            comp.materialFX = 'SOLID'
+            comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+            comp.ha, comp.va = ('LEFT', 'TOP')
+            comp.position[2] = 0.8
+            comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+            self.component.addChild(comp)
+            self._slots.append(comp)
+            self._place_slot(comp, index)
+        slot = self._slots[index]
+        slot.colour = col
+        slot.visible = True
+        return slot
+
+    def handleMouseButtonEvent(self, comp, event):
+        if event.isKeyDown() and event.key == Keys.KEY_LEFTMOUSE:
+            pos = self.component.screenToLocal((event.cursorPosition[0], event.cursorPosition[1]))
+            col, row = int(pos[0] / self._slot_size), int(pos[1] / self._slot_size)
+            index = row * self._cols + col
+            if len(self._slots) > index and self._slots[index].visible:
+                data = {'color': self._colors[index]}
+                prev_selected = self.selected
+                self.notify_listeners(PaletteET.OnClick, data)
+                if prev_selected != self.selected:
+                    playSound('ui/menu_click')
+        return True
+
+    def handleMouseEvent(self, comp, event):
+        return False
+
+    def _place_slot(self, slot, index):
+        slot.width, slot.height = self._slot_size - 2, self._slot_size - 2
+        row, col = divmod(index, self._cols)
+        slot.position = (col * self._slot_size + 1, row * self._slot_size + 1, slot.position[2])
+
+    def _apply_selection(self):
+        scomp = self.component.selector
+        if not self.selected:
+            scomp.visible = False
+            return
+        scomp.visible = True
+        comp = self.selected
+        scomp.position = (comp.position[0] - 1, comp.position[1] - 1, scomp.position[2])
+        scomp.width, scomp.height = self._slot_size, self._slot_size
+
+    def _update_height(self):
+        if not self._slots:
+            self.component.height = 0
+            return
+        for i in range(0, len(self._slots), self._cols):
+            comp = self._slots[i]
+            if not comp.visible:
+                self.component.height = comp.position[1] + 1
+                return
+
+        comp = self._slots[-1]
+        self.component.height = comp.position[1] + comp.height + 1
+
+    def clear(self):
+        self._colors = []
+        for slot in self._slots:
+            comp = slot
+            if not comp.visible:
+                break
+            comp.visible = False
+
+        self.selected = None
+        self._update_height()
+        return
+
+    @property
+    def selected(self):
+        return self._selected
+
+    @selected.setter
+    def selected(self, value):
+        if value == self._selected:
+            return
+        self._selected = value
+        self._apply_selection()
+
+    def change_cur_color(self, cur_color):
+        self.selected = self._slots[self._colors.index(cur_color)]
+
+    def set_colors(self, colors, cur_color):
+        self._colors = colors
+        selected = None
+        for i, col in enumerate(colors):
+            slot = self._set_slot(i, col)
+            if col == cur_color:
+                selected = slot
+
+        for i in range(len(colors), len(self._slots)):
+            comp = self._slots[i]
+            if not comp.visible:
+                break
+            comp.visible = False
+
+        self.selected = selected
+        self._update_height()
+        return
+
+    def do_reposition(self):
+        self._cols = 16
+        self._slot_size = int(self.component.width / self._cols)
+        for i, slot in enumerate(self._slots):
+            self._place_slot(slot, i)
+
+        self._apply_selection()
+        self._update_height()
+
+
+class SlotET:
+    OnClicked, = ((r, 'cpickerslot') for r in range(1))
+
+
+class ChannelSlot(Interceptor, Listenable):
+
+    def __init__(self, channel, component):
+        Listenable.__init__(self)
+        Interceptor.__init__(self, component)
+        self.channel = channel
+        self._selected = False
+        self._color = None
+        comp = GUI.Window('soGUI/frame/paint/white.dds')
+        comp.materialFX = 'SOLID'
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('LEFT', 'TOP')
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.position = (1, 1, 0.7)
+        self.component.addChild(comp, 'image')
+        comp = GUI.Window('soGUI/frame/paint/borderslot.dds')
+        comp.materialFX = 'SOLID'
+        comp.wm, comp.hm = ('CLIP', 'CLIP')
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.position = (0, 0, 0.9)
+        comp.width, comp.height = (2, 2)
+        comp.visible = False
+        self.component.addChild(comp, 'selection')
+        return
+
+    def show(self, color):
+        self._color = color
+        self.component.visible = True
+        self.component.image.colour = color
+        self._update_visual()
+
+    def _update_visual(self):
+        self.component.selection.visible = self.selected
+
+    def hide(self):
+        self._color = None
+        self.component.visible = False
+        return
+
+    def handleMouseButtonEvent(self, comp, event):
+        if event.isKeyDown() and event.key == Keys.KEY_LEFTMOUSE:
+            data = {'slot': self}
+            self.notify_listeners(SlotET.OnClicked, data)
+        return True
+
+    @property
+    def visible(self):
+        return self.component.visible
+
+    @property
+    def selected(self):
+        return self._selected
+
+    @selected.setter
+    def selected(self, value):
+        if self._selected == value:
+            return
+        self._selected = value
+        self._update_visual()
+
+    def do_reposition(self):
+        comp = self.component.image
+        comp.width, comp.height = self.component.width - 2, self.component.height - 2
+
+
+class PickerET:
+    OnSaveClick, OnColorRequested, OnHeightChanged = ((r, 'equipcolorpicker') for r in range(3))
+
+
+class ColorPicker(Listenable):
+
+    def __init__(self, component):
+        Listenable.__init__(self)
+        self.component = component
+        self._channel_slots = []
+        self._equip_item = None
+        self._selected = None
+        comp = GUI.Simple(u'')
+        comp.visible = False
+        self.component.addChild(comp)
+        self._container = comp
+        comp = GUI.Text()
+        comp.colourFormatting = True
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('LEFT', 'TOP')
+        comp.position = (0, 0, 0.3)
+        self._container.addChild(comp, 'camoname')
+        comp = GUI.Text(lc('PaintScreen.screen.LAYERS_COLOR'))
+        comp.colour = cc.inactive_rgba
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('LEFT', 'TOP')
+        comp.position = (0, 0, 0.3)
+        self._container.addChild(comp, 'layers')
+        comp = GUI.Window()
+        comp.hpm, comp.vpm = ('CLIP', 'PIXEL')
+        comp.ha, comp.va = ('RIGHT', 'TOP')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.position = (1, 0, 0.5)
+        self._container.addChild(comp)
+        self._save_btn = SaveBtn(comp)
+        self._save_btn.on_click = self._on_save_click
+        for channel in ('R', 'G', 'B', 'A'):
+            comp = GUI.Window('soGUI/frame/paint/black.dds')
+            comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+            comp.ha, comp.va = ('LEFT', 'TOP')
+            comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+            comp.materialFX = 'SOLID'
+            comp.visible = False
+            self.component.addChild(comp)
+            slot = ChannelSlot(channel, comp)
+            slot.add_listener(self._on_slot_event)
+            self._channel_slots.append(slot)
+
+        comp = GUI.Window()
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('CENTER', 'TOP')
+        comp.hpm, comp.vpm = ('CLIP', 'PIXEL')
+        self.component.addChild(comp)
+        self._palette = Palette(comp)
+        self._palette.add_listener(self._on_palete_evet)
+        return
+
+    def _on_save_click(self):
+        colors = []
+        for slot in self._channel_slots:
+            colors.append(slot._color)
+
+        data = {'colors': colors}
+        self.notify_listeners(PickerET.OnSaveClick, data)
+
+    def _on_slot_event(self, event_type, data):
+        if event_type == SlotET.OnClicked:
+            if self.selected != data['slot']:
+                self.selected = data['slot']
+                self._update_palete()
+                playSound('ui/menu_click')
+
+    def _on_palete_evet(self, event_type, data):
+        if event_type == PaletteET.OnClick:
+            channel = self._channel_slots.index(self.selected)
+            data = {'channel': channel,
+             'color': data['color']}
+            self.notify_listeners(PickerET.OnColorRequested, data)
+
+    def _update_palete(self):
+        colored = False
+        if self.equip_item and self.selected:
+            camo_id = self.equip_item.camo_id
+            if camo_id:
+                if not DyeConstant.get_camo_colors(self.equip_item.item_type, camo_id):
+                    colors = {}
+
+                    def alpha_color(col):
+                        return (col[0],
+                         col[1],
+                         col[2],
+                         255)
+
+                    colors = colors.get(self.selected.channel)
+                    if colors:
+                        colors = map(alpha_color, colors)
+                    else:
+                        colors = [(255, 0, 255, 255)]
+                    cur_color = self.equip_item.colors4rgba[self._channel_slots.index(self.selected)]
+                    colored = True
+                    self._palette.set_colors(colors, cur_color)
+            colored or self._palette.clear()
+        self._update_height()
+
+    def _update_height(self):
+        if self._container.visible:
+            self.height = self._palette.component.height + self._palette.component.position[1]
+        else:
+            self.height = 0.0
+
+    @property
+    def height(self):
+        return self.component.height
+
+    @height.setter
+    def height(self, value):
+        if self.component.height != value:
+            self.component.height = value
+            self.notify_listeners(PickerET.OnHeightChanged)
+
+    def _update_picker(self):
+        if self.equip_item:
+            camo_id = self.equip_item.camo_id
+            colors = camo_id and self.equip_item.colors4rgba
+            camo_colors = DyeConstant.get_camo_colors(self.equip_item.item_type, camo_id)
+            for i, slot in enumerate(self._channel_slots):
+                if slot.channel in camo_colors:
+                    slot.show(colors[i])
+                else:
+                    slot.hide()
+
+            text = cc.inactive_hex + lc('PaintScreen.screen.LAYERS_TYPE') + u' ' + cc.active_hex + lc('colourItemWindow.CAMMO_' + str(camo_id))
+            self._container.camoname.text = text
+            self.selected = self._channel_slots[0]
+            self._container.visible = True
+        else:
+            for slot in self._channel_slots:
+                slot.hide()
+
+            self.selected = None
+            self._container.visible = False
+        return
+
+    def set_item(self, equip_item):
+        self.equip_item = equip_item
+
+    def _on_equipitem_event(self, event_type, data):
+        if event_type == EquipItemDataET.OnCamoColorsChanged:
+            self._update_picker()
+            self._update_palete()
+        elif event_type == EquipItemDataET.OnColorChanged:
+            item_colors = self.equip_item.colors4rgba
+            for channel, slot in enumerate(self._channel_slots):
+                if not slot.visible:
+                    continue
+                color = item_colors[channel]
+                if not color:
+                    continue
+                slot.show(color)
+                if self.selected == slot:
+                    self._palette.change_cur_color(color)
+
+    def do_reposition(self):
+        font = calc_needed_font(18)
+        comp = self._container.camoname
+        comp.font = font
+        height = comp.stringDimensions('W')[1]
+        comp = self._save_btn.component
+        comp.height = height
+        comp.width = self._save_btn.do_reposition(font)
+        pos_y = height + self.component.width * 0.03
+        pos_x = 0
+        size = int(self.component.width * 0.15)
+        margin = max(int(size * 0.05), 1)
+        for slot in self._channel_slots:
+            comp = slot.component
+            comp.width, comp.height = size, size
+            comp.position = (pos_x, pos_y, 0.5)
+            slot.do_reposition()
+            pos_x += size + margin
+
+        pos_y += size + self.component.width * 0.03
+        comp = self._container.layers
+        comp.font = font
+        comp.position[1] = pos_y
+        pos_y += comp.stringDimensions('W')[1] + self.component.width * 0.02
+        comp = self._palette.component
+        comp.width = self.component.width
+        comp.position = (0, pos_y, 0.5)
+        self._palette.do_reposition()
+        self._update_height()
+
+    @property
+    def equip_item(self):
+        return self._equip_item
+
+    @equip_item.setter
+    def equip_item(self, value):
+        if value == self._equip_item:
+            return
+        if self._equip_item:
+            self._equip_item.remove_listener(self._on_equipitem_event)
+        self._equip_item = value
+        if self._equip_item:
+            self._equip_item.add_listener(self._on_equipitem_event)
+        self._update_picker()
+        self._update_palete()
+
+    @property
+    def selected(self):
+        return self._selected
+
+    @selected.setter
+    def selected(self, value):
+        if self._selected == value:
+            return
+        if self._selected:
+            self._selected.selected = False
+        self._selected = value
+        if self._selected:
+            self._selected.selected = True

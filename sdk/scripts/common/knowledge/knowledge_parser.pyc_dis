@@ -1,0 +1,329 @@
+# Embedded file name: ./common/knowledge/knowledge_parser.py
+import ResMgr
+import pyson
+import pickle
+from Constants import KnowledgeTypes as KT
+from Localization import lc
+from itertools import chain
+
+class NpcEventType:
+    NpcGotCoords, KnowledgeWiped, OnGotKnowledge = xrange(3)
+
+
+BITS_PER_NUMBER = 8
+data_path = u'scripts/common/Knowledges.pyson'
+raw_data = pyson.loads(ResMgr.openSection(data_path).asBinary)
+cur_version = raw_data['version']
+
+def add_to_str(data, npc_id, gr_id, ctrigger_id):
+    if npc_id:
+        data['npc_id'] = npc_id
+    if gr_id:
+        data['gr_id'] = gr_id
+    if ctrigger_id:
+        data['ctrigger_id'] = ctrigger_id
+    return data
+
+
+def is_knowledge_valid(k_id):
+    if k_id not in _knowledge_struct:
+        return False
+    if k_id not in _knowledge_id_to_index:
+        return False
+    return True
+
+
+_knowledge_struct = {}
+_npc_to_root_kid = {}
+_group_to_root_kid = {}
+_ctrigger_to_kid = {}
+for item_type, item_data in raw_data['items'].iteritems():
+    if item_type == 'STORY':
+        continue
+    for item_id, root_k_data in item_data.iteritems():
+        npc_id = item_id if item_type == 'NPC' else None
+        gr_id = item_id if item_type == 'FRACTION' else None
+        ctrigger_id = item_id if item_type == 'AREA' else None
+        root_id = root_k_data['KID']
+        root_data = {'k_id': root_id}
+        for k_data in chain(root_k_data['additional'], root_k_data['base']):
+            k_id, k_type = k_data['KID'], k_data['KType']
+            subs = []
+            if k_type in (KT.CHAPTER, KT.CHOICE):
+                for k_data in k_data['children']:
+                    child_id, child_type = k_data['KID'], k_data['KType']
+                    _knowledge_struct[child_id] = add_to_str({'k_id': child_id,
+                     'k_type': child_type,
+                     'parent': k_id,
+                     'root': root_id}, npc_id, gr_id, ctrigger_id)
+                    subs.append(child_id)
+
+            elif k_type == KT.FRACTION:
+                if k_type not in root_data:
+                    root_data[k_type] = []
+                root_data[k_type].append({'k_id': k_id,
+                 'gr_id': k_data['fract_id']})
+            else:
+                root_data[k_type] = k_id
+                if k_type == KT.COORD and ctrigger_id:
+                    _ctrigger_to_kid[ctrigger_id] = k_id
+            _knowledge_struct[k_id] = add_to_str({'k_id': k_id,
+             'k_type': k_type,
+             'root': root_id}, npc_id, gr_id, ctrigger_id)
+            if subs:
+                _knowledge_struct[k_id]['subs'] = subs
+
+        additional = []
+        for add_data in root_k_data['additional']:
+            ktype, kid = add_data['KType'], add_data['KID']
+            sub_data = {'k_id': kid,
+             'k_type': ktype}
+            additional.append(sub_data)
+            if ktype in (KT.CHAPTER, KT.CHOICE):
+                subs = []
+                for child_data in add_data['children']:
+                    child_id = child_data['KID']
+                    subs.append({'k_id': child_id,
+                     'k_type': KT.TEXT})
+
+                sub_data['subs'] = subs
+                if add_data.get('hide_common', False):
+                    sub_data['hide_common'] = True
+                if add_data.get('hide_final', False):
+                    sub_data['hide_final'] = True
+
+        root_data['additional'] = additional
+        _knowledge_struct[root_id] = add_to_str(root_data, npc_id, gr_id, ctrigger_id)
+        if npc_id:
+            _npc_to_root_kid[npc_id] = root_id
+        if gr_id:
+            _group_to_root_kid[gr_id] = root_id
+
+def _read_mask(version):
+    if not version:
+        return []
+    else:
+        mask_path = u'scripts/common/knowledge/masks/{0}.msk'.format(version)
+        section = ResMgr.openSection(mask_path)
+        if section is None:
+            print "knowledge_parser (ERROR): mask version {0} doesn't exist".format(version)
+            raise RuntimeError
+        return pickle.loads(section.asBinary)
+
+
+masks = {}
+_knowledge_id_to_index = {}
+all_knowledges = []
+masks[cur_version] = _read_mask(cur_version)
+for index, knowledge_id in enumerate(masks[cur_version]):
+    _knowledge_id_to_index[knowledge_id] = index
+    all_knowledges.append(knowledge_id)
+
+def migrate_knowledge(knowledge, old_version):
+    if old_version not in masks:
+        masks[old_version] = _read_mask(old_version)
+    old_mask = masks[old_version]
+    new_mask = masks[cur_version]
+    for i in xrange(len(old_mask)):
+        if old_mask[i] != new_mask[i]:
+            list_index, bit_index = divmod(i, BITS_PER_NUMBER)
+            if list_index >= len(knowledge):
+                break
+            knowledge[list_index] &= ~(1 << bit_index)
+
+
+def is_root(know_id):
+    return not bool(get_root_know_id(know_id))
+
+
+def get_root_know_id(know_id):
+    if know_id not in _knowledge_struct:
+        return None
+    else:
+        return _knowledge_struct[know_id].get('root')
+
+
+def knowid_to_bitindex(know_id):
+    return _knowledge_id_to_index.get(know_id)
+
+
+def get_npc_acquaintance_id(npc_id):
+    k_id = _npc_to_root_kid.get(npc_id)
+    if not k_id:
+        return None
+    else:
+        return _knowledge_struct[k_id][KT.ACQUAINTANCE]
+
+
+def get_npc_ingroup_id(npc_id, group_id):
+    k_id = _npc_to_root_kid.get(npc_id)
+    if not k_id:
+        return None
+    else:
+        for data in _knowledge_struct[k_id][KT.FRACTION]:
+            k_id, gr_id = data['k_id'], data['gr_id']
+            if gr_id == group_id:
+                return k_id
+
+        return None
+
+
+def get_group_root_id(gr_id):
+    return _group_to_root_kid.get(gr_id)
+
+
+def get_group_acquaintance_id(gr_id):
+    k_id = _group_to_root_kid.get(gr_id)
+    if not k_id:
+        return None
+    else:
+        return _knowledge_struct[k_id][KT.ACQUAINTANCE]
+
+
+def is_coords(k_id):
+    return _knowledge_struct[k_id].get('k_type') == KT.COORD
+
+
+def is_acquaintance(k_id):
+    return _knowledge_struct[k_id].get('k_type') == KT.ACQUAINTANCE
+
+
+def get_npc_coords_id(npc_id):
+    k_id = _npc_to_root_kid.get(npc_id)
+    if not k_id:
+        return None
+    else:
+        return _knowledge_struct[k_id][KT.COORD]
+
+
+def get_ctrigger_coords_id(ctrigger_name):
+    return _ctrigger_to_kid.get(ctrigger_name)
+
+
+def get_knowledge_data(k_id):
+    return _knowledge_struct.get(k_id)
+
+
+def get_npc_root_id(npc_id):
+    return _npc_to_root_kid.get(npc_id)
+
+
+def get_npc_fractions(npc_id):
+    k_id = _npc_to_root_kid.get(npc_id)
+    if not k_id:
+        return []
+    return _knowledge_struct[k_id].get(KT.FRACTION, [])
+
+
+def get_npc_additionals(npc_id):
+    k_id = _npc_to_root_kid.get(npc_id)
+    if not k_id:
+        return None
+    else:
+        return _knowledge_struct[k_id]['additional']
+
+
+def get_npcid_from_knowledge(know_id):
+    return _knowledge_struct[know_id].get('npc_id')
+
+
+def get_ctrigger_from_knowledge(know_id):
+    return _knowledge_struct[know_id].get('ctrigger_id')
+
+
+def get_group_additionals(gr_id):
+    k_id = _group_to_root_kid.get(gr_id)
+    if not k_id:
+        return None
+    else:
+        return _knowledge_struct[k_id]['additional']
+
+
+def get_groupid_from_knowledge(know_id):
+    return _knowledge_struct[know_id].get('gr_id')
+
+
+def get_parent(know_id):
+    return _knowledge_struct[know_id].get('parent')
+
+
+def get_knowledge_description0(know_id):
+    """ \xd0\xbe\xd0\xbf\xd0\xb8\xd1\x81\xd0\xb0\xd0\xbd\xd0\xb8\xd0\xb5 \xd0\xbd\xd0\xb5\xd0\xbf\xd0\xbe\xd0\xbb\xd1\x83\xd1\x87\xd0\xb5\xd0\xbd\xd0\xbd\xd0\xbe\xd0\xb3\xd0\xbe \xd1\x80\xd0\xbe\xd0\xb4\xd0\xb8\xd1\x82\xd0\xb5\xd0\xbb\xd1\x8c\xd1\x81\xd0\xba\xd0\xbe\xd0\xb3\xd0\xbe \xd0\xb7\xd0\xbd\xd0\xb0\xd0\xbd\xd0\xb8\xd1\x8f """
+    return lc('Knowledges.desc_common.id_%s' % know_id)
+
+
+def get_knowledge_description1(know_id):
+    """ \xd0\xbe\xd0\xbf\xd0\xb8\xd1\x81\xd0\xb0\xd0\xbd\xd0\xb8\xd0\xb5 \xd0\xbf\xd0\xbe\xd0\xbb\xd1\x83\xd1\x87\xd0\xb5\xd0\xbd\xd0\xbd\xd0\xbe\xd0\xb3\xd0\xbe \xd1\x80\xd0\xbe\xd0\xb4\xd0\xb8\xd1\x82\xd0\xb5\xd0\xbb\xd1\x8c\xd1\x81\xd1\x82\xd0\xba\xd0\xbe\xd0\xb3\xd0\xbe \xd0\xb7\xd0\xbd\xd0\xb0\xd0\xbd\xd0\xb8\xd1\x8f """
+    return lc('Knowledges.desc_final.id_%s' % know_id)
+
+
+def get_knowledge_description(know_id):
+    """ \xd0\xbe\xd0\xbf\xd0\xb8\xd1\x81\xd0\xb0\xd0\xbd\xd0\xb8\xd0\xb5 \xd0\xbf\xd0\xbe\xd0\xbb\xd1\x83\xd1\x87\xd0\xb5\xd0\xbd\xd0\xbd\xd0\xbe\xd0\xb3\xd0\xbe \xd1\x82\xd0\xb5\xd0\xba\xd1\x81\xd1\x82\xd0\xbe\xd0\xb2\xd0\xbe\xd0\xb3\xd0\xbe \xd0\xb7\xd0\xbd\xd0\xb0\xd0\xbd\xd0\xb8\xd1\x8f """
+    return lc('Knowledges.desc_common.id_%s' % know_id)
+
+
+def compile_knowledge_additional_description(additionals, bit_value):
+
+    def compile_knowledge_dict_from_additionals(additionals, bit_value):
+        k_ids = []
+        for k_data in additionals:
+            k_ids.append(k_data['k_id'])
+            for child_data in k_data.get('subs', []):
+                k_ids.append(child_data['k_id'])
+
+        has_knowledge = []
+        for i in xrange(len(k_ids) - 1, -1, -1):
+            has_knowledge.insert(0, bool(bit_value & 1))
+            bit_value >>= 1
+
+        return dict(zip(k_ids, has_knowledge))
+
+    def compile_description(k_data, knowledge):
+        k_type, k_id = k_data['k_type'], k_data['k_id']
+        if k_type == KT.TEXT:
+            text = None
+            text = knowledge[k_id] and get_knowledge_description(k_id)
+        if not text:
+            return
+        elif k_type in (KT.CHOICE, KT.CHAPTER):
+            result = ''
+            hide_common, hide_final = k_data.get('hide_common', False), k_data.get('hide_final', False)
+            hide_children = False
+            if knowledge[k_id]:
+                has_any_child = False
+                for sub_data in k_data['subs']:
+                    if knowledge[sub_data['k_id']]:
+                        has_any_child = True
+                        break
+
+                if has_any_child and not hide_common:
+                    text = get_knowledge_description1(k_id)
+                    if text:
+                        result += text + '\n\n'
+                if hide_final:
+                    hide_children = True
+            else:
+                text = get_knowledge_description0(k_id)
+                if text:
+                    result += text + '\n\n'
+            if not hide_children:
+                for sub_data in k_data['subs']:
+                    if knowledge[sub_data['k_id']]:
+                        text = get_knowledge_description(sub_data['k_id'])
+                        if text:
+                            result += text + '\n\n'
+
+            return result and result.strip() or None
+        else:
+            raise RuntimeError
+            return
+
+    knowledge = compile_knowledge_dict_from_additionals(additionals, bit_value)
+    knowledge_text = u''
+    for k_data in additionals:
+        desc = compile_description(k_data, knowledge)
+        if desc is not None:
+            knowledge_text += desc + '\n\n'
+
+    knowledge_text = knowledge_text.strip()
+    return knowledge_text

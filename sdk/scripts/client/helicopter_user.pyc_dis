@@ -1,0 +1,174 @@
+# Embedded file name: ./client/helicopter_user.py
+from heliutils.sticker import Sticker
+from heliutils.helicamera import Helicamera
+import heliconstants as H
+from Vehicle import Vehicle
+import Constants
+import BigWorld
+import heli_weapon
+import BWPersonality
+import RestrictionsUtils
+from Math import Matrix
+from Constants import ControlLockTypes as CLT
+
+class HelicopterUser(Sticker):
+    heli_weapon = None
+
+    def onEnterWorld(self):
+        if self.transport_seat:
+            HelicopterUser.set_transport_seat(self, 0)
+
+    def on_heliseat_requested(self, heli_id):
+        self.stopPlayerMoving()
+        self.setControlLock(CLT.TRANSPORT, True, lock_id=Constants.TRANSPORT_HARD_LOCK_ID, duration=1)
+
+    def set_transport_seat(self, old_value):
+        if not old_value and self.transport_seat:
+            self.try_stick(self.transport_seat)
+        elif not self.transport_seat and old_value:
+            self.try_unstick(old_value)
+            if BigWorld.player() is self:
+                self.stopSendHeadMatrix()
+
+    def on_stick(self, helicopter, sit_node, cam_node):
+        if not hasattr(self, '_helicamera'):
+            self._helicamera = Helicamera()
+        if BigWorld.player() is self:
+            if sit_node:
+                BigWorld.dcursor().yaw = Matrix(sit_node).yaw
+            self._helicamera.activate(sit_node, cam_node, helicopter)
+            BWPersonality.GUICore.heli_interface.on_stick()
+        if self.in_helicopter:
+            self.attach_transport_weapon(helicopter)
+
+    def onPostModelChange(self):
+        if self.in_helicopter:
+            helicopter = BigWorld.entities.get(self.transport_seat)
+            if helicopter:
+                self.attach_transport_weapon(helicopter)
+
+    def attach_transport_weapon(self, helicopter):
+        index = helicopter.get_user_seat_index(self.id)
+        if index != H.GUNNER_SEAT_INDEX:
+            return
+        self.clearAvatarGuns()
+        weapon = heli_weapon.HeliWeapon(complex_item=H.ITEM_WEAPON, parent_entity=self, helicopter=helicopter)
+        weapon.set_need_spend_ammo(False)
+        model = weapon.getModel()
+        self.model.GUNR = model
+        self.active_weapon = weapon
+        self.heli_weapon = weapon
+        self.setActiveWeaponModel(model, weapon)
+        self.forceClearTrackerLock()
+        if self is BigWorld.player():
+            self.DisableCollisionWeapon()
+            self.LookAround(False)
+            BWPersonality.GUICore.targettingGUI.hide()
+            BWPersonality.GUICore.showCrosshairLookAround(False)
+            self.SetWeaponStatus(Constants.WEAPON_INCOMABAT, check_rest=False)
+            self.sendHeadRotationBylookArround()
+            BWPersonality.onAvatarChangeWeapon(self.heli_weapon.getItemType())
+            BWPersonality.GUICore.updateTestWeaponWindowActiveItem()
+        self.updateGunProvider()
+        self.updateTorsoHeadProvider()
+        self._update_tracker_flags()
+
+    def onAlignHeliCamera(self):
+        if self is BigWorld.player() and self.heli_weapon:
+            self.LookAround(False)
+            BWPersonality.GUICore.targettingGUI.hide()
+            BWPersonality.GUICore.showCrosshairLookAround(False)
+
+    def onHeliWeaponTemp(self, temp_ratio, broken):
+        if self.heli_weapon:
+            self.heli_weapon.onHeliWeaponTemperature(temp_ratio, broken)
+            if BWPersonality.GUICore.heliinterface_visible():
+                BWPersonality.GUICore.heli_interface.update_temperature(temp_ratio)
+            if BWPersonality.GUICore.gunwin_visible():
+                BWPersonality.GUICore.gunwin.update_temperature(temp_ratio)
+
+    def emergency_tranport_teleport(self, heliposition):
+        """ \xd0\xb8\xd0\xb7-\xd0\xb7\xd0\xb0 \xd0\xbb\xd0\xb0\xd0\xb3\xd0\xbe\xd0\xb2 \xd0\xb8\xd0\xbb\xd0\xb8 \xd0\xb5\xd1\x89\xd1\x91 \xd1\x87\xd0\xb5\xd0\xb3\xd0\xbe \xd0\xb2\xd0\xb5\xd1\x80\xd1\x82\xd0\xbe\xd0\xbb\xd1\x91\xd1\x82 (\xd0\xb8\xd0\xbb\xd0\xb8 \xd0\xbb\xd0\xbe\xd0\xb4\xd0\xba\xd0\xb0) \xd0\xbc\xd0\xbe\xd0\xb6\xd0\xb5\xd1\x82 \xd1\x83\xd0\xbb\xd0\xb5\xd1\x82\xd0\xb5\xd1\x82\xd1\x8c \xd1\x81 \xd0\xba\xd0\xbb\xd0\xb8\xd0\xb5\xd0\xbd\xd1\x82\xd0\xb0,
+                \xd0\xb2 \xd1\x8d\xd1\x82\xd0\xbe\xd0\xbc \xd1\x81\xd0\xbb\xd1\x83\xd1\x87\xd0\xb0\xd0\xb5 \xd0\xbf\xd1\x80\xd0\xbe\xd0\xb8\xd1\x81\xd1\x85\xd0\xbe\xd0\xb4\xd0\xb8\xd1\x82 \xd1\x8d\xd0\xba\xd1\x81\xd1\x82\xd1\x80\xd0\xb5\xd0\xbd\xd0\xbd\xd1\x8b\xd0\xb9 \xd1\x82\xd0\xb5\xd0\xbb\xd0\xb5\xd0\xbf\xd0\xbe\xd1\x80\xd1\x82, \xd1\x87\xd1\x82\xd0\xbe\xd0\xb1\xd1\x8b \xd0\xb4\xd0\xbe\xd0\xb3\xd0\xbd\xd0\xb0\xd1\x82\xd1\x8c \xd0\xb2\xd0\xb5\xd1\x80\xd1\x82\xd0\xbe\xd0\xbb\xd1\x91\xd1\x82 (\xd0\xb8\xd0\xbb\xd0\xb8 \xd0\xbb\xd0\xbe\xd0\xb4\xd0\xba\xd1\x83)
+        """
+        if hasattr(self, '_seek_heli_callback'):
+            BigWorld.cancelCallback(self._seek_heli_callback)
+            del self._seek_heli_callback
+        if not self.transport_seat or self.isDestroyed:
+            return
+        m = Matrix()
+        m.setTranslate(heliposition)
+        self.filter.matrixProvider = m
+
+        def check_heli_spawn():
+            if hasattr(self, '_seek_heli_callback'):
+                BigWorld.cancelCallback(self._seek_heli_callback)
+                del self._seek_heli_callback
+            if not self.transport_seat or self.isDestroyed:
+                return
+            helicopter = BigWorld.entities.get(self.transport_seat)
+            if not helicopter:
+                self._seek_heli_callback = BigWorld.callback(0, check_heli_spawn)
+                return
+            sit_node = helicopter.get_seat_node(self.id)
+            self.filter.matrixProvider = sit_node
+
+        check_heli_spawn()
+
+    def update_helicopter_gui_data(self, box_count, box_total, users_count):
+        if BWPersonality.GUICore.heliinterface_visible():
+            BWPersonality.GUICore.heli_interface.update_data(box_count, box_total, users_count)
+
+    def on_heli_gui_visible_changed(self, is_visible):
+        if is_visible:
+            BWPersonality.GUICore.heli_interface.show()
+        else:
+            BWPersonality.GUICore.heli_interface.hide()
+
+    def on_crouch_in_transport(self):
+        if self.in_helicopter and BigWorld.player() is self:
+            self._helicamera.toggle_camera()
+
+    def on_cam_activated(self):
+        self.onChangeWeaponStatus()
+
+    def on_cam_deactivated(self):
+        self.onChangeWeaponStatus()
+        if BigWorld.player() is self:
+            self._resetLookAround()
+            BWPersonality.GUICore.targettingGUI.show()
+            BWPersonality.GUICore.showCrosshairLookAround(False)
+            self.SetWeaponStatus(Constants.WEAPON_BORED)
+
+    def on_cam_mode_changed(self):
+        self.onChangeWeaponStatus()
+        self.UpdateAvatarModel()
+        Sticker.on_cam_mode_changed(self)
+
+    def on_unstick(self):
+        if BigWorld.player() is self:
+            self._helicamera.deactivate()
+            BWPersonality.GUICore.heli_interface.on_stick()
+            self.SetWeaponStatus(Constants.WEAPON_BORED)
+        self.replayHandHvatAnimation()
+
+    def handleMouseEvent(self, event):
+        if not hasattr(self, '_helicamera'):
+            return False
+        if not self.transport_seat:
+            return False
+        if not self.in_helicopter:
+            return False
+        return self._helicamera.handle_mouse_event(event)
+
+    def interact_helicopter(self, helicopter):
+        if not self.CheckRestriction(RestrictionsUtils.CHANNEL_ITEMS):
+            return
+        if self.is_box_moving():
+            pass
+        elif not self.transport_seat:
+            BWPersonality.GUICore.createEntityContextMenu(helicopter)
+
+    @property
+    def in_helicopter(self):
+        return self.transport_seat and issubclass(BigWorld.entities.get(self.transport_seat).__class__, Vehicle)

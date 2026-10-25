@@ -1,0 +1,138 @@
+# Embedded file name: ./client/soGUI/promo_gui/main.py
+import BigWorld
+import BWPersonality
+import GUI
+from Helpers.PyGUI.PyGUIBase import Interceptor
+from win import EventType as WinET
+from agree_win import AgreeWin, EventType as AgreeET
+from win import Win
+from register_win import RegisterWin, EventType as RegisterET
+from login_win import LoginWin, EventType as LoginET
+from personal_win.personal_win import PersonalWin, EventType as PersonalET
+from promo_win import PromoWin, EventType as PromoET
+from promo_result_win import PromoResultWin
+from server import Server, EventType as ServerET
+from message_box import MessageBox
+
+class PromoGui(Interceptor):
+    _agree_pref_key = 'PromoGUI.LicenseAgreed'
+
+    def __init__(self):
+        comp = GUI.Window()
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.height, comp.width = (2.0, 2.0)
+        comp.position = (0, 0, 0.05)
+        comp.script = self
+        comp.visible = False
+        Interceptor.__init__(self, comp, interscept_keys=True)
+        BWPersonality.GUICore.generalLayer.addChild(self.component, 'promo_gui')
+        self._server = Server(self)
+        self._server.add_listener(self._on_server_event)
+        self._agree_win = AgreeWin()
+        self._agree_win.add_listener(self._on_win_event)
+        comp.addChild(self._agree_win.component)
+        self._register_win = RegisterWin()
+        self._register_win.add_listener(self._on_win_event)
+        comp.addChild(self._register_win.component)
+        self._login_win = LoginWin()
+        self._login_win.add_listener(self._on_win_event)
+        comp.addChild(self._login_win.component)
+        self._personal_win = PersonalWin()
+        self._personal_win.add_listener(self._on_win_event)
+        comp.addChild(self._personal_win.component)
+        self._promo_win = PromoWin()
+        self._promo_win.add_listener(self._on_win_event)
+        comp.addChild(self._promo_win.component)
+        self._promo_result_win = PromoResultWin()
+        self._promo_result_win.add_listener(self._on_win_event)
+        comp.addChild(self._promo_result_win.component)
+        self._current_win = None
+        Win.message_box = MessageBox()
+        comp.addChild(Win.message_box.component)
+        return
+
+    def _on_win_event(self, event_type, data):
+        if event_type == WinET.OnRequestExit:
+            self.hide()
+        elif event_type == AgreeET.OnAgree:
+            BWPersonality.settings.setSetting(PromoGui._agree_pref_key, True, True)
+            self._run_win(self._register_win)
+        elif event_type == RegisterET.OnRegister:
+            self._run_win(self._personal_win)
+            self._personal_win.secret = data['secret']
+        elif event_type == RegisterET.OnStartRegParnterRequest:
+            mail_text = data['mail_text']
+            self._server.start_reg_partner(mail_text, delay=True)
+        elif event_type == RegisterET.OnContinueRegPartnerRequest:
+            code_text = data['code_text']
+            self._server.continue_reg_parnter(code_text, delay=True)
+        elif event_type == RegisterET.OnRequestLogin:
+            self._run_win(self._login_win)
+        elif event_type == PersonalET.OnUnsubscribeRequest:
+            self._server.unsubscribe_partner()
+        elif event_type == LoginET.OnSubscribeRequest:
+            mail, secret = data['mail'], data['secret']
+            self._server.subscribe_partner(mail, secret, delay=True)
+        elif event_type == LoginET.OnContinueSubscribeRequest:
+            code = data['code']
+            self._server.continue_subscribe_partner(code, delay=True)
+        elif event_type == LoginET.OnSubscribeCompleted:
+            self._run_win(self._personal_win)
+        elif event_type == LoginET.OnRegisterRequest:
+            self._run_win(self._register_win)
+        elif event_type == PromoET.OnRequestPromo:
+            code = data['code']
+            self._server.use_promo_code(code, delay=True)
+
+    def _on_server_event(self, event_type, data):
+        if event_type == ServerET.OnPromoEvent:
+            code = data['code']
+            if self._current_win:
+                self._current_win.on_promo_event(code)
+        elif event_type == ServerET.OnRegPartner:
+            email, secret = data['email'], data['secret']
+            if self._current_win:
+                self._current_win.on_reg_partner(email, secret)
+        elif event_type == ServerET.OnUpdatePartnerInfo:
+            if self._current_win:
+                self._current_win.on_update_partner_info()
+        elif event_type == ServerET.OnUsePromocode:
+            if self._current_win:
+                if self._current_win == self._promo_win:
+                    self._run_win(self._promo_result_win)
+                self._current_win.on_use_promocode(data['stritems'])
+
+    @property
+    def visible(self):
+        return self.component.visible
+
+    def show_promo(self):
+        self.component.visible = True
+        self._run_win(self._promo_win)
+        self._server.on_show()
+
+    def show_partnership(self):
+        self.component.visible = True
+        if BigWorld.player()._partner_id:
+            self._run_win(self._personal_win)
+        elif BWPersonality.settings.getSetting(PromoGui._agree_pref_key):
+            self._run_win(self._login_win)
+        else:
+            self._run_win(self._agree_win)
+        self._server.on_show()
+
+    def hide(self):
+        self._run_win(None)
+        self._server.on_hide()
+        self.component.visible = False
+        return
+
+    def _run_win(self, win):
+        if self._current_win:
+            self._current_win.hide()
+        self._current_win = win
+        if self._current_win:
+            self._current_win.show()
+        Win.message_box.hide()

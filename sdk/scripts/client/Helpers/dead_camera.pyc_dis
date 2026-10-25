@@ -1,0 +1,140 @@
+# Embedded file name: ./client/Helpers/dead_camera.py
+import BigWorld
+from Math import Matrix
+import player_speed_settings
+main = __import__('__main__')
+IGNORE_MATERIAL = [139, 140, 255]
+IGNORE_FLAGS = 1
+
+class DeadCamera:
+
+    def __init__(self, player):
+        self._player = player
+        self._tid = 0
+        self._out_count = 0
+        self._killer = None
+        self.matr = None
+        self.foot_dir = None
+        self._to_pos = None
+        self.setDead(self._player.dead)
+        return
+
+    def setDead(self, isdead):
+        if isdead:
+            BigWorld.callback(0.3, self.play)
+        else:
+            self.playOut()
+
+    def setKiller(self, entity):
+        self._killer = entity
+        BigWorld.callback(player_speed_settings.DEAD_CAMERA.KILLER_TARGET_TIME, self._clearKiller)
+
+    def _clearKiller(self):
+        self._killer = None
+        if self._player:
+            self._player.show_afterdeath_windows()
+        return
+
+    def getKiller(self):
+        return self._killer
+
+    def play(self):
+        if not self._player:
+            return
+        elif not self._player.dead:
+            return
+        else:
+            try:
+                self._node_target = self._player.model.node('Head')
+            except:
+                self._node_target = self._player.model.root
+
+            self.cam = BigWorld.FreeCamera(self._player.AvatarCam)
+            self.matr = Matrix(self._player.AvatarCam.invViewMatrix)
+            self._from_pos = self.matr.translation
+            self._to_pos = self._player.position
+            self.cam.invViewProvider = self.matr
+            BigWorld.camera(self.cam)
+            if self._tid:
+                BigWorld.cancelCallback(self._tid)
+            self._tid = BigWorld.callback(0, self._tick)
+            self._out = False
+            self.foot_dir = None
+            return
+
+    def _get_foot_dir(self, topos):
+        foot_dir = self.matr.translation - topos
+        foot_dir.y = 0
+        foot_dir.normalise()
+        return foot_dir
+
+    def collideCheck(self, center_pos, up_pos):
+        cam_geom_offset = 0.5
+        dir_ = up_pos - center_pos
+        dir_.normalise()
+        offset = dir_ * cam_geom_offset
+        res = BigWorld.collideIgnoreFlags(self._player.spaceID, center_pos, up_pos + offset, IGNORE_MATERIAL, IGNORE_FLAGS)
+        if not res or not res[0]:
+            return up_pos
+        col = res[0]
+        return col - offset
+
+    def _tick(self):
+        if self._out:
+            target = Matrix(self._player.AvatarCam.invViewMatrix)
+            self._out_count += 1
+            alpha = self._out_count * 0.03
+            self.matr.blendMatrix(min(1.0, alpha), target)
+            if self._out_count > 160 or alpha > 0.98:
+                self.stop()
+                return
+        else:
+            if self._node_target.isActualCoords:
+                self._to_pos = Matrix(self._node_target).translation
+            to_pos = self._to_pos
+            if self.foot_dir is None:
+                self.foot_dir = self._get_foot_dir(to_pos)
+            BLEND_SPEED = 0.05
+            if self._killer and not self._killer.isDestroyed:
+                BLEND_SPEED = 0.2
+                self._from_pos = self.matr.translation
+                to_pos = self._killer.position + (0, player_speed_settings.DEAD_CAMERA.KILLER_HEIGHT, 0)
+            else:
+                up_pos = to_pos + (0, player_speed_settings.DEAD_CAMERA.HEIGHT, 0.001)
+                up_pos += self.foot_dir * player_speed_settings.DEAD_CAMERA.OFFSET
+                up_pos = self.collideCheck(self._from_pos, up_pos)
+                if (up_pos - self._from_pos).length > 0.1:
+                    self._from_pos = (self._from_pos - up_pos) * 0.001 + up_pos
+            target = Matrix()
+            target.lookAt(self._from_pos, to_pos - self._from_pos, (0, 1, 0))
+            target.invert()
+            self.matr.blendMatrix(BLEND_SPEED, target)
+        self._tid = BigWorld.callback(0, self._tick)
+        return
+
+    def playOut(self):
+        self._out = True
+        self._out_count = 0
+
+    def stop(self):
+        if self._tid:
+            BigWorld.cancelCallback(self._tid)
+        if self._player and not self._player.isDestroyed:
+            BigWorld.camera(self._player.AvatarCam)
+            self._player.EnableTargeting(not self._player.dead)
+        if self.matr:
+            dc = BigWorld.dcursor()
+            dc.yaw = self.matr.yaw
+            dc.pitch = self.matr.pitch
+        self.matr = None
+        self._killer = None
+        return
+
+    def destroy(self):
+        self.stop()
+        self._player = None
+        self.cam = None
+        self._node_target = None
+        self._killer = None
+        self._to_pos = None
+        return

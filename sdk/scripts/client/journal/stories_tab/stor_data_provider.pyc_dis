@@ -1,0 +1,266 @@
+# Embedded file name: ./client/journal/stories_tab/stor_data_provider.py
+from StoriesListenerCommon import STORIES_DATA as st_data
+from journal.common_view.data_provider import DataProvider, EventType as DpET
+import BigWorld
+from Localization import lc
+
+class IdET:
+    OnSelectedChanged, OnStoryindexChanged, OnReadChanged = xrange(3)
+
+
+class ItemData(object):
+    unique_id_counter = 0
+
+    def __init__(self, data_id, is_group):
+        self._callback_listeners = []
+        ItemData.unique_id_counter += 1
+        self._selected = False
+        self._unique_id = ItemData.unique_id_counter
+        self.is_group = is_group
+        self._unread = set()
+        if is_group:
+            self.group_id = data_id
+            self.story_id = None
+            self._story_index = 0
+        else:
+            self.group_id = None
+            self.story_id = data_id
+            self._story_index = None
+        return
+
+    @property
+    def name(self):
+        if self.is_group:
+            return lc('Stories.GroupName.id_' + str(self.group_id))
+        else:
+            return lc('Stories.name.id_' + str(self.story_id))
+
+    @property
+    def debug_text(self):
+        return u'group_id: {0} story_id: {1}'.format(self.group_id, self.story_id)
+
+    @property
+    def description(self):
+        if self.is_group:
+            return lc('Stories.descr.id_' + str(self.group_story_id))
+        else:
+            return lc('Stories.descr.id_' + str(self.story_id))
+
+    @property
+    def selected(self):
+        return self._selected
+
+    @selected.setter
+    def selected(self, value):
+        self._selected = value
+        self._notify_listeners(IdET.OnSelectedChanged, self)
+
+    @property
+    def stories_count(self):
+        return len(self._user.get_group_stories(self.group_id))
+
+    @property
+    def story_index(self):
+        return self._story_index
+
+    @story_index.setter
+    def story_index(self, value):
+        self._story_index = value
+        self._notify_listeners(IdET.OnStoryindexChanged, self)
+
+    @property
+    def group_story_id(self):
+        if self.is_group:
+            return self._user.get_group_stories(self.group_id)[self.story_index]
+
+    def on_destroy(self):
+        self._callback_listeners = []
+
+    def add_callback_listener(self, callback_listener):
+        self._callback_listeners.append(callback_listener)
+
+    def del_callback_listener(self, callback_listener):
+        if callback_listener in self._callback_listeners:
+            self._callback_listeners.remove(callback_listener)
+
+    def _notify_listeners(self, event_type, data):
+        for l in self._callback_listeners:
+            l(event_type, data)
+
+    def has_unread(self):
+        return bool(self._unread)
+
+    def set_story_unread(self, story_id):
+        if story_id not in self._unread:
+            self._user.set_story_read(story_id, False)
+        was_read = self.has_unread()
+        self._unread.add(story_id)
+        if was_read != self.has_unread():
+            self._notify_listeners(IdET.OnReadChanged, self.has_unread())
+
+    def set_story_read(self, story_id):
+        if story_id in self._unread:
+            self._user.set_story_read(story_id, True)
+        was_read = self.has_unread()
+        if story_id in self._unread:
+            self._unread.remove(story_id)
+        if was_read != self.has_unread():
+            self._notify_listeners(IdET.OnReadChanged, self.has_unread())
+
+    @property
+    def _user(self):
+        return BigWorld.player()
+
+    def get_blob(self):
+        return {'selected': self._selected,
+         'index': self._story_index,
+         'unread': self._unread}
+
+    def set_blob(self, blob):
+        self._selected, self._story_index, self._unread = blob['selected'], blob['index'], blob['unread']
+
+    @staticmethod
+    def compile_default_group_blob(group_id):
+        user = BigWorld.player()
+        unread = set(filter(user.is_story_unread, user.get_group_stories(group_id)))
+        return {'selected': False,
+         'index': 0,
+         'unread': unread}
+
+    @staticmethod
+    def compile_default_story_blob(story_id):
+        user = BigWorld.player()
+        unread = set(filter(user.is_story_unread, [story_id]))
+        return {'selected': False,
+         'index': 0,
+         'unread': unread}
+
+
+class StorDataProvider(DataProvider):
+
+    def __init__(self):
+        DataProvider.__init__(self)
+        self._reverse_sort = False
+        self._data = []
+
+    def set_sort_reverse(self, reverse):
+        if self._reverse_sort != reverse:
+            self._reverse_sort = reverse
+            self.clear()
+
+    def clear(self):
+        groups_states = {}
+        stories_states = {}
+        for i in xrange(len(self._data) - 1, -1, -1):
+            item_data = self._data[i]
+            if item_data.is_group:
+                groups_states[item_data.group_id] = item_data.get_blob()
+            else:
+                stories_states[item_data.story_id] = item_data.get_blob()
+            self._delete_item_data(i)
+
+        groups = set()
+        stories = set()
+        for story_id in self._user.get_active_stories():
+            group_id = st_data[story_id].get('Group')
+            if group_id:
+                groups.add(group_id)
+            else:
+                stories.add(story_id)
+
+        selected_index = -1
+        for group_id in groups:
+            default_group_blob = ItemData.compile_default_group_blob(group_id)
+            blob = groups_states.get(group_id, default_group_blob)
+            blob['unread'] = default_group_blob['unread']
+            item_data = ItemData(group_id, True)
+            item_data.set_blob(blob)
+            self._data.append(item_data)
+            if blob['selected']:
+                selected_index = len(self._data) - 1
+
+        for story_id in stories:
+            default_story_blob = ItemData.compile_default_story_blob(story_id)
+            blob = stories_states.get(story_id, default_story_blob)
+            blob['unread'] = default_story_blob['unread']
+            item_data = ItemData(story_id, False)
+            item_data.set_blob(blob)
+            self._data.append(item_data)
+            if blob['selected']:
+                selected_index = len(self._data) - 1
+
+        if selected_index == -1 and self._data:
+            selected_index = 0
+        selected_unique_id = None
+        if selected_index != -1:
+            selected_unique_id = self._data[selected_index]._unique_id
+        self._resort_data()
+        if selected_unique_id is not None:
+            self.set_selection(selected_unique_id)
+        if self._callback_listener:
+            self._callback_listener(DpET.OnClear, None)
+        return
+
+    def _resort_data(self):
+
+        def key(item_data):
+            group_value = not item_data.is_group
+            if self._reverse_sort:
+                group_value = not group_value
+            return (group_value, item_data.name)
+
+        self._data = sorted(self._data, key=key, reverse=self._reverse_sort)
+
+    def _find_item_by_story_id(self, story_id):
+        for item_data in self._data:
+            if item_data.is_group:
+                if story_id in self._user.get_group_stories(item_data.group_id):
+                    return item_data
+            elif item_data.story_id == story_id:
+                return item_data
+
+    def insert_new_stories(self, stor_ids):
+        stor_ids = set(stor_ids)
+        old_groups = {}
+        groups = set()
+        stories = set()
+        for item_data in self._data:
+            old_groups[item_data.group_id] = item_data
+
+        for story_id in stor_ids:
+            group_id = st_data[story_id].get('Group')
+            if group_id and group_id in old_groups:
+                continue
+            if group_id:
+                groups.add(group_id)
+            else:
+                stories.add(story_id)
+
+        new_items = []
+        for group_id in groups:
+            new_items.append(ItemData(group_id, True))
+
+        for story_id in stories:
+            new_items.append(ItemData(story_id, False))
+
+        for item_data in new_items:
+            self._data.append(item_data)
+            self._resort_data()
+            if self._callback_listener:
+                index = self._data.index(item_data)
+                prev_unique_id = self._data[index - 1]._unique_id if index > 0 else None
+                next_unique_id = self._data[index + 1]._unique_id if index < len(self._data) - 1 else None
+                data = {'prev_unique_id': prev_unique_id,
+                 'next_unique_id': next_unique_id,
+                 'unique_id': item_data._unique_id}
+                self._callback_listener(DpET.OnItemInserted, data)
+
+        for story_id in stor_ids:
+            item_data = self._find_item_by_story_id(story_id)
+            item_data.set_story_unread(story_id)
+
+        return
+
+    @property
+    def _user(self):
+        return BigWorld.player()

@@ -1,0 +1,246 @@
+# Embedded file name: ./client/TransportUser.py
+import BigWorld
+import Constants
+from Codes import TransportProcess as TP
+from ChatChannelConfig import CHANNEL_CONSTS
+import BWPersonality
+from Math import Matrix
+from functools import partial
+from Localization import lc
+from Vehicle import Vehicle
+from Constants import MESSAGE_TYPES as MT
+
+def isTransport(ent):
+    if ent.__class__.__name__ in ('Transport', 'CrossingCarriage'):
+        return True
+
+
+class TransportUser:
+
+    def __init__(self):
+        self._stuck = False
+        self._subscribed_to_boat = False
+        self._last_in_pot_notification = None
+        self._prev_matrix = None
+        return
+
+    def _stick_to_place(self, transport, node):
+        self.filter = BigWorld.TransformFilter()
+        self.filter.matrixProvider = node
+        self.pushTrackerLockByName('Transport', 'Belly-or-Right', lock_track_torso=True, lock_track_head=False)
+        self.setControlLock(Constants.ControlLockTypes.TRANSPORT, True, lock_id=Constants.TRANSPORT_MILD_LOCK_ID)
+        self.rememberlastFootTwist(False, channel='Transport')
+        self.model.motors[0].resetFootTwist()
+        self.torso_nodeinfo.disableAddHipsEffect = True
+        self.tracker_torso.drawEnabled = False
+        if self.__class__.__name__ == 'NPC':
+            self.model.boat_driver()
+        else:
+            self.model.idle_zil_passenger()
+        self.model.motors[0].lockChangeAction = True
+        self.model.motors[0].useEntityPitchAndRoll = True
+        BigWorld.callback(0, partial(self._align_camera, node))
+        if self is BigWorld.player():
+            self.physics.fall = False
+        self._stuck = True
+
+    def _align_camera(self, node):
+        if self.isDestroyed or BigWorld.player().id != self.id or not self.in_transport:
+            return
+        if getattr(node, 'isActualCoords', True):
+            BigWorld.dcursor().yaw = Matrix(node).yaw
+        self.LookAround(True)
+
+    def _stick_to_transport(self):
+        if self.isDestroyed:
+            return
+        if self._stuck:
+            return
+        if not self.transport_seat:
+            return
+        transport = BigWorld.entities.get(self.transport_seat)
+        if not transport:
+            BigWorld.callback(0, self._stick_to_transport)
+            return
+        if not isTransport(transport):
+            return
+        if transport.isDestroyed:
+            return
+        seat_node = transport.get_seat_node(self.id)
+        if not seat_node:
+            BigWorld.callback(0, self._stick_to_transport)
+            return
+        self._stick_to_place(transport, seat_node)
+
+    def onEnterWorld(self):
+        if self.transport_seat:
+            self._stick_to_transport()
+
+    def _unstick_from_place(self):
+        self.setControlLock(Constants.ControlLockTypes.TRANSPORT, False, Constants.TRANSPORT_MILD_LOCK_ID)
+        self.onUseAnyHandActionEnd()
+        self.torso_nodeinfo.disableAddHipsEffect = False
+        self.tracker_torso.drawEnabled = True
+        self.popTrackerLock('Transport')
+        if self.__class__.__name__ == 'NPC':
+            self.model.boat_driver().stop()
+        else:
+            self.model.idle_zil_passenger().stop()
+        self.filter = BigWorld.PlayerAvatarFilter() if self is BigWorld.player() else BigWorld.AvatarFilter()
+        self.rememberlastFootTwist(True, channel='Transport')
+        self.model.motors[0].lockChangeAction = False
+        self.model.motors[0].useEntityPitchAndRoll = False
+        self.resetFootTwist()
+        self._stuck = False
+        m = Matrix()
+        m.setTranslate(self.position)
+        r = Matrix()
+        r.setRotateY(self.yaw)
+        r.postMultiply(m)
+        self.model.setWorldTransform(r)
+        if BigWorld.player() is self:
+            self.LookAround(False)
+            self.physics.fall = True
+            if self.physics.inAir:
+                self.inAirNotifier(0.0, True)
+            self.EnableCollisionWeapon()
+
+    def onLeaveWorld(self):
+        pass
+
+    def onEnterSpace(self):
+        pass
+
+    @property
+    def in_transport(self):
+        return bool(self.transport_seat)
+
+    def request_leave_transport(self):
+        transport = BigWorld.entities.get(self.transport_seat)
+        if isTransport(transport) or issubclass(transport.__class__, Vehicle):
+            if not transport.canLeaveUser(self):
+                BWPersonality.gpd.sendHightMessage(lc('PlayerAvatar.client.FORBIDDEN_TRANSPORT_MOVING'), MT.PERSONAL)
+                return
+            transport.cell.request_leave()
+        elif transport.__class__.__name__ == 'GunPoint':
+            transport.cell.request_leave()
+
+    def set_transport_seat(self, old_value):
+        if hasattr(self, '_apply_transport_callback'):
+            BigWorld.cancelCallback(self._apply_transport_callback)
+            del self._apply_transport_callback
+
+        def apply_stick():
+            if hasattr(self, '_apply_transport_callback'):
+                del self._apply_transport_callback
+            if self.isDestroyed:
+                return
+            transport = BigWorld.entities.get(self.transport_seat)
+            if transport:
+                if isTransport(transport):
+                    self._stick_to_transport()
+                    self._transport_tick()
+            else:
+                self._apply_transport_callback = BigWorld.callback(0, apply_stick)
+
+        def apply_unstick():
+            if hasattr(self, '_apply_transport_callback'):
+                del self._apply_transport_callback
+            if self.isDestroyed:
+                return
+            else:
+                transport = BigWorld.entities.get(old_value)
+                if transport:
+                    if isTransport(transport):
+                        self._prev_matrix = None
+                        self._unstick_from_place()
+                else:
+                    self._apply_transport_callback = BigWorld.callback(0, apply_unstick)
+                return
+
+        if not old_value and self.transport_seat:
+            apply_stick()
+        if old_value and not self.transport_seat:
+            apply_unstick()
+
+    def onTeleportCompleted(self):
+        if self.__class__.__name__ == 'NPC':
+            self.resetFootTwist()
+
+    def _transport_tick(self):
+        if self.isDestroyed or BigWorld.player().id != self.id or not self.in_transport:
+            return
+        transport = BigWorld.entities[self.transport_seat]
+        matrix = Matrix(transport.matrix)
+        if self._prev_matrix:
+            delta_yaw = matrix.yaw - self._prev_matrix.yaw
+            BigWorld.dcursor().yaw += delta_yaw
+        self._prev_matrix = matrix
+        BigWorld.callback(0, self._transport_tick)
+
+    def transport_process_result(self, event):
+        code = event['code']
+        if code in (TP.INTERACT_NOT_WAITING,
+         TP.INTERACT_NO_ROOM,
+         TP.SUMMON_BUSY,
+         TP.CANT_LEAVE):
+            self.putMessage(CHANNEL_CONSTS.SYSTEM, TP.get_message(code))
+        elif code == TP.INTERACT_NO_TICKET:
+            boatman = BigWorld.entities[event['int_data']]
+            self.start_talk(boatman)
+        elif code == TP.SUBSCRIBED:
+            self._subscribed_to_boat = True
+        elif code == TP.UNSUBSCRIBED:
+            self._subscribed_to_boat = False
+            if self._last_in_pot_notification:
+                self.transport_process_result(self._last_in_pot_notification)
+            else:
+                self._win.hide()
+        else:
+            if code in (TP.BELL_TERMINAL_LAZY,
+             TP.BILL_TERMINAL_WAITING,
+             TP.BILL_STATION,
+             TP.BILL_SOMEWHERE,
+             TP.BELL_LAZY):
+                self._last_in_pot_notification = event
+            elif code == TP.BELL_LEAVE:
+                self._last_in_pot_notification = None
+            if self._subscribed_to_boat:
+                if code == TP.ST_WAITING:
+                    self._win.set_text(lc('Transport.uinotifications.wait'))
+                    self._win.show()
+                elif code == TP.ST_STATION:
+                    self._win.set_text(lc('Transport.uinotifications.station'))
+                    self._win.show()
+                if code == TP.ST_BUSY:
+                    self._win.set_text(lc('Transport.uinotifications.busy'))
+                    self._win.show()
+                if code == TP.ST_ARRIVE:
+                    self._win.set_text(lc('Transport.uinotifications.arrive'))
+                    self._win.show()
+                if code == TP.ST_DEPART:
+                    self._win.set_text(lc('Transport.uinotifications.depart'))
+                    self._win.show()
+            elif code == TP.BELL_TERMINAL_LAZY:
+                if BWPersonality.GUICore.is_transport_win_visible():
+                    self._win.hide()
+            elif code == TP.BILL_TERMINAL_WAITING:
+                self._win.set_text(lc('Transport.uinotifications.bell_wait'))
+                self._win.show()
+            elif code == TP.BILL_STATION:
+                self._win.set_text(lc('Transport.uinotifications.bell_station'))
+                self._win.show()
+            elif code == TP.BILL_SOMEWHERE:
+                self._win.set_text(lc('Transport.uinotifications.bell_busy'))
+                self._win.show()
+            elif code == TP.BELL_LEAVE:
+                if BWPersonality.GUICore.is_transport_win_visible():
+                    self._win.hide()
+            elif code == TP.BELL_LAZY:
+                self._win.set_text(lc('Transport.uinotifications.bell_lazy'))
+                self._win.show()
+        return
+
+    @property
+    def _win(self):
+        return BWPersonality.GUICore.transport_window

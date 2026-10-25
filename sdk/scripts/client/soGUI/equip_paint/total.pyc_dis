@@ -1,0 +1,142 @@
+# Embedded file name: ./client/soGUI/equip_paint/total.py
+import ItemsUtils
+import DyeConstant
+import colorCodes as cc
+from Localization import lc
+from Items import ItemsCatalog
+from itertools import chain
+from utils import PY
+import GUI
+from equip_block.equip_tablegrid import ItemDataET as EquipItemET
+from ui.text import calc_needed_font
+from ui.button import Button
+
+class Total:
+    _ticket_type = ItemsCatalog.EVENT_TICKET['TypeID']
+
+    def __init__(self, component):
+        self.component = component
+        self.component.isClip = False
+        self._item = None
+        self.tickets = 0
+        comp = GUI.Window('soGUI/frame/paint/white.dds')
+        comp.colour = cc.inactive_rgba
+        comp.wm, comp.hm = ('CLIP', 'PIXEL')
+        comp.ha, comp.va = ('CENTER', 'TOP')
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.width, comp.height = (2, 1)
+        comp.position = (0, 1, 0.5)
+        self.component.addChild(comp)
+        comp = GUI.Text(u'')
+        comp.ha, comp.va = ('RIGHT', 'TOP')
+        comp.hpm, comp.vpm = ('CLIP', 'PIXEL')
+        comp.colourFormatting = True
+        comp.position = (1, 0, 0.5)
+        self.component.addChild(comp, 'cost')
+        comp = GUI.Text(u'')
+        comp.ha, comp.va = ('RIGHT', 'TOP')
+        comp.hpm, comp.vpm = ('CLIP', 'PIXEL')
+        comp.position = (1, 0, 0.5)
+        self.component.addChild(comp, 'cons')
+        comp = GUI.Text(lc('PaintScreen.screen.BUYEMBLEMS'))
+        comp.colour = cc.red_rgba
+        comp.ha, comp.va = ('RIGHT', 'TOP')
+        comp.hpm, comp.vpm = ('CLIP', 'PIXEL')
+        comp.position = (1, 0, 0.5)
+        self.component.addChild(comp, 'buyemblems')
+        self.txt_buy = comp
+        btn = Button(self.component, 'btnbuy')
+        btn.transform.set_base_resolution(None)
+        btn.set_visual('soGUI/frame/buttons/donatbutton.json')
+        btn.set_text(lc('PaintScreen.screen.BUYEMBLEM'))
+        btn.hover_sound = True
+        self.btn_buy = btn
+        self._items_changes = {}
+        self._consumables = ([], [])
+        self._update_texts()
+        return
+
+    def update_consumables(self, consumables, inventory_consumables):
+        self._consumables = (consumables, inventory_consumables)
+        self.tickets = sum((c['count'] for c in chain(*self._consumables) if c['type_id'] == Total._ticket_type))
+        self._update_texts()
+
+    def get_tickets_count(self):
+        consumables, inventory_consumables = self._consumables
+        inv_tickets = sum((c['count'] for c in inventory_consumables if c['type_id'] == Total._ticket_type))
+        tickets = sum((c['count'] for c in consumables if c['type_id'] == Total._ticket_type))
+        return (tickets, inv_tickets)
+
+    def reset_changes(self):
+        self._items_changes.clear()
+        self._update_texts()
+
+    def consumable_added(self, items):
+        consumables, inventory_consumables = self._consumables
+        consumables = PY(consumables)
+        for item in items:
+            for c in consumables:
+                if item['item_id'] == c['item_id']:
+                    c['count'] = item['count']
+                    break
+            else:
+                consumables.append(item)
+
+        self.update_consumables(consumables, inventory_consumables)
+
+    def set_item(self, item):
+        if self._item:
+            self._item.remove_listener(self._on_equipitem_event)
+        self._item = item
+        if self._item:
+            self._item.add_listener(self._on_equipitem_event)
+
+    def _on_equipitem_event(self, event_type, data):
+        if event_type == EquipItemET.OnChanged:
+            item_id = self._item.item_id
+            if self._item.changes:
+                self._items_changes[item_id] = (self._item.get_change_cost(), self._item.emblem_id)
+            elif item_id in self._items_changes:
+                del self._items_changes[item_id]
+        self._update_texts()
+
+    def _update_texts(self):
+        total_cost = 0
+        buy_emblems = set()
+        for cost, emblem_id in self._items_changes.itervalues():
+            if ItemsUtils.is_textured_emblem(emblem_id):
+                buy_emblems.add(emblem_id)
+            total_cost += cost
+
+        local = lc('PaintScreen.screen.NEEDED_TICKETS')
+        upload_cost = DyeConstant.COST_UPLOAD_EMBLEM[ItemsCatalog.EVENT_TICKET['TypeID']]
+        total_cost += upload_cost * len(buy_emblems)
+        self.component.cost.text = cc.inactive_hex + local.format(cc.active_hex + unicode(total_cost))
+        self.component.cons.text = lc('PaintScreen.screen.AVAILABLE_TICKETS').format(self.tickets)
+        self.component.cons.colour = cc.red_rgba if total_cost > self.tickets else cc.active_rgba
+
+    def get_changed_items(self):
+        return set(self._items_changes.keys())
+
+    def has_changes(self):
+        return bool(self._items_changes)
+
+    def do_reposition(self, btn_width, btn_height):
+        pos_y = self.component.width * 0.03
+        font = calc_needed_font(16)
+        comp = self.component.cost
+        comp.font = font
+        comp.position[1] = pos_y
+        delta_y = comp.stringDimensions(u'W')[1] + self.component.width * 0.01
+        pos_y += delta_y
+        comp = self.component.cons
+        comp.font = font
+        comp.position[1] = pos_y
+        self.component.height = 120
+        pos_y += delta_y
+        comp = self.txt_buy
+        comp.font = font
+        comp.position[1] = pos_y
+        self.component.height = 120
+        pos_y += delta_y + 8
+        self.btn_buy.transform.set_pixel_mode((0.5, 0), (0.5, 0), (btn_width, btn_height), pixel_pos=(0, pos_y))

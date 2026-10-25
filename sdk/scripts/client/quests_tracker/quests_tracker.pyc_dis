@@ -1,0 +1,176 @@
+# Embedded file name: ./client/quests_tracker/quests_tracker.py
+import colorCodes as cc
+from Localization import lc
+import Quest
+import BigWorld
+import QuestDispatcher as qd
+from quests_track_win import QuestsTrackWin, EventType as WinET
+import BWPersonality
+from utils import Listenable
+import gui_jokes
+from collections import deque
+
+class EventType:
+    OnStartTrack, OnStopTrack = (('QuestTracker.QuestTracker', r) for r in xrange(2))
+
+
+class ForceQueue:
+    DELAY = 2.0
+
+    def __init__(self):
+        self._deque = deque(maxlen=3)
+        self._callback_handler = None
+        self.try_pop = lambda quest_id: True
+        return
+
+    def queue(self, quest_id):
+        if self._callback_handler:
+            BigWorld.cancelCallback(self._callback_handler)
+        self._callback_handler = BigWorld.callback(ForceQueue.DELAY, self._apply)
+        if quest_id not in self._deque:
+            self._deque.append(quest_id)
+
+    def remove(self, quest_id):
+        if quest_id in self._deque:
+            self._deque.remove(quest_id)
+
+    def _apply(self):
+        if self._callback_handler:
+            BigWorld.cancelCallback(self._callback_handler)
+        delay = ForceQueue.DELAY
+        if self._deque:
+            quest_id = self._deque[0]
+            if self.try_pop(quest_id):
+                self._deque.popleft()
+            else:
+                delay = 0.5
+        if self._deque:
+            self._callback_handler = BigWorld.callback(delay, self._apply)
+        else:
+            self._callback_handler = None
+        return
+
+
+class QuestsTracker(Listenable):
+
+    def __init__(self, player_name):
+        Listenable.__init__(self)
+        self._player_name = player_name
+        if hasattr(BWPersonality, 'GUICore'):
+            world_layer = BWPersonality.GUICore.worldLayer
+            prev_comp = getattr(world_layer, QuestsTrackWin.factoryString, None)
+            if prev_comp:
+                world_layer.delChild(prev_comp)
+        self._win = None
+        self._messagebox = None
+        self._force_queue = ForceQueue()
+        self._force_queue.try_pop = self._queue_try_pop
+        self._cur_quests = []
+        for q_id in list(BWPersonality.settings.get_tracker_quests(self._player_name)):
+            self.start_track(q_id, flush=False)
+
+        return
+
+    def can_track_more(self):
+        return len(self._cur_quests) < 3
+
+    def is_tracking(self, quest_id):
+        return quest_id in self._cur_quests
+
+    def start_track(self, quest_id, flush = True):
+        if quest_id not in self._cur_quests:
+            self._cur_quests.append(quest_id)
+            self.win.append_block(quest_id)
+            data = {'quest_id': quest_id}
+            self.notify_listeners(EventType.OnStartTrack, data)
+            if not self.win.visible:
+                self.win.show()
+            quest_ids = qd.getQuestTreeIDs(quest_id)
+            self._user.subscribe_all_quests_changes((self._on_quest_state_event, self._on_quest_internal_event), self, quest_ids)
+            if flush:
+                self._flush_settings()
+
+    def _on_quest_state_event(self, quest_id, prev_state, state):
+        if quest_id in self._cur_quests and state not in (Quest.STATE_OPENED, Quest.STATE_ONTEST):
+            self.stop_track(quest_id)
+            return
+        self.win.on_quest_state_event(quest_id, prev_state, state)
+
+    def force_queue(self, quest_id):
+        if self.destroyed:
+            return
+        if self.can_track_more():
+            self._force(quest_id)
+        else:
+            self._force_queue.queue(quest_id)
+
+    def _queue_try_pop(self, quest_id):
+        if self._messagebox and BWPersonality.GUICore.msgBoxMgr.is_msg_box_active(self._messagebox):
+            return False
+        else:
+            self._messagebox = None
+            self._force(quest_id)
+            return True
+
+    def _force(self, quest_id):
+        if self.can_track_more():
+            self.start_track(quest_id)
+        else:
+            stop_track_id = self._cur_quests[0]
+
+            def callback(event):
+                self._messagebox = None
+                if event == gui_jokes.askUserYesNo.YES:
+                    self.stop_track(stop_track_id)
+                    self.start_track(quest_id)
+                return
+
+            self._messagebox = gui_jokes.askUserYesNo(u'', cc.inactive_xml + lc('Quests.Messages.AutoTrack').format(cc.active_xml + qd.getQuestTitleByID(quest_id) + cc.inactive_xml, cc.active_xml + qd.getQuestTitleByID(stop_track_id) + cc.inactive_xml), callback=callback).ID
+
+    def _flush_settings(self):
+        BWPersonality.settings.set_tracker_quests(self._cur_quests, self._player_name)
+
+    def _on_quest_internal_event(self, quest_id, int_data):
+        self.win.on_quest_internal_event(quest_id, int_data)
+
+    def stop_track(self, quest_id, flush = True):
+        self._force_queue.remove(quest_id)
+        if self._destroyed:
+            flush = False
+        if quest_id in self._cur_quests:
+            self._cur_quests.remove(quest_id)
+            self.win.remove_block(quest_id)
+            if not self._cur_quests:
+                self.win.hide()
+            data = {'quest_id': quest_id}
+            self.notify_listeners(EventType.OnStopTrack, data)
+            quest_ids = qd.getQuestTreeIDs(quest_id)
+            self._user.unsubscribe_all_quests_changes(self, quest_ids)
+            if flush:
+                self._flush_settings()
+
+    def on_release(self):
+        Listenable.on_release(self)
+        self._messagebox = None
+        for q_id in list(self._cur_quests):
+            self.stop_track(q_id, flush=False)
+
+        self.win.release()
+        BWPersonality.GUICore.worldLayer.delChild(QuestsTrackWin.factoryString)
+        return
+
+    def _on_win_event(self, event_type, data):
+        if event_type == WinET.OnBlockRemoved:
+            self.stop_track(data['quest_id'])
+
+    @property
+    def win(self):
+        if self._win == None:
+            self._win = QuestsTrackWin()
+            self._win.add_listener(self._on_win_event)
+            BWPersonality.GUICore.worldLayer.addChild(self._win.component, QuestsTrackWin.factoryString)
+        return self._win
+
+    @property
+    def _user(self):
+        return BigWorld.player()

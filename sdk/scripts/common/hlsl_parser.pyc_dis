@@ -1,0 +1,583 @@
+# Embedded file name: ./common/hlsl_parser.py
+"""
+\xd0\x9c\xd0\xbe\xd0\xb4\xd1\x83\xd0\xbb\xd1\x8c, \xd0\xba\xd0\xbe\xd1\x82\xd0\xbe\xd1\x80\xd1\x8b\xd0\xb9 \xd0\xbf\xd0\xb0\xd1\x80\xd1\x81\xd0\xb8\xd1\x82 HLSL-\xd1\x84\xd0\xb0\xd0\xb9\xd0\xbb \xd1\x81\xd0\xbe \xd0\xb2\xd1\x81\xd0\xb5\xd0\xbc\xd0\xb8 #include, #define
+\xd0\xa4\xd0\xbe\xd1\x80\xd0\xbc\xd0\xb8\xd1\x80\xd1\x83\xd0\xb5\xd1\x82 \xd0\xbe\xd0\xbf\xd0\xb8\xd1\x81\xd0\xb0\xd0\xbd\xd0\xb8\xd0\xb5 \xd1\x88\xd0\xb5\xd0\xb9\xd0\xb4\xd0\xb5\xd1\x80\xd0\xb0, \xd0\xba\xd0\xbe\xd1\x82\xd0\xbe\xd1\x80\xd0\xbe\xd0\xb5 \xd1\x81\xd0\xbe\xd0\xb4\xd0\xb5\xd1\x80\xd0\xb6\xd0\xb8\xd1\x82 \xd0\xb1\xd1\x83\xd1\x84\xd0\xb5\xd1\x80\xd1\x8b \xd0\xb4\xd0\xb0\xd0\xbd\xd0\xbd\xd1\x8b\xd1\x85, \xd0\xb8\xd1\x85 \xd0\xbc\xd0\xb5\xd1\x82\xd0\xb0\xd0\xb4\xd0\xb0\xd0\xbd\xd0\xbd\xd1\x8b\xd0\xb5, \xd1\x80\xd0\xb5\xd0\xb3\xd0\xb8\xd1\x81\xd1\x82\xd1\x80\xd1\x8b, \xd1\x82\xd0\xb8\xd0\xbf \xd0\xb1\xd1\x83\xd1\x84\xd0\xb5\xd1\x80\xd0\xb0, \xd0\xba\xd0\xb0\xd0\xba\xd0\xb8\xd0\xb5 \xd0\xbf\xd0\xb5\xd1\x80\xd0\xb5\xd0\xbc\xd0\xb5\xd0\xbd\xd0\xbd\xd1\x8b\xd0\xb5 \xd0\xb2 \xd0\xbd\xd0\xb8\xd1\x85 \xd0\xb2\xd1\x85\xd0\xbe\xd0\xb4\xd1\x8f\xd1\x82: \xd0\xb8\xd0\xbc\xd0\xb5\xd0\xbd\xd0\xb0, \xd1\x82\xd0\xb8\xd0\xbf\xd1\x8b, \xd0\xbc\xd0\xb5\xd1\x82\xd0\xb0\xd0\xb4\xd0\xb0\xd0\xbd\xd0\xbd\xd1\x8b\xd0\xb5 \xd0\xba\xd0\xb0\xd0\xb6\xd0\xb4\xd0\xbe\xd0\xb9 \xd0\xbf\xd0\xb5\xd1\x80\xd0\xb5\xd0\xbc\xd0\xb5\xd0\xbd\xd0\xbd\xd0\xbe\xd0\xb9.
+
+\xd0\xa4\xd0\xbe\xd1\x80\xd0\xbc\xd0\xb0\xd1\x82\xd1\x8b \xd0\xbc\xd0\xb5\xd1\x82\xd0\xb0\xd0\xb4\xd0\xb0\xd0\xbd\xd0\xbd\xd1\x8b\xd1\x85:
+        //@ui_name LOCALIZE(shiftXName)
+        /*@ui_name LOCALIZE(shiftXName) */
+
+\xd0\x9e\xd0\xb4\xd0\xbd\xd0\xbe\xd1\x81\xd1\x82\xd1\x80\xd0\xbe\xd1\x87\xd0\xbd\xd1\x8b\xd0\xb5 struct \xd0\xbd\xd0\xb5 \xd0\xbf\xd0\xbe\xd0\xb4\xd0\xb4\xd0\xb5\xd1\x80\xd0\xb6\xd0\xb8\xd0\xb2\xd0\xb0\xd1\x8e\xd1\x82\xd1\x81\xd1\x8f:
+        struct InlineTest { float4 color }
+
+"""
+import os
+import re
+from collections import defaultdict
+import xml.etree.ElementTree as ET
+import xml.dom.minidom as minidom
+try:
+    from collections import OrderedDict
+except ImportError:
+    from ordereddict import OrderedDict
+
+DEBUG_MODE = False
+MULTI_LINE_PATTERN = re.compile('/\\*.*?\\*/|\\w+\\s+\\w+(?:\\[\\d*\\])?(?:\\s*:\\s*\\w+)?')
+FIELD_PATTERN = re.compile('(\\w+)\\s+(\\w+)(\\[\\d*\\])?(?:\\s*:\\s*(\\w+))?')
+RESOURCE_PATTERN = re.compile('(\\w+(?:<[^>]+>)?)\\s+(\\w+)(\\[\\d*\\])?(?:\\s*:\\s*register\\s*\\(\\s*([^)]+)\\s*\\))?')
+RESOURCE_TYPE_PATTERN = re.compile('(\\w+)(?:<(\\w+)>)?')
+FUNCTION_PATTERN = re.compile('(?:[\\w:]+\\s+)?(\\w+)\\s*\\(\\s*(\\w+)\\s+\\w+\\s*(?:,.*)?\\)')
+NORMALIZE_1_PATTERN = re.compile('\\s+')
+NORMALIZE_2_PATTERN = re.compile('\\s+,')
+NORMALIZE_3_PATTERN = re.compile(',\\s*')
+NORMALIZE_4_PATTERN = re.compile('\\(\\s+')
+NORMALIZE_5_PATTERN = re.compile('\\s+\\)')
+
+class LineMerger():
+    """
+    \xd0\x9e\xd0\xb1\xd1\x8a\xd0\xb5\xd0\xb4\xd0\xb8\xd0\xbd\xd1\x8f\xd0\xb5\xd1\x82 \xd1\x81\xd1\x82\xd1\x80\xd0\xbe\xd0\xba\xd0\xb8 \xd0\xb2\xd0\xbd\xd1\x83\xd1\x82\xd1\x80\xd0\xb8 \xd1\x81\xd0\xba\xd0\xbe\xd0\xb1\xd0\xbe\xd0\xba \xd0\xb8 \xd0\xbd\xd0\xbe\xd1\x80\xd0\xbc\xd0\xb0\xd0\xbb\xd0\xb8\xd0\xb7\xd1\x83\xd0\xb5\xd1\x82 \xd1\x81\xd1\x82\xd1\x80\xd0\xbe\xd0\xba\xd0\xb8
+    """
+
+    def __init__(self):
+        self._buffer = []
+        self._brackets_count = 0
+
+    def add_line(self, line):
+        if not line:
+            return []
+        output = []
+        for ch in line:
+            if ch == '(':
+                self._brackets_count += 1
+            elif ch == ')':
+                self._brackets_count -= 1
+
+        self._buffer.append(line)
+        if self._brackets_count == 0:
+            merged = ' '.join(self._buffer)
+            del self._buffer[:]
+            output.append(self._normalize(merged))
+        return output
+
+    def get_buffer(self):
+        return self._buffer
+
+    def _normalize(self, text):
+        text = NORMALIZE_1_PATTERN.sub(' ', text)
+        text = NORMALIZE_2_PATTERN.sub(',', text)
+        text = NORMALIZE_3_PATTERN.sub(', ', text)
+        text = NORMALIZE_4_PATTERN.sub('(', text)
+        text = NORMALIZE_5_PATTERN.sub(')', text)
+        return text.strip()
+
+
+LEN_START_WRAP_METADATA = len('/*@')
+LEN_END_WRAP_METADATA = len('*/')
+
+def log(msg, *args):
+    if args:
+        try:
+            line = msg % args
+        except:
+            line = '%s: %s' % (msg, ' | '.join(map(str, args)))
+
+    else:
+        line = msg
+    print line
+
+
+def normpath(file_path):
+    if file_path:
+        return os.path.normpath(file_path).replace('\\', '/')
+    return file_path
+
+
+def prettify_str(raw_xml_str):
+    reparsed = minidom.parseString(raw_xml_str)
+    xml_str = '\n'.join([ line for line in reparsed.toprettyxml(indent='\t').split('\n')[1:] if line.strip() ])
+    return xml_str
+
+
+def try_wrap_metadata(line):
+    """
+    \xd0\x9f\xd1\x80\xd0\xbe\xd0\xb1\xd1\x83\xd0\xb5\xd0\xbc \xd0\xbe\xd0\xb1\xd0\xb5\xd1\x80\xd0\xbd\xd1\x83\xd1\x82\xd1\x8c \xd0\xbc\xd0\xb5\xd1\x82\xd0\xb0\xd0\xb4\xd0\xb0\xd0\xbd\xd0\xbd\xd1\x8b\xd0\xb5
+    """
+    if line.startswith('//@'):
+        return '/*@%s */' % line[LEN_START_WRAP_METADATA:]
+    return line
+
+
+def iter_lines_ignore_comments(file_path):
+    """
+    \xd0\xa3\xd0\xb1\xd0\xb8\xd1\x80\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xba\xd0\xbe\xd0\xbc\xd0\xbc\xd0\xb5\xd0\xbd\xd1\x82\xd0\xb0\xd1\x80\xd0\xb8\xd0\xb8, \xd1\x81\xd0\xbe\xd1\x85\xd1\x80\xd0\xb0\xd0\xbd\xd1\x8f\xd1\x8f \xd0\xbc\xd0\xb5\xd1\x82\xd0\xb0\xd0\xb4\xd0\xb0\xd0\xbd\xd0\xbd\xd1\x8b\xd0\xb5, \xd1\x81\xd0\xba\xd0\xbb\xd0\xb5\xd0\xb8\xd0\xb2\xd0\xb0\xd0\xb5\xd1\x82 \xd1\x81\xd1\x82\xd1\x80\xd0\xbe\xd0\xba\xd0\xb8
+    """
+    multi_line_buff = []
+
+    def remove_comment_and_useless(line):
+        if not line:
+            return line
+        i = line.find('/*')
+        if i > -1 and line[i:i + 3] != '/*@':
+            raise ValueError("unsupported comment syntax. line='%s'" % line)
+        i = line.find('//')
+        if i > -1 and line[i:i + 3] != '//@':
+            line = line[:i].rstrip()
+        if 'register' in line:
+            if '{' in line or '}' in line:
+                raise ValueError("unsupported resource. line='%s'" % line)
+            return line
+        return line.replace(';', '').replace('{', '')
+
+    def merge_lines_break(line):
+        """
+        \xd0\x9e\xd0\xb1\xd1\x8a\xd0\xb5\xd0\xb4\xd0\xb8\xd0\xbd\xd1\x8f\xd0\xb5\xd1\x82 \xd1\x81\xd1\x82\xd1\x80\xd0\xbe\xd0\xba\xd0\xb8, \xd1\x80\xd0\xb0\xd0\xb7\xd0\xbe\xd1\x80\xd0\xb2\xd0\xb0\xd0\xbd\xd0\xbd\xd1\x8b\xd0\xb5 \xd1\x81\xd0\xb8\xd0\xbc\xd0\xb2\xd0\xbe\xd0\xbb\xd0\xbe\xd0\xbc ''
+        """
+        if line.endswith('\\'):
+            _wrapped = try_wrap_metadata(line[:-1].rstrip())
+            multi_line_buff.append(_wrapped)
+        else:
+            _wrapped = try_wrap_metadata(line)
+            if multi_line_buff:
+                multi_line_buff.append(_wrapped)
+                multi_line = ' '.join(multi_line_buff)
+                del multi_line_buff[:]
+                yield multi_line
+            else:
+                yield _wrapped
+
+    merge_normalizer = LineMerger()
+    with open(file_path) as fh:
+        for raw_line in fh:
+            line = raw_line.strip()
+            if not line:
+                continue
+            line = remove_comment_and_useless(line)
+            if not line:
+                continue
+            if 'struct' in line and line.endswith('}'):
+                raise ValueError("unsupported struct syntax. line='%s'" % line)
+            for l1 in merge_lines_break(line):
+                merged_lines = merge_normalizer.add_line(l1)
+                for l2 in merged_lines:
+                    yield l2
+
+    error_buffer = merge_normalizer.get_buffer()
+    if error_buffer:
+        raise ValueError('no closing bracket. error_buffer=%s' % error_buffer)
+
+
+class Parser():
+
+    def __init__(self, file_path, include_paths = None, defines = None):
+        self._file_path = normpath(file_path)
+        self._file_dir = os.path.dirname(self._file_path)
+        self._include_paths = set([self._file_dir])
+        if include_paths:
+            self._include_paths.update([ normpath(p) for p in include_paths ])
+        self._defines = defines if defines else dict()
+        self._macros = dict()
+        self._processed_files = set([self._file_path])
+        self._if_stack = []
+        self._cur_struct_name = None
+        self._struct_dict = defaultdict(list)
+        self._resource_list = []
+        self._global_metadata = dict()
+        self._cache_meta = []
+        self._cur_resource_data = None
+        self._cur_function = None
+        self._function_name2input_type = dict()
+        return
+
+    def _get_metadata(self, line):
+        if not line.startswith('/*@'):
+            return
+        else:
+            parts = line[LEN_START_WRAP_METADATA:-LEN_END_WRAP_METADATA].split(None, 1)
+            metadata = {'name': parts[0],
+             'value': parts[1] if len(parts) > 1 else ''}
+            return metadata
+
+    def _parse_fiels(self, multi_line):
+        """
+        multi_line \xd0\xbc\xd0\xbe\xd0\xb6\xd0\xb5\xd1\x82 \xd1\x81\xd0\xbe\xd0\xb4\xd0\xb5\xd1\x80\xd0\xb6\xd0\xb0\xd1\x82\xd1\x8c \xd0\xbd\xd0\xb5\xd1\x81\xd0\xba\xd0\xbe\xd0\xbb\xd1\x8c\xd0\xba\xd0\xbe \xd0\xbc\xd0\xb5\xd1\x82\xd0\xb0\xd0\xb4\xd0\xb0\xd0\xbd\xd0\xbd\xd1\x8b\xd1\x85 \xd0\xb8 \xd0\xbf\xd0\xbe\xd0\xbb\xd0\xb5\xd0\xb9
+        """
+        fields = []
+
+        def _parse_line(line):
+            metadata = self._get_metadata(line)
+            if metadata:
+                self._cache_meta.append(metadata)
+            else:
+                match = FIELD_PATTERN.match(line)
+                if match:
+                    result = match.groups()
+                else:
+                    raise ValueError("unsupported field. line='%s'" % line)
+                field_data = OrderedDict()
+                field_data['type'] = result[0]
+                field_data['name'] = result[1]
+                field_data['array'] = result[2]
+                if result[3]:
+                    field_data['vertex_semantic'] = result[3]
+                for metadata in self._cache_meta:
+                    metadata_name = metadata['name']
+                    if metadata_name in field_data:
+                        raise ValueError('dup metadata-name [%s] in field_data=%s' % (metadata_name, field_data))
+                    field_data[metadata_name] = metadata['value']
+
+                del self._cache_meta[:]
+                fields.append(field_data)
+
+        lines = MULTI_LINE_PATTERN.findall(multi_line)
+        for line in lines:
+            _parse_line(line)
+
+        return fields
+
+    def _parse_struct_fields(self, multi_line):
+        if not multi_line:
+            return
+        if self._cur_struct_name not in self._struct_dict:
+            self._struct_dict[self._cur_struct_name] = {'fields': []}
+        fields = self._parse_fiels(multi_line)
+        if fields:
+            self._struct_dict[self._cur_struct_name]['fields'].extend(fields)
+
+    def _all_blocks_enabled(self):
+        return all((block['enabled'] for block in self._if_stack))
+
+    def _append_if_stack(self, enabled):
+        prev_enabled = self._all_blocks_enabled()
+        enabled = enabled and prev_enabled
+        block = {'prev_enabled': prev_enabled,
+         'branch_selected': enabled,
+         'enabled': enabled}
+        self._if_stack.append(block)
+
+    def _parse_resource_start(self, line):
+        match = RESOURCE_PATTERN.match(line)
+        if match:
+            result = match.groups()
+        else:
+            raise ValueError("unsupported resource. line='%s'" % line)
+        match = RESOURCE_TYPE_PATTERN.match(result[0].strip())
+        if match:
+            base_type, sub_type = match.groups()
+        else:
+            raise ValueError("unsupported resource-type. line='%s'" % line)
+        self._cur_resource_data = OrderedDict()
+        self._cur_resource_data['base_type'] = base_type
+        self._cur_resource_data['type'] = sub_type
+        self._cur_resource_data['name'] = result[1]
+        self._cur_resource_data['array'] = result[2]
+        _parts = result[3].split(',', 1)
+        self._cur_resource_data['register'] = _parts[0]
+        if len(_parts) == 2:
+            self._cur_resource_data['space'] = _parts[1]
+        self._cur_resource_data['fields'] = []
+        for metadata in self._cache_meta:
+            metadata_name = metadata['name']
+            if metadata_name in self._cur_resource_data:
+                raise ValueError('dup metadata-name [%s] in resource: %s' % (metadata_name, self._cur_resource_data))
+            self._cur_resource_data[metadata_name] = metadata['value']
+
+        del self._cache_meta[:]
+
+    def _parse_resource_fields(self, multi_line):
+        if not multi_line:
+            return
+        fields = self._parse_fiels(multi_line)
+        if fields:
+            self._cur_resource_data['fields'].extend(fields)
+
+    def _flush_resource_desc(self):
+        if not self._cur_resource_data:
+            raise ValueError('not _cur_resource_data')
+        self._resource_list.append(self._cur_resource_data)
+        self._cur_resource_data = None
+        return
+
+    def _try_parse_function(self, line):
+        match = FUNCTION_PATTERN.match(line)
+        if not match:
+            return
+        function_name, input_type = match.groups()
+        if function_name in self._function_name2input_type:
+            raise KeyError("dup function. function_name='%s'" % function_name)
+        self._function_name2input_type[function_name] = input_type
+        return True
+
+    def _parse_file(self, file_path):
+        for i, line in enumerate(iter_lines_ignore_comments(file_path), 1):
+            if line.startswith('#include'):
+                for _line in self._iter_include_lines(line):
+                    yield _line
+
+            else:
+                yield line
+
+    def _iter_include_lines(self, line):
+        """\xd0\xa0\xd0\xb5\xd0\xba\xd1\x83\xd1\x80\xd1\x81\xd0\xb8\xd0\xb2\xd0\xbd\xd0\xbe \xd0\xbe\xd0\xb1\xd1\x80\xd0\xb0\xd0\xb1\xd0\xb0\xd1\x82\xd1\x8b\xd0\xb2\xd0\xb0\xd0\xb5\xd1\x82 #include \xd0\xb4\xd0\xb8\xd1\x80\xd0\xb5\xd0\xba\xd1\x82\xd0\xb8\xd0\xb2\xd1\x8b"""
+        include_pattern = '#include\\s+[<"]([^>"]+)[>"]'
+        is_exists = False
+        res = re.match(include_pattern, line)
+        if res:
+            include_file = res.group(1)
+            for search_path in self._include_paths:
+                full_path = normpath(os.path.join(search_path, include_file))
+                is_exists = os.path.exists(full_path)
+                if is_exists:
+                    if full_path not in self._processed_files:
+                        self._processed_files.add(full_path)
+                        for line in self._parse_file(full_path):
+                            yield line
+
+                    break
+
+        if not is_exists:
+            raise Exception('Include file not found: %s' % include_file)
+
+    def _find_replace_simple_macros(self, text):
+        """\xd0\x97\xd0\xb0\xd0\xbc\xd0\xb5\xd0\xbd\xd1\x8f\xd0\xb5\xd1\x82 \xd0\xbf\xd1\x80\xd0\xbe\xd1\x81\xd1\x82\xd1\x8b\xd0\xb5 \xd0\xbc\xd0\xb0\xd0\xba\xd1\x80\xd0\xbe\xd1\x81\xd1\x8b \xd0\xb1\xd0\xb5\xd0\xb7 \xd0\xb0\xd0\xb3\xd1\x80\xd1\x83\xd0\xbc\xd0\xb5\xd0\xbd\xd1\x82\xd0\xbe\xd0\xb2"""
+        for define_name, define_value in self._defines.items():
+            pattern = '\\b' + re.escape(define_name) + '\\b'
+            text = re.sub(pattern, define_value, text)
+
+        return text
+
+    def _replace_macro(self, name, args = None):
+        if name not in self._macros:
+            return None
+        else:
+            macro = self._macros[name]
+            result = macro['body']
+            if args and macro['params']:
+                for param, arg in zip(macro['params'], args):
+                    param_escaped = re.escape(param.strip())
+                    result = re.sub('\\b' + param_escaped + '\\b', str(arg), result)
+
+            result = self._find_replace_func_macros(result)
+            return result
+
+    def _find_replace_func_macros(self, text):
+        """\xd0\x97\xd0\xb0\xd0\xbc\xd0\xb5\xd0\xbd\xd1\x8f\xd0\xb5\xd1\x82 \xd1\x81\xd0\xbb\xd0\xbe\xd0\xb6\xd0\xbd\xd1\x8b\xd0\xb5 \xd0\xbc\xd0\xb0\xd0\xba\xd1\x80\xd0\xbe\xd1\x81\xd1\x8b \xd1\x81 \xd0\xbf\xd0\xbe\xd0\xb4\xd1\x81\xd1\x82\xd0\xb0\xd0\xbd\xd0\xbe\xd0\xb2\xd0\xba\xd0\xbe\xd0\xb9 \xd0\xb0\xd1\x80\xd0\xb3\xd1\x83\xd0\xbc\xd0\xb5\xd0\xbd\xd1\x82\xd0\xbe\xd0\xb2"""
+        macro_calls = re.finditer('(\\w+)\\s*\\(([^)]*)\\)', text)
+        result = text
+        offset = 0
+        for match in macro_calls:
+            macro_name = match.group(1)
+            if macro_name in self._macros:
+                args = [ a.strip() for a in match.group(2).split(',') ]
+                replaced = self._replace_macro(macro_name, args)
+                start, end = match.span()
+                result = result[:start + offset] + replaced + result[end + offset:]
+                offset += len(replaced) - (end - start)
+
+        return result
+
+    def _eval_if(self, expr):
+        expr = expr.strip()
+        expr = re.sub('#if\\s+', '', expr)
+
+        def repl(m):
+            name = m.group(1)
+            return str(name in self._defines)
+
+        expr = re.sub('defined\\s*\\(\\s*(\\w+)\\s*\\)', repl, expr)
+        expr = expr.replace('&&', ' and ')
+        expr = expr.replace('||', ' or ')
+        expr = expr.replace('!', ' not ')
+        result = bool(eval(expr))
+        return result
+
+    def parse_base_file(self):
+        """
+        \xd0\x92\xd1\x8b\xd0\xb7\xd1\x8b\xd0\xb2\xd0\xb0\xd0\xb5\xd1\x82\xd1\x81\xd1\x8f \xd0\xb4\xd0\xbb\xd1\x8f \xd0\xbe\xd1\x81\xd0\xbd\xd0\xbe\xd0\xb2\xd0\xbd\xd0\xbe\xd0\xb3\xd0\xbe \xd1\x84\xd0\xb0\xd0\xb9\xd0\xbb\xd0\xb0
+        """
+
+        def parse_line(line):
+            if line.startswith('#ifndef'):
+                name = line.split(None, 1)[1]
+                enabled = name not in self._defines
+                self._append_if_stack(enabled)
+                return
+            elif line.startswith('#ifdef'):
+                name = line.split(None, 1)[1]
+                enabled = name in self._defines
+                self._append_if_stack(enabled)
+                return
+            elif line.startswith('#if'):
+                if_pattern = '#if\\s+defined'
+                res = re.match(if_pattern, line)
+                if res:
+                    enabled = self._eval_if(line)
+                else:
+                    raise ValueError("unsupported #if. line='%s'" % line)
+                self._append_if_stack(enabled)
+                return
+            elif line.startswith('#elif'):
+                if not self._if_stack:
+                    raise RuntimeError("empty if_stack. line='%s'" % line)
+                _line = line.replace('#elif', '#if', 1)
+                if_pattern = '#if\\s+defined'
+                res = re.match(if_pattern, _line)
+                if res:
+                    enabled = self._eval_if(_line)
+                else:
+                    raise ValueError("unsupported #elif. line='%s'" % line)
+                block = self._if_stack[-1]
+                if block['branch_selected']:
+                    block['enabled'] = False
+                elif enabled:
+                    block['enabled'] = block['prev_enabled']
+                    block['branch_selected'] = block['enabled'] and True
+                return
+            elif line.startswith('#else'):
+                if not self._if_stack:
+                    raise RuntimeError("empty if_stack. line='%s'" % line)
+                block = self._if_stack[-1]
+                if block['branch_selected']:
+                    block['enabled'] = False
+                else:
+                    block['enabled'] = block['prev_enabled']
+                    if block['enabled']:
+                        block['branch_selected'] = True
+                return
+            elif line.startswith('#endif'):
+                if self._if_stack:
+                    self._if_stack.pop()
+                return
+            elif not self._all_blocks_enabled():
+                return
+            if DEBUG_MODE:
+                print 'raw ->', line
+            if line.startswith('#undef'):
+                name = line.split(None, 1)[1]
+                self._defines.pop(name, None)
+                return
+            line = self._find_replace_simple_macros(line)
+            line = self._find_replace_func_macros(line)
+            if line.startswith('#define'):
+                func_match = re.match('#define\\s+(\\w+)\\s*\\(([^)]*)\\)', line)
+                if func_match:
+                    name = func_match.group(1)
+                    params = [ p.strip() for p in func_match.group(2).split(',') if p.strip() ]
+                    body = line[line.find(')') + 1:].lstrip()
+                    self._macros[name] = {'params': params,
+                     'body': body}
+                else:
+                    parts = line.split(None, 2)
+                    name = parts[1]
+                    value = parts[2] if len(parts) > 2 else ''
+                    self._defines[name] = value
+                return
+            elif not self._cur_struct_name and not self._cur_resource_data and line.startswith('/*@'):
+                metadata = self._get_metadata(line)
+                self._cache_meta.append(metadata)
+                return
+            elif line.startswith('struct'):
+                self._cur_struct_name = line.split(None, 1)[1]
+                return
+            elif self._cur_struct_name:
+                self._parse_struct_fields(line.replace('}', ''))
+                if line.endswith('}'):
+                    self._cur_struct_name = None
+                return
+            elif 'register' in line:
+                self._parse_resource_start(line)
+                if line.endswith(';'):
+                    self._flush_resource_desc()
+                return
+            elif self._cur_resource_data:
+                self._parse_resource_fields(line)
+                if line.endswith('}'):
+                    self._flush_resource_desc()
+                return
+            if not self._cur_function and self._try_parse_function(line):
+                self._cur_function = True
+            if self._cur_function:
+                if line.endswith('}'):
+                    self._cur_function = None
+                return
+            else:
+                return
+
+        for i, line in enumerate(self._parse_file(self._file_path), 1):
+            try:
+                parse_line(line)
+            except:
+                log("[ERROR] Failed parse_line: '%s'", line)
+                raise
+
+    def get_xml_str(self):
+        root = ET.Element('root')
+        for name in sorted(self._struct_dict.keys()):
+            _fields_list = self._struct_dict[name].pop('fields')
+            struct_node = ET.SubElement(root, 'struct')
+            ET.SubElement(struct_node, 'name').text = name
+            fields_node = ET.SubElement(struct_node, 'fields')
+            for field_data in _fields_list:
+                field_node = ET.SubElement(fields_node, 'field')
+                for k, v in field_data.items():
+                    ET.SubElement(field_node, k).text = str(v)
+
+        for resource_data in self._resource_list:
+            _fields_list = resource_data.pop('fields')
+            _base_type = resource_data.pop('base_type')
+            resource_node = ET.SubElement(root, _base_type)
+            for k, v in resource_data.items():
+                ET.SubElement(resource_node, k).text = str(v)
+
+            fields_node = ET.SubElement(resource_node, 'fields')
+            for field_data in _fields_list:
+                field_node = ET.SubElement(fields_node, 'field')
+                for k, v in field_data.items():
+                    ET.SubElement(field_node, k).text = str(v)
+
+        for function_name, input_type in self._function_name2input_type.items():
+            function_node = ET.SubElement(root, 'function')
+            function_node.text = function_name
+            input_node = ET.SubElement(function_node, 'input')
+            ET.SubElement(input_node, 'type').text = input_type
+
+        xml_str = ET.tostring(root)
+        return xml_str
+
+    def get_data_section(self):
+        import ResMgr
+        ds = ResMgr.DataSection('data')
+        ds.createSectionFromString(self.get_xml_str())
+        return ds
+
+    def write_xml_file(self, output_path):
+        with open(output_path, 'w') as fh:
+            fh.write(prettify_str(self.get_xml_str()))
+
+
+def get_desc_data_section(input_path, include_paths = None, defines = None):
+    """
+    Args:
+            input_path: path to HLSL-file
+            include_paths: list of paths for searching
+            defines: macro dictionary {"name": "value"}
+    Returns:
+            DataSection: result-description
+    """
+    parser = Parser(input_path, include_paths, defines)
+    parser.parse_base_file()
+    return parser.get_data_section()
+
+
+def write_desc_xml(input_path, output_path, include_paths = None, defines = None):
+    """
+    Args:
+            input_path: path to HLSL-file
+            include_paths: list of paths for searching
+            defines: macro dictionary {"name": "value"}
+            output_path: path to save the result-description
+    Returns:
+            None
+    """
+    parser = Parser(input_path, include_paths, defines)
+    parser.parse_base_file()
+    parser.write_xml_file(output_path)

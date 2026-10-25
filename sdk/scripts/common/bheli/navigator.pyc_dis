@@ -1,0 +1,138 @@
+# Embedded file name: ./common/bheli/navigator.py
+import math_bw
+import random
+
+class Navigator(object):
+    """
+            \xd1\x83 Point \xd0\xb4\xd0\xbe\xd0\xbb\xd0\xb6\xd0\xb5\xd0\xbd\xd1\x8b \xd0\xb1\xd1\x8b\xd1\x82\xd1\x8c \xd1\x81\xd0\xb2\xd0\xbe\xd0\xb9\xd1\x81\xd1\x82\xd0\xb2\xd0\xb0:
+                    speed, position, matrix
+            \xd1\x83 data_provider \xd0\xb4\xd0\xbe\xd0\xbb\xd0\xb6\xd0\xb4\xd0\xbd\xd1\x8b \xd0\xb1\xd1\x8b\xd1\x82\xd1\x8c getterssetters:
+                            bheli_ratio, bheli_position, bheli_ypr
+                    getter:
+                            bheli_points
+                    \xd0\xbc\xd0\xb5\xd1\x82\xd0\xbe\xd0\xb4\xd1\x8b:
+                            seek_points, swap_points
+    """
+
+    def __init__(self, data_provider):
+        self._data_provider = data_provider
+
+    def destroyNavigator(self):
+        self._data_provider = None
+        return
+
+    def tick(self, delta_time):
+        if not self._data_provider.seek_points():
+            return
+        speed = math_bw.lerp(self._prev_point.speed, self._next_point.speed, self._ratio)
+        move_dist = delta_time * speed
+
+        def check_move(disp):
+            p0 = self._prev2_point.position
+            p1 = self._prev_point.position
+            p2 = self._next_point.position
+            p3 = self._next2_point.position
+            total_distance = (p2 - p1).length
+            cur_distance = self._ratio * total_distance
+            next_distance = cur_distance + disp
+            next_ratio = math_bw.clamp(next_distance / total_distance) if total_distance else 1.0
+            return (math_bw.catmull_rom(p0, p1, p2, p3, next_ratio), next_ratio)
+
+        def run_move(move_dist):
+            check_dist = move_dist
+            step = move_dist * 0.5
+            for i in xrange(5):
+                next_pos, next_ratio = check_move(check_dist)
+                calculated_disp = self._position.distTo(next_pos)
+                if next_ratio == 1.0 and calculated_disp < move_dist:
+                    self._data_provider.swap_points()
+                    self._ratio = 0.0
+                    if not self._data_provider.seek_points():
+                        return None
+                    return (next_pos, next_ratio, move_dist - calculated_disp)
+                error_dist = calculated_disp - move_dist
+                if error_dist > 0:
+                    check_dist -= step
+                else:
+                    check_dist += step
+                step *= 0.5
+
+            return (next_pos, next_ratio, 0)
+
+        for i in xrange(5):
+            run_result = run_move(move_dist)
+            if not run_result:
+                return
+            next_pos, next_ratio, move_dist = run_result
+            if move_dist == 0:
+                break
+
+        self._ratio = 0.0 if self.arrived else next_ratio
+        self._position = next_pos
+        blended_matrix = math_bw.blend_matrises(self._prev_point.matrix, self._next_point.matrix, self._ratio)
+        self._ypr = (blended_matrix.yaw, blended_matrix.pitch, blended_matrix.roll)
+
+    def apply_ratio_to_position(self):
+        p0 = self._prev2_point.position
+        p1 = self._prev_point.position
+        p2 = self._next_point.position
+        p3 = self._next2_point.position
+        self._position = math_bw.catmull_rom(p0, p1, p2, p3, self._ratio)
+        blended_matrix = math_bw.blend_matrises(self._prev_point.matrix, self._next_point.matrix, self._ratio)
+        self._ypr = (blended_matrix.yaw, blended_matrix.pitch, blended_matrix.roll)
+
+    def get_random_next_guid(self, point_data, heli_id, cycle_index):
+        random.seed(heli_id + cycle_index)
+        if not (point_data['next_points'] and len(point_data['next_points'])):
+            next_points_count = 0
+            result = next_points_count == 0 and point_data['guid']
+        elif next_points_count == 1:
+            result = point_data['next_points'][0]
+        else:
+            result = random.choice(point_data['next_points'])
+        random.seed()
+        return result
+
+    @property
+    def arrived(self):
+        return self._prev_point.position == self._next_point.position == self._next2_point.position
+
+    @property
+    def _prev2_point(self):
+        return self._data_provider.bheli_points[0]
+
+    @property
+    def _prev_point(self):
+        return self._data_provider.bheli_points[1]
+
+    @property
+    def _next_point(self):
+        return self._data_provider.bheli_points[2]
+
+    @property
+    def _next2_point(self):
+        return self._data_provider.bheli_points[3]
+
+    @property
+    def _position(self):
+        return self._data_provider.bheli_position
+
+    @_position.setter
+    def _position(self, value):
+        self._data_provider.bheli_position = value
+
+    @property
+    def _ypr(self):
+        return self._data_provider.bheli_ypr
+
+    @_ypr.setter
+    def _ypr(self, value):
+        self._data_provider.bheli_ypr = value
+
+    @property
+    def _ratio(self):
+        return self._data_provider.bheli_ratio
+
+    @_ratio.setter
+    def _ratio(self, value):
+        self._data_provider.bheli_ratio = value

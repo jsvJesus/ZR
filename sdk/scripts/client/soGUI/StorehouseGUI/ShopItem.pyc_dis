@@ -1,0 +1,539 @@
+# Embedded file name: ./client/soGUI/StorehouseGUI/ShopItem.py
+import BWPersonality
+import GUI
+from Helpers.PyGUI.PyGUIBase import PyGUIBase
+from soGUI.UtilsGUI.PaintButton import PaintButton
+from soGUI.StorehouseGUI.ShopUtils import ComplexAmountButton, MultilineText
+from Items import ItemsCatalog
+import ItemsUtils
+import ShopUtils
+import BigWorld
+from InfoWin import InfoWin
+from soGUI.UtilsGUI.TextScaler import TextScaler
+from Localization import lc
+import sounds_manager as sounds
+import Keys
+from utils import format_price
+from StoreHouse import getDonateItemCost
+from StoreHouse import getDonateItemOriginalCost
+from MessageWin import MessageWin
+from ChooseCharWin import ChooseCharWin
+from functools import partial
+import BlackBox
+import StoreHouseConst
+
+class ElipseCountComp:
+
+    def __init__(self, base_comp):
+        self.component = base_comp
+        self.text_str = u'0'
+        left = GUI.Simple('soGUI/frame/storehouse/label_left.png')
+        center = GUI.Simple('soGUI/frame/storehouse/label_center.png')
+        right = GUI.Simple('soGUI/frame/storehouse/label_right.png')
+        for comp in (left, center, right):
+            comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+            comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+            comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+            comp.materialFX = 'BLEND'
+            comp.filterType = 'LINEAR'
+            comp.width, comp.height = (0.15, 1)
+            comp.position = (-0.5, 0, 0.2)
+
+        left.horizontalAnchor = 'RIGHT'
+        center.horizontalAnchor = 'CENTER'
+        right.horizontalAnchor = 'LEFT'
+        comp = GUI.Text(u'')
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.width, comp.height = (1, 1)
+        comp.position = (0, 0, 0.1)
+        base_comp.horizontalAnchor, base_comp.verticalAnchor = ('LEFT', 'TOP')
+        base_comp.horizontalPositionMode, base_comp.verticalPositionMode = ('CLIP', 'CLIP')
+        base_comp.widthMode, base_comp.heightMode = ('CLIP', 'CLIP')
+        base_comp.width, base_comp.height = (2, 0.5)
+        base_comp.position = (-1, 1, 0.2)
+        self._text = comp
+        self._count = 0
+        self._hidden = False
+        self._ts = TextScaler(comp, 'RobotoCondensedRegular_16')
+        base_comp.addChild(comp, 'number')
+        base_comp.addChild(left, 'left')
+        base_comp.addChild(center, 'center')
+        base_comp.addChild(right, 'right')
+
+    def _update(self):
+        w, h = self._text.stringDimensions(self.text_str)
+        self._text.text = self.text_str
+        self.component.widthMode = 'PIXEL'
+        base_width = self.component.width
+        self.component.widthMode = 'CLIP'
+        z = w / float(base_width) * 1.5
+        z = max(z, 0.0)
+        self._text.position[0] = z / 2.0 - 0.5
+        self.component.center.width = z
+        self.component.center.position[0] = z / 2.0 - 0.5
+        self.component.right.position[0] = z - 0.5
+
+    def do_reposition(self):
+        self._ts.do_reposition()
+        self._update()
+
+    def set_count(self, count):
+        self.text_str = u'%s' % count
+        self._update()
+
+
+class ShopItemDesc(PyGUIBase):
+    INFO_ICON_COLOUR = (255, 255, 255, 120)
+
+    def __init__(self, comp, mode):
+        self._mode = mode
+        comp.script = self
+        comp.mouseButtonFocus = True
+        comp.crossFocus = True
+        PyGUIBase.__init__(self, comp)
+        self.on_click = lambda : None
+        self._repositioners = []
+        self._twinkle_callback = None
+        self._setup_content()
+        return
+
+    def initialize(self, item_type, item):
+        self._count = 1
+        self._item_type = item_type
+        self._icon_name = None
+        self.component.icon.texture = None
+        if self._mode == ShopUtils.STORE_MODE:
+            self._count = ItemsUtils.GetItemNumber(item)
+            self._count_comp.component.visible = self._count > 1
+            self._count_comp.set_count(self._count)
+        item_name = ItemsUtils.get_shop_name(item_type) or ItemsUtils.GetItemName(item_type, fGetShortName=True)
+        self._multitext.set_text(item_name)
+        self._update_image()
+        return
+
+    def set_amount(self, amount):
+        self._count = amount
+        self._update_image()
+
+    def _update_image(self):
+
+        def on_load(icon_name, icon):
+            if icon_name != self._icon_name:
+                return
+            self.show_load_circle(False)
+            self.component.icon.visible = True
+            self.component.icon.texture = icon.values()[0]
+
+        icon_name = ItemsUtils.GetIconShopName(None, item_type=self._item_type, number=self._count)
+        if self._icon_name != icon_name:
+            self._icon_name = icon_name
+            self.component.icon.visible = False
+            self.show_load_circle(True)
+            BigWorld.loadResourceListBG([icon_name], partial(on_load, icon_name))
+        return
+
+    def handleMouseEnterEvent(self, comp):
+        self.component.info.colour = (255, 255, 255, 255)
+        return True
+
+    def handleMouseLeaveEvent(self, comp):
+        self.component.info.colour = ShopItemDesc.INFO_ICON_COLOUR
+        return True
+
+    def handleMouseButtonEvent(self, comp, event):
+        if event.key == Keys.KEY_LEFTMOUSE:
+            if event.isKeyDown():
+                sounds.playSound('ui/menu_click')
+            else:
+                sounds.playSound('ui/menu_click_up')
+        return True
+
+    def handleMouseClickEvent(self, comp):
+        self.on_click()
+        return True
+
+    def twinkle(self):
+
+        def appear():
+            self._twinkle_callback = None
+            self.component.icon.visible = True
+            return
+
+        if self._twinkle_callback:
+            BigWorld.cancelCallback(self._twinkle_callback)
+        self._twinkle_callback = BigWorld.callback(0.3, appear)
+        self.component.icon.visible = False
+
+    def _setup_content(self):
+        comp = GUI.Simple('')
+        comp.materialFX = 'BLEND'
+        comp.filterType = 'LINEAR'
+        self.component.addChild(comp, 'icon')
+        if self._mode == ShopUtils.STORE_MODE:
+            name_font = 'RobotoCondensedRegular_14'
+        elif self._mode == ShopUtils.SHOP_MODE:
+            name_font = 'RobotoCondensedRegular_18'
+        comp = GUI.Window()
+        self._multitext = MultilineText(comp, u'', name_font)
+        self.component.addChild(comp, 'description')
+        self._repositioners.append(self._multitext)
+        comp = GUI.Simple('soGUI/frame/storehouse/i.png')
+        comp.materialFX = 'BLEND'
+        comp.filterType = 'LINEAR'
+        comp.position = (0, 0, 0.3)
+        comp.colour = ShopItemDesc.INFO_ICON_COLOUR
+        self.component.addChild(comp, 'info')
+        comp = GUI.Simple('soGUI/maps/loadingScreen/loadingCircle/loadingCircle.texanim')
+        comp.materialFX = 'BLEND'
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = (20, 20)
+        comp.position = (0, 0, 0.5)
+        comp.visible = False
+        self.component.addChild(comp, 'load_circle')
+        if self._mode == ShopUtils.STORE_MODE:
+            comp = GUI.Window('')
+            self._count_comp = ElipseCountComp(comp)
+            self.component.addChild(comp, 'count_notificator')
+            self._repositioners.append(self._count_comp)
+
+    def do_reposition(self):
+        comp = self.component.icon
+        comp.widthMode, comp.heightMode = ('CLIP', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'TOP')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.width = 2
+        comp.widthMode = 'PIXEL'
+        comp.height = comp.width
+        comp.position = (0, 1, 0.5)
+        comp = self.component.description
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.width, comp.height = (1.78, 0.8)
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'BOTTOM')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.position = (-0.89, -1, 0.5)
+        parent_mode = (self.component.widthMode, self.component.heightMode)
+        self.component.heightMode = 'PIXEL'
+        comp = self.component.info
+        comp.horizontalAnchor, comp.verticalAnchor = ('RIGHT', 'TOP')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'CLIP')
+        if self._mode == ShopUtils.STORE_MODE:
+            comp.height = 0.2
+        elif self._mode == ShopUtils.SHOP_MODE:
+            comp.height = 0.15
+        comp.heightMode = 'PIXEL'
+        comp.width = comp.height
+        margin = self.component.width * 0.05
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.position = (self.component.width - margin, margin, 0.3)
+        self.component.widthMode, self.component.heightMode = parent_mode
+        for r in self._repositioners:
+            r.do_reposition()
+
+    def show_load_circle(self, show):
+        self.component.load_circle.visible = show
+
+    @property
+    def icon_pos(self):
+        x = self.component.icon.width / 2
+        y = self.component.icon.height / 2
+        return self.component.icon.localToScreen((x, y))
+
+
+class ShopItem(PyGUIBase):
+
+    def __init__(self, comp, mode):
+        comp.script = self
+        self._mode = mode
+        PyGUIBase.__init__(self, comp)
+        self._repositioners = []
+        self.bin_click_callback = lambda amount, item, screen_pos: None
+        self.take_click_callback = lambda item_id: None
+        self.use_click_callback = lambda item_id: None
+        self.put_to_inventory_click_callback = lambda item_id, db_id: None
+        self._take_button = None
+        self._complex_button = None
+        self._currency = None
+        if mode == ShopUtils.SHOP_MODE:
+            self._setup_shop_content()
+        elif mode == ShopUtils.STORE_MODE:
+            self._setup_store_content()
+        self._setup_item_desc_content(mode)
+        return
+
+    def _local_name(self, currency):
+        if currency == StoreHouseConst.CURRENCY_PLATINA_NAME:
+            return lc('StoreHouse.shopitem.PLATINA')
+        elif currency:
+            return currency
+        else:
+            return lc('StoreHouse.shopitem.GOLD')
+
+    def initialize(self, item, currency = None):
+        """ \xd0\xb8\xd0\xbd\xd0\xb8\xd1\x86\xd0\xb8\xd0\xb0\xd0\xbb\xd0\xb8\xd0\xb7\xd0\xb0\xd1\x86\xd0\xb8\xd1\x8f (\xd0\xbc\xd0\xbe\xd0\xb6\xd0\xb5\xd1\x82 \xd0\xb1\xd1\x8b\xd1\x82\xd1\x8c \xd0\xbd\xd0\xb5\xd1\x81\xd0\xba\xd0\xbe\xd0\xbb\xd1\x8c\xd0\xba\xd0\xbe, \xd0\xb8\xd0\xb1\xd0\xbe \xd0\xbf\xd1\x83\xd0\xbb) """
+        self._item = item
+        self._currency = currency
+        self.component.item_desc.script.initialize(self._item_type, self._item)
+        if self._mode == ShopUtils.SHOP_MODE:
+            gold_cost = getDonateItemOriginalCost(self._item, self._currency)
+            self.component.price.text = format_price(gold_cost) + ' ' + self._local_name(currency)
+            self._update_sale()
+            self.component.garant.visible = False
+            item_param = ItemsCatalog.GetItemParam(self._item_type)
+            if item_param.get('isBlackBox'):
+                bb_name = item_param.get('Name')
+                if bb_name and BlackBox.has_bb_garant(bb_name):
+                    self.component.garant.visible = True
+        if self._mode == ShopUtils.STORE_MODE:
+            use_text = None
+            item_type = self._item['complexItemType']
+            item_params = ItemsCatalog.GetItemParam(item_type)
+            if 'Premium_id' in item_params or 'Booster_id' in item_params:
+                use_text = lc('StoreHouse.shopitem.USE')
+            elif ItemsUtils.canTakeStoreHouseItemToAvatar(item_type):
+                use_text = lc('StoreHouse.shopitem.MOVE')
+            if use_text:
+                self._use_button.text = use_text
+            self._use_button.component.visible = bool(use_text)
+        return
+
+    def unlock_use(self):
+        self.component.usebutton.script.enabled = True
+
+    @property
+    def _item_type(self):
+        if self._mode == ShopUtils.SHOP_MODE:
+            return self._item['item_type']
+        if self._mode == ShopUtils.STORE_MODE:
+            return self._item['complexItemType']
+
+    @property
+    def item(self):
+        return self._item
+
+    @property
+    def sale(self):
+        if self._mode == ShopUtils.STORE_MODE:
+            return False
+        return self.component.action_panel.visible
+
+    @sale.setter
+    def sale(self, value):
+        if self._mode == ShopUtils.STORE_MODE:
+            if value:
+                raise RuntimeError
+        else:
+            self.component.action_panel.visible = value
+
+    def _on_amount_changed(self, amount):
+        self.component.item_desc.script.set_amount(amount)
+
+    def _setup_shop_content(self):
+        self.component.isClip = False
+        comp = GUI.Window()
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'BOTTOM')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.width, comp.height = (1.8, 0.2)
+        comp.position = (-0.89, -0.92, 0.5)
+        self._complex_button = ComplexAmountButton(comp)
+        self._complex_button.text = lc('StoreHouse.shopitem.TO_BIN')
+        self._complex_button.on_click = self._bin_click
+        self._complex_button.on_amount_changed_callback = self._on_amount_changed
+        self.component.addChild(comp, 'buybutton')
+        self._repositioners.append(self._complex_button)
+        btn_comp = comp
+        comp = GUI.Window('soGUI/frame/storehouse/garant.dds')
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'BOTTOM')
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.width, comp.height = (1.5, 1.2)
+        comp.position = (0, btn_comp.position[1] + btn_comp.height, 0.8)
+        comp.visible = False
+        self.component.addChild(comp, 'garant')
+        comp = GUI.Text(u'')
+        self._price_text = TextScaler(comp, 'RobotoCondensedRegular_18')
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = (1.9, 0.2)
+        comp.position = (0, -0.57, 0.5)
+        self.component.addChild(comp, 'price')
+        self._repositioners.append(self._price_text)
+        comp = GUI.Simple('')
+        comp.position = (0, 0, 0.1)
+        self.component.addChild(comp, 'action_panel')
+        comp = GUI.Window('soGUI/frame/storehouse/sale_back.dds')
+        self._sales_back_ratio = float(comp.texture.width) / comp.texture.height
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'CENTER')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.materialFX = 'BLEND'
+        comp.position = (-1.04, 0.88, 0.2)
+        self.component.action_panel.addChild(comp, 'sales_back')
+        self._sales_back = comp
+        comp = GUI.Window()
+        initial_text = u'-0%'
+        self._action_text = MultilineText(comp, initial_text, 'RobotoCondensedRegular_promo_donate')
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.position = (0, 0.1, 0.5)
+        comp.width, comp.height = (2, 2)
+        self._sales_back.addChild(comp, 'action_text')
+        self._repositioners.append(self._action_text)
+        comp = GUI.Simple('soGUI/frame/storehouse/sale.dds')
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+        comp.materialFX = 'BLEND'
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'CLIP')
+        comp.height = 0.15
+        comp.position = (0, -0.57, 0.4)
+        comp.filterType = 'LINEAR'
+        self.component.action_panel.addChild(comp, 'sale_cross')
+        comp = GUI.Simple('soGUI/frame/storehouse/time.dds')
+        comp.widthMode, comp.heightMode = ('CLIP', 'PIXEL')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.horizontalAnchor, comp.verticalAnchor = ('RIGHT', 'TOP')
+        comp.width = 0.2
+        comp.materialFX = 'BLEND'
+        comp.filterType = 'LINEAR'
+        comp.position = (0.9, 0.7, 0.2)
+        self.component.action_panel.addChild(comp, 'timer')
+        comp = GUI.Text(u'???')
+        self._sale_price = TextScaler(comp, 'RobotoCondensedRegular_36')
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.width, comp.height = (1.9, 0.2)
+        comp.position = (0, -0.4, 0.5)
+        comp.colour = (200, 130, 0, 255)
+        self.component.action_panel.addChild(comp, 'sale_price')
+        self._repositioners.append(self._sale_price)
+
+    def _setup_store_content(self):
+        comp = GUI.Window()
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'BOTTOM')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.width, comp.height = (1.9, 0.3)
+        comp.position = (-0.95, -0.6, 0.5)
+        comp.visible = False
+        self._use_button = PaintButton(comp, visual_state='soGUI/frame/storehouse/smallStoreButton.xml')
+        self._use_button.text = lc('StoreHouse.shopitem.USE')
+        self._use_button.on_click = self._on_use_click
+        self.component.addChild(comp, 'usebutton')
+        self._repositioners.append(self._use_button)
+        comp = GUI.Window()
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'BOTTOM')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.width, comp.height = (1.9, 0.3)
+        comp.position = (-0.95, -0.95, 0.5)
+        self._take_button = PaintButton(comp, visual_state='soGUI/frame/storehouse/smallStoreButton.xml')
+        self._take_button.text = lc('StoreHouse.shopitem.TAKE')
+        self._take_button.on_click = self._on_take_click
+        self.component.addChild(comp, 'takebutton')
+        self._repositioners.append(self._take_button)
+
+    def _on_take_click(self):
+        self.take_click_callback(self._item['complexItemID'])
+        self.component.takebutton.script.enabled = False
+
+    def _on_use_click(self):
+
+        def accept():
+            self.use_click_callback(self._item['complexItemID'])
+            self.component.usebutton.script.enabled = False
+
+        item_type = self._item['complexItemType']
+        item_param = ItemsCatalog.GetItemParam(item_type)
+        booster_id = item_param.get('Booster_id')
+        if booster_id and BigWorld.player().get_boost_id():
+            MessageWin.shop_instance.show_double_buttons(lc('StoreHouse.shopitem.BOOSTWARNING'), lc('StoreHouse.shopitem.OK'), lc('StoreHouse.shopitem.CANCEL'), left_click_callback=accept)
+        elif ItemsUtils.canTakeStoreHouseItemToAvatar(item_type):
+            win_component = BWPersonality.GUICore.storehouse_screen.component
+            ChooseCharWin.show(win_component, self._char_pick_click)
+        else:
+            accept()
+
+    def _char_pick_click(self, db_id, char_name, lock_tutorial):
+        if db_id is None:
+            return
+        elif lock_tutorial:
+            MessageWin.shop_instance.show_single_button(lc('StoreHouse.moveitem.LOCKTUTOR'), lc('StoreHouse.shopitem.OK'))
+            return
+        else:
+
+            def accept():
+                self.put_to_inventory_click_callback(self._item['complexItemID'], db_id)
+                self.component.usebutton.script.enabled = False
+
+            text = lc('StoreHouse.moveitem.CONFIRM').format(char_name)
+            MessageWin.shop_instance.show_double_buttons(text, lc('StoreHouse.shopitem.OK'), lc('StoreHouse.shopitem.CANCEL'), left_click_callback=accept)
+            return
+
+    def _setup_item_desc_content(self, mode):
+        comp = GUI.Window()
+        item_desc = ShopItemDesc(comp, mode)
+        item_desc.on_click = self._on_desc_click
+        self.component.addChild(comp, 'item_desc')
+        self._repositioners.append(item_desc)
+
+    def _on_desc_click(self):
+        InfoWin.instance.show(self._item_type, self._complex_button)
+
+    def _bin_click(self):
+        if self._complex_button.count == 0:
+            return
+        screen_pos = self.component.item_desc.script.icon_pos
+        self.bin_click_callback(self._complex_button.count, self._item, screen_pos)
+        self.component.item_desc.script.twinkle()
+
+    def _update_sale(self):
+        cur_time = BWPersonality.gpd.server_time
+        self.sale = self._item['promo_time_start'] <= cur_time <= self._item['promo_time_end']
+        if self.sale:
+            sale_percent = self._item['promo_discount']
+            donat_cost = float(getDonateItemCost(self._item, self._currency))
+            text_price = format_price(donat_cost) + ' ' + self._local_name(self._currency)
+            self._sale_price.component.text = text_price
+            self._action_text.set_text(u'-{0}%'.format(sale_percent))
+
+    def tick(self):
+        self._update_sale()
+
+    def set_lock(self, lock):
+        if self._take_button:
+            self._take_button.enabled = not lock
+
+    def do_reposition(self):
+        if self._mode == ShopUtils.SHOP_MODE:
+            ratio = 1.2
+        elif self._mode == ShopUtils.STORE_MODE:
+            ratio = 1.3
+        comp = self.component.item_desc
+        comp.widthMode, comp.heightMode = ('CLIP', 'PIXEL')
+        comp.width = 2
+        comp.widthMode = 'PIXEL'
+        comp.height = comp.width * ratio
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'TOP')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.position = (0, 1, 0.5)
+        for r in self._repositioners:
+            r.do_reposition()
+
+        if self._mode == ShopUtils.SHOP_MODE:
+            self._sales_back.height = self._action_text.height
+            self._sales_back.width = self._sales_back.height * self._sales_back_ratio
+            comp = self.component.action_panel.sale_cross
+            comp.heightMode = 'PIXEL'
+            comp.width = comp.height * comp.texture.width / comp.texture.height
+            comp.heightMode = 'CLIP'
+            comp = self.component.action_panel.timer
+            comp.widthMode = 'PIXEL'
+            comp.height = comp.width * comp.texture.height / comp.texture.width
+            comp.widthMode = 'CLIP'

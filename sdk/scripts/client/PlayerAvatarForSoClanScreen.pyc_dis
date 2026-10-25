@@ -1,0 +1,321 @@
+# Embedded file name: ./client/PlayerAvatarForSoClanScreen.py
+import BigWorld
+import soGUI
+import gui_jokes
+from functools import partial
+import BWPersonality
+import Clan
+from Localization import lc
+
+class PlayerAvatarForSoClanScreen:
+    clan_motto = ''
+    clan_message = ''
+    clan_level = 0
+    clanpoints = 0
+
+    def clanRanksUpdate(self, ranks, self_id):
+
+        def sortOnOrder(a, b):
+            orderA = self.clanRoster['ranksData'][a[1]][0]
+            orderB = self.clanRoster['ranksData'][b[1]][0]
+            if orderA == orderB:
+                return 0
+            elif orderA > orderB:
+                return -1
+            else:
+                return 1
+
+        if not hasattr(self, 'clanRoster'):
+            self.clanRoster = {}
+        self.clanRoster['ranksData'] = {}
+        rankNames = []
+        for rank in ranks:
+            name = lc(rank['name'], utf8=True, default=rank['name']).decode('utf-8', 'ignore')
+            if rank['id'] == self_id and BWPersonality.GUICore.clanGUI is not None:
+                BWPersonality.GUICore.clanGUI.set_my_rank(name)
+            rankNames.append((rank['name'], name))
+            self.clanRoster['ranksData'][name] = [rank['order'], rank['options'], rank['id']]
+
+        rankNames.sort(sortOnOrder)
+        self.clanRoster['ranks'] = rankNames
+        BWPersonality.GUICore.clanData(dict(ranks=self.clanRoster['ranks'], ranksData=self.clanRoster['ranksData'], rights=self.clanRoster.get('rights', [])))
+        return
+
+    def clanIconUpdate(self, iconID):
+        self.clanEmblemID = iconID
+
+    def clan_motto_update(self, motto):
+        self.clan_motto = motto
+        BWPersonality.GUICore.update_clan_GUI()
+
+    def clan_message_update(self, message):
+        self.clan_message = message
+        BWPersonality.GUICore.update_clan_GUI()
+
+    def set_clan_level(self, old_value):
+        BWPersonality.GUICore.update_clan_GUI()
+
+    def clan_points_update(self, points):
+        self.clanpoints = points
+        BWPersonality.GUICore.update_clan_GUI()
+
+    def getRank(self, member):
+        rankName = ''
+        if self.clanRoster.has_key('ranksData'):
+            for key in self.clanRoster['ranksData'].keys():
+                if member['rank'] == self.clanRoster['ranksData'][key][-1]:
+                    rankName = key
+                    break
+
+        if rankName == '':
+            print 'Rank NOT FOUND', member['name'], ' ', member['rank']
+        return rankName
+
+    def clanMemberRosterUpdate(self, member):
+        if hasattr(self, 'clanRoster') and self.clanRoster:
+            if 'members' not in self.clanRoster:
+                self.clanRoster['members'] = {}
+            rankName = self.getRank(member)
+            newDict = {}
+            newDict[member['name'].decode('utf-8')] = [member['name'].decode('utf-8'),
+             rankName,
+             member['clan_points_mounth'],
+             member['clanpoints'],
+             member['lastLogin']]
+            if not self.clanRoster['members'].has_key(member['name'].decode('utf-8')):
+                BWPersonality.GUICore.addMembers(newDict)
+            self.clanRoster['members'][member['name'].decode('utf-8')] = [unicode('0'),
+             rankName,
+             member['clan_points_mounth'],
+             member['clanpoints'],
+             member['lastLogin']]
+            newDict[member['name'].decode('utf-8')] = self.clanRoster['members'][member['name'].decode('utf-8')]
+            BWPersonality.GUICore.savedSetMembers(newDict)
+            return
+
+    def clanRosterUpdate(self, roster):
+        from time import time
+        dt = self.clanRoster
+        dt['cName'] = self.clanName.decode('utf-8')
+        dt['members'] = {}
+        for e in roster:
+            rankName = self.getRank(e)
+            dt['members'][e['name'].decode('utf-8')] = [unicode('0'),
+             rankName,
+             e['clan_points_mounth'],
+             e['clanpoints'],
+             e['lastLogin']]
+            if e['name'].decode('utf-8') == self.name:
+                dt['self'] = e
+
+        dt['rights'] = []
+        dt['allRights'] = []
+        if not dt.has_key('ranksData'):
+            dt['ranksData'] = {}
+        if not dt.has_key('ranks'):
+            dt['ranks'] = []
+        self.clanRoster = dt
+        BWPersonality.GUICore.clanData(dict(rights=self.clanRoster['rights'], self=self.clanRoster['self'] if self.clanRoster.has_key('self') else dict(), cName=self.clanRoster['cName'], members=self.clanRoster['members'], allRights=self.clanRoster['allRights']))
+        self.updateClanRights()
+
+    def members_update(self, changed_list, deleted_list):
+        for member in changed_list:
+            rankName = self.getRank(member)
+            self.clanRoster['members'][member['name'].decode('utf-8')] = [unicode('0'),
+             rankName,
+             member['clan_points_mounth'],
+             member['clanpoints'],
+             member['lastLogin']]
+
+        for member_name in deleted_list:
+            key = member_name.decode('utf-8')
+            if self.clanRoster['members'].has_key(key):
+                del self.clanRoster['members'][key]
+
+        BWPersonality.GUICore.clanData(dict(rights=self.clanRoster['rights'], self=self.clanRoster['self'] if self.clanRoster.has_key('self') else dict(), cName=self.clanRoster['cName'], members=self.clanRoster['members'], allRights=self.clanRoster['allRights']))
+        self.update_clan_screen()
+
+    def clanEvent(self, event, data):
+
+        def renameresult(xname, xdata):
+            if self.has_name_rank(xdata):
+                gui_jokes.msgBox(lc('Clans.Interface.RANK_NAME_TITLE'), lc('Clans.Interface.RANK_NAME_ERROR'))
+                return
+            rank = self.getNamedRank(xname)
+            cmd = u'/clanrankname ' + unicode(rank[2]) + ' ' + xdata
+            self.runCommand(cmd)
+
+        if event == soGUI.soClanScreen2.EVENT_RANKSELECT:
+            if self.clanRoster is not None:
+                self.clanRoster['rights'] = self.getRightsListForNamedRank(data)
+                BWPersonality.GUICore.clanData({'rights': self.clanRoster['rights']})
+        elif event == soGUI.soClanScreen2.EVENT_EDITRIGHT:
+            rank = self.getNamedRank(data[0])
+            if rank:
+                bit = 1 << data[1]
+                if data[2]:
+                    rank[1] |= bit
+                else:
+                    rank[1] &= ~bit
+                cmd = u'/clanrankoptions ' + unicode(rank[2]) + u' ' + unicode(rank[1])
+                self.runCommand(cmd)
+            else:
+                print "Can't find selected rank"
+        elif event == soGUI.soClanScreen2.EVENT_EDITRANK:
+            gui_jokes.inputBox(lc('Clans.Interface.RANK_NAME_TITLE'), lc('Clans.Interface.RANK_NAME_QUESTION') + u':', partial(renameresult, data), active=True)
+        elif event == soGUI.soClanScreen2.EVENT_MOVERANK:
+            rankname, move_type = data
+            rank_id = self.clanRoster['ranksData'][rankname][-1]
+            self.base.clan_rank_move(rank_id, move_type)
+        elif event == soGUI.soClanScreen2.EVENT_ADDRANK:
+
+            def create_result(selected_rank, new_name):
+                if self.has_name_rank(new_name):
+                    gui_jokes.msgBox(lc('Clans.Interface.RANK_NAME_TITLE'), lc('Clans.Interface.RANK_NAME_ERROR'))
+                    return
+                rank_id = self.getNamedRank(selected_rank)[-1]
+                new_name = new_name.encode('utf-8')
+                self.base.clan_rank_add(rank_id, new_name)
+
+            def input_validator(new_str, whole_text, offset):
+                return len(whole_text) + len(new_str) <= 21
+
+            message_text = lc('Clans.Interface.RANK_CREATE_COST').format(Clan.COST_CREATE_RANK_CP) + u' ' + lc('Clans.Interface.RANK_NAME_QUESTION') + u':'
+            gui_jokes.inputBox(lc('Clans.Interface.RANK_NAME_TITLE'), message_text, partial(create_result, data), active=True, input_validator=input_validator)
+        elif event == soGUI.soClanScreen2.EVENT_DELRANK:
+            rankname = data
+            rank_id = self.clanRoster['ranksData'][rankname][-1]
+            self.base.clan_rank_delete(rank_id)
+        return
+
+    def getOwnClanRank(self):
+        if self.clanRoster.has_key('self'):
+            rankID = self.clanRoster['self']['rank']
+            for key in self.clanRoster['ranksData']:
+                if self.clanRoster['ranksData'][key][2] == rankID:
+                    return self.clanRoster['ranksData'][key]
+
+        return None
+
+    def checkOwnClanRight(self, rightNum):
+        rank = self.getOwnClanRank()
+        if rank:
+            return rank[1] & 1 << rightNum
+        else:
+            return False
+
+    def checkChangeOnOwner(self, target_name):
+        name = self.name
+        own_rank = self.getOwnClanRank()
+        if own_rank and target_name != name:
+            return own_rank[0] == 1000
+        else:
+            return False
+
+    def getNamedRank(self, name):
+        if self.clanRoster.has_key('ranksData'):
+            if self.clanRoster['ranksData'].has_key(name):
+                rank = self.clanRoster['ranksData'][name]
+                return rank
+        return None
+
+    def has_name_rank(self, name):
+        if self.clanRoster.has_key('ranksData'):
+            return self.clanRoster['ranksData'].has_key(name)
+        return False
+
+    def updateClanRights(self):
+        if self.clanRoster.has_key('self'):
+            rankName = None
+            rankID = self.clanRoster['self']['rank']
+            for key in self.clanRoster['ranksData']:
+                if self.clanRoster['ranksData'][key][0] == rankID:
+                    rankName = key
+
+            rt = self.getRightsListForNamedRank(rankName)
+            if rt:
+                rightsIDsOnly = [ e[1] for e in rt if e[3] ]
+                BWPersonality.GUICore.setClanRights(rightsIDsOnly)
+        return
+
+    def getRightsListForNamedRank(self, name):
+        ownRank = self.getOwnClanRank()
+        if self.clanRoster.has_key('ranksData'):
+            if self.clanRoster['ranksData'].has_key(name):
+                canEditRights = self.checkOwnClanRight(0)
+                rank = self.clanRoster['ranksData'][name]
+                rights = []
+                for num in xrange(len(self.clanRoster['allRights'])):
+                    rights.append(self.clanRoster['allRights'][num])
+                    if rank[1] & 1 << num:
+                        rights[-1][3] = True
+                    else:
+                        rights[-1][3] = False
+                    if canEditRights and rank[0] < ownRank[0]:
+                        rights[-1][2] = True
+                    else:
+                        rights[-1][2] = False
+
+                return rights
+
+    def getStaffListForNPCType(self, npcType, maxLevel, expires):
+        xlist = []
+        if npcType == 0:
+            for level in xrange(maxLevel):
+                xlist.append({'npcType': npcType,
+                 'level': level + 1,
+                 'selectorName': lc('PlayerAvatarForSoClanScreen.client.STRING_594_25', True) + str(level + 1) + ')',
+                 'selectorDesc': lc('PlayerAvatarForSoClanScreen.client.STRING_595_25', True),
+                 'shiftCost': 5000 * (level + 1),
+                 'staffCurrent': 0,
+                 'staffExpire': expires})
+
+        elif npcType == 1:
+            for level in xrange(maxLevel):
+                xlist.append({'npcType': npcType,
+                 'level': level + 1,
+                 'selectorName': lc('PlayerAvatarForSoClanScreen.client.STRING_607_25', True) + str(level + 1) + ')',
+                 'selectorDesc': lc('PlayerAvatarForSoClanScreen.client.STRING_608_25', True),
+                 'shiftCost': 5000 * (level + 1),
+                 'staffCurrent': 0,
+                 'staffExpire': expires})
+
+        if npcType == 2:
+            for level in xrange(maxLevel):
+                xlist.append({'npcType': npcType,
+                 'level': level,
+                 'selectorName': lc('PlayerAvatarForSoClanScreen.client.STRING_620_25', True) + str(level) + ')',
+                 'selectorDesc': lc('PlayerAvatarForSoClanScreen.client.STRING_621_25', True),
+                 'shiftCost': 5000 * (level + 1),
+                 'staffCurrent': 0,
+                 'staffExpire': expires})
+
+        if npcType == 3:
+            for level in xrange(maxLevel):
+                xlist.append({'npcType': npcType,
+                 'level': level + 1,
+                 'selectorName': lc('PlayerAvatarForSoClanScreen.client.STRING_633_25', True) + str(level + 1) + ')',
+                 'selectorDesc': lc('PlayerAvatarForSoClanScreen.client.STRING_634_25', True),
+                 'shiftCost': 5000 * (level + 1),
+                 'staffCurrent': 0,
+                 'staffExpire': expires})
+
+        return xlist
+
+    def findNpcDataByName(self, selName):
+        pass
+
+    def clan_screen_set_bases(self, bases_list):
+        if BWPersonality.GUICore.clanGUI:
+            BWPersonality.GUICore.clanGUI.set_bases(bases_list)
+
+    def clan_screen_set_donat_bases(self, bases_list):
+        if BWPersonality.GUICore.clanGUI:
+            BWPersonality.GUICore.clanGUI.set_donat_bases(bases_list)
+
+    def update_clan_screen(self):
+        if BWPersonality.GUICore.clanGUI:
+            BWPersonality.GUICore.clanGUI.update()
+
+    def get_another_clan_info(self, clan_name):
+        self.base.get_another_clan_info(clan_name)

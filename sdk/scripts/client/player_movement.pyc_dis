@@ -1,0 +1,948 @@
+# Embedded file name: ./client/player_movement.py
+"""
+        \xd0\xba\xd0\xbb\xd0\xb0\xd1\x81\xd1\x81 \xd1\x80\xd0\xb5\xd0\xb0\xd0\xbb\xd0\xb8\xd0\xb7\xd1\x83\xd1\x8e\xd1\x89\xd0\xb8\xd0\xb9 \xd0\xbf\xd0\xb5\xd1\x80\xd0\xb5\xd0\xbc\xd0\xb5\xd1\x89\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5 \xd0\xb8\xd0\xb3\xd1\x80\xd0\xbe\xd0\xba\xd0\xb0
+
+"""
+DEBUG = False
+DEBUG_SLOPE = False
+PHY_PAUSE = False
+
+def change_debug_mode():
+    global DEBUG
+    DEBUG = not DEBUG
+    drawerSLOPE.clear()
+    drawerSLOPE2.clear()
+    drawerUP.clear()
+    drawer.clear()
+    drawerBox.clear()
+    drawerPL.clear()
+    drawerPLBEST.clear()
+    drawerG.clear()
+    drawerZZZ.clear()
+    drawerC.clear()
+    drHeadGeom.clear()
+
+
+import BigWorld
+import BWPersonality
+import traceback
+import player_speed_settings
+import Math
+import math
+import Stats
+from CharacterUtils import CharacterConst
+import utils_bw
+import Constants
+import blend_vectors_inertion
+from Math import Matrix, Vector3
+from time import time
+from math_bw import angle_between_vectors, VECTOR3_UP
+from math_bw import angle_between_flat_vectors
+from math_bw import clamp, lerp
+from tmp_demo_recorder import rec_attr_demo, rec_foo_demo
+from foot_tmp2 import tri_normal
+from utils import ignoreError
+import draw_utils_extend
+import climb
+from Items import ItemsCatalog
+import random
+from blend_vectors_inertion import IntertionBlendVec3, LinearBlendVec3, PercentBlendVec3
+import tmp_blends
+from tmp_blends import get_linear_coeff
+drawerSLOPE = draw_utils_extend.LinesHolder(15)
+drawerSLOPE2 = draw_utils_extend.LinesHolder(100)
+drawerUP = draw_utils_extend.LinesHolder(30)
+drawer = draw_utils_extend.LinesHolder(200)
+drawerBox = draw_utils_extend.LinesHolder(100)
+drawerPL = draw_utils_extend.LinesHolder(200, def_color=(0, 0.3, 0, 1))
+drawerPLBEST = draw_utils_extend.LinesHolder(100, def_color=(1, 0, 0, 1))
+drawerG = draw_utils_extend.LinesHolder(100)
+drawerZZZ = draw_utils_extend.LinesHolder(100)
+drawerC = draw_utils_extend.Cylinder(0)
+drHeadGeom = draw_utils_extend.LinesHolder(100)
+pi = math.pi
+pi_2 = math.pi / 2.0
+pi_4 = math.pi / 4.0
+
+def getFlatVector3(originla_dir):
+    flat_dir = Vector3(originla_dir)
+    flat_dir.y = 0
+    flat_dir.normalise()
+    return flat_dir
+
+
+SPEED_KEYS = {Constants.WEAPON_SNIPING: 'AIM_',
+ Constants.WEAPON_BORED: 'BORED_',
+ Constants.WEAPON_INCOMABAT: 'INCOMBAT_'}
+import Keys
+DEBUG_DETAINING = False
+
+class DetainBlender:
+    PERIOD = 0.3
+
+    def __init__(self, detaining):
+        self._start_time = BigWorld.time()
+        self._detaining = detaining
+
+    def get_ratio(self):
+        time_passed = BigWorld.time() - self._start_time
+        if time_passed >= DetainBlender.PERIOD:
+            return None
+        else:
+            return self._detaining
+
+
+class PlayerMovement:
+    _velocitytickID = 0
+    _last_mov_time = 0
+    _pushing_with_tilt = None
+    _pushing_with_tilt2 = None
+    _pushing_with_art_wall = None
+    _deb_last_key = None
+    _pushing_with_tilt_res = None
+    _last_tilt_time = 0
+    _after_jump_state = False
+    _prev_move_vec = False
+    _collide_detected = False
+    _isladder = False
+    _head_node = None
+    _ramid = 0
+    _detain_blender = None
+    lock_move_by_slide = False
+    IS_BLEND_VELOCITY = True
+    IFGNORE_PUSHING = False
+    __t = 0
+    smmmm_vel = blend_vectors_inertion.LinearBlendVec3()
+
+    def updateSpeedSettings(self, module):
+        global player_speed_settings
+        player_speed_settings = module
+        self.UpdateVelocity()
+
+    def onLeaveWorld(self):
+        self.stopVelocityloop()
+        self._head_node = None
+        return
+
+    def onPreModelChange(self):
+        self._head_node = None
+        return
+
+    def onPostModelChange(self):
+        self._head_node = None
+        return
+
+    def got_bullet(self, bullet_type_id, weapon_type_id):
+        detaining = ItemsCatalog.GetItemParam(bullet_type_id).get('AddDetaining', 0)
+        detaining += ItemsCatalog.GetItemParam(weapon_type_id).get('AddDetaining', 0)
+        detaining = min(max(0, detaining), 1)
+        msg = u'Detaining: No'
+        if detaining:
+            chance = ItemsCatalog.GetItemParam(bullet_type_id).get('AddDetainingChance', 0)
+            chance += ItemsCatalog.GetItemParam(weapon_type_id).get('AddDetainingChance', 0)
+            chance = min(max(0, chance), 1)
+            if random.random() <= chance:
+                ratio = 1 - detaining
+                self._detain_blender = DetainBlender(ratio)
+                if DEBUG_DETAINING:
+                    speed_prev = self._last_maxSpeed
+                    speed_now = speed_prev * ratio
+                    speed_diff = speed_prev - speed_now
+                    msg = u'Detaining: Yes {speed_prev:.1f}m - {speed_diff:.1f}m = {speed_now:.1f}m ({proc}%)'.format(speed_prev=speed_prev, speed_diff=speed_diff, speed_now=speed_now, proc=int(round(detaining * 100)))
+        if DEBUG_DETAINING:
+            self.systemMsgChat(msg)
+            self.cell.send_system_world_around_message(msg)
+
+    @property
+    def DefModelDepth(self):
+        phy_depth = 0.5
+        if self.isImpactingPlayed():
+            return phy_depth
+        if self.physics.velocity.z < 0:
+            return phy_depth
+        if self._head_node and self._head_node.isActualCoords:
+            pl_matrinv = Matrix(self.matrix)
+            pl_matrinv.invert()
+            localhead = pl_matrinv.applyPoint(Matrix(self._head_node).translation)
+            phy_depth = (localhead.z + 0.1) * 2
+            phy_depth = max(phy_depth, 0.5)
+            phy_depth = min(phy_depth, 1.5)
+        return phy_depth
+
+    @ignoreError
+    def _checkHeadInGeometry(self):
+        if self.isDestroyed:
+            return
+        if self.isImpactingPlayed():
+            return
+        if self.dead:
+            return
+        if not self.model:
+            return
+        if not self.IsAvatarStand():
+            return
+        if self.in_transport:
+            return
+        if self.is_sitting_in_car():
+            return
+        if self.transformationID:
+            return
+        if self.isPlayerJump():
+            return
+        if self._inAir:
+            return
+        if not self._head_node:
+            self._head_node = self.model.node('Head')
+            return
+        self.physics.modelDepth = self.DefModelDepth
+        add_depth = 0.1
+        if self.isPlayerPressMove():
+            add_depth = 0.09
+        pos = self.position + (0, 1.4, 0)
+        head_pos = Matrix(self._head_node).translation
+        direction = head_pos - pos
+        direction.y = 0
+        depth = direction.length + add_depth
+        if depth > 3.0:
+            return
+        direction.normalise()
+        drHeadGeom.clear()
+        res = climb.collideBoxGeometry(self.spaceID, pos, direction, width=0.3, height=0.6, depth=depth, draw_handle=drHeadGeom)
+        if not res:
+            return
+        res = depth - res
+        if res <= 0:
+            return
+        self.physics.nudge = Vector3(direction) * (-res * 0.99)
+        self.model.motors[0].lockChangeAction = True
+        if self._ramid:
+            BigWorld.cancelCallback(self._ramid)
+        self._ramid = BigWorld.callback(0.1, self._retAM)
+
+    def _retAM(self):
+        self.model.motors[0].lockChangeAction = False
+        self._ramid = 0
+
+    def onInitPhysics(self):
+        self._phy_blend_rot = tmp_blends.LinearBlend(player_speed_settings.PHY_SMOOTH.BLEND_OUT_TIME_ROT)
+        self.collide_blend = tmp_blends.LinearBlend(1.5, 1.0, 1.0)
+        self.physics.applyGravityAndBuoyancyDebug = self.applyGravityAndBuoyancyDebug_
+        self.physics.debugTestSlopeMy = self.debugTestSlopeMy
+        self.physics.rotateTestDebug = self._rotatePhysicsTestDebug
+        if player_speed_settings.PHY_SMOOTH.TEST_BOX_LEFT_RIGHT_ENABLE:
+            self.physics.preventCollisionDebug = self.preventCollisionDebug_
+        else:
+            self.physics.preventCollisionDebug = None
+        self.physics.autoFallEnableCollisionHit = False
+        self.physics.resetSpeedJumpCollide = False
+        return
+
+    def startVelocityloop(self):
+        if self._velocitytickID:
+            self.stopVelocityloop()
+        try:
+            self._velocitytick()
+        except:
+            traceback.print_stack()
+            traceback.print_exc()
+
+    def stopVelocityloop(self):
+        if self._velocitytickID:
+            BigWorld.cancelCallback(self._velocitytickID)
+            self._velocitytickID = 0
+
+    _stop_sprinting_auto_id = 0
+
+    def _stop_sprinting_auto(self):
+        if self.isDestroyed:
+            return
+        self._stop_sprinting_auto_id = 0
+        if not self.movingBackward:
+            not_moving_forward = not self.movingForward
+            self.sprinting and not_moving_forward and self.SetSprinting(False)
+
+    def _getSpeedKey(self):
+        if not self.movingBackward:
+            forawrd_only = self.movingForward
+            if self.sprinting and forawrd_only and not self.underWaterLevel3:
+                return 'SPRINT'
+            key = SPEED_KEYS[self.weaponStatus]
+            if self.IsAvatarCrouched():
+                if self._is_walk or self.binoculing:
+                    key += 'WALK_'
+                else:
+                    key += 'RUN_'
+                key += 'CROUCH'
+            elif self.IsAvatarCrawling():
+                key += 'CRAWL'
+            elif self._is_walk or self.binoculing:
+                key += 'WALK'
+            else:
+                key += 'RUN'
+            self.movingBackward and key += '_BACK'
+        elif (self.movingLeft or self.movingRight) and not self.movingForward:
+            key += '_STRAFE'
+        return key
+
+    def _getMaxSpeed(self, key):
+        maxSpeed = 0
+        if self._is_injured:
+            maxSpeed = getattr(player_speed_settings.MAX_SPEED_INJURED, key)
+        else:
+            maxSpeed = getattr(player_speed_settings.MAX_SPEED, key)
+        if self._ladder_status:
+            maxSpeed = min(player_speed_settings.MAX_SPEED.IN_LADDER, maxSpeed)
+        if self.underWaterLevelKnee:
+            maxSpeed = min(player_speed_settings.MAX_SPEED.MAX_SPEED_IN_WATER_KNEE, maxSpeed)
+        if self.underWaterLevel2:
+            maxSpeed = min(player_speed_settings.MAX_SPEED.MAX_SPEED_IN_WATER_HIPS, maxSpeed)
+        if self.underWaterLevel3:
+            maxSpeed = min(player_speed_settings.MAX_SPEED.MAX_SPEED_IN_WATER_HEAD, maxSpeed)
+        return maxSpeed
+
+    def UpdateVelocity(self):
+        if self.isDestroyed or not self.inWorld:
+            return
+        elif not getattr(self, 'enteredWorld', False):
+            return True
+        elif self._inAir:
+            return True
+        else:
+            if self.IsAvatarCrawling():
+                self.updatePhysicsModelCrawl()
+            if not self.movingBackward:
+                forawrd_only = self.movingForward
+                if not self.movingBackward:
+                    if not self.movingForward:
+                        if not self.movingLeft:
+                            any_moving = self.movingRight
+                            strafing = bool(self.movingLeft) != bool(self.movingRight)
+                            if not self.movingBackward:
+                                not_moving_forward = not self.movingForward
+                                if self._stop_sprinting_auto_id:
+                                    BigWorld.cancelCallback(self._stop_sprinting_auto_id)
+                                if self.sprinting and not_moving_forward:
+                                    self._stop_sprinting_auto_id = BigWorld.callback(0.1, self._stop_sprinting_auto)
+                                if self.active_transform:
+                                    if self.movingBackward and self.sprinting:
+                                        self.SetSprinting(False, delayed=False)
+                                prev_stop_dtime = time() - self._last_mov_time
+                                if not any_moving and not self._last_mov_time:
+                                    self._last_mov_time = time()
+                                if any_moving:
+                                    self._last_mov_time = 0
+                                maxSpeed = 0
+                                if self.control_locked or self.isSitting() or self.dead or self.lock_move_by_tranform or self.lock_move_by_jump:
+                                    pass
+                                else:
+                                    key = self._getSpeedKey()
+                                    if self._deb_last_key != key:
+                                        self._deb_last_key = key
+                                    maxSpeed = self._getMaxSpeed(key)
+                                    if self.sprinting:
+                                        maxSpeed *= self.GetSprintSpeedModifyer()
+                                    if self.active_transform:
+                                        if self.sprinting:
+                                            speed = self.active_transform.getparam('sprint_speed')
+                                            if speed:
+                                                maxSpeed = speed
+                                        elif self.IsAvatarCrouched():
+                                            speed = self.active_transform.getparam('crouch_speed')
+                                            if speed:
+                                                maxSpeed = speed
+                                        elif self.IsAvatarCrawling():
+                                            speed = self.active_transform.getparam('crouch_speed')
+                                            if speed:
+                                                maxSpeed = speed
+                                        else:
+                                            speed = self.active_transform.getparam('run_speed')
+                                            walk_speed_tr = self.active_transform.getparam('walk_speed')
+                                            if self._is_walk and walk_speed_tr is not None:
+                                                speed = walk_speed_tr
+                                            if self.movingBackward:
+                                                run_speed_back = self.active_transform.getparam('run_speed_back')
+                                                if run_speed_back is not None:
+                                                    speed = run_speed_back
+                                            if speed:
+                                                maxSpeed = speed
+                                    if self.lock_move_by_slide:
+                                        self.angle_phy = 0
+                                    else:
+                                        if any_moving:
+                                            self.angle_phy = 0
+                                        if self.movingForward and not self.movingBackward:
+                                            if strafing:
+                                                self.angle_phy += pi_4 if self.movingRight else -pi_4
+                                        elif not self.movingForward and self.movingBackward and not self.isPlayerJump():
+                                            self.angle_phy = pi
+                                            if strafing:
+                                                self.angle_phy += -pi_4 if self.movingRight else pi_4
+                                        elif strafing:
+                                            self.angle_phy = pi_2 if self.movingRight else -pi_2
+                                        else:
+                                            maxSpeed = 0
+                                    if any((self.movingForward,
+                                     self.movingBackward,
+                                     self.movingRight,
+                                     self.movingLeft)):
+                                        if not self.moving_repeat:
+                                            self.moving_repeat = True
+                                    else:
+                                        self.moving_repeat = False
+                                speed_percent = 1.0 if self.offline_mode else self.GetStatValue(Stats.ch_MoveSpeed)
+                                maxSpeed *= speed_percent
+                                maxSpeed and getattr(self, '_wait_real_stop_id', 0) and BigWorld.cancelCallback(self._wait_real_stop_id)
+                                self._wait_real_stop_id = 0
+                            maxSpeed = not maxSpeed and getattr(self, '_wait_real_stop_id', 0) and self._last_maxSpeed
+                        if self._last_maxSpeed and not maxSpeed and not getattr(self, '_wait_real_stop_id', 0):
+
+                            def realStop():
+                                if self.isDestroyed:
+                                    return
+                                self._last_maxSpeed = 0
+                                self._wait_real_stop_id = 0
+                                self.UpdateVelocity()
+
+                            self._wait_real_stop_id = BigWorld.callback(0.1, realStop)
+                            maxSpeed = self._last_maxSpeed
+                        vel_z = self.physics.velocity[1]
+                        self._last_maxSpeed = maxSpeed
+                        self._ladder_status or self.setMovingActionMather(maxSpeed != 0)
+                        self.physics.velocity = maxSpeed == 0 and (0, vel_z, 0)
+                matr = (not self.IS_BLEND_VELOCITY or self.IsAvatarCrawling()) and Matrix()
+                matr.setRotateY(self.angle_phy)
+                velocity = matr.applyVector((0, 0, self._last_maxSpeed))
+                velocity[1] = vel_z
+                self.physics.velocity = velocity
+            return
+
+    _velocity_hook = None
+    _velocity_hook_value_to = None
+
+    def _velocitytick(self):
+        if self.isDestroyed:
+            return
+        else:
+            t = time()
+            dtime = t - self.__t
+            self.__t = t
+            dtime = max(0, dtime)
+            dtime = min(0.3, dtime)
+            self._checkHeadInGeometry()
+            self._velocitytickID = BigWorld.callback(0.0, self._velocitytick)
+            if self._velocity_hook is not None:
+                self.physics.velocity = self._velocity_hook
+                self.smmmm_vel.curentValue_ = Vector3(self._velocity_hook)
+                return
+            if self.dead:
+                self.physics.velocity = (0, 0, 0)
+                self.setMovingActionMather(False)
+                return
+            if not self.IS_BLEND_VELOCITY:
+                return
+            if self.IsAvatarCrawling():
+                return
+            if not self.physics:
+                return
+            self.angle_phy_cur = self.angle_phy
+            matr = Matrix()
+            matr.setRotateY(self.angle_phy_cur)
+            tovel = matr.applyVector((0, 0, self._last_maxSpeed))
+            phy_walk_acelerate = player_speed_settings.SPEED_SMOOTH.CHANGE_VEOCITY_IN_SEC
+            phy_sprint_acelerate = player_speed_settings.SPEED_SMOOTH.CHANGE_VEOCITY_IN_SEC_SPRINT
+            phy_acelerate_down = 0
+            if self.active_transform:
+                if not self.active_transform.getparam('phy_walk_acelerate'):
+                    phy_walk_acelerate = phy_walk_acelerate
+                    if not self.active_transform.getparam('phy_sprint_acelerate'):
+                        phy_sprint_acelerate = phy_sprint_acelerate
+                        if not self.active_transform.getparam('phy_acelerate_down'):
+                            phy_acelerate_down = phy_acelerate_down
+                        if not self._last_maxSpeed or self.isImpactingPlayed():
+                            if not phy_acelerate_down:
+                                tovel = Vector3(0, 0, 0)
+                                self.smmmm_vel.curentValue_ = Vector3(0, 0, 0)
+                        self.smmmm_vel.setValueTo(tovel)
+                        self.smmmm_vel.accelerationStep_ = phy_walk_acelerate
+                        if self.sprinting:
+                            self.smmmm_vel.accelerationStep_ = phy_sprint_acelerate
+                        if not self._last_maxSpeed:
+                            self.smmmm_vel.accelerationStep_ = phy_acelerate_down
+                        self._velocity_hook_value_to is not None and self.smmmm_vel.setValueTo(self._velocity_hook_value_to)
+                    self.smmmm_vel.updateBlend(dtime)
+                    realvel = Vector3(self.smmmm_vel.getCurrentValue())
+                    realvel[1] = self.physics.velocity[1]
+                    vel = self.get_pushing_with_tilt(realvel)
+                    ratio = self._detain_blender and self._detain_blender.get_ratio()
+                    self._detain_blender = ratio is None and None
+                else:
+                    vel = Vector3(vel)
+                    vel[0] *= ratio
+                    vel[2] *= ratio
+            self.physics.velocity = vel
+            return
+
+    def forceStopPhysics(self):
+        self.smmmm_vel.curentValue_ = Vector3(0, 0, 0)
+        self.smmmm_vel.setValueTo(Vector3(0, 0, 0))
+        self.physics.velocity = Vector3(0, 0, 0)
+
+    def get_pushing_with_tilt(self, realvel):
+        return realvel
+
+    def _rotatePhysicsTestDebug(self, old_velocityYaw, velocityYaw, delta_vel_yaw, newHeadYaw, mc_modelYaw, mc, oldPos, velocity_, dTime):
+        """
+                \xd0\xa1\xd0\xb3\xd0\xbb\xd0\xb0\xd0\xb6\xd0\xb8\xd0\xb2\xd0\xb0\xd0\xbd\xd0\xb8\xd0\xb5 \xd0\xb8 \xd0\xbb\xd0\xb8\xd0\xbc\xd0\xb8\xd1\x82\xd1\x8b \xd0\xbf\xd0\xbe\xd0\xb2\xd0\xbe\xd1\x80\xd0\xbe\xd1\x82\xd0\xb0 \xd1\x84\xd0\xb8\xd0\xb7\xd0\xb8\xd0\xba\xd0\xb8 \xd0\xb8\xd0\xb3\xd1\x80\xd0\xbe\xd0\xba\xd0\xb0 \xd0\xb7\xd0\xb0 \xd0\xbc\xd1\x8b\xd1\x88\xd0\xba\xd0\xbe\xd0\xb9
+                TODO \xd0\xb2 \xd1\x81++
+                TODO \xd0\xbb\xd0\xb8\xd0\xbc\xd0\xb8\xd1\x82 \xd0\xbe\xd1\x82 \xd0\xbc\xd0\xbe\xd0\xb4\xd0\xb5\xd0\xbb\xd0\xb8 \xd0\xb2 \xd0\xbf\xd0\xbe\xd0\xbb\xd0\xbe\xd0\xb6\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb8 \xd0\xbb\xd0\xb5\xd0\xb6\xd0\xb0(\xd0\xbf\xd0\xbe\xd1\x87\xd0\xb8\xd0\xbd\xd0\xb8\xd1\x82\xd1\x8c \xd0\xb1\xd0\xb0\xd0\xb3 )
+        """
+        self._phy_blend_rot.updateBlend(dTime)
+        if not self.vechicle_contorled and (self.physics.inAir or self.physics.lockUserDir or not self.physics.userDirected or self.isPlayerJump() or self.isImpactingPlayed()):
+            self._phy_blend_rot.setValueTo(0)
+            self._phy_blend_rot.setCurrentValue(0)
+        else:
+            self._phy_blend_rot.setValueTo(1.0)
+        return old_velocityYaw + delta_vel_yaw * self._phy_blend_rot.getCurrentValue()
+
+    def preventCollisionDebug_(self, oldPos, newPos, bottomLeft_, widthVector_, dest_, halfWidthVector_, heightVector_, flatDir_, frontBuffer_, shouldSlide, reverseCheck, frontDistance_, maxAdvance_, dTime):
+        smooth = 1.0
+        if not reverseCheck:
+            smooth = self.collide_blend.getCurrentValue()
+        calc_pos, collidedetect = self._preventCollision(oldPos, newPos, bottomLeft_, widthVector_, dest_, halfWidthVector_, heightVector_, flatDir_, frontBuffer_, shouldSlide, reverseCheck, frontDistance_, maxAdvance_, dTime, smooth=smooth)
+        if not reverseCheck:
+            self.collide_blend.setValueTo(0.4 if collidedetect else 1.0)
+            self.collide_blend.updateBlend(dTime)
+        return (calc_pos, collidedetect)
+
+    def _preventCollision(self, oldPos, newPos, bottomLeft_, widthVector_, dest_, halfWidthVector_, heightVector_, flatDir_, frontBuffer_, shouldSlide, reverseCheck, frontDistance_, maxAdvance_, dTime, smooth = 1.0):
+        """
+        \xd0\xb4\xd0\xb5\xd0\xb1\xd1\x83\xd0\xb6\xd0\xbd\xd1\x8b\xd0\xb9 \xd0\xba\xd0\xbe\xd0\xbb\xd0\xbb\xd0\xb0\xd0\xb9\xd0\xb4 \xd1\x84\xd0\xb8\xd0\xb7\xd0\xb8\xd0\xba\xd0\xb8 \xd0\xb8\xd0\xb3\xd1\x80\xd0\xbe\xd0\xba\xd0\xb0
+        """
+        if PHY_PAUSE:
+            return (oldPos, False)
+        v0 = bottomLeft_
+        v1 = bottomLeft_ + widthVector_
+        v2 = bottomLeft_ + widthVector_ + heightVector_
+        v3 = bottomLeft_ + heightVector_
+        direction = dest_ - v0
+        depth = direction.length
+        direction.normalise()
+        if not reverseCheck:
+            if DEBUG:
+                drawerBox.clear()
+
+        def drBox(v0, v1, v2, v3, dist = 0, color = (1, 0, 0, 1), shift = None):
+            drawerBox.add(v0, v1)
+            drawerBox.add(v1, v2)
+            drawerBox.add(v2, v3)
+            drawerBox.add(v3, v0)
+            addpos = direction * dist
+            if shift:
+                shiftv = Vector3(widthVector_)
+                shiftv.normalise()
+                shiftv = shiftv * shift
+                v0, v1, v2, v3 = map(lambda x: x + shiftv, (v0,
+                 v1,
+                 v2,
+                 v3))
+            drawerBox.add(addpos + v0, addpos + v1, color=color)
+            drawerBox.add(addpos + v1, addpos + v2, color=color)
+            drawerBox.add(addpos + v2, addpos + v3, color=color)
+            drawerBox.add(addpos + v3, addpos + v0, color=color)
+
+        def drPoly(res, color = (1, 0, 0, 1)):
+            if not res:
+                return
+            point = res[0]
+            poly = res[1]
+            drawerBox.add(poly[0], poly[1], color=color)
+            drawerBox.add(poly[1], poly[2], color=color)
+            drawerBox.add(poly[2], poly[0], color=color)
+            for x in xrange(3):
+                drawerBox.add(point, poly[x], color=color)
+
+        res = BigWorld.naturalCollideBox(v0, v1, v2, v3, direction, dest_, depth)
+        if reverseCheck:
+            self._prev_move_vec = None
+            if res:
+                if DEBUG:
+                    drBox(v0, v1, v2, v3, res[-1])
+                if DEBUG:
+                    drPoly(res, (0, 0, 1, 1))
+                self._collide_detected = True
+                return (oldPos, True)
+            self._prev_move_vec = (newPos - oldPos) / dTime
+            return (newPos, False)
+        self._collide_detected = False
+        if res:
+            p_coll, triangle, materialKind, collisionFlags, collision_advance, natural_p_coll = res
+            clear = collision_advance - frontDistance_
+            if clear < 0:
+                clear = 0
+
+            def left_coll(left_size):
+                add = Vector3(widthVector_)
+                add.normalise()
+                add = add * left_size
+                xv0, xv1, xv2, xv3 = (v0 + add,
+                 v1 + add,
+                 v2 + add,
+                 v3 + add)
+                dest = xv0 + direction * depth
+                if not BigWorld.collideBoxTestIntersection(self.spaceID, xv0, xv1, xv2, xv3, dest):
+                    return add
+
+            if DEBUG:
+                drawerZZZ.clear()
+            for x in xrange(1, player_speed_settings.PHY_SMOOTH.BOX_LEFT_RIGHT_STEPS):
+                for side in [-1, 1]:
+                    left_size = x / (player_speed_settings.PHY_SMOOTH.BOX_LEFT_RIGHT_STEPS + 1.0)
+                    left_size = left_size * side * player_speed_settings.PHY_SMOOTH.BOX_LEFT_RIGHT_MAX_SIZE
+                    test = left_coll(left_size)
+                    if DEBUG:
+                        p = oldPos + (0, 2, 0) + widthVector_ * left_size
+                        drawerZZZ.add(p, p + direction)
+                    if test:
+                        if DEBUG:
+                            drawerUP.add((0, 2.2, 0) + oldPos, (0, 2.2, 0) + oldPos + test, color=(1, 0, 1, 1))
+                            drawerUP.add((0, 2.2, 0) + oldPos, (0, 2, 0) + oldPos, color=(1, 0, 1, 1))
+                        dist_left_right_test = test.length
+                        need_dist = (oldPos - newPos).length * smooth
+                        if dist_left_right_test > need_dist:
+                            test.normalise()
+                            return (oldPos + test * need_dist, True)
+                        oldPos = oldPos + test
+                        if DEBUG:
+                            drawerUP.add((0, 2.2, 0) + oldPos, (0, 2.1, 0) + oldPos, color=(1, 0, 1, 1))
+                        need_dist = need_dist - dist_left_right_test
+                        newPosCalc = oldPos + direction * need_dist
+                        if DEBUG:
+                            drawerUP.add((0, 2.2, 0) + oldPos, (0, 2.2, 0) + newPosCalc, color=(1, 0.3, 1, 1))
+                        return (newPosCalc, True)
+
+            newPosCalc = oldPos + direction * clear * smooth
+            if DEBUG:
+                drBox(v0, v1, v2, v3, collision_advance)
+            if DEBUG:
+                drPoly(res)
+            self._collide_detected = True
+            return (newPosCalc, True)
+        if DEBUG:
+            drBox(v0, v1, v2, v3, depth, color=(1, 1, 0, 1))
+        if smooth < 0.999:
+            return (oldPos + (newPos - oldPos) * smooth, False)
+        else:
+            return (newPos, False)
+
+    def _getGroundNormal(self, pos = None, radius = 0.25, deb = 0):
+        if pos is None:
+            pos = self.position
+        best_norm = Vector3(0, 1, 0)
+        best_angle = 9999.0
+        v = Vector3()
+        for yaw in xrange(20):
+            if yaw == 0:
+                v = Vector3()
+            else:
+                v.setPitchYaw(0, 6.28 * yaw / 21.0)
+            p1 = v * radius + pos + (0, 0.7, 0)
+            p2 = v * radius + pos - (0, 1.5, 0)
+            res = utils_bw.collideIgnoreNoVisible(self.spaceID, p1, p2)
+            if res and res[0]:
+                norm = tri_normal(res[1])
+                angl = angle_between_vectors(Vector3(0, 1, 0), norm)
+                if angl < best_angle:
+                    best_angle = angl
+                    best_norm = norm
+                if deb and DEBUG_SLOPE:
+                    drawerSLOPE2.add(p1, p2, (1, 1, 0, 1))
+
+        return best_norm
+
+    _slope_v = LinearBlendVec3(10)
+    _slope_factor = tmp_blends.LinearBlend(0.3)
+
+    def _applySlopePhy(self, realvel, dtime):
+        """ \xd1\x80\xd0\xb0\xd1\x81\xd1\x87\xd0\xb8\xd1\x82\xd0\xb0\xd1\x82\xd1\x8c \xd1\x81\xd0\xba\xd0\xb0\xd1\x82\xd1\x8b\xd0\xb2\xd0\xb0\xd0\xbd\xd0\xb8\xd0\xb5 \xd1\x81\xd0\xbe \xd1\x81\xd0\xba\xd0\xbb\xd0\xbe\xd0\xbd\xd0\xbe\xd0\xb2
+        """
+        pass
+
+    _slope_off_time = 0
+    _slope_detect_by_angle = False
+
+    def debugTestSlopeMy(self, oldPos, newPos, dTime, timeNow):
+        original_dir = newPos - oldPos
+        normal = self._getGroundNormal(oldPos, deb=1)
+        if DEBUG_SLOPE:
+            drawerSLOPE2.add(oldPos, oldPos + normal)
+        push_weight = player_speed_settings.PHY_SMOOTH.SLOPE_PUSH_MAX_COEF
+        if self._collide_detected:
+            push_weight = player_speed_settings.PHY_SMOOTH.SLOPE_PUSH_MAX_COEF_WITH_HEAD_COLLIDE
+        if normal.y < 0:
+            normal = normal * -1
+        angle = angle_between_vectors(Vector3(0, 1, 0), normal)
+        self._slope_detect_by_angle = False
+        if not self.isImpactingPlayed() and not self._isladder:
+            if self._pushing_with_art_wall:
+                self._slope_factor.setValueTo(1.0)
+                self._slope_v.setValueTo(self._pushing_with_art_wall * 5)
+            elif angle > math.radians(player_speed_settings.PHY_SMOOTH.MAX_SLOPE_ANGLE):
+                self._slope_factor.setValueTo(push_weight)
+                normal.y = -normal.y
+                prevslope_angle = angle_between_flat_vectors(self._slope_v.getCurrentValue(), normal)
+                self._slope_v.setValueTo(normal * player_speed_settings.PHY_SMOOTH.SLOPE_FORCE)
+                if prevslope_angle > 2.6:
+                    self._slope_factor.setCurrentValue(self._slope_factor.getCurrentValue() * 0.5)
+                self._slope_off_time = time()
+                self._slope_detect_by_angle = True
+            elif self._pushing_with_tilt2:
+                self._slope_factor.setValueTo(push_weight)
+                self._slope_v.setValueTo(self._pushing_with_tilt2 * 2)
+                self._slope_off_time = time()
+            elif time() - self._slope_off_time > player_speed_settings.PHY_SMOOTH.SLOPE_OFF_TIME:
+                self._slope_factor.setValueTo(0.0)
+                self._slope_v.setValueTo(Vector3(0, 0, 0))
+        else:
+            self._slope_factor.setValueTo(0.0)
+            self._slope_v.setValueTo(Vector3(0, 0, 0))
+        self._slope_v.updateBlend(dTime)
+        self._slope_factor.updateBlend(dTime)
+        if self._fence_played or self._isladder:
+            self._slope_factor.setCurrentValue(0.0)
+        f = self._slope_factor.getCurrentValue()
+        new_dir = original_dir * (1 - f) + self._slope_v.getCurrentValue() * dTime * f
+        if self._pushing_with_art_wall:
+            new_dir = self._pushing_with_art_wall * dTime * 2
+        min_sf = 0.3
+        max_sf = 0.9
+        self._slope_factor.accelerationStep_ = get_linear_coeff(angle, math.radians(player_speed_settings.PHY_SMOOTH.MAX_SLOPE_ANGLE), math.radians(60), min_sf, max_sf)
+        if self._pushing_with_tilt2:
+            self._slope_factor.accelerationStep_ = min_sf
+        return oldPos + new_dir
+
+    def _predictLadder(self, oldPos, newPos, scrambleHeight, radius, deltaTime):
+        """
+                        \xd0\xbf\xd1\x80\xd0\xb5\xd0\xb4\xd1\x81\xd0\xba\xd0\xb0\xd0\xb7\xd0\xb0\xd1\x82\xd1\x8c \xd0\xbd\xd0\xbe\xd0\xb2\xd1\x83\xd1\x8e \xd0\xbf\xd0\xbe\xd0\xb7\xd0\xb8\xd1\x86\xd0\xb8\xd1\x8e, \xd0\xb4\xd0\xb5\xd1\x80\xd0\xb3\xd0\xb0\xd0\xbd\xd0\xb8\xd1\x8f \xd0\xbd\xd0\xb0 \xd1\x81\xd1\x82\xd1\x83\xd0\xbf\xd0\xb5\xd0\xbd\xd1\x8c\xd0\xba\xd0\xb0\xd1\x85
+        """
+        if DEBUG:
+            drawerPL.clear()
+        if not player_speed_settings.PHY_SMOOTH.PREDICT_LADDER_EANABLE:
+            return (newPos, 0)
+        originla_dir = newPos - oldPos
+        original_dist = originla_dir.length
+        flat_dir = Vector3(originla_dir)
+        flat_dir.y = 0
+        need_dir = Vector3(flat_dir)
+        need_dir.normalise()
+        center = oldPos + (0, scrambleHeight * 2, 0)
+        dwn_pos = oldPos + need_dir * radius
+        fwd = flat_dir * (player_speed_settings.PHY_SMOOTH.PREDICT_LADDER_DIST_COEF / deltaTime)
+        res = BigWorld.collide(self.spaceID, center, center + fwd)
+        if res:
+            fwd = res[0] - center
+        fwd_predict_dist = fwd.length - 0.001
+        fwd_predict_dist = max(player_speed_settings.PHY_SMOOTH.PREDICT_LADDER_MAX_DIST, fwd_predict_dist)
+        if DEBUG:
+            fwd.normalise()
+            fwd = fwd * fwd_predict_dist
+            drawerPL.add(center, center + fwd)
+        best_angle = 0
+        best_dir = None
+        for x in xrange(1, 51):
+            dist_p = x / 50.0 * fwd_predict_dist
+            if dist_p < radius:
+                continue
+            dir_p = need_dir * dist_p
+            p1 = center + dir_p
+            p2 = oldPos + dir_p
+            res = BigWorld.collide(self.spaceID, p1, p2)
+            if not res:
+                continue
+            if DEBUG:
+                drawerPL.add(p1, p1 + (-res[0] + p1))
+            height = res[0].y - p2.y
+            if height < 0:
+                continue
+            dist_p = dist_p - radius
+            if dist_p < 0.0001:
+                continue
+            angle_p = math.asin(clamp(height / dist_p))
+            if angle_p < math.radians(player_speed_settings.PHY_SMOOTH.PREDICT_LADDER_MAX_ANGLE) and best_angle < angle_p:
+                best_angle = angle_p
+                best_dir = res[0] - dwn_pos
+
+        if best_angle > 0 and best_dir:
+            best_dir.normalise()
+            if DEBUG:
+                drawerPLBEST.add(oldPos, oldPos + best_dir)
+            new_dir = best_dir * original_dist
+            return (oldPos + new_dir, new_dir.y)
+        else:
+            return (newPos, 0)
+
+    _vel_naklon = 0
+    _start_time_slope = 0
+    _stop_time_slope = 0
+    __slope_material_id = -1
+
+    def applyGravityAndBuoyancyDebug_(self, oldPos, newPos, fallingVelocity_, gravity_, lastYaw_, mc, deltaTime, timeNow):
+        if PHY_PAUSE:
+            return (oldPos, 0, False)
+        scrambleHeight, modelDepth, modelWidth, modelHeight = mc
+        originla_dir = oldPos - newPos
+        originla_dist = originla_dir.length
+        radius = min(modelDepth, modelWidth) * 0.5
+        add_predict_ladder = 0
+        newPos, add_predict_ladder = self._predictLadder(oldPos, newPos, scrambleHeight, radius, deltaTime)
+        newPos_lader = Vector3(newPos)
+        self._vel_naklon = max(self._vel_naklon, fallingVelocity_)
+        self._vel_naklon = min(self._vel_naklon, 5.0)
+        self._vel_naklon = max(self._vel_naklon, 0)
+        if self._slope_v.getCurrentValue().length < 0.1:
+            self._vel_naklon = 0
+        detect_stuck = False
+
+        def canEnableSlopCaps():
+            flat_dir = getFlatVector3(-originla_dir)
+            if not flat_dir:
+                return True
+            normal = self._getGroundNormal(oldPos)
+            flat_normal = getFlatVector3(normal)
+            if not flat_normal:
+                return False
+            angle = angle_between_vectors(flat_dir, flat_normal)
+            if DEBUG:
+                color = (1, 0, 0, 1) if angle > pi_2 else (1, 1, 0, 1)
+                drawerSLOPE.add(oldPos, oldPos + flat_dir)
+                drawerSLOPE.add(oldPos, oldPos + normal * 0.4, (0, 0, 1, 0))
+                drawerSLOPE.add(oldPos, oldPos + flat_normal, color)
+            if angle > pi_2:
+                return False
+            return True
+
+        if self._vel_naklon > player_speed_settings.PHY_SMOOTH.SLOPE_SPEED_DOWN_START and self._slope_factor.getCurrentValue() > 0 and not self.physics.inAir and self._slope_detect_by_angle:
+            if not self._slope_caps and time() - self._stop_time_slope > 0.5 and canEnableSlopCaps():
+                self._start_time_slope = time()
+                self._slope_caps = 'DOWN'
+                self.updateHandControl()
+                self.UpdateAvatarAnimationCaps()
+        elif self._vel_naklon < player_speed_settings.PHY_SMOOTH.SLOPE_SPEED_DOWN_STOP:
+            if self._slope_caps and time() - self._start_time_slope > 0.5:
+                self._stop_time_slope = time()
+                self._slope_caps = ''
+                self.updateHandControl()
+                self.UpdateAvatarAnimationCaps()
+        if self._slope_caps:
+            res = BigWorld.collide(self.spaceID, newPos + (0, 1, 0), newPos - (0, 1, 0))
+            if res and res[-1] != self.__slope_material_id:
+                self.__slope_material_id = res[-1]
+                self.onChangeSlope(True, self.__slope_material_id)
+        elif not self._slope_caps and self.__slope_material_id != -1:
+            self.__slope_material_id = -1
+            self.onChangeSlope(False, self.__slope_material_id)
+        newFallingVelocity = fallingVelocity_ + gravity_ * deltaTime
+        dropDistance = (fallingVelocity_ + newFallingVelocity) / 2 * deltaTime
+        center = Vector3(newPos)
+        center.y = oldPos.y
+        if DEBUG:
+            drawerC.clear()
+        dest = Vector3(center)
+        center.y += scrambleHeight
+        dest.y -= max(dropDistance, self._vel_naklon * deltaTime)
+        bsp_detect = False
+        dir_ = dest - center
+        dist = dir_.length
+        right = Vector3(radius * 1.5, 0, 0)
+        up = Vector3(0, 0, radius * 1.5)
+        l_d = center - right - up
+        r_d = center + right - up
+        r_u = center + right + up
+        l_u = center - right + up
+        destTest = l_d + dir_ * 2
+        points = (l_d,
+         r_d,
+         r_u,
+         l_u,
+         destTest)
+        res = BigWorld.naturalCollideCylinder(center, dest, radius, points)
+        if res:
+            point, tri, mkind, cflag, advance, nativePoint = res
+            bsp_detect = True
+            newFallingVelocity = max(0.0, fallingVelocity_ - 1.5 * deltaTime)
+            if scrambleHeight + 0.1 >= advance:
+                self._vel_naklon -= 16 * deltaTime
+                self._vel_naklon = max(self._vel_naklon, 0)
+            if dist - advance > 6e-07:
+                newPos.y = nativePoint.y + add_predict_ladder
+                if advance < 0.01:
+                    detect_stuck = True
+                if DEBUG:
+                    drawerC.drawCylinder(center, newPos, radius, color=(1, 1, 0, 1), numberOfFaces=18)
+            else:
+                newPos.y = oldPos.y + add_predict_ladder
+                if DEBUG:
+                    drawerC.drawCylinder(center, dest, radius, color=(0, 0, 1, 1), numberOfFaces=18)
+            if DEBUG:
+                drawerC.drawCyrcle(center - (0, advance - 0.01, 0), dir_, radius - 0.01, numberOfFaces=18)
+            new_dir = newPos - oldPos
+            new_dist = new_dir.length
+        else:
+            newPos.y = dest.y + add_predict_ladder
+            if DEBUG:
+                drawerC.drawCylinder(center, dest, radius, color=(0.1, 0.1, 0.1, 1), numberOfFaces=18)
+            self.resetFootTwist()
+        if add_predict_ladder > 0:
+            bsp_detect = True
+            newFallingVelocity = max(0.0, fallingVelocity_ - 1.5 * deltaTime)
+        if bsp_detect:
+            new_dir = newPos - oldPos
+            new_dist = new_dir.length
+            if new_dir.y > 0:
+                new_dir.normalise()
+                new_dist = min(originla_dist, new_dist)
+                if detect_stuck:
+                    new_dist = 0.5 * deltaTime
+                    new_dir = Vector3(0, 1, 0)
+                newPos = oldPos + new_dir * new_dist
+        return (newPos, newFallingVelocity, bsp_detect)
+
+    cl_isMovingTest = 1
+    USE_MovingActionMather = True
+    ENABLE_MovingActionMather = True
+
+    def setMovingActionMather(self, curr_move):
+        if not self.USE_MovingActionMather:
+            return
+        if not self.ENABLE_MovingActionMather:
+            return
+        self.physics.playerPressStop = not curr_move
+        if curr_move != self.cl_isMovingTest:
+            self.cl_isMovingTest = curr_move
+            old_val = self.isMovingTest
+            self.isMovingTest = curr_move
+            rec_attr_demo('isMovingTest', old_val, self.isMovingTest)
+            if self.model:
+                if not curr_move and self._is_jump:
+                    return
+                self.model.motors[0].isInputMove = curr_move
+                self.model.motors[0].useAntiSlipping = False
+
+    def update_isMovingTest(self, isinit = False):
+        if self.model:
+            if not self.USE_MovingActionMather:
+                self.cl_isMovingTest = True
+            self.model.motors[0].isInputMove = self.cl_isMovingTest
+            self.model.motors[0].useAntiSlipping = True
+
+    def onStopedActionNotifier(self, action, isImpacting = None):
+        if not self.cl_isMovingTest:
+            self.physics.velocity = (0, 0, 0)
+
+    def can_start_sliding(self):
+        if self.invulnerable:
+            return True
+        current_stamina = self.GetStatValue(Stats.ch_Stamina)
+        need = CharacterConst.STAMINA_SLIDE_USAGE
+        if current_stamina < need:
+            return False
+        return True

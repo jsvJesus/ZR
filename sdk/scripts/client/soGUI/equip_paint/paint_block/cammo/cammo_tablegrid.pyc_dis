@@ -1,0 +1,220 @@
+# Embedded file name: ./client/soGUI/equip_paint/paint_block/cammo/cammo_tablegrid.py
+from Localization import lc
+import GUI
+import BigWorld
+from functools import partial
+from soGUI.equip_paint.tablegrid.table_model import TableModel, ItemData
+from soGUI.equip_paint.tablegrid.tablegrid import TableGrid, Cell
+import DyeConstant
+from sounds_manager import playSound
+
+class ItemDataET:
+    OnSelectionChanged, = ((r, 'paintitemdata') for r in range(1))
+
+
+class CammoItemData(ItemData):
+
+    def __init__(self, item_type, item):
+        ItemData.__init__(self, item)
+        self._item_type = item_type
+        self._selected = False
+
+    @property
+    def item_type(self):
+        return self._item_type
+
+    @property
+    def camo_id(self):
+        return self._item
+
+    @property
+    def selected(self):
+        return self._selected
+
+    @selected.setter
+    def selected(self, value):
+        if self._selected == value:
+            return
+        self._selected = value
+        self.notify_listeners(ItemDataET.OnSelectionChanged)
+
+
+class CammoTableModel(TableModel):
+
+    def __init__(self):
+        TableModel.__init__(self)
+        self._item_type = None
+        self._selected = None
+        return
+
+    def set_items(self, current_cammo_id, item_type, items):
+        self._item_type = item_type
+        TableModel.set_items(self, items)
+        for item in self._items:
+            if item.camo_id == current_cammo_id:
+                self.selected = item
+                break
+        else:
+            self.selected = None
+
+        return
+
+    def clear(self):
+        self._item_type = None
+        TableModel.set_items(self, [])
+        self.selected = None
+        return
+
+    def select_item(self, camo_id):
+        for item in self._items:
+            if item.camo_id == camo_id:
+                self.selected = item
+                break
+        else:
+            self.selected = None
+
+        return
+
+    def _create_item_data(self, camo_id):
+        return CammoItemData(self._item_type, camo_id)
+
+    @property
+    def selected(self):
+        return self._selected
+
+    @selected.setter
+    def selected(self, value):
+        if self._selected == value:
+            return
+        if self._selected:
+            self._selected.selected = False
+        self._selected = value
+        if self._selected:
+            self._selected.selected = True
+
+
+class CellET:
+    OnSelectRequested, = ((r, 'paintcell') for r in range(1))
+
+
+class CammoCell(Cell):
+    _request_id = 0
+
+    def __init__(self, component):
+        Cell.__init__(self, component)
+        comp = GUI.Simple(u'')
+        comp.materialFX = 'BLEND'
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.filterType = 'NONE'
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.position = (0, 0, 0.7)
+        self.component.addChild(comp, 'image')
+        comp = GUI.Window('soGUI/frame/paint/borderslot.dds')
+        comp.materialFX = 'SOLID'
+        comp.wm, comp.hm = ('CLIP', 'CLIP')
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.position = (0, 0, 0.9)
+        comp.width, comp.height = (2, 2)
+        comp.visible = False
+        self.component.addChild(comp, 'selection')
+
+    def _on_mouse_down(self):
+        data = {'item': self._item}
+        self.notify_listeners(CellET.OnSelectRequested, data)
+
+    def _update_visual(self):
+        if not self._item:
+            return
+        if self._item.selected:
+            self.component.selection.visible = True
+            self.component.image.colour[3] = 240
+        else:
+            self.component.selection.visible = False
+            self.component.image.colour[3] = 160
+
+    def _on_itemdata_event(self, event_type, data):
+        Cell._on_itemdata_event(self, event_type, data)
+        if event_type == ItemDataET.OnSelectionChanged:
+            self._update_visual()
+
+
+class ColoredCell(CammoCell):
+
+    def __init__(self, component):
+        CammoCell.__init__(self, component)
+        comp = self.component.image
+        comp.width, comp.height = self.component.width - 2, self.component.height - 2
+        self._wait_request = None
+        return
+
+    def set_item(self, item):
+        CammoCell.set_item(self, item)
+        self._wait_request = None
+        if not item:
+            return
+        else:
+            mask_texture = DyeConstant.cammo_previews[item.camo_id]
+            default_colors = DyeConstant.get_camo_default_colors(item.item_type, item.camo_id)
+
+            def callback(request_id, texture):
+                if request_id != self._wait_request:
+                    return
+                self.component.image.texture = texture
+
+            colors = []
+            for channel in ('R', 'G', 'B', 'A'):
+                color = default_colors.get(channel)
+                if color:
+                    color = (color[0] / 255.0,
+                     color[1] / 255.0,
+                     color[2] / 255.0,
+                     1.0)
+                else:
+                    color = (255, 0, 255, 255)
+                colors.append(color)
+
+            CammoCell._request_id += 1
+            self._wait_request = CammoCell._request_id
+            BigWorld.getCamouflage(mask_texture, tuple(colors), partial(callback, CammoCell._request_id))
+            self._update_visual()
+            return
+
+    def get_tooltip_text(self):
+        if self._item:
+            return lc('colourItemWindow.CAMMO_' + str(self._item.camo_id))
+
+
+class EmptyCell(CammoCell):
+
+    def __init__(self, component):
+        CammoCell.__init__(self, component)
+        comp = self.component.image
+        comp.filterType = 'LINEAR'
+        comp.width, comp.height = self.component.width * 0.5, self.component.height * 0.5
+        self.component.image.textureName = 'soGUI/frame/paint/no_camo.dds'
+
+    def set_item(self, item):
+        CammoCell.set_item(self, item)
+        self._update_visual()
+
+
+class TableGridET:
+    OnCammoChanged, = ((r, 'cammotablegrid') for r in range(1))
+
+
+class CammoTableGrid(TableGrid):
+
+    def _get_cell_class(self, col, row):
+        if col == 0 and row == 0:
+            return EmptyCell
+        return ColoredCell
+
+    def _on_cell_event(self, event_type, data):
+        if event_type == CellET.OnSelectRequested:
+            data['camo_id'] = data['item'].camo_id
+            prev_selected = self._tm.selected
+            self.notify_listeners(TableGridET.OnCammoChanged, data)
+            if prev_selected != self._tm.selected:
+                playSound('ui/menu_click')

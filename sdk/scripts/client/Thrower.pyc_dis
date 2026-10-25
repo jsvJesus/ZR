@@ -1,0 +1,243 @@
+# Embedded file name: ./client/Thrower.py
+import BigWorld
+from Items import ItemsCatalog
+import ItemsUtils
+from Localization import lc
+import BWPersonality
+import RestrictionsUtils
+import Durations
+from Math import Vector3, Matrix
+import math_bw
+import math
+import Math
+import SFXer
+import utils_bw
+from Constants import MESSAGE_TYPES as MT
+
+class Thrower:
+    THROW_DELAY = 0.65
+    COLLISION_FACTOR = 0.3
+    DEBUG_COLLISIONS = False
+
+    def __init__(self):
+        self.__throw_ready = False
+        self._last_grenade_type = 0
+        self._throw_need = False
+        self._throw_power = 1
+        self._callbackOnThrow = None
+        self._reset_callbackOnThrow_cid = 0
+        self._end_throw_t = 0
+        return
+
+    def throw(self, entity_params, position, velocity, grenade_type, callbackOnThrow = None):
+        throwing_params = {'ownerID': self.id,
+         'fromServer': False,
+         'startPosition': position,
+         'velocity': velocity,
+         'grenade_type': grenade_type}
+        throwing_params.update(entity_params)
+        self._callbackOnThrow = callbackOnThrow
+        grenade_params = ItemsCatalog.GetItemParam(grenade_type)
+        if not grenade_params:
+            print 'unknown grenade type', grenade_type
+            print self, self.position
+            raise ValueError('unknown grenade type %s' % grenade_type)
+        if self == BigWorld.player():
+            if self._reset_callbackOnThrow_cid:
+                BigWorld.cancelCallback(self._reset_callbackOnThrow_cid)
+            self._reset_callbackOnThrow_cid = BigWorld.callback(10, self._reset_callbackOnThrow)
+        class_name = 'Rocket' if grenade_params.get('AmmoClass') == ItemsCatalog.AMMO_CL_RPG7_ROCKET or grenade_params.get('AmmoClass') == ItemsCatalog.AMMO_CL_M74_ROCKET else 'Grenade'
+        if math_bw.isNanV3(velocity):
+            print 'ERROR FOR:', self, entity_params, position, velocity, grenade_type
+            raise ValueError('velocity is nan!')
+        entityID = BigWorld.createEntity(grenade_params.get('entityClassName', class_name), self.spaceID, 0, position, (0, self.pitch, self.yaw), throwing_params)
+        return entityID
+
+    def _reset_callbackOnThrow(self):
+        """
+        \xd1\x80\xd0\xb5\xd0\xb7\xd0\xb5\xd1\x80\xd0\xb2\xd0\xbd\xd1\x8b\xd0\xb9 \xd1\x81\xd0\xb1\xd1\x80\xd0\xbe\xd1\x81 \xd0\xba\xd0\xbe\xd0\xbb\xd0\xbb\xd0\xb1\xd0\xb5\xd0\xba\xd0\xb0, \xd1\x82.\xd0\xba. Throwable-\xd1\x81\xd1\x83\xd1\x89\xd0\xbd\xd0\xbe\xd1\x81\xd1\x82\xd1\x8c \xd0\xbf\xd0\xbe \xd0\xba\xd0\xb0\xd0\xba\xd0\xb8\xd0\xbc-\xd1\x82\xd0\xbe \xd0\xbf\xd1\x80\xd0\xb8\xd1\x87\xd0\xb8\xd0\xbd\xd0\xb0\xd0\xbc \xd0\xbd\xd0\xb5 \xd0\xb2\xd1\x8b\xd0\xb7\xd0\xb2\xd0\xb0\xd0\xbb\xd0\xb0 onThrowingEntityAppears
+        """
+        print '[WARNING] _reset_callbackOnThrow', self
+        self._callbackOnThrow = None
+        self._reset_callbackOnThrow_cid = 0
+        return
+
+    def onThrowingEntityAppears(self, throwable_entity):
+        """
+        Throwable-\xd1\x81\xd1\x83\xd1\x89\xd0\xbd\xd0\xbe\xd1\x81\xd1\x82\xd1\x8c \xd1\x81\xd0\xbe\xd0\xbe\xd0\xb1\xd1\x89\xd0\xb8\xd0\xbb\xd0\xb0 \xd0\xbe \xd1\x82\xd0\xbe\xd0\xbc, \xd1\x87\xd1\x82\xd0\xbe \xd0\xb7\xd0\xb0\xd0\xb3\xd1\x80\xd1\x83\xd0\xb7\xd0\xb8\xd0\xbb\xd0\xb0\xd1\x81\xd1\x8c
+        """
+        throw_param = throwable_entity.throw()
+        if self._callbackOnThrow:
+            self._callbackOnThrow(throw_param)
+        self._callbackOnThrow = None
+        if self._reset_callbackOnThrow_cid:
+            BigWorld.cancelCallback(self._reset_callbackOnThrow_cid)
+            self._reset_callbackOnThrow_cid = 0
+        return
+
+    def startAnimGrenadeSwnig(self):
+        if self.model:
+            self.playAnimation(self.model.use_stone_in, self.model.use_stone_in.duration, self.onThrowReady, stretch=True, offset_mult=0.9)
+
+    def stopAnimGrenadeSwnig(self):
+        if self.model:
+            self.model.use_stone_in.stop()
+            self.model.use_stone_loop.stop()
+            self.stopAnimation()
+
+    def onThrowReady(self):
+        if self.isDestroyed:
+            return
+        if self._throw_need:
+            self._throw_need = False
+            self.endThrow(self._throw_power)
+        else:
+            self.model.use_stone_loop()
+            self.__throw_ready = True
+
+    def endThrow(self, throw_power = 1.0):
+        if self._last_grenade_type:
+            self.drawStopThrowGrenade()
+            self.magnitude = 17.0
+            if self.CheckRestriction(RestrictionsUtils.CHANNEL_ITEMS):
+                throw_duration = self.grenadeThrow(throw_power, self._last_grenade_type)
+                self._end_throw_t = BigWorld.time() + throw_duration
+                self.DoAction(RestrictionsUtils.CHANNEL_ITEMS, throw_duration, lc('Items.GUIStrings.GRENADE'))
+            else:
+                BWPersonality.gpd.sendHightMessage(lc('PlayerAvatar.client.CLOTH_ACTION_NOT_AVAILABLE'))
+            self._last_grenade_type = 0
+
+    def throwGrenade(self, isDown, event = None, throw_power = 0, grenade_type = 0):
+        if self.dead or self.use_gesture:
+            BWPersonality.gpd.sendHightMessage(lc('PlayerAvatar.client.MSG3'), MT.FAIL)
+            return
+        if isDown and (self.is_throwing or not self.CheckRestriction(RestrictionsUtils.CHANNEL_ITEMS)):
+            return
+        if self._end_throw_t + 0.1 > BigWorld.time():
+            print 'throwGrenade error _end_throw_t'
+            return
+        if self._callbackOnThrow:
+            BWPersonality.gpd.sendHightMessage(lc('PlayerAvatar.client.MSG3'), MT.FAIL)
+            print 'ERROR _callbackOnThrow!'
+            return
+        if isDown and not self.is_throwing:
+            self._last_grenade_type = grenade_type
+            self.drawStartThrowGrenade(grenade_type)
+            self.cell.startThrowGrenade(grenade_type)
+            self.__throw_ready = False
+        elif self.is_throwing and not isDown:
+            if self.__throw_ready:
+                self.endThrow(throw_power=throw_power)
+            else:
+                self._throw_need = True
+                self._throw_power = throw_power
+
+    def grenadeThrow(self, throw_power, throw_type):
+        if self.binoculars_animation:
+            return
+        weight = 0.3
+        throw_duration = Durations.GetGrenadeThrowDuration(self)
+
+        def on_throw_item():
+            self.clearThrowModel()
+            position, velocity = self.get_throw_params()
+            grenade_params = {}
+            velocity *= (0.5 + throw_power * self.GetGrenadeThrowModifyer()) / (weight + 1.0)
+            if self.__class__.__name__ == 'PlayerAvatar':
+                uv = self.physics.uncorrectedVelocity.value
+                velocity += Math.Vector3(uv[0], uv[1], uv[2])
+            position, velocity, mat_id = self.check_throw_collision(position, velocity)
+
+            def callbackOnThrow(param):
+                if not param:
+                    return
+                position, velocity, clientGrenadeID, timeBeforeFlyEnd, destPos = param
+                self.end_throw_grenade(position, velocity, clientGrenadeID, throw_type)
+
+            if getattr(self, '_portal_shell', None):
+                SFXer.playSFX('sfx/events/stone_throw_portals.xml', position, timeLife=4.0)
+                return
+            else:
+                grenade_id = self.throw(grenade_params, Vector3(position), Vector3(velocity), throw_type, callbackOnThrow=callbackOnThrow)
+                self.onThrStart(grenade_id, Vector3(position), Vector3(velocity), throw_type)
+                if mat_id:
+
+                    def play_hit_sound():
+                        grenade = BigWorld.entities.get(grenade_id)
+                        if grenade:
+                            grenade.play_material_sound(mat_id)
+
+                    BigWorld.callback(0, play_hit_sound)
+                return
+
+        velocity = self.get_throw_params()[1]
+        self.DrawThrow(velocity, on_throw_item)
+        return throw_duration
+
+    def getDirection(self):
+        direction = BigWorld.camera().direction
+        if self.lookingaround or self.isSitting():
+            direction = Vector3(self.lastdirection)
+        return direction
+
+    def get_throw_params(self):
+        ADD_PITCH = 15
+        direction = Vector3(self.getDirection())
+        y, p = direction.yaw, direction.pitch
+        p = max(-1.5, p - math.radians(ADD_PITCH))
+        direction.setPitchYaw(p, y)
+        direction.normalise()
+        velocity = direction * self.magnitude
+        position = Matrix(self.throwing_node).translation
+        return (position, velocity)
+
+    def onThrStart(self, *w):
+        pass
+
+    def check_throw_collision(self, position, velocity):
+        """ \xd0\xbf\xd1\x80\xd0\xbe\xd0\xb2\xd0\xb5\xd1\x80\xd0\xba\xd0\xb0 \xd0\xba\xd0\xbe\xd0\xbb\xd0\xbb\xd0\xb8\xd0\xb7\xd0\xb8\xd0\xb9, \xd1\x87\xd1\x82\xd0\xbe\xd0\xb1\xd1\x8b \xd0\xbd\xd0\xb5\xd0\xbb\xd1\x8c\xd0\xb7\xd1\x8f \xd0\xb1\xd1\x8b\xd0\xbb\xd0\xbe \xd0\xba\xd0\xb8\xd0\xbd\xd1\x83\xd1\x82\xd1\x8c \xd0\xb3\xd1\x80\xd0\xb0\xd0\xbd\xd0\xb0\xd1\x82\xd1\x83 \xd1\x81\xd0\xba\xd0\xb2\xd0\xbe\xd0\xb7\xd1\x8c \xd1\x81\xd1\x82\xd0\xb5\xd0\xbd\xd1\x83
+                http://hz-dev.stalker.so:8090/issues/3299
+                \xd0\xb2\xd0\xbe\xd0\xb7\xd0\xb2\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xbd\xd0\xb0\xd1\x87\xd0\xb0\xd0\xbb\xd1\x8c\xd0\xbd\xd1\x83\xd1\x8e \xd1\x82\xd0\xbe\xd1\x87\xd0\xba\xd1\x83, \xd0\xbd\xd0\xb0\xd1\x87\xd0\xb0\xd0\xbb\xd1\x8c\xd0\xbd\xd1\x83\xd1\x8e \xd1\x81\xd0\xba\xd0\xbe\xd1\x80\xd0\xbe\xd1\x81\xd1\x82\xd1\x8c \xd0\xb8 \xd0\xbc\xd0\xb0\xd1\x82\xd0\xb5\xd1\x80\xd0\xb8\xd0\xb0\xd0\xbb \xd0\xbd\xd0\xb0\xd1\x87\xd0\xb0\xd0\xbb\xd1\x8c\xd0\xbd\xd0\xbe\xd0\xb3\xd0\xbe \xd1\x81\xd1\x82\xd0\xbe\xd0\xbb\xd0\xba\xd0\xbd\xd0\xbe\xd0\xb2\xd0\xb5\xd0\xbd\xd0\xb8\xd1\x8f (\xd0\xb5\xd1\x81\xd0\xbb\xd0\xb8 \xd0\xb5\xd1\x81\xd1\x82\xd1\x8c)
+        """
+        from_position = self.position + (0, self.get_height() * 0.5, 0)
+        collision = utils_bw.collide(self.spaceID, from_position, position)
+        if not collision:
+            return (position, velocity, None)
+        else:
+            collision_point = collision[0]
+            result, normal = math_bw.calculate_reflection(collision_point, collision_point - from_position, collision[1])
+            velocity = result * velocity.length * Thrower.COLLISION_FACTOR
+            collision_point += normal * 0.1
+            if Thrower.DEBUG_COLLISIONS:
+                import DrawPrimitivesUtils
+                DrawPrimitivesUtils.clear_drawings()
+                DrawPrimitivesUtils.draw_ray(collision_point, normal, (1, 1, 1, 1))
+                DrawPrimitivesUtils.draw_sphere(collision_point, 0.05)
+                DrawPrimitivesUtils.draw_line(position, from_position)
+                DrawPrimitivesUtils.draw_ray(collision_point, velocity, (0, 0, 1, 1))
+            return (collision_point, velocity, collision[2])
+            return
+
+    def fake_grenade_exploded(self, grenade_type, victims, collision_data):
+        grenade_params = ItemsCatalog.GetItemParam(grenade_type)
+        if not grenade_params:
+            print 'unknown grenade type', grenade_type
+            print self, self.position
+            raise ValueError('unknown grenade type %s' % grenade_type)
+        position = collision_data['position']
+        direction = collision_data['direction']
+        throwing_params = {'ownerID': 0,
+         'fromServer': False,
+         'startPosition': position,
+         'velocity': Vector3(0, 0, 0),
+         'grenade_type': grenade_type}
+        class_name = 'Rocket' if grenade_params.get('AmmoClass') == ItemsCatalog.AMMO_CL_RPG7_ROCKET or grenade_params.get('AmmoClass') == ItemsCatalog.AMMO_CL_M74_ROCKET else 'Grenade'
+        grenade_id = BigWorld.createEntity(class_name, self.spaceID, 0, position, direction, throwing_params)
+
+        def onCreate():
+            grenade = BigWorld.entities.get(grenade_id)
+            if not grenade:
+                return
+            grenade.explode(victims, collision_data)
+
+        BigWorld.callback(0.1, onCreate)

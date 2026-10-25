@@ -1,0 +1,118 @@
+# Embedded file name: ./client/avatar_melee.py
+import BigWorld
+import traceback
+from utils_bw import get_classname
+from melee_avatar_skill.melee_skill import MeleeSkill
+import Math
+
+class AvatarMelee:
+    active_melee = None
+
+    def onMeleeStartAttack(self, item_type, attack_id):
+        if not self.active_melee:
+            self.active_melee = MeleeSkill(item_type)
+            self.active_melee.start(self)
+        if attack_id:
+            self.active_melee.addPlayAttack(attack_id)
+        self.setDirectionProviderParam(force=True)
+
+    def onStopMeleeAttack(self, force = False):
+        if self.active_melee:
+            if force:
+                self.active_melee.stop()
+            else:
+                self.active_melee.playEnd()
+
+    def onStartMeleePowerful(self):
+        if self.active_melee:
+            self.active_melee.onStartPowerful()
+
+    def onEndMeleePowerful(self):
+        if self.active_melee:
+            self.active_melee.onEndPowerful()
+
+    def onMeleeSkillStop(self):
+        self.active_melee = None
+        self.UpdateAvatarAnimationCaps()
+        self.setDirectionProviderParam(force=True)
+        return
+
+    def _applyMeleeAttack(self, *e):
+        pass
+
+    def getMeleeHitData(self, entity, start_pos):
+        """
+        \xd0\xba\xd0\xbe\xd0\xbb\xd0\xbb\xd0\xb0\xd0\xb9\xd0\xb4\xd1\x8b \xd0\xb2 entity \xd0\xb4\xd0\xbb\xd1\x8f \xd0\xbf\xd0\xbe\xd0\xb8\xd1\x81\xd0\xba\xd0\xb0 \xd0\xbc\xd0\xb5\xd1\x81\xd1\x82\xd0\xb0 \xd0\xbf\xd0\xbe\xd1\x80\xd0\xb0\xd0\xb6\xd0\xb5\xd0\xbd\xd0\xb8\xd1\x8f
+        """
+        damager_pos = start_pos
+        direction = Math.Vector3()
+        direction.setPitchYaw(self.pitch, self.yaw)
+        if entity.skeletonCollider.doCollide(damager_pos, direction):
+            blood_world_pos = entity.skeletonCollider.impactPoint
+            collider_name = entity.skeletonCollider.impactCollider.name
+            return (blood_world_pos, collider_name, direction)
+        ent_pos = Math.Vector3(entity.position)
+        ent_pos.y += entity.get_height()
+        direction = ent_pos - damager_pos
+        direction.normalise()
+        if entity.skeletonCollider.doCollide(damager_pos, direction):
+            blood_world_pos = entity.skeletonCollider.impactPoint
+            collider_name = entity.skeletonCollider.impactCollider.name
+            return (blood_world_pos, collider_name, direction)
+        else:
+            return (None, None, None)
+
+    def onMeleeAttackHit(self, item_type, attack_id, targets_ids):
+        """
+        self \xd1\x83\xd0\xb4\xd0\xb0\xd1\x80\xd0\xb8\xd0\xbb targets_ids
+        """
+        if not self.active_melee:
+            return
+        else:
+            conf = self.active_melee.getAttackParam(attack_id)
+            for victim_id in targets_ids:
+                entity = BigWorld.entity(victim_id)
+                if not entity:
+                    continue
+                if get_classname(entity) in ('Avatar', 'PlayerAvatar', 'NPC'):
+                    try:
+                        entity.onGotMeleeAttackHit(attack_id, conf)
+                    except:
+                        print 'ERROR FOR:', self
+                        print 'TARGET:', entity
+                        traceback.print_exc()
+
+                if self is not BigWorld.player():
+                    start_pos = Math.Matrix(self.model.node(conf['from_node'])).translation
+                    hit_pos, collider_name, blood_orientation = self.getMeleeHitData(entity, start_pos)
+                    if hit_pos is None:
+                        continue
+                    entity.bleedFromShoot(hit_pos, blood_orientation, collider_name, self.active_melee.item_type, self.id)
+
+            return
+
+    def onGotMeleeAttackHit(self, attack_id, conf):
+        """
+        self \xd0\xbf\xd0\xbe\xd0\xbb\xd1\x83\xd1\x87\xd0\xb8\xd0\xbb \xd1\x83\xd0\xb4\xd0\xb0\xd1\x80
+        """
+        avatar_hit_action = conf.get('avatar_hit_action')
+        dead_avatar_hit_action = conf.get('dead_avatar_hit_action')
+        if avatar_hit_action and not self.is_dead():
+            _action = self.model.action(avatar_hit_action)
+        elif dead_avatar_hit_action and self.is_dead():
+            _action = self.model.action(dead_avatar_hit_action)
+        if getattr(self, '_got_melee_hit_cid', None):
+            BigWorld.cancelCallback(self._got_melee_hit_cid)
+        if not self.active_weapon:
+            self.pushTrackerLockByName('onGotMeleeAttackHit', print_error=False)
+            self._got_melee_hit_cid = BigWorld.callback(_action.duration, self.onGotMeleeAttackHitEnd)
+        _action()
+        return
+
+    def onGotMeleeAttackHitEnd(self):
+        if self.isDestroyed:
+            return
+        else:
+            self._got_melee_hit_cid = None
+            self.popTrackerLock('onGotMeleeAttackHit')
+            return

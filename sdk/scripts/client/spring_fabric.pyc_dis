@@ -1,0 +1,294 @@
+# Embedded file name: ./client/spring_fabric.py
+import BigWorld
+import traceback
+import spring_fabric_settings
+from Fabric import Fabric
+from Fabric import WeaponTrack
+import tracker_lod_settings
+import _Trackers
+from Math import Vector2, Vector3
+USE_CPP_FABRIC = True
+
+def _cpp_create_fabric_node_info(owner, config, sk):
+    rigid_points_for_bone = {}
+    movable_points_for_bone = {}
+    rigid_config = config['rigid_points']
+    movable_config = config['movable_points']
+
+    def parse_rigid_point(data):
+        boneName = data[0]
+        disp = Vector3(0, 0, 0)
+        if len(data) > 1:
+            disp = data[1]
+        return (boneName, disp or (Vector3(0, 0, 0),))
+
+    def parse_movable_point(data, baseData):
+        boneName = data[0]
+
+        def get_data_param(key):
+            if len(data) > 1:
+                param = data[1].get(key)
+                if param:
+                    return param
+            return baseData.get(key)
+
+        disp = get_data_param('disp') or Vector3(0, 0, 0)
+        lock_rotate = get_data_param('lock_rotate')
+        mass = get_data_param('mass')
+        stretch = get_data_param('stretch')
+        rigid = get_data_param('rigid')
+        collidable = get_data_param('collidable')
+        world_collidable = get_data_param('world_collidable')
+        use_wind = get_data_param('use_wind')
+        push_algorithm = get_data_param('push_algorithm')
+        xLock = None
+        yLock = None
+        zLock = None
+
+        def get_axis_lock(data):
+            if type(data) == tuple or type(data) == Vector2:
+                return Vector2(data[0], data[1])
+            else:
+                return Vector2(data, data)
+
+        if lock_rotate:
+            for axis, limitData in lock_rotate:
+                if axis == 'x':
+                    xLock = get_axis_lock(limitData)
+                elif axis == 'y':
+                    yLock = get_axis_lock(limitData)
+                elif axis == 'z':
+                    zLock = get_axis_lock(limitData)
+
+        return (boneName, (xLock,
+          yLock,
+          zLock,
+          disp,
+          mass,
+          stretch,
+          rigid,
+          collidable,
+          world_collidable,
+          use_wind,
+          push_algorithm))
+
+    for point_name in rigid_config:
+        point_data = rigid_config[point_name]
+        bone_name, point_create_data = parse_rigid_point(point_data)
+        if not rigid_points_for_bone.has_key(bone_name):
+            rigid_points_for_bone[bone_name] = []
+        rigid_points_for_bone[bone_name].append((point_name, point_create_data))
+
+    for point_name in movable_config:
+        point_data = movable_config[point_name]
+        bone_name, point_create_data = parse_movable_point(point_data, config)
+        if not movable_points_for_bone.has_key(bone_name):
+            movable_points_for_bone[bone_name] = []
+        movable_points_for_bone[bone_name].append((point_name, point_create_data))
+
+    node_data = []
+    rigid_point_indexes = {}
+    movable_point_indexes = {}
+
+    def add_points(bone_name, isParent):
+
+        def sub_add_points(baseIndex, pointsArray, outIndexDict):
+            if pointsArray is None:
+                return []
+            else:
+                res = []
+                for subindex, pointInfo in enumerate(pointsArray):
+                    pointName, pointData = pointInfo
+                    if not outIndexDict.has_key(pointName):
+                        outIndexDict[pointName] = {}
+                    if not outIndexDict[pointName].has_key(baseIndex):
+                        outIndexDict[pointName][baseIndex] = []
+                    outIndexDict[pointName][baseIndex].append(subindex)
+                    res.append(pointData)
+
+                return res
+
+        baseIndex = len(node_data)
+        arrStat = sub_add_points(baseIndex, rigid_points_for_bone.get(bone_name), rigid_point_indexes)
+        arrDyn = sub_add_points(baseIndex, movable_points_for_bone.get(bone_name), movable_point_indexes)
+        node_data.append((bone_name,
+         arrStat,
+         arrDyn,
+         isParent,
+         False))
+
+    for boneData in config['bones']:
+        boneRoot = boneData[0]
+        add_points(boneRoot, True)
+        for subBone in boneData[1:]:
+            add_points(subBone, False)
+
+    links = []
+    for linkData in config['links']:
+        parent = linkData[0]
+        child = linkData[1]
+        data = None
+        if len(linkData) > 2:
+            data = linkData[2]
+
+        def get_link_param(key, data, baseData):
+            if data:
+                result = data.get(key)
+                if result != None:
+                    return result
+            return baseData.get(key)
+
+        suck_algorithm = get_link_param('suck_algorithm', data, config)
+        stretch = get_link_param('stretch', data, config)
+
+        def get_link_data(linkName):
+            data = rigid_point_indexes.get(linkName)
+            isStatic = data != None
+            if not isStatic:
+                data = movable_point_indexes[linkName]
+            return (data, isStatic)
+
+        parentDataDict, parentStatic = get_link_data(parent)
+        childDataDict, childStatic = get_link_data(child)
+        for baseParentIndex in parentDataDict:
+            for subParentIndex in parentDataDict[baseParentIndex]:
+                for baseChildIndex in childDataDict:
+                    for subChildIndex in childDataDict[baseChildIndex]:
+                        links.append((baseChildIndex,
+                         subChildIndex,
+                         childStatic,
+                         baseParentIndex,
+                         subParentIndex,
+                         parentStatic,
+                         stretch,
+                         suck_algorithm))
+
+    return _Trackers.NodeInfoFabric(owner, node_data, links, sk, 1.0 / config['update_rate'])
+
+
+def create_fabric_node_info(model, config, entity, base_tracker):
+    if USE_CPP_FABRIC:
+        sk = None
+        if entity:
+            sk = entity.skeletonCollider
+        nodeInfo = _cpp_create_fabric_node_info(model, config, sk)
+    else:
+        nodeInfo = BigWorld.NodeInfoSimpleCloth(model, config['bones'])
+        Fabric.Fabric(nodeInfo, config, entity)
+    base_tracker.addAdditionalNode(nodeInfo)
+    return
+
+
+def weapon_change(weapon_model):
+    if not weapon_model:
+        return
+    else:
+        for path in weapon_model.sources:
+            if spring_fabric_settings.spring_fabric_config.get(path):
+                break
+        else:
+            return
+
+        if not hasattr(weapon_model, 'weapon_cloth_tracker'):
+            weapon_model.weapon_cloth_tracker = BigWorld.Tracker()
+            weapon_model.weapon_cloth_tracker.testTick = False
+            weapon_model.weapon_cloth_tracker.fashionEraID = 4
+            weapon_model.weapon_cloth_tracker.maxLod = tracker_lod_settings.weapon_cloth_lod
+        weapon_model.weapon_cloth_tracker.removeAllAdditionalNodes()
+        for path in weapon_model.sources:
+            for conf in spring_fabric_settings.spring_fabric_config.get(path):
+                create_fabric_node_info(weapon_model, conf, None, weapon_model.weapon_cloth_tracker)
+
+        return
+
+
+def removeFromEntity(entity):
+    pass
+
+
+def applyToEntity(entity):
+    model = entity.model
+    if not model:
+        return
+    if not hasattr(model, 'simple_cloth_tracker'):
+        model.simple_cloth_tracker = BigWorld.Tracker()
+        model.simple_cloth_tracker.testTick = False
+        model.simple_cloth_tracker.fashionEraID = 4
+        model.simple_cloth_tracker.maxLod = tracker_lod_settings.simple_cloth_lod
+        model.simple_cloth_tracker.nodeMatrixUpdateType = 'UPDATE_ALL'
+    model.simple_cloth_tracker.removeAllAdditionalNodes()
+    if entity == BigWorld.player():
+        for path in model.sources:
+            for conf in spring_fabric_settings.spring_fabric_config.get(path):
+                try:
+                    create_fabric_node_info(model, conf, entity, model.simple_cloth_tracker)
+                except:
+                    print '----------'
+                    print entity.position, entity.id
+                    print entity, repr(path)
+                    traceback.print_exc()
+
+    displacement_conf = spring_fabric_settings.spring_fabric_config.get_weapon_displacement(model)
+    tickFromPython = False
+    conf = spring_fabric_settings.spring_fabric_config.get_weapon('belly').copy()
+    conf.update(displacement_conf['belly'])
+    if tickFromPython:
+        nodeInfo = BigWorld.NodeInfoSimpleCloth(model, conf['bones'])
+        model.simple_cloth_tracker.addAdditionalNode(nodeInfo)
+        entity.tracker_belly = WeaponTrack.WeaponTrackDebug(nodeInfo, conf)
+        conf = spring_fabric_settings.spring_fabric_config.get_weapon('weaponback').copy()
+        conf.update(displacement_conf['weaponback'])
+        nodeInfo = BigWorld.NodeInfoSimpleCloth(model, conf['bones'])
+        model.simple_cloth_tracker.addAdditionalNode(nodeInfo)
+        entity.tracker_weaponback = WeaponTrack.WeaponTrackDebug(nodeInfo, conf)
+        conf = spring_fabric_settings.spring_fabric_config.get_weapon('weaponback2').copy()
+        conf.update(displacement_conf['weaponback2'])
+        nodeInfo = BigWorld.NodeInfoSimpleCloth(model, conf['bones'])
+        model.simple_cloth_tracker.addAdditionalNode(nodeInfo)
+        entity.tracker_weaponback2 = WeaponTrack.WeaponTrackDebug(nodeInfo, conf)
+    else:
+        nodeInfo = BigWorld.NodeInfoWeaponSway(model, conf['bones'])
+        model.simple_cloth_tracker.addAdditionalNode(nodeInfo)
+        entity.tracker_belly = WeaponTrack.WeaponTrack(nodeInfo, conf)
+        conf = spring_fabric_settings.spring_fabric_config.get_weapon('weaponback').copy()
+        conf.update(displacement_conf['weaponback'])
+        nodeInfo = BigWorld.NodeInfoWeaponSway(model, conf['bones'])
+        model.simple_cloth_tracker.addAdditionalNode(nodeInfo)
+        entity.tracker_weaponback = WeaponTrack.WeaponTrack(nodeInfo, conf)
+        conf = spring_fabric_settings.spring_fabric_config.get_weapon('weaponback2').copy()
+        conf.update(displacement_conf['weaponback2'])
+        nodeInfo = BigWorld.NodeInfoWeaponSway(model, conf['bones'])
+        model.simple_cloth_tracker.addAdditionalNode(nodeInfo)
+        entity.tracker_weaponback2 = WeaponTrack.WeaponTrack(nodeInfo, conf)
+
+
+def reload_and_reinit(entity = None):
+    reload(spring_fabric_settings)
+    try:
+        if entity:
+            applyToEntity(entity)
+        else:
+            pl = BigWorld.player()
+            for ent in BigWorld.entities.values():
+                if ent.isDestroyed:
+                    continue
+                if not ent.model:
+                    continue
+                if ent.spaceID != pl.spaceID:
+                    continue
+                if not hasattr(ent, 'skeletonCollider'):
+                    continue
+                if ent.__class__.__name__ not in ('PlayerAvatar', 'Avatar', 'NPC'):
+                    continue
+                try:
+                    if ent.enable_tracker and not ent.is_old_npc:
+                        applyToEntity(ent)
+                except:
+                    traceback.print_exc()
+                    print 'entity: ', ent, ent.model
+                    if ent.model:
+                        print ent.model.sources
+                    print
+
+    except:
+        traceback.print_exc()

@@ -1,0 +1,80 @@
+# Embedded file name: ./client/soGUI/soVisualStateComponent.py
+import ResMgr
+import BigWorld
+from bwdebug import ERROR_MSG
+from Helpers.PyGUI.VisualStateComponent import VisualStateComponent, VisualState
+_xml_cache = {}
+
+def clearVisualStateCache():
+    for x in _xml_cache:
+        ResMgr.purge(x)
+
+    _xml_cache.clear()
+
+
+class soVisualState(VisualState):
+    pass
+
+
+class soVisualStateComponent(VisualStateComponent):
+
+    def __init__(self, component, visualStateClassName):
+        VisualStateComponent.__init__(self, component, visualStateClassName)
+        self.xmlPath = None
+        self._callback = None
+        self._loaded = False
+        self.__state = None
+        return
+
+    def initVSC(self, xmlPath, callback = None):
+        if self.xmlPath == xmlPath:
+            return
+        self.xmlPath = xmlPath
+        self._callback = callback
+        if _xml_cache.get(self.xmlPath):
+            return self.onLoadXML(_xml_cache[self.xmlPath])
+        if self._callback:
+
+            def onResLoaded(resource):
+                _xml_cache[self.xmlPath] = resource[self.xmlPath]
+                self.onLoadXML(resource[self.xmlPath])
+
+            BigWorld.loadResourceListBG([self.xmlPath], onResLoaded)
+        else:
+            dsection = ResMgr.openSection(self.xmlPath)
+            self.onLoadXML(dsection)
+            _xml_cache[self.xmlPath] = dsection
+
+    def onLoadXML(self, ext):
+        if ext is not None:
+            visualStatesSection = ext
+            self.visualStateClassName = visualStatesSection.asString
+            components = self.visualStateClassName.strip('"').split('.')
+            module = __import__('__main__')
+            for comp in components[:-1]:
+                module = getattr(module, comp)
+
+            visualStateClass = getattr(module, components[-1])
+            for stateName, stateSection in visualStatesSection.items():
+                visualState = visualStateClass()
+                visualState.onLoad(stateSection)
+                self._visualStates[stateName] = visualState
+
+            if self._callback:
+                self._callback(self.__state)
+                self._callback = None
+            self._loaded = True
+            if self.__state:
+                self.setVisualState(self.__state)
+                self.__state = None
+        else:
+            ERROR_MSG("Failed to open external visual state '%s'." % self.xmlPath)
+        return
+
+    def setVisualState(self, stateName):
+        if self._loaded:
+            self.__state = None
+            VisualStateComponent.setVisualState(self, stateName)
+        else:
+            self.__state = stateName
+        return

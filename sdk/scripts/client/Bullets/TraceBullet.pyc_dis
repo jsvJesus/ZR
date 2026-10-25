@@ -1,0 +1,526 @@
+# Embedded file name: ./client/Bullets/TraceBullet.py
+import BigWorld
+from Math import Vector3, Matrix
+from DrawPrimitivesUtils import draw_sphere, draw_line, clear_drawings
+import math_bw
+import random
+import FX
+import traceback
+from Items import ItemsCatalog
+from wound_and_soak_parameters import material_blood_params
+from SfxCatalog import Mat
+from SfxCatalog import RICOCHET_CATALOG as RC
+from SfxCatalog import RICOCHET_INTERACTION as RI
+from SfxCatalog import PIERCE_INTERACTION as PI
+from SfxCatalog import BULLET_SPIRALS_CATALOG
+import utils_bw
+import draw_utils_extend
+from DrawPrimitivesUtils import DrawBBox
+from BulletsController import Spin
+from utils_bw import IGNORE_MATERIAL
+import math
+from FiringDefs import DamageTypes, BODY_ZONES
+from BWBallistic import Helper as BallisticHelper
+from BWBallistic import SfxType
+from EntityCollision import onEntityCollision
+from EnviroCollision import onEnviroCollision, onWaterCollision
+
+class BallisticHelperEmulator(object):
+
+    def __init__(self):
+        self._spin = None
+        self._hasSpin = False
+        self._friction = 0
+        self._gravity = Vector3()
+        return
+
+    def init(self, friction, gravity):
+        self._friction = friction
+        self._gravity = gravity
+
+    def calculate(self, old_velocity, position, dt):
+        frictionForce = old_velocity * math_bw.clamp(self._friction * dt, 0.0, 0.95)
+        velocity = old_velocity + self._gravity * dt - frictionForce
+        disp = None
+        if self._hasSpin and self._spin is None:
+            raise ValueError('HasSpin setted, but there is no spin')
+        if self._spin is not None:
+            self._spin.tick(dt, velocity)
+            speed = velocity.length * (1.0 - self._spin._velocity_fade)
+            velocity.normalise()
+            velocity *= speed
+            disp = self._spin.spin_vector
+        potential_pos = position + velocity * dt
+        if disp is not None:
+            potential_pos += disp
+        dist = (potential_pos - position).length
+        return (velocity, potential_pos, dist)
+
+    def setSpin(self, density, speed, size, velocity_fade):
+        self._spin = Spin(density, speed, size, velocity_fade)
+        self._hasSpin = True
+
+    @property
+    def hasSpin(self):
+        return self._hasSpin
+
+    @hasSpin.setter
+    def hasSpin(self, value):
+        self._hasSpin = bool(value)
+
+    @property
+    def spinAmplitudeEffect(self):
+        return math_bw.clamp(1.0 - self._spin.amplitude * 2.0)
+
+
+DONT_USE_CPP_CODE = False
+if DONT_USE_CPP_CODE:
+    BallisticHelper = BallisticHelperEmulator
+DEBUG = False
+DEBUG_DRAW_HINT = False
+DEBUG_IGNORE_CONFIG = False
+GRAVITY = 30
+FRICTION = 0.0
+MIN_SPEED = 1.0
+LIFE_TIME = 3.0
+SPEED = 250
+LENGTH = 0.017
+FLAME_DIST = 0
+COLOUR = (1, 1, 1, 1)
+VISIBLE = True
+SPIRAL_TRAVEL = 'travel_9x19'
+SPIRAL_RICOCHET = 'ricochet_9x19'
+COLLISION_SPREAD = 0.3
+PIERCE_FACTOR = 0.024
+MAX_RICOCHETS = 2
+CRAZY_RATIO = 0.01
+CRAZY_DUMP = (0.005, 0.1)
+
+class Status:
+    NORMAL, CRAZY, SMALL_RICOCHET, BIG_RICOCHET, PIERCED = xrange(5)
+
+
+class TraceBullet(object):
+
+    def __init__(self, destroy_callback):
+        self._model = BigWorld.Model('characters2/weapons/ammo/tracer_trail.model')
+        self._model.empty = 'stock'
+        self._tail_model = BigWorld.Model('characters2/weapons/ammo/tracer_trail.model')
+        self._tail_model.empty = 'stock'
+        self._destroy_callback = destroy_callback
+        self._debug_tragectory_drawer = draw_utils_extend.LinesHolder(1000, (1, 1, 1, 1))
+
+    def reset(self, parent_avatar, position, direction, ammo_type, weapon_item_id, weapon_in_water):
+        self._far_plane_sqr = BigWorld.projection().farPlane ** 2
+        self._status = Status.NORMAL
+        self._inside = None
+        self._accumulation_time = 0
+        self._ricochets = 0
+        self._weapon_item_id = weapon_item_id
+        self._parent_avatar = parent_avatar
+        self._spaceID = self._parent_avatar.spaceID
+        self._ammo_type = ammo_type
+        self._ammo_params = ItemsCatalog.GetItemParam(ammo_type)
+        self._start_pos = Vector3(position)
+        self._prev_start_pos = None
+        self._position = Vector3(position)
+        self._prev_position = Vector3(self._position)
+        self._velocity = Vector3(direction)
+        self._velocity.normalise()
+        self._velocity *= self.SPEED
+        self._life_time = LIFE_TIME
+        self._gravity = self.GRAVITY
+        self._destroyed = False
+        self._in_water = weapon_in_water
+        self._fly_dist = 0.0
+        self._ballistic_helper = BallisticHelper()
+        self._ballistic_helper.init(self.FRICTION, self._gravity)
+        self._model.empty.g_colour = self.COLOUR
+        self._tail_model.empty.g_colour = self.COLOUR
+        self._model.position = position
+        self._tail_model.position = position
+        if self.VISIBLE:
+            BigWorld.addModel(self._tail_model)
+            BigWorld.addModel(self._model)
+            self._update_model_transform()
+        self._debug_tragectory_drawer.clear()
+        if DEBUG:
+            self._debug_tragectory_drawer.add(position, position + direction * 0.05, (1, 1, 0, 1))
+            self._debug_tragectory_drawer.add(position, position + Vector3(0, 0.05, 0), (1, 1, 0, 1))
+        BigWorld.callback(0, self._tick)
+        return
+
+    def _draw_line(self, pos1, pos2):
+        if DEBUG:
+            if self._status == Status.NORMAL:
+                color = (1, 1, 1, 1)
+            elif self._status == Status.CRAZY:
+                color = (1, 0, 0, 1)
+            elif self._status == Status.PIERCED:
+                color = (0, 0, 0, 1)
+            elif self._status == Status.SMALL_RICOCHET:
+                color = (1, 1, 0, 1)
+            elif self._status == Status.BIG_RICOCHET:
+                color = (1, 0, 1, 1)
+            self._debug_tragectory_drawer.add(pos1, pos2, color=color)
+
+    def _tick(self):
+        if self._destroyed:
+            return
+        self._accumulation_time += BigWorld.getTimeDelta()
+        fixed_time = 0.02
+        while self._accumulation_time > fixed_time:
+            self._accumulation_time -= fixed_time
+            self._fixed_tick(fixed_time)
+
+        BigWorld.callback(0, self._tick)
+
+    def _fixed_tick(self, time_delta):
+        if self._destroyed:
+            return
+        self._life_time -= time_delta
+        if self._life_time <= 0.0 or self._velocity.length < MIN_SPEED:
+            self._destroy()
+            return
+        if BigWorld.player().position.distSqrTo(self._position) >= self._far_plane_sqr:
+            self._destroy()
+            return
+        self._velocity, potential_pos, dist = self._ballistic_helper.calculate(self._velocity, self._position, time_delta)
+        if not BigWorld.isSpaceLoaded(self._spaceID):
+            self._destroy()
+            return
+        try:
+            self._move_to_potential_pos(potential_pos)
+        except:
+            traceback.print_exc()
+            self._destroy()
+            return
+
+        self._fly_dist += dist
+
+    def _check_pierce(self, material, point, double_sided):
+        """ \xd0\xb2\xd0\xbe\xd0\xb7\xd0\xb2\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xbd\xd0\xbe\xd0\xb2\xd1\x83\xd1\x8e \xd1\x81\xd0\xba\xd0\xbe\xd1\x80\xd0\xbe\xd1\x81\xd1\x82\xd1\x8c
+                \xd0\xb8\xd0\xbb\xd0\xb8 False, \xd0\xb5\xd1\x81\xd0\xbb\xd0\xb8 \xd0\xbd\xd0\xb5 \xd0\xbf\xd1\x80\xd0\xbe\xd1\x82\xd0\xba\xd0\xbd\xd1\x83\xd0\xbb
+        """
+        pierce_data = PI.get(material)
+        if not pierce_data:
+            return False
+        else:
+            direction = Vector3(self._velocity)
+            direction.normalise()
+            from_point = point + direction * 0.01
+            to_point = from_point + direction * 1.0
+            velocity = direction * self._velocity.length
+            if self._inside:
+                velocity = self._random_velocity(velocity, self._inside, material)
+                self._inside = None
+                return velocity
+            if pierce_data[0] == 0.0:
+                return velocity
+            if double_sided:
+                dist = 1
+                velocity *= max(0, 1.0 - pierce_data[0] * dist)
+                velocity = self._random_velocity(velocity, dist, material)
+                return velocity
+            collision = utils_bw.collide(self._spaceID, from_point, to_point)
+            if not collision:
+                return False
+            point, triangle, _ = collision
+            dist = (point - from_point).length * 100
+            self._inside = dist
+            return velocity * max(0, 1.0 - pierce_data[0] * dist)
+
+    def _random_velocity(self, velocity, pierce_dist, material):
+        return math_bw.random_vector(velocity, pierce_dist * PIERCE_FACTOR, False)
+
+    def _armor_sfx_draw(self, position, direction, sfx_path):
+        hit_model = BigWorld.Model('')
+        hit_model.position = position
+        BigWorld.addModel(hit_model)
+        FX.bufferedOneShotEffect(sfx_path, hit_model, DecalInfo=[position, position + direction * 2])
+
+        def _delModel():
+            BigWorld.delModel(hit_model)
+
+        BigWorld.callback(2.0, _delModel)
+
+    def _move_to_potential_pos(self, potential_pos):
+        self._prev_position = Vector3(self._position)
+        collision_point_to = potential_pos
+        environment_collision = BigWorld.collideIgnoreFlags(self._spaceID, self._position, collision_point_to, IGNORE_MATERIAL)
+        if not environment_collision[0]:
+            environment_collision = None
+        if environment_collision:
+            collision_point_to = environment_collision[0]
+        was_in_water = self.in_water
+        position = Vector3(self._position)
+        self._last_water_collision = BigWorld.waterCollide(self._position, collision_point_to)
+        _in_water = bool(self._last_water_collision)
+        water_collision_point_to = None
+        if _in_water and not was_in_water:
+            collision_point_to = Vector3(self._last_water_collision[0])
+            environment_collision = None
+        entity_collision = BigWorld.traceBulletWithCustomColliders(position, collision_point_to, 0, ['skeletonCollider'], True)
+        if entity_collision:
+            if entity_collision[0] == self._parent_avatar.id and self._status == Status.NORMAL:
+                entity_collision = None
+        reflected = False
+        pierced = False
+        destroyed = False
+        if DEBUG and DEBUG_DRAW_HINT:
+            clear_drawings()
+        if entity_collision:
+            collision_data = {'skeletonCollider': []}
+            if isinstance(entity_collision[1], dict):
+                entity_id = entity_collision[0]
+                victim = BigWorld.entities[entity_id]
+                collision_data['skeletonCollider'] = victim.skeletonCollider.getLastCollides()
+                collision_data['skeletonCollider'].sort(key=lambda x: position.distTo(x[1]))
+            else:
+                entity_id, point, collider_name = entity_collision
+                victim = BigWorld.entities[entity_id]
+                reflection = victim.skeletonCollider.impactReflection
+                collision_data['skeletonCollider'] = [(victim.collider_boxes[collider_name], point, reflection)]
+            skeletons = collision_data['skeletonCollider']
+            armors = collision_data['armorCollider']
+            onEntityCollision(skeletons, armors, collision_point_to, potential_pos, self._position, self._velocity, self.SPEED, self._ammo_type, self._weapon_item_id, entity_collision[0], self._parent_avatar.id)
+            if not collision_data['armorCollider']:
+                destroyed = True
+            point = skeletons[0][0]
+            sfx = lambda : 0
+        elif environment_collision:
+            if self.in_water:
+                self._destroy()
+                return
+            point, triangle, material, flags, _ = environment_collision
+            reflection, normal = math_bw.calculate_reflection(point, self._velocity, triangle)
+            reflect_point = point + normal * 0.01
+            reflection, speed, reflect_angle = self._calk_random_reflection(reflect_point, reflection, material)
+            if reflection and speed:
+                self._ricochets += 1
+                sfx = lambda : onEnviroCollision(triangle, normal, material, reflect_point, SfxType.REFLECT, self._ammo_type, self._parent_avatar)
+                if self._ricochets > MAX_RICOCHETS:
+                    destroyed = True
+                else:
+                    reflected = True
+            else:
+                pierce_velocity = self._check_pierce(material, point, utils_bw.double_sided(material, flags))
+                if pierce_velocity and pierce_velocity.length > MIN_SPEED:
+                    sfx = lambda : onEnviroCollision(triangle, normal, material, point, SfxType.PIERCE, self._ammo_type, self._parent_avatar)
+                    normalised_velocity = Vector3(self._velocity)
+                    normalised_velocity.normalise()
+                    point = point - normal * 0.01 + normalised_velocity * 0.01
+                    pierced = True
+                if not pierced:
+                    sfx = lambda : onEnviroCollision(triangle, normal, material, point, SfxType.STUCK, self._ammo_type, self._parent_avatar)
+                    destroyed = True
+        self.in_water = _in_water
+        if reflected:
+            sfx()
+            self._ballistic_helper.hasSpin = False
+            if self._status == Status.CRAZY:
+                self._create_ricochet_spin()
+            else:
+                chance = reflect_angle / (math.pi * 0.5)
+                if random.random() < chance:
+                    self._create_ricochet_spin()
+                    self._status = Status.BIG_RICOCHET
+                else:
+                    self._status = Status.SMALL_RICOCHET
+            self._velocity = reflection * speed
+            self._prev_start_pos = self._start_pos
+            self._start_pos = Vector3(reflect_point)
+            self._position = Vector3(reflect_point)
+        elif pierced:
+            sfx()
+            self._status = Status.PIERCED
+            self._velocity = pierce_velocity
+            self._prev_start_pos = self._start_pos
+            self._start_pos = Vector3(point)
+            self._position = Vector3(point)
+        else:
+            if destroyed:
+                self._draw_line(point, self._prev_position)
+                sfx()
+                self._destroy()
+                return
+            self._position = Vector3(collision_point_to)
+        if self.VISIBLE:
+            self._update_model_transform()
+        self._draw_line(self._position, self._prev_position)
+        return
+
+    def _calk_random_reflection(self, point, real_reflection, material):
+        """ \xd0\xb4\xd0\xbe\xd0\xb1\xd0\xb0\xd0\xb2\xd0\xbb\xd1\x8f\xd0\xb5\xd1\x82 \xd1\x81\xd0\xbb\xd1\x83\xd1\x87\xd0\xb0\xd0\xb9\xd0\xbd\xd0\xbe\xd1\x81\xd1\x82\xd1\x8c \xd0\xbf\xd1\x80\xd0\xb8 \xd1\x81\xd1\x82\xd0\xbe\xd0\xbb\xd0\xba\xd0\xbd\xd0\xbe\xd0\xb2\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb8
+                \xd0\xb2\xd0\xbe\xd0\xb7\xd0\xb2\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xb2\xd0\xb5\xd0\xba\xd1\x82\xd0\xbe\xd1\x80 \xd0\xbe\xd1\x82\xd1\x80\xd0\xb0\xd0\xb6\xd0\xb5\xd0\xbd\xd0\xb8\xd1\x8f, \xd1\x81\xd0\xba\xd0\xbe\xd1\x80\xd0\xbe\xd1\x81\xd1\x82\xd1\x8c(\xd1\x81\xd0\xba\xd0\xb0\xd0\xbb\xd1\x8f\xd1\x80), \xd1\x83\xd0\xb3\xd0\xbe\xd0\xbb
+        """
+        crazy = random.random() < self.get_crazy_ratio(material)
+        if crazy:
+            for _ in xrange(3):
+                reflection = math_bw.random_normalized_vector()
+                if not utils_bw.collide(self._spaceID, point, point + reflection * 0.1):
+                    speed = self._velocity.length * random.uniform(*CRAZY_DUMP)
+                    normal_angle = 0.5 * math_bw.angle_between_vectors(reflection, self._velocity)
+                    self._status = Status.CRAZY
+                    break
+            else:
+                return (None, None, None)
+
+        if not crazy:
+            reflection = math_bw.random_vector(real_reflection, COLLISION_SPREAD)
+            normal_angle = 0.5 * math_bw.angle_between_vectors(reflection, self._velocity)
+            if not self._ammo_params.get('HitSfxCategory'):
+                category_name = 'Default'
+                category = RI.get(category_name) or RI['Default']
+                catalog_name, _ = category.get(material) or category.get(Mat.Default) or ('Default', 'sfx/hits/default.xml')
+                config = RC.get(catalog_name) or RC['Default']
+                for range_config in config:
+                    if normal_angle <= range_config['start_angle']:
+                        reflection_config = range_config
+                        break
+                else:
+                    reflection_config = config[-1]
+
+                return random.random() > reflection_config['ricochet'] and (None, None, None)
+            speed = self._velocity.length * reflection_config['speed']
+        return (reflection, speed, normal_angle)
+
+    def _update_model_transform(self):
+        """ \xd0\xbe\xd0\xb1\xd0\xbd\xd0\xbe\xd0\xb2\xd0\xbb\xd1\x8f\xd0\xb5\xd1\x82 \xd0\xb2\xd0\xbd\xd0\xb5\xd1\x88\xd0\xbd\xd0\xb8\xd0\xb9 \xd0\xb2\xd0\xb8\xd0\xb4 \xd0\xbf\xd1\x83\xd0\xbb\xd0\xb8 """
+        if self.in_water or self._fly_dist < FLAME_DIST:
+            self._model.visible = False
+            self._tail_model.visible = False
+            return
+        direction = self._position - self._start_pos
+        if direction.lengthSquared == 0:
+            direction = Vector3(self._velocity)
+        self._model.alignToVector(direction, self._position, False)
+        max_dist = (self._position - self._start_pos).length * 1.0
+        min_scale = 0.01
+        length = self._velocity.length * self.LENGTH
+        if self._ballistic_helper.hasSpin:
+            length *= self._ballistic_helper.spinAmplitudeEffect
+        need_tail = False
+        if length > max_dist:
+            if self._prev_start_pos:
+                tail_length = length - max_dist
+                tail_start = self._start_pos
+                tail_direction = self._prev_start_pos - self._start_pos
+                tail_length = min(tail_length, tail_direction.length)
+                tail_direction.normalise()
+                tail_direction *= tail_length
+                need_tail = tail_length >= min_scale
+            length = max_dist
+        points_dist = (self._position - self._prev_position).length
+        if points_dist > length:
+            direction.normalise()
+            spread = random.uniform(length - points_dist, points_dist - length)
+            model_pos = self._position - direction * spread
+            self._model.alignToVector(direction, model_pos, False)
+        need_model = length >= min_scale
+        self._model.visible = need_model
+        if need_model:
+            self._model.newScaleTest = Vector3(1, 1, length)
+            self._model.scale = self._model.newScaleTest
+            self._model.visible = self._model.scale[0] > min_scale
+        self._tail_model.visible = need_tail
+        if need_tail:
+            self._tail_model.alignToVector(-tail_direction, tail_start)
+            self._tail_model.newScaleTest = Vector3(1, 1, tail_length)
+            self._tail_model.scale = self._tail_model.newScaleTest
+
+    def _destroy(self):
+        if self._destroyed:
+            return
+        else:
+            self._destroyed = True
+            self._parent_avatar = None
+            if self.VISIBLE:
+                BigWorld.delModel(self._tail_model)
+                BigWorld.delModel(self._model)
+            self._destroy_callback(self)
+            return
+
+    @property
+    def in_water(self):
+        return self._in_water
+
+    @in_water.setter
+    def in_water(self, value):
+        if value == self._in_water:
+            return
+        self._in_water = value
+        if self._in_water:
+            self._on_water_enter(False)
+        else:
+            self._on_water_leave()
+
+    def _on_water_enter(self, inside):
+        water_point = self._last_water_collision[0]
+        if not inside:
+            onWaterCollision(water_point)
+        self._velocity = math_bw.clamp_vector(self._velocity, 0, self._velocity.length * 0.02)
+        self._life_time = 0.3
+        self._prev_start_pos = self._start_pos
+        self._start_pos = Vector3(water_point)
+        self._position = Vector3(water_point)
+
+    def _on_water_leave(self):
+        pass
+
+    def _create_coriolis_spin(self):
+        return
+        spin_params_name = SPIRAL_TRAVEL if DEBUG_IGNORE_CONFIG else self._ammo_params.get('TracerSpiralTravel', SPIRAL_TRAVEL)
+        self._create_spin(spin_params_name)
+
+    def _create_ricochet_spin(self):
+        spin_params_name = SPIRAL_RICOCHET if DEBUG_IGNORE_CONFIG else self._ammo_params.get('TracerSpiralRicochet', SPIRAL_RICOCHET)
+        self._create_spin(spin_params_name)
+
+    def _create_spin(self, spin_params_name):
+        if not spin_params_name:
+            return None
+        else:
+            spin_params = BULLET_SPIRALS_CATALOG.get(spin_params_name)
+            self._ballistic_helper.setSpin(spin_params['SpiralDensity'], spin_params['SpiralSpeed'], spin_params['SpiralSize'], spin_params['VelocityFade'])
+            return None
+
+    def get_crazy_ratio(self, material):
+        if DEBUG_IGNORE_CONFIG or material not in material_blood_params:
+            return CRAZY_RATIO
+        return material_blood_params[material]['crazy_ratio']
+
+    @property
+    def SPEED(self):
+        if DEBUG_IGNORE_CONFIG:
+            return SPEED
+        return self._ammo_params.get('TracerSpeed', SPEED)
+
+    @property
+    def LENGTH(self):
+        if DEBUG_IGNORE_CONFIG:
+            return LENGTH
+        return self._ammo_params.get('TracerLength', LENGTH)
+
+    @property
+    def VISIBLE(self):
+        if DEBUG_IGNORE_CONFIG:
+            return VISIBLE
+        return self._ammo_params.get('TracerVisible', VISIBLE)
+
+    @property
+    def GRAVITY(self):
+        grav = GRAVITY if DEBUG_IGNORE_CONFIG else self._ammo_params.get('TracerGravity', GRAVITY)
+        return Vector3(0, -grav, 0)
+
+    @property
+    def FRICTION(self):
+        if DEBUG_IGNORE_CONFIG:
+            return FRICTION
+        return self._ammo_params.get('TracerFriction', FRICTION)
+
+    @property
+    def COLOUR(self):
+        if DEBUG_IGNORE_CONFIG:
+            return COLOUR
+        return self._ammo_params.get('TracerColour', COLOUR)

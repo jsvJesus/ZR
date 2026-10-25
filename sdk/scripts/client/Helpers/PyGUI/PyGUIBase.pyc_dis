@@ -1,0 +1,380 @@
+# Embedded file name: ./client/Helpers/PyGUI/PyGUIBase.py
+import BigWorld
+import traceback
+import GUI
+import weakref
+from bwdebug import ERROR_MSG
+from Helpers.PyGUI.Utils import roundComponentPos
+from functools import partial
+from Helpers.Listener import Listenable
+from Helpers.PyGUI.DraggableComponent import DraggableComponent
+from Keys import KEY_SYSRQ
+DRAG_CELL_SIZE_DIGITS = 4
+
+class WinBehaviour():
+    StopPlayerOnShow = 1
+    InterceptKeyDown = 2
+    InterceptButtons = 4
+    InterceptMove = 8
+    Simple = 0
+    Full = StopPlayerOnShow | InterceptKeyDown | InterceptButtons | InterceptMove
+
+    @staticmethod
+    def need_stop_on_show(win_type):
+        return bool(win_type & WinBehaviour.StopPlayerOnShow)
+
+    @staticmethod
+    def need_intersept_down(win_type):
+        return bool(win_type & WinBehaviour.InterceptKeyDown)
+
+    @staticmethod
+    def need_intercept_move(win_type):
+        return bool(win_type & WinBehaviour.InterceptMove)
+
+    @staticmethod
+    def need_intercept_buttons(win_type):
+        return bool(win_type & WinBehaviour.InterceptButtons)
+
+
+class PyGUIBase(object, Listenable):
+
+    def __init__(self, component = None):
+        object.__init__(self)
+        Listenable.__init__(self)
+        self.component = component
+        self.eventHandler = None
+        self._parent = None
+        self._behaviours = WinBehaviour.Simple
+        self.isActive = False
+        return
+
+    def set_behaviours(self, behaviours):
+        self._behaviours = behaviours
+
+    def show(self):
+        if not self.component.visible:
+            self.component.visible = True
+            self.on_show()
+
+    def on_show(self):
+        try:
+            if WinBehaviour.need_stop_on_show(self._behaviours):
+                p = BigWorld.player()
+                if p and not p.isDestroyed:
+                    p.stopPlayerMoving()
+        except:
+            traceback.print_exc()
+            traceback.print_stack()
+
+    def hide(self):
+        if self.component.visible:
+            self.component.visible = False
+            self.on_hide()
+
+    def on_hide(self):
+        pass
+
+    def print_parents(self):
+
+        def recurs(comp, n):
+            if n > 100:
+                return
+            elif not comp:
+                return
+            else:
+                recurs(comp.parent, n + 1)
+                if comp.parent is None:
+                    print ' ' * n, '-- TOP:', comp, comp.script
+                    return
+                for name, child in comp.parent.children:
+                    if child == comp:
+                        print ' ' * n, '-->', repr(name), comp, comp.script
+                        return
+
+                return
+
+        return recurs(self.component, 0)
+
+    def active(self, state):
+        if state == self.isActive:
+            return
+        if not self.component:
+            return
+        self.isActive = state
+        if state:
+            if not self._parent:
+                GUI.addRoot(self.component)
+            else:
+                self._parent.addChild(self.component)
+            self.component.focus = True
+            self.component.moveFocus = True
+            self.component.crossFocus = True
+        else:
+            if not self._parent:
+                GUI.delRoot(self.component)
+            else:
+                self._parent.delChild(self.component)
+            self.component.focus = False
+            self.component.moveFocus = False
+            self.component.crossFocus = False
+        self.listeners.activated(state)
+
+    def _setparent(self, parent):
+        if self.isActive:
+            if not self._parent:
+                GUI.delRoot(self.component)
+            else:
+                self._parent.delChild(self.component)
+        if parent:
+            self._parent = weakref.proxy(parent)
+        else:
+            self._parent = parent
+        if self.isActive:
+            if not self._parent:
+                GUI.addRoot(self.component)
+            else:
+                self._parent.addChild(self.component)
+
+    def _getparent(self):
+        return self._parent
+
+    parent = property(_getparent, _setparent)
+
+    def getWindow(self):
+        import Window
+        if isinstance(self, Window.Window):
+            return self
+        elif self.component.parent and self.component.parent.script:
+            return self.component.parent.script.getWindow()
+        else:
+            return
+            return
+
+    def toggleActive(self):
+        self.active(not self.isActive)
+
+    def setEventHandler(self, eh):
+        self.eventHandler = eh
+
+    def doLayout(self, parent):
+        for name, child in self.component.children:
+            child.script.doLayout(self)
+
+    def setToolTipInfo(self, toolTipInfo):
+        self.toolTipInfo = toolTipInfo
+
+    def removeToolTipInfo(self):
+        if hasattr(self, 'toolTipInfo'):
+            del self.toolTipInfo
+
+    def focus(self, state):
+        pass
+
+    def handleKeyEvent(self, event):
+        return False
+
+    def handleMouseEvent(self, comp, event):
+        return False
+
+    def handleMouseButtonEvent(self, comp, event):
+        window = self.getWindow()
+        if window:
+            window.listeners.windowClicked()
+        return False
+
+    def handleMouseClickEvent(self, component):
+        return False
+
+    def handleMouseEnterEvent(self, comp):
+        if getattr(self, 'toolTipInfo', None):
+            import ToolTip
+            ToolTip.ToolTipManager.instance.setupToolTip(self.component, self.toolTipInfo)
+        return False
+
+    def handleMouseLeaveEvent(self, comp):
+        return False
+
+    def handleAxisEvent(self, axis, value, dTime):
+        return False
+
+    def handleDragStartEvent(self, comp):
+        return False
+
+    def handleDragStopEvent(self, comp):
+        return False
+
+    def handleDragEnterEvent(self, comp, dragged):
+        return False
+
+    def handleDragLeaveEvent(self, comp, dragged):
+        return False
+
+    def handleDropEvent(self, comp, dropped):
+        return False
+
+    def onLoad(self, dataSection):
+        if dataSection.has_key('toolTipInfo'):
+            import ToolTip
+            self.toolTipInfo = ToolTip.ToolTipInfo()
+            self.toolTipInfo.onLoad(dataSection._toolTipInfo)
+
+    def onSave(self, dataSection):
+        if hasattr(self, 'toolTipInfo') and self.toolTipInfo is not None:
+            toolTipInfoSection = dataSection.createSection('toolTipInfo')
+            self.toolTipInfo.onSave(toolTipInfoSection)
+        return
+
+    def onBound(self):
+        for name, child in self.component.children:
+            if not child.script:
+                child.script = PyGUIBase(child)
+            raise isinstance(child.script, PyGUIBase) or AssertionError
+
+        roundComponentPos(self)
+        self._bindEvents(self.__class__)
+
+    def _bindEvents(self, cls):
+        for name, function in cls.__dict__.iteritems():
+            if hasattr(function, '_PyGUIEventHandler'):
+                for componentName, eventName, args, kargs in function._PyGUIEventHandler:
+                    if not callable(function):
+                        raise AssertionError
+                        component = self.component
+                        for name in componentName.split('.'):
+                            component = getattr(component, name, None)
+                            if component is None:
+                                break
+
+                        component is None and ERROR_MSG("PyGUIEvent: '%s' has no component named '%s'." % (str(self), componentName))
+                        continue
+                    function = getattr(self, function.__name__)
+                    setattr(component.script, eventName, partial(function, *args, **kargs))
+
+        for base in cls.__bases__:
+            self._bindEvents(base)
+
+        return
+
+    def clearAllChildren(self, component):
+        for name, child in component.children:
+            if len(child.children) > 0:
+                self.clearAllChildren(child)
+                child.textureName = ''
+                child.script = None
+                component.delChild(child)
+            else:
+                child.textureName = ''
+                child.script = None
+                component.delChild(child)
+
+        return
+
+    def _unloadself(self):
+        if self.component:
+            self.component.textureName = ''
+            self.component.script = None
+            self.component = None
+            self.eventHandler = None
+        return
+
+
+def get_layer(component):
+    from soGUI.soGUILayer import soGUILayer
+    if isinstance(component.script, soGUILayer):
+        return component.script
+    if component.parent:
+        return get_layer(component.parent)
+
+
+def get_component_size(component, mode = 'PIXEL'):
+    prev_mode = (component.widthMode, component.heightMode)
+    component.widthMode, component.heightMode = mode, mode
+    width, height = component.width, component.height
+    component.widthMode, component.heightMode = prev_mode
+    return (width, height)
+
+
+class DragWin(PyGUIBase, DraggableComponent):
+
+    def __init__(self, component):
+        PyGUIBase.__init__(self, component)
+        DraggableComponent.__init__(self, True, True, True)
+        component.script = self
+
+    def is_visible(self):
+        return self.component.visible
+
+    def handleMouseButtonEvent(self, comp, event):
+        return DraggableComponent.handleMouseButtonEvent(self, comp, event)
+
+
+class Interceptor(PyGUIBase):
+    """ \xd0\xbf\xd0\xb5\xd1\x80\xd0\xb5\xd1\x85\xd0\xb2\xd0\xb0\xd1\x82\xd1\x8b\xd0\xb2\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xb2\xd1\x81\xd0\xb5 \xd1\x81\xd0\xbe\xd0\xb1\xd1\x8b\xd1\x82\xd0\xb8\xd1\x8f \xd0\xbc\xd1\x8b\xd1\x88\xd0\xb8 \xd0\xb8 \xd0\xbd\xd0\xb8\xd0\xba\xd0\xbe\xd0\xbc\xd1\x83 \xd0\xbd\xd0\xb5 \xd0\xbe\xd1\x82\xd0\xb4\xd0\xb0\xd1\x91\xd1\x82
+            \xd0\xbb\xd0\xb8\xd0\xb1\xd0\xbe \xd0\xbe\xd1\x82\xd0\xb4\xd0\xb0\xd1\x91\xd1\x82 proxy
+    """
+
+    def __init__(self, component, intercept_buttons = True, intercept_moving = True, interscept_keys = False):
+        PyGUIBase.__init__(self, component)
+        self._proxy = None
+        component.script = self
+        self._intercept_buttons = intercept_buttons
+        self._intercept_moving = intercept_moving
+        self._intercept_keys = interscept_keys
+        self.change_interseption()
+        return
+
+    def set_behaviours(self, behaviours):
+        PyGUIBase.set_behaviours(self, behaviours)
+        if WinBehaviour.need_intercept_buttons(self._behaviours):
+            self.component.mouseButtonFocus = True
+        if WinBehaviour.need_intercept_move(self._behaviours):
+            self.component.dropFocus = True
+            self.component.dragFocus = True
+            self.component.crossFocus = True
+            self.component.moveFocus = True
+        if WinBehaviour.need_intersept_down(self._behaviours):
+            self.component.focus = True
+
+    def change_interseption(self, **kargs):
+        """ \xd1\x82\xd0\xb5 \xd0\xb6\xd0\xb5, \xd1\x87\xd1\x82\xd0\xbe \xd0\xb2 \xd0\xba\xd0\xbe\xd0\xbd\xd1\x81\xd1\x82\xd1\x80\xd1\x83\xd0\xba\xd1\x82\xd0\xbe\xd1\x80\xd0\xb5 """
+        self._intercept_buttons = kargs.get('intercept_buttons', self._intercept_buttons)
+        self._intercept_moving = kargs.get('intercept_moving', self._intercept_moving)
+        self._intercept_keys = kargs.get('interscept_keys', self._intercept_keys)
+        self.component.mouseButtonFocus = self._intercept_buttons
+        self.component.dropFocus = self._intercept_moving
+        self.component.dragFocus = self._intercept_moving
+        self.component.crossFocus = self._intercept_moving
+        self.component.moveFocus = self._intercept_moving
+        self.component.focus = self._intercept_keys
+
+    def set_proxy(self, proxy):
+        self._proxy = proxy
+
+    def handleMouseButtonEvent(self, component, event):
+        if self._intercept_buttons:
+            if self._proxy:
+                return self._proxy.handleMouseButtonEvent(component, event)
+            return True
+        if WinBehaviour.need_intercept_buttons(self._behaviours):
+            return True
+        return False
+
+    def handleMouseEvent(self, component, event):
+        if self._intercept_moving:
+            if self._proxy:
+                return self._proxy.handleMouseEvent(component, event)
+            return True
+        if WinBehaviour.need_intercept_move(self._behaviours):
+            return True
+        return False
+
+    def handleKeyEvent(self, event):
+        if self._intercept_keys:
+            if event.key == KEY_SYSRQ and not event.modifiers:
+                return False
+            if self._proxy:
+                return self._proxy.handleKeyEvent(event)
+            return True
+        if event.isKeyDown() and WinBehaviour.need_intersept_down(self._behaviours):
+            return True
+        return False

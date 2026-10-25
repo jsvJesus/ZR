@@ -1,0 +1,158 @@
+# Embedded file name: ./client/Draisine.py
+import math
+from Localization import lc
+from Vehicle import Vehicle, AnimationState
+import heliconstants as H
+import BigWorld
+from FX.persistent_ext_bg import loadPersistentExtAsync, PersistentExt
+from math_bw import smooth_damp, inverse_lerpclam
+from sounds_manager import playSound
+
+class AnimationRotator:
+    """ \xd0\xbc\xd0\xb5\xd1\x80\xd0\xb7\xd0\xba\xd0\xb8\xd0\xb9 \xd0\xba\xd0\xbe\xd1\x81\xd1\x82\xd1\x8b\xd0\xbb\xd1\x8c:
+            - changeParam \xd1\x80\xd0\xb0\xd0\xb1\xd0\xbe\xd1\x82\xd0\xb0\xd0\xb5\xd1\x82 \xd1\x87\xd0\xb5\xd1\x80\xd0\xb5\xd0\xb7 \xd0\xb7\xd0\xb0\xd0\xbd\xd0\xb8\xd1\x86\xd1\x83 (\xd0\xbd\xd0\xb5\xd0\xbb\xd1\x8c\xd0\xb7\xd1\x8f \xd1\x87\xd0\xb0\xd1\x81\xd1\x82\xd0\xbe \xd0\xbe\xd0\xb1\xd0\xbd\xd0\xbe\xd0\xb2\xd0\xbb\xd1\x8f\xd1\x82\xd1\x8c)
+    """
+    _min_delay = 0.1
+
+    def __init__(self, entity):
+        self._entity = entity
+        self._action = entity.model.move_forward
+        self._old_frame = 0
+        self._frame_rate = 0
+        self._action(0, None, 0, -1, -1, 0)
+        self._update_callback = None
+        self._speed = 0.0
+        self._speed_velocity = 0.0
+        self._position = entity.position
+        BigWorld.callback(0, self._tick)
+        return
+
+    def _tick(self):
+        if self._entity.isDestroyed:
+            return
+        position = self._entity.position
+        disp = (position - self._position).length
+        frame_speed = disp / BigWorld.getTimeDelta()
+        self._speed, self._speed_velocity = smooth_damp(self._speed, frame_speed, self._speed_velocity, 0.1, 10000000000.0, BigWorld.getTimeDelta())
+        cur_speed = self._speed if self._speed >= 0.01 else 0
+        if self._entity._fly_sound:
+            param_value = inverse_lerpclam(0, 5, cur_speed)
+            self._entity._fly_sound.set_param('trolley_speed', param_value)
+            self._entity._fly_sound.set_param('movement', 1 if cur_speed > 0 else 0)
+        self._set_framerate(Draisine.wheel_animation_speed * cur_speed)
+        self._position = position
+        BigWorld.callback(0, self._tick)
+
+    def _set_framerate(self, frame_rate):
+        if self._frame_rate == frame_rate:
+            return
+        else:
+            self._frame_rate = frame_rate
+            for info in self._action.playedInfo():
+                if info and info['name_'] == 'move_forward':
+                    break
+
+            if not info:
+                return
+            if frame_rate == 0:
+                if math.isnan(info['duration']):
+                    frame = 0
+                else:
+                    anim_ratio = info['passed_'] % info['duration'] / info['duration']
+                    frame = self._action.frameCount * anim_ratio
+                self._old_frame = frame
+                self._action.changeParam(100, 100, frame, frame, frame_rate)
+            else:
+                if math.isnan(info['duration']):
+                    time_elapsed = self._old_frame / frame_rate
+                    passed = time_elapsed
+                else:
+                    old_frame_rate = self._action.frameCount / info['duration']
+                    passed = info['passed_'] * old_frame_rate / frame_rate
+                self._action.changeParam(passed, passed, -1, -1, frame_rate)
+            self._last_run_time = BigWorld.time()
+            self._update_callback = None
+            return
+
+
+class Draisine(Vehicle):
+    wheel_animation_speed = 15.0
+
+    def __init__(self):
+        Vehicle.__init__(self)
+        self._smoke_sfx = None
+        self._rotator = None
+        print '  ZIM: draisine inited', self.id
+        return
+
+    def on_animation_state_changed(self, state, prev_state):
+        Vehicle.on_animation_state_changed(self, state, prev_state)
+        if prev_state == AnimationState.Undefined:
+            if state in (AnimationState.Prepare, AnimationState.Run, AnimationState.Unprepare):
+                self._think_particles()
+        if state == AnimationState.Prepare:
+            BigWorld.callback(2.0, self._think_particles)
+        if state == AnimationState.Stand:
+            self._think_particles()
+            if prev_state != AnimationState.Undefined:
+                playSound(H.STOP_SOUND_DRAISINE, self.model)
+
+    def onEnterWorld(self, prereqs):
+        Vehicle.onEnterWorld(self, prereqs)
+        self._rotator = AnimationRotator(self)
+
+    def _think_particles(self):
+        if self.isDestroyed:
+            return
+        need_particles = self.animation_state in (AnimationState.Prepare, AnimationState.Run, AnimationState.Unprepare)
+        if need_particles:
+            if self._smoke_sfx:
+                if not self._smoke_sfx.played:
+                    self._smoke_sfx.go()
+            else:
+                sfx_path = 'sfx/transport/smoke_transport.xml'
+
+                def on_load(prereqs):
+                    if self.isDestroyed:
+                        return
+                    self._smoke_sfx = PersistentExt(sfx_path, prereqs)
+                    self._smoke_sfx.attach(self.model)
+                    self._think_particles()
+
+                loadPersistentExtAsync([sfx_path], on_load)
+        elif self._smoke_sfx:
+            self._smoke_sfx.stop()
+
+    def can_put_box_from_this_point(self, position):
+        distance = (self.position - position).length
+        return distance <= self.get_interaction_dist()
+
+    def get_sound(self):
+        return H.FLY_SOUND_DRAISINE
+
+    def need_camera_tick(self):
+        return False
+
+    def can_take_boxes_out(self):
+        return False
+
+    def can_sit_inside(self):
+        return False
+
+    def get_model_name(self):
+        return H.MODEL_NAME_DRAISINE
+
+    def get_boxes_count(self):
+        return H.BOXES_COUNT_DRAISINE
+
+    def get_collider_name(self):
+        return 'models/transport/trains/pioneer_trolley/door.xml'
+
+    def get_mark_name(self):
+        return lc('Helicopter.draisine')
+
+    def get_box_scale(self):
+        return 0.8
+
+    def get_npc_animation(self):
+        return H.NPC_ANIMATION_DRAISINE

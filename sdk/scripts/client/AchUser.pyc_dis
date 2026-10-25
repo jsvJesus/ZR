@@ -1,0 +1,324 @@
+# Embedded file name: ./client/AchUser.py
+import BWPersonality
+import BigWorld
+import Stats
+from FiringDefs import BODY_ZONES
+from achivments import achives_parser
+ET = achives_parser.EssenceTypes
+from achivments.deciders.distance_type_decider import DistanceCounter, dist_ach_ids
+from achivments.deciders.timekill_type_decider import KillCounter, kill_ach_ids
+from achivments.deciders.area_decider import AreaCounter, area_ach_ids
+from achivments.deciders.anomalycat_decider import AnomalyCounter, anomaly_ach_ids
+from achivments.deciders.capture_type_decider import CaptureCounter, capture_ach_ids
+from achivments.deciders.capture_protect_type_decider import ProtectCounter, protect_ach_ids
+from achivments.deciders import capture_type_decider, capture_protect_type_decider, simple_decider
+from achivments.deciders.money_type_decider import money_ach_ids
+from achivments.deciders.items_decider import items_ach_ids
+from achivments.deciders.pkstatus_decider import karma_ach_ids
+from Config.Anomalies.CommonConfig import type_to_category
+from functools import partial
+import traceback
+import ItemsUtils
+
+class EventType:
+    AchmaskUpdated, GotAchValue = xrange(2)
+
+
+_ach_queue = []
+
+def ach_waiter(func):
+
+    def inner(*args, **kargs):
+        if BigWorld.player()._achiv_ids is None:
+            _ach_queue.append(partial(func, *args, **kargs))
+        else:
+            func(*args, **kargs)
+        return
+
+    return inner
+
+
+class AchUser(object):
+    __listeners = []
+    _distance_counter = None
+    _kill_counter = None
+    _achiv_ids = None
+    _destroy_counters_controller_id = None
+
+    def on_become_player(self):
+        del _ach_queue[:]
+        self.base.request_achmask()
+
+    def onEnterWorld(self):
+        self.__listeners = AchUser.__listeners
+        AchUser.__listeners = []
+        self._distance_counter = None
+        self._anomaly_counter = None
+        self._kill_counter = None
+        self._areas_counter = None
+        self._capture_counter = None
+        self._protect_counter = None
+        self._destroy_counters_controller_id = None
+        return
+
+    def onLeaveWorld(self):
+        self.__listeners = []
+        if self._distance_counter:
+            self._distance_counter.destroy()
+            self._distance_counter = None
+        if self._areas_counter:
+            self._areas_counter.destroy()
+            self._areas_counter = None
+        if self._anomaly_counter:
+            self._anomaly_counter.destroy()
+            self._anomaly_counter = None
+        if self._kill_counter:
+            self._kill_counter.destroy()
+            self._kill_counter = None
+        if self._capture_counter:
+            self._capture_counter.destroy()
+            self._capture_counter = None
+        if self._protect_counter:
+            self._protect_counter.destroy()
+            self._protect_counter = None
+        self._achiv_ids = None
+        del _ach_queue[:]
+        if hasattr(self, '_achuser_settings_cache'):
+            del self._achuser_settings_cache
+        return
+
+    def add_ach_listener(self, listener):
+        if listener not in self.__listeners:
+            self.__listeners.append(listener)
+
+    def remove_ach_listener(self, listener):
+        if listener in self.__listeners:
+            self.__listeners.remove(listener)
+
+    def __notify_listeners(self, event_type, data):
+        for listener in self.__listeners:
+            listener.on_achivs_event(event_type, data)
+
+    def get_unread_achs(self):
+        return set(BWPersonality.settings.getSetting(self.get_settings_key()) or [])
+
+    def is_ach_unread(self, ach_id):
+        unread = BWPersonality.settings.getSetting(self.get_settings_key())
+        return bool(unread and ach_id in unread)
+
+    def set_ach_read(self, ach_id):
+        unread = self.get_unread_achs()
+        if ach_id in unread:
+            unread.remove(ach_id)
+            BWPersonality.settings.setSetting(self.get_settings_key(), list(unread))
+            return True
+        return False
+
+    def get_settings_key(self):
+        if not hasattr(self, '_achuser_settings_cache'):
+            adress = BWPersonality.game.last_server_address
+            if ':' in adress:
+                adress = adress.split(':')[0]
+            self._achuser_settings_cache = u'unread_achivments' + self.name + adress
+        return self._achuser_settings_cache
+
+    def got_achmask(self, achmask):
+        prev_ach_ids = self._achiv_ids
+        self._achiv_ids = achives_parser.convert_achmask_to_achids(achmask)
+        if prev_ach_ids is None:
+            for func in _ach_queue:
+                func()
+
+            del _ach_queue[:]
+        else:
+            unread = self.get_unread_achs()
+            new_ach_ids = self.achiv_ids.difference(prev_ach_ids)
+            unread.update(new_ach_ids)
+            BWPersonality.settings.setSetting(self.get_settings_key(), list(unread))
+            if not self.achiv_ids:
+                BWPersonality.settings.delSettings(self.get_settings_key())
+            for new_ach_id in new_ach_ids:
+                BWPersonality.GUICore.on_just_got_achivment(new_ach_id)
+
+        self.__notify_listeners(EventType.AchmaskUpdated, None)
+        if self._distance_counter:
+            if self._all_achs_completed(dist_ach_ids):
+                self._distance_counter.destroy()
+        elif not self._all_achs_completed(dist_ach_ids):
+            self._distance_counter = DistanceCounter()
+        if self._kill_counter:
+            if self._all_achs_completed(kill_ach_ids):
+                self._kill_counter.destroy()
+        elif not self._all_achs_completed(kill_ach_ids):
+            self._kill_counter = KillCounter()
+        return
+
+    def got_ach_value(self, ach_id, value):
+        if not self.__listeners:
+            return
+        data = {'ach_id': ach_id,
+         'value': value}
+        self.__notify_listeners(EventType.GotAchValue, data)
+
+    def request_ach_value0(self, ach_id):
+        self.base.request_ach_value1(ach_id)
+
+    def on_distance_change(self, distance):
+        self.base.on_distance_change(distance)
+
+    def on_update_karma(self, value):
+        if not self.__listeners:
+            return
+        for ach_id in karma_ach_ids:
+            self.got_ach_value(ach_id, value)
+
+    def on_item_changed(self, item_type):
+        if not self.__listeners:
+            return
+        for ach_id in items_ach_ids:
+            needed_item_type = achives_parser.get_achiv(ach_id)['essence']['params'][1]
+            if needed_item_type != item_type:
+                continue
+            items_count = ItemsUtils.get_item_number_by_type(self, item_type)
+            self.got_ach_value(ach_id, items_count)
+
+    def on_money_changed(self, money):
+        if not self.__listeners:
+            return
+        for ach_id in money_ach_ids:
+            self.got_ach_value(ach_id, money)
+
+    def request_complete_ach1(self, ach_id):
+        self.base.request_complete_ach2(ach_id)
+
+    def on_victim_death(self, kill_data):
+        victim = BigWorld.entities.get(kill_data['victim'])
+        if not victim or not victim.__class__.__name__ == 'Avatar':
+            return
+        if self._kill_counter:
+            victim = BigWorld.entities.get(kill_data['victim'])
+            if victim:
+                weapon_item_type = kill_data['itemtype']
+                if self.active_weapon:
+                    if self.active_weapon.hasScope():
+                        from_scope = self.IsAvatarSniping()
+                    else:
+                        from_scope = False
+                    headshot = kill_data['bodyzone'] == BODY_ZONES.HEAD
+                    is_capture = self.is_capture_member
+                    health = self.GetStatValue(Stats.ch_HitPoints)
+                    self._kill_counter.on_avatar_killed(weapon_item_type, health, from_scope, is_capture, headshot)
+            if self._capture_counter:
+                victim.cellClanID and victim.cellClanID != self.clanID and self._capture_counter.on_protector_killed()
+
+    @ach_waiter
+    def on_base_attack_start(self, base_name):
+        if not self.clanID:
+            return
+        if self.clanName != self.get_current_base_owner() and not self._all_achs_completed(capture_ach_ids):
+            if self._capture_counter:
+                self._capture_counter.destroy()
+            self._capture_counter = CaptureCounter(self._on_base_capture)
+        if self.clanName == self.get_current_base_owner() and not self._all_achs_completed(protect_ach_ids):
+            if self._protect_counter:
+                self._protect_counter.destroy()
+            self._protect_counter = ProtectCounter(self._on_base_protect)
+
+    def _on_base_protect(self):
+        if capture_protect_type_decider.filter_send_to_basapp(self.achiv_ids):
+            self.base.on_base_protected()
+
+    def _on_base_capture(self, base_name, frags):
+        if capture_type_decider.filter_send_to_basapp(base_name, frags, self.achiv_ids):
+            self.base.on_base_captured(base_name, frags)
+
+    @ach_waiter
+    def on_base_attack_stop(self, base_name):
+        if self._capture_counter:
+            self._capture_counter.on_attack_stop()
+            self._capture_counter.destroy()
+            self._capture_counter = None
+        if self._protect_counter:
+            self._protect_counter.on_attack_stop()
+            self._protect_counter.destroy()
+            self._protect_counter = None
+        return
+
+    @ach_waiter
+    def on_base_entered(self, base_name):
+        if self._destroy_counters_controller_id and self._destroy_counters_controller_id[1] == base_name:
+            BigWorld.cancelCallback(self._destroy_counters_controller_id[0])
+            self._destroy_counters_controller_id = None
+        return
+
+    @ach_waiter
+    def on_base_left(self, base_name):
+
+        def destroy_counters():
+            if self._capture_counter:
+                self._capture_counter.destroy()
+                self._capture_counter = None
+            if self._protect_counter:
+                self._protect_counter.destroy()
+                self._protect_counter = None
+            self._destroy_counters_controller_id = None
+            return
+
+        self._destroy_counters_controller_id = (BigWorld.callback(3.0, destroy_counters), base_name)
+
+    @property
+    def achiv_ids(self):
+        if self._achiv_ids is None:
+            print 'AchUser (ERROR): to fast achivs access'
+            traceback.print_stack()
+            self._achiv_ids = set()
+        return self._achiv_ids
+
+    @ach_waiter
+    def on_teleport_event(self):
+        if self._distance_counter:
+            self._distance_counter.reset()
+
+    def _all_achs_completed(self, ach_ids):
+        for ach_id in ach_ids:
+            if ach_id not in self.achiv_ids:
+                return False
+
+        return True
+
+    @ach_waiter
+    def on_player_client_trigger(self, is_inside, trigger):
+        if is_inside:
+            trigger_name = trigger.trigger_id
+            if not self._areas_counter:
+                if not self._all_achs_completed(area_ach_ids):
+                    self._areas_counter = AreaCounter()
+            if self._areas_counter:
+                self._areas_counter.on_trigger_visited(trigger_name)
+
+    @ach_waiter
+    def on_start_cooking_item(self, item_type, count = 1):
+        if simple_decider.filter_send_to_base_from_client(self.achiv_ids, ET.FireFeed, item_type):
+            self.base.on_start_cooking_item(item_type)
+
+    @ach_waiter
+    def on_sin_with_fireplace(self, duration_secs):
+        if simple_decider.filter_send_to_base_from_client(self.achiv_ids, ET.FireSit, duration_secs):
+            self.base.on_sin_with_fireplace(duration_secs)
+
+    @ach_waiter
+    def on_anomaly_inside_time(self, duration, anomaly_type):
+        if simple_decider.filter_send_to_base_from_client(self.achiv_ids, ET.AnomalyLast, duration, anomaly_type):
+            self.base.on_anomaly_inside_time(duration, anomaly_type)
+
+    @ach_waiter
+    def on_throwable_anomaly_hit(self, anomaly_type, is_moving):
+        if simple_decider.filter_send_to_base_from_client(self.achiv_ids, ET.AnomalyStone, is_moving):
+            self.base.on_throwable_anomaly_hit(anomaly_type, is_moving)
+        if not self._anomaly_counter:
+            if not self._all_achs_completed(anomaly_ach_ids):
+                self._anomaly_counter = AnomalyCounter()
+        anomaly_category = type_to_category.get(anomaly_type)
+        if self._anomaly_counter and anomaly_category is not None:
+            self._anomaly_counter.on_anomaly_hit(anomaly_category)
+        return

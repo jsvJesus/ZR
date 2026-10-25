@@ -1,0 +1,146 @@
+# Embedded file name: ./client/soGUI/donat_shop/window/bin_tab/bin_counter.py
+from math_bw import lerp
+from math import atan, pi
+import GUI
+import BigWorld
+from utils import Listenable
+from ui.button import Panel
+from ui.button import Button
+from ui.text import Text
+from soGUI.donat_shop.models.bin_model import EventType as BinET
+import colorCodes as cc
+from Helpers.PyGUI import Utils
+import Keys
+import sounds_manager as sm
+
+class ArrowButton(Button):
+
+    def __init__(self, component, name, visual, on_down):
+        Button.__init__(self, component, name)
+        self.on_down = on_down
+        self.component.frame.filterType = 'LINEAR'
+        self.set_visual(visual)
+
+
+class EventType:
+    OnCountChanged, = ((r, 'bincounter') for r in range(1))
+
+
+class PressData:
+
+    def init(self, direction):
+        self.direction = direction
+        self._wait_time = 1.0
+        self._start_time = BigWorld.time()
+
+    def tick(self):
+        time_elapsed = BigWorld.time() - self._start_time
+        speed = lerp(2, 50, atan(time_elapsed * 0.1) / pi * 2)
+        self._wait_time -= BigWorld.getTimeDelta() * speed
+        count = 0
+        while self._wait_time < 0:
+            self._wait_time += 1
+            count += 1
+
+        return count
+
+
+_press_data = PressData()
+
+class BinCounter(Panel, Listenable):
+
+    def __init__(self, component, name, bin_model, can_be_empty, view_owner = None, depth = 0.5):
+        Listenable.__init__(self)
+        Panel.__init__(self, component, name, depth=depth)
+        self._tick_handler = None
+        self._can_be_empty = can_be_empty
+        self._item_type = None
+        self._view_owner = view_owner
+        self._bin_model = bin_model
+        self._count = 0
+        self._press_delay = 0
+        btn_left = ArrowButton(self.component, 'btn_left', 'soGUI/frame/buttons/arrowleft_button_0.json', self._on_left_click)
+        texture = btn_left.component.frame.texture
+        btn_left.transform.set_pixel_mode((0, 0.5), (0, 0.5), (texture.width, texture.height), pixel_pos=(10, 0))
+        btn_right = ArrowButton(self.component, 'btn_right', 'soGUI/frame/buttons/arrowright_button_0.json', self._on_right_click)
+        texture = btn_right.component.frame.texture
+        btn_right.transform.set_pixel_mode((1, 0.5), (1, 0.5), (texture.width, texture.height), pixel_pos=(-10, 0))
+        self._txt = Text(self.component, 'txt', size=24)
+        self._txt.set_color(cc.active_rgba)
+        self._txt.transform.set_clip_mode((0, 0, 1, 1))
+        self._bin_model.add_listener(self._on_binmodel_event)
+        return
+
+    def _stop_tick(self):
+        if self._tick_handler:
+            BigWorld.cancelCallback(self._tick_handler)
+            self._tick_handler = None
+        return
+
+    def _tick(self):
+        self._stop_tick()
+        if not Utils.is_visible_in_hierarchy(self.component):
+            return
+        if not BigWorld.isKeyDown(Keys.KEY_LEFTMOUSE):
+            return
+        local_pos = self.component.screenToLocal(GUI.mcursor().position)
+        if local_pos[0] < 0 or local_pos[1] < 0 or local_pos[0] > self.component.width or local_pos[1] > self.component.height:
+            return
+        if not self._can_be_empty and _press_data.direction == -1 and self.count <= 1:
+            return
+        for i in range(_press_data.tick()):
+            if _press_data.direction == +1:
+                self._bin_model.add_item_type(self.item_type, shop_item_view=self._view_owner)
+            elif _press_data.direction == -1:
+                self._bin_model.del_item_type(self.item_type, shop_item_view=self._view_owner)
+
+        BigWorld.callback(0, self._tick)
+
+    def _on_right_click(self):
+        sm.playSound('ui/weapon_mod/adjust')
+        if self.item_type:
+            self._bin_model.add_item_type(self.item_type, shop_item_view=self._view_owner)
+            _press_data.init(+1)
+            self._tick()
+
+    def _on_left_click(self):
+        sm.playSound('ui/weapon_mod/adjust')
+        if self.item_type:
+            self._bin_model.del_item_type(self.item_type, shop_item_view=self._view_owner)
+            _press_data.init(-1)
+            self._tick()
+
+    def _on_binmodel_event(self, event_type, data):
+        if event_type == BinET.OnCountChanged:
+            self._update_content()
+
+    def _update_content(self):
+        if not self._item_type:
+            return
+        item_data = self._bin_model.get_item_type(self._item_type)
+        self.count = item_data and item_data['bincount'] or 0
+        self.component.btn_left.script.set_enabled(self._can_be_empty or self.count > 1)
+
+    @property
+    def count(self):
+        return self._count
+
+    @count.setter
+    def count(self, value):
+        if self._count == value:
+            return
+        self._count = value
+        self._txt.set_text(unicode(self._count))
+        self.notify_listeners(EventType.OnCountChanged)
+
+    @property
+    def item_type(self):
+        return self._item_type
+
+    @item_type.setter
+    def item_type(self, value):
+        self._stop_tick()
+        if self._item_type == value:
+            return
+        self._item_type = value
+        self._update_content()

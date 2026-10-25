@@ -1,0 +1,429 @@
+# Embedded file name: ./client/maputils/minimap.py
+from Math import Vector3
+import BWPersonality
+import BigWorld
+import GUI
+from Helpers.PyGUI.PyGUIBase import DragWin
+from soGUI.equip_paint.eqp_button import EqpButton
+from Helpers.BWCoroutine import BWMemberCoroutine, BWWaitForPeriod
+from math import pi
+from utils import Listenable, Tickable
+from math_bw import smooth_damp
+from soGUI.GUIPositions import GUIPositions
+from cmap import CMap
+from space_model import SpaceModel, EventType as SpaceET
+from system_buttons import SystemButtons
+from party_model import PartyModel
+from maputils.MarksData import LoadStatus
+
+class MinimizeEventType:
+    OnMinimizeRequested, OnMaximizedRequested = ((r, 'minimizeeventtype') for r in range(2))
+
+
+class WinState:
+    Minimized, Maximized = range(2)
+
+
+class MinimizeButton(EqpButton, Listenable):
+
+    def __init__(self):
+        Listenable.__init__(self)
+        self._win_state = WinState.Maximized
+        comp = GUI.Window()
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = (18, 18)
+        EqpButton.__init__(self, comp)
+
+    def set_win_state(self, win_state):
+        self._win_state = win_state
+        self._update_visual()
+
+    def get_win_state(self):
+        return self._win_state
+
+    def _create_content(self):
+        comp = GUI.Window('soGUI/frame/minimap/turn.dds')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.materialFX = 'BLEND'
+        comp.width, comp.height = comp.texture.width, comp.texture.height
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.position = (0, 0, 0.5)
+        self.component.addChild(comp, 'img')
+
+    def on_click(self):
+        if self._win_state == WinState.Maximized:
+            self.notify_listeners(MinimizeEventType.OnMinimizeRequested)
+        elif self._win_state == WinState.Minimized:
+            self.notify_listeners(MinimizeEventType.OnMaximizedRequested)
+
+    def update_visual(self, hovered, pressed):
+        if self._win_state == WinState.Maximized:
+            self.component.img.rotate = pi
+        elif self._win_state == WinState.Minimized:
+            self.component.img.rotate = 0
+        if pressed:
+            color = 255
+        elif hovered:
+            color = 220
+        else:
+            color = 190
+        self.component.img.colour = (color,
+         color,
+         color,
+         255)
+
+
+class Header(Listenable, Tickable):
+
+    def __init__(self):
+        Listenable.__init__(self)
+        Tickable.__init__(self, 0.5)
+        comp = GUI.Window('soGUI/frame/paint/black.dds')
+        comp.materialFX = 'BLEND'
+        comp.colour = (255, 255, 255, 26)
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.height = 24
+        self.component = comp
+        self._btn = MinimizeButton()
+        self._btn.add_listener(self._on_btn_event)
+        comp = self._btn.component
+        comp.ha, comp.va = ('RIGHT', 'CENTER')
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.position = (1, 0, 0.5)
+        self.component.addChild(comp)
+        comp = GUI.Text(BigWorld.timeOfDay(), 'RobotoCondensedRegular_18.font')
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.position = (0, 0, 0.5)
+        self.component.addChild(comp, 'text')
+
+    def on_player_ready(self, ready):
+        if ready:
+            self.start_tick()
+        else:
+            self.stop_tick()
+
+    def can_tick(self):
+        return getattr(BigWorld.player(), 'isInWorld', False) == True
+
+    def on_tick(self):
+        self.component.text.text = BigWorld.timeOfDay()
+
+    def set_win_state(self, win_state):
+        self._btn.set_win_state(win_state)
+
+    def get_win_state(self):
+        return self._btn.get_win_state()
+
+    def _on_btn_event(self, event_type, data):
+        self.notify_listeners(event_type, data)
+
+
+class ZoomButton(EqpButton):
+
+    def __init__(self, texture_name):
+        comp = GUI.Window(texture_name)
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = comp.texture.width, comp.texture.height
+        comp.materialFX = 'BLEND'
+        EqpButton.__init__(self, comp)
+
+    def update_visual2(self, hovered, pressed, disabled):
+        if disabled:
+            color = 62
+        elif pressed:
+            color = 255
+        elif hovered:
+            color = 220
+        else:
+            color = 190
+        self.component.colour = (color,
+         color,
+         color,
+         255)
+
+
+class ZoomEventType:
+    OnZoomInRequested, OnZoomOutRequested = ((r, 'zoomeventtype') for r in range(2))
+
+
+class Zoom(Listenable):
+
+    def __init__(self, space_model):
+        Listenable.__init__(self)
+        comp = GUI.Window()
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        self.component = comp
+        self._space_model = space_model
+        self._space_model.add_listener(self._on_space_event)
+        pos_y = 0
+        width = 0
+        btn = ZoomButton('soGUI/frame/map/zoom_in.dds')
+        btn.on_click = self._on_zoom_in_click
+        comp = btn.component
+        comp.ha, comp.va = ('CENTER', 'TOP')
+        comp.hpm, comp.vpm = ('CLIP', 'PIXEL')
+        comp.position = (0, pos_y, 0.5)
+        width = max(width, comp.width)
+        self.component.addChild(comp)
+        pos_y += comp.height + 4
+        self._in_btn = btn
+        btn = ZoomButton('soGUI/frame/map/zoom_out.dds')
+        btn.on_click = self._on_zoom_out_click
+        comp = btn.component
+        comp.ha, comp.va = ('CENTER', 'TOP')
+        comp.hpm, comp.vpm = ('CLIP', 'PIXEL')
+        comp.position = (0, pos_y, 0.5)
+        width = max(width, comp.width)
+        self.component.addChild(comp)
+        pos_y += comp.height + 2
+        self._out_btn = btn
+        self.component.width, self.component.height = width, pos_y
+
+    def _on_zoom_in_click(self):
+        self.notify_listeners(ZoomEventType.OnZoomInRequested)
+
+    def _on_zoom_out_click(self):
+        self.notify_listeners(ZoomEventType.OnZoomOutRequested)
+
+    def _on_space_event(self, event_type, data):
+        if event_type in (SpaceET.OnSpaceChanged, SpaceET.OnZoomChanged):
+            self._update_zoom_available()
+
+    def _update_zoom_available(self):
+        if not self._space_model.space_name:
+            self._in_btn.disabled = True
+            self._out_btn.disabled = True
+            return
+        self._in_btn.disabled = not self._space_model.can_zoom_in()
+        self._out_btn.disabled = not self._space_model.can_zoom_out()
+
+
+class Minimap(DragWin, GUIPositions):
+
+    def __init__(self):
+        comp = GUI.Window()
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('RIGHT', 'TOP')
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.width = 256
+        comp.materialFX = 'BLEND'
+        comp.position = self._get_default_position()
+        DragWin.__init__(self, comp)
+        GUIPositions.__init__(self)
+        self._space_model = SpaceModel()
+        self._space_model.add_listener(self._on_space_event)
+        self._party_model = PartyModel()
+        self._marks_data = None
+        self._collapse_coroutine = None
+        self._coroutine_velocity = 0.0
+        map_size = 230
+        self._header = Header()
+        self._header.add_listener(self._on_header_event)
+        comp = self._header.component
+        comp.ha, comp.va = ('RIGHT', 'TOP')
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.position = (1, 1, 0.4)
+        comp.width = map_size
+        self.component.addChild(comp)
+        self._sbuttons = SystemButtons()
+        comp = self._sbuttons.component
+        comp.ha, comp.va = ('RIGHT', 'BOTTOM')
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.position = (1, -1, 0.4)
+        self.component.addChild(comp)
+        header_cont_margin = 8
+        comp = GUI.Window()
+        comp.hpm, comp.vpm = ('CLIP', 'PIXEL')
+        comp.ha, comp.va = ('CENTER', 'TOP')
+        comp.wm, comp.hm = ('CLIP', 'PIXEL')
+        comp.width, comp.height = 2, map_size + header_cont_margin
+        comp.position = (0, self._header.component.height, 0.5)
+        self.component.addChild(comp, 'content')
+        comp = GUI.Window()
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('RIGHT', 'BOTTOM')
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.width, comp.height = map_size, map_size
+        comp.position = (1, -1, 0.5)
+        self.component.content.addChild(comp, 'mapcont')
+        self._cmap = CMap(self._space_model, self._party_model)
+        self.component.content.mapcont.addChild(self._cmap.component)
+        self._zoom = Zoom(self._space_model)
+        self._zoom.add_listener(self._on_zoom_event)
+        comp = self._zoom.component
+        comp.ha, comp.va = ('LEFT', 'BOTTOM')
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.position = (-1, -1, 0.5)
+        self.component.content.addChild(comp)
+        self._max_width = self.component.width
+        self._min_width = self._header.component.width
+        self._min_height = 0
+        self._max_height = self.component.content.height
+        self._set_content_height(self._max_height)
+        GUIPositions.show(self)
+        return
+
+    def _set_content_height(self, height):
+        self.component.height = height + self._header.component.height + self._sbuttons.component.height
+        self.component.content.height = height
+        self.on_size_changed()
+
+    def _on_space_event(self, event_type, data):
+        if event_type == SpaceET.OnSpaceChanged:
+            self._check_load()
+
+    def _check_load(self):
+        if not self._marks_data:
+            return
+        space_name = self._space_model.space_name
+        if not space_name:
+            return
+        personal_load_status = self._marks_data.has_loaded_personal_data(space_name)
+        common_load_status = self._marks_data.has_loaded_common_data(space_name)
+        if LoadStatus.Empty in (personal_load_status, common_load_status):
+            self._marks_data.request_data(BigWorld.player().name, space_name)
+
+    def set_marks_data(self, marks_data):
+        self._marks_data = marks_data
+        self._cmap.set_marks_data(marks_data)
+        self._check_load()
+
+    def set_filterset(self, filterset):
+        self._cmap.set_filterset(filterset)
+
+    @BWMemberCoroutine
+    def _run_collapse_coroutine(self, win_state, immidiate = False):
+        if win_state == WinState.Maximized:
+            desired_height = self._max_height
+        elif win_state == WinState.Minimized:
+            desired_height = self._min_height
+        self._update_width()
+        while not immidiate:
+            height, self._coroutine_velocity = smooth_damp(self.component.content.height, desired_height, self._coroutine_velocity, 0.1, 10000000000.0, BigWorld.getTimeDelta())
+            self._set_content_height(height)
+            yield BWWaitForPeriod(0)
+            if abs(self._coroutine_velocity) < 0.01 and abs(self.component.content.height - height) < 0.01:
+                break
+
+        if win_state == WinState.Minimized:
+            self.component.width = self._min_width
+        self._set_content_height(desired_height)
+        self._collapse_coroutine = None
+        self._update_width()
+        return
+
+    def _update_width(self):
+        if not BWPersonality.game.cursor_mode:
+            need_width = False
+        elif self._collapse_coroutine:
+            need_width = True
+        elif self.component.content.height == self._min_height:
+            need_width = False
+        else:
+            need_width = True
+        if need_width:
+            self.component.width = self._max_width
+            self._zoom.component.visible = True
+        else:
+            self.component.width = self._min_width
+            self._zoom.component.visible = False
+
+    def _on_header_event(self, event_type, data):
+        if event_type in (MinimizeEventType.OnMinimizeRequested, MinimizeEventType.OnMaximizedRequested):
+            if event_type == MinimizeEventType.OnMinimizeRequested:
+                win_state = WinState.Minimized
+            elif event_type == MinimizeEventType.OnMaximizedRequested:
+                win_state = WinState.Maximized
+            self._header.set_win_state(win_state)
+            self.flush()
+            if self._collapse_coroutine:
+                self._collapse_coroutine.stop()
+            self._collapse_coroutine = self._run_collapse_coroutine(win_state)
+            self._collapse_coroutine.run()
+
+    def _on_zoom_event(self, event_type, data):
+        if event_type == ZoomEventType.OnZoomInRequested:
+            self._space_model.zoom_in()
+        elif event_type == ZoomEventType.OnZoomOutRequested:
+            self._space_model.zoom_out()
+
+    def _get_default_position(self):
+        return (0.987501, 0.977776, 0.9)
+
+    def get_save_data(self):
+        return (tuple(self.component.position), self._header.get_win_state())
+
+    def apply_save_data(self, data):
+        try:
+            position, win_state = data
+        except:
+            position, win_state = self._get_default_position(), WinState.Maximized
+
+        self.component.position = Vector3(position[0], position[1], self.component.position[2])
+        if not self._collapse_coroutine and win_state == WinState.Minimized:
+            self._header.set_win_state(win_state)
+            self._collapse_coroutine = self._run_collapse_coroutine(win_state, immidiate=True)
+            self._collapse_coroutine.run()
+
+    def reset_position(self):
+        self.component.position = self._get_default_position()
+
+    def set_space(self, space_name):
+        self._space_model.set_space(space_name)
+
+    def on_player_ready(self):
+        self._space_model.on_player_ready(True)
+        self._header.on_player_ready(True)
+        BWPersonality.game.addListener('onMouseCursor', self._on_cursor)
+        visible = bool(BWPersonality.game.cursor_mode)
+        self._sbuttons.component.visible = visible
+        self._zoom.component.visible = visible
+
+    def on_leave_world(self):
+        self._space_model.on_player_ready(False)
+        self._header.on_player_ready(False)
+        BWPersonality.game.removeListener('onMouseCursor', self._on_cursor)
+
+    def _on_cursor(self, value):
+        self._update_width()
+        self._sbuttons.component.visible = value
+
+    def release(self):
+        self.on_leave_world()
+        self._cmap.release()
+
+    def stopDragging(self):
+        DragWin.stopDragging(self)
+        GUIPositions.stopDragging(self)
+
+    def destroy_party(self):
+        self._party_model.destroy_party()
+
+    def create_party(self, members_ids):
+        self._party_model.create_party(members_ids)
+
+    def add_member(self, member_id):
+        self._party_model.add_member(member_id)
+
+    def remove_member(self, member_id):
+        self._party_model.remove_member(member_id)
+
+    def on_avatar_death(self, avatar_id):
+        self._party_model.on_avatar_death(avatar_id)
+
+    def on_avatar_revive(self, avatar_id):
+        self._party_model.on_avatar_revive(avatar_id)
+
+    def on_radio_state_changed(self, member_id, is_working):
+        self._party_model.on_radio_state_changed(member_id, is_working)
+
+    def on_radio_switch(self):
+        self._party_model.on_radio_switch()
+
+    def on_avatar_enter_world(self, avatar_id):
+        self._party_model.on_avatar_enter_world(avatar_id)
+
+    def on_avatar_leave_world(self, avatar_id):
+        self._party_model.on_avatar_leave_world(avatar_id)

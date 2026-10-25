@@ -1,0 +1,126 @@
+# Embedded file name: ./client/PvpInstFlag.py
+import BigWorld
+from csconstans import FLAG_MODELS
+from csconstans import TEAM_RED
+from Helpers.Caps import CAP_INTERACT, CAP_EXCLUDE
+from Localization import lc
+from soGUI.soInworldMarkers import soInworldMarker
+import sounds_manager as sounds
+
+class PvpInstFlag(BigWorld.Entity):
+
+    def __init__(self):
+        BigWorld.Entity.__init__(self)
+        self.targetCaps = [CAP_INTERACT]
+        self.attachedToEntity = None
+        self._flag_sound = None
+        if self.teamID == TEAM_RED:
+            self.name = lc(lc('PvpInstFlag.name_red'))
+        else:
+            self.name = lc(lc('PvpInstFlag.name_blue'))
+        return
+
+    def prerequisites(self):
+        return [FLAG_MODELS['free'], FLAG_MODELS['attached']]
+
+    def onEnterWorld(self, prereqs):
+        self.model = prereqs[FLAG_MODELS['free']]
+        self._attmodel = prereqs[FLAG_MODELS['attached']]
+        self._check_attach()
+        if FLAG_MODELS['action']:
+            self.model.action(FLAG_MODELS['action'])()
+        for model in (self.model, self._attmodel):
+            for dye, tintname in FLAG_MODELS['tint'][self.teamID].items():
+                setattr(model, str(dye), str(tintname))
+
+    def onLeaveWorld(self):
+        self.model = None
+        self._attmodel = None
+        if self.attachedToEntity and not self.attachedToEntity.isDestroyed:
+            self.attachedToEntity.remove_listener(self)
+            self.trackable_preupdate(self.attachedToEntity)
+        self.attachedToEntity = None
+        self.clearSound()
+        return
+
+    def set_attachedTo(self, old_value):
+        if self.attachedTo > 0:
+            self.targetCaps = [CAP_EXCLUDE]
+        else:
+            self.targetCaps = [CAP_INTERACT]
+        self._check_attach()
+
+    def _check_attach(self):
+        if self.isDestroyed:
+            return
+        else:
+            if self.attachedTo > 0:
+                self.model.visible = False
+                self._attmodel.visible = True
+                self.clearSound()
+            else:
+                self.model.visible = True
+                self._attmodel.visible = False
+                if not self._flag_sound:
+                    self._flag_sound = sounds.playSound('environment/flag_waves', self.model)
+            if getattr(self, '_checktimer', 0):
+                BigWorld.cancelCallback(self._checktimer)
+                self._checktimer = 0
+            if self.attachedToEntity and not self.attachedToEntity.isDestroyed:
+                self.attachedToEntity.remove_listener(self)
+                self.trackable_preupdate(self.attachedToEntity)
+            self.attachedToEntity = None
+            if self.attachedTo <= 0:
+                return
+            target = BigWorld.entity(self.attachedTo)
+            if not target:
+                self._checktimer = BigWorld.callback(0.3, self._check_attach)
+                return
+            self.attachedToEntity = target
+            self.attachedToEntity.add_listener(self)
+            self.trackable_updated()
+            return
+
+    def clearSound(self):
+        if self._flag_sound:
+            self._flag_sound.stop()
+            self._flag_sound.releaseSound()
+            self._flag_sound = None
+        return
+
+    def trackable_preupdate(self, target):
+        if target.isDestroyed:
+            return
+        elif not target.model:
+            return
+        else:
+            setattr(target.model, FLAG_MODELS['node'], None)
+            return
+
+    def trackable_updated(self):
+        setattr(self.attachedToEntity.model, FLAG_MODELS['node'], None)
+        setattr(self.attachedToEntity.model, FLAG_MODELS['node'], self._attmodel)
+        return
+
+    def interact(self, interactor):
+        if self.attachedTo > 0:
+            return
+        self.cell.interact()
+
+    def get_mark_name(self):
+        return self.name
+
+    def get_interaction_dist(self):
+        return FLAG_MODELS['interaction_dist']
+
+    def get_target_mark(self, distance):
+        if distance > self.get_interaction_dist():
+            return None
+        else:
+            return soInworldMarker.MARKER_USE
+
+    def get_hightlight(self, distance):
+        if distance > self.get_interaction_dist():
+            return None
+        else:
+            return True

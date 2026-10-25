@@ -1,0 +1,214 @@
+# Embedded file name: ./client/soGUI/donat_shop/window/shop_tab/recs/recs.py
+from math import pi
+import BigWorld
+from math_bw import move_towards_angle_smooth_damp, clamp
+from soGUI.donat_shop.models.shop_model import EventType as ShopModelET
+from soGUI.donat_shop.models.bin_model import EventType as BinModelET
+from soGUI.donat_shop.window.win_ui.pager import Pager, EventType as PagerET
+from ui.button import Button
+from Helpers.BWCoroutine import BWMemberCoroutine, BWWaitForPeriod
+from Helpers.PyGUI import Utils
+from rec_itemview import RecItemView
+from pager_ui import PagerUi
+import sounds_manager as sm
+
+class Recs(object):
+
+    def __init__(self, component, shop_model, bin_model):
+        self.component = component
+        self._shop_model = shop_model
+        self._bin_model = bin_model
+        self._shop_model.add_listener(self._on_shopmodel_event)
+        self._bin_model.add_listener(self._on_binmodel_event)
+        self._repositions = []
+        self._shown_index = None
+        self._coroutine_handler = None
+        self._velocity = 0
+        self._autoswap_handler = None
+        self._pager = Pager()
+        self._pager.add_listener(self._on_pager_event)
+
+        def adapt_view(view):
+            view.transform.set_clip_mode((0, 0, 1, 1))
+            self._repositions.append(view)
+
+        self._view0 = RecItemView(self.component, 'view0', shop_model, bin_model, depth=1)
+        adapt_view(self._view0)
+        self._view1 = RecItemView(self.component, 'view1', shop_model, bin_model, depth=1)
+        adapt_view(self._view1)
+        btn_left = Button(self.component, 'btn_left', depth=0.5)
+        btn_left.set_visual('soGUI/frame/buttons/arrowleft_button_1.json')
+        texture = btn_left.component.frame.texture
+        btn_left.transform.set_pixel_mode((0, 0.5), (0, 0.5), (texture.width, texture.height), pixel_pos=(10, 0))
+        btn_left.on_click = self._on_click_left
+        btn_left.component.frame.filterType = 'LINEAR'
+        self._repositions.append(btn_left)
+        btn_right = Button(self.component, 'btn_right', depth=0.5)
+        btn_right.set_visual('soGUI/frame/buttons/arrowright_button_1.json')
+        texture = btn_right.component.frame.texture
+        btn_right.transform.set_pixel_mode((1, 0.5), (1, 0.5), (texture.width, texture.height), pixel_pos=(-10, 0))
+        btn_right.on_click = self._on_click_right
+        btn_right.component.frame.filterType = 'LINEAR'
+        self._repositions.append(btn_right)
+        self._pager_ui = PagerUi(self._pager, self.component, 'pager')
+        self._pager_ui.transform.set_pixel_mode((0.5, 0.5), (0.5, 0.95), (0, 10))
+        self._repositions.append(self._pager_ui)
+        return
+
+    def on_just_visible(self):
+        self._run_autoswap_callback()
+
+    def _on_binmodel_event(self, event_type, data):
+        if event_type == BinModelET.OnCountChanged:
+            if data and isinstance(data.get('shop_item_view'), RecItemView):
+                self._run_autoswap_callback()
+
+    def on_tick(self):
+        self._view0.on_tick()
+        self._view1.on_tick()
+
+    def on_show(self):
+        self._run_autoswap_callback()
+        if self.shown_index:
+            self.shown_index = clamp(round(self.shown_index), 0, self._pager.count - 1)
+
+    def on_hide(self):
+        self._stop_autoswap_callback()
+
+    def _autoswap(self):
+        if not Utils.is_visible_in_hierarchy(self.component):
+            return
+        self._run_autoswap_callback()
+        self._pager.move_right()
+
+    def _run_autoswap_callback(self):
+        self._stop_autoswap_callback()
+        if not Utils.is_visible_in_hierarchy(self.component):
+            return
+        self._autoswap_handler = BigWorld.callback(6.0, self._autoswap)
+
+    def _stop_autoswap_callback(self):
+        if self._autoswap_handler:
+            BigWorld.cancelCallback(self._autoswap_handler)
+            self._autoswap_handler = None
+        return
+
+    @BWMemberCoroutine
+    def _move_coroutine(self):
+        self._stop_autoswap_callback()
+        if self.shown_index is None or self.index is None or not Utils.is_visible_in_hierarchy(self.component):
+            if self.index and not Utils.is_visible_in_hierarchy(self.component):
+                self.shown_index = self.index
+            self._pager.index = None
+        else:
+            while self.shown_index != self.index:
+                if not Utils.is_visible_in_hierarchy(self.component):
+                    break
+                dist = self._pager.count
+
+                def to_radians(value):
+                    return float(value) / dist * 2 * pi - pi
+
+                def from_radians(value):
+                    result = value / (2 * pi) * dist + dist * 0.5
+                    if result >= dist:
+                        result -= dist
+                    return result
+
+                cur_shown_index = to_radians(self.shown_index)
+                cur_index = to_radians(self.index)
+                cur_shown_index, self._velocity = move_towards_angle_smooth_damp(cur_shown_index, cur_index, self._velocity, 0.1, 50, BigWorld.getTimeDelta())
+                cur_shown_index = from_radians(cur_shown_index)
+                if abs(self._velocity) <= 0.001:
+                    cur_shown_index = self.index
+                self.shown_index = cur_shown_index
+                yield BWWaitForPeriod(0)
+
+        self._velocity = 0
+        self._coroutine_handler = None
+        self._run_autoswap_callback()
+        return
+
+    def _update_content(self):
+        index0 = int(self.shown_index)
+        index1 = None
+        ratio = self.shown_index - index0
+        if ratio:
+            index1 = (index0 + 1) % self._pager.count
+
+        def apply_item(view, index):
+            if index is None:
+                view.component.visible = False
+                return
+            else:
+                view.component.visible = True
+                view.set_recom(self._pager.get_item(index))
+                return
+
+        apply_item(self._view1, index1)
+        apply_item(self._view0, index0)
+        self._view0.transform.set_clip_mode((-ratio,
+         0,
+         1 - ratio,
+         1))
+        self._view1.transform.set_clip_mode((1 - ratio,
+         0,
+         2 - ratio,
+         1))
+        return
+
+    @property
+    def shown_index(self):
+        return self._shown_index
+
+    @shown_index.setter
+    def shown_index(self, value):
+        if value == self._shown_index:
+            return
+        self._shown_index = value
+        self._update_content()
+
+    def _on_pager_event(self, event_type, data):
+        if event_type == PagerET.OnIndexChanged:
+            if self.shown_index is None or self.index is None:
+                self.shown_index = self.index
+                if self._coroutine_handler:
+                    self._coroutine_handler.stop()
+                    self._coroutine_handler = None
+                    self._velocity = 0
+            elif self.shown_index != self.index:
+                if not self._coroutine_handler:
+                    self._coroutine_handler = self._move_coroutine()
+                    self._coroutine_handler.run()
+        return
+
+    @property
+    def index(self):
+        return self._pager.index
+
+    def _on_click_right(self):
+        sm.playSound('ui/weapon_mod/adjust')
+        self._pager.move_right()
+
+    def _on_click_left(self):
+        sm.playSound('ui/weapon_mod/adjust')
+        self._pager.move_left()
+
+    def _on_shopmodel_event(self, event_type, data):
+        if event_type == ShopModelET.OnRec:
+            if self.index is None and self._shop_model.recom:
+                self._pager.set_items(self._shop_model.recom)
+        return
+
+    def align_content(self, button_width):
+        self._view0.set_button_width(button_width)
+        self._view1.set_button_width(button_width)
+        for r in self._repositions:
+            r.transform.apply_mode()
+
+        self._run_autoswap_callback()
+        mode = self._pager_ui.transform._mode[1:]
+        size = list(mode[2])
+        size[0] = button_width
+        mode[2] = tuple(size)
+        self._pager_ui.transform.set_pixel_mode(*mode)

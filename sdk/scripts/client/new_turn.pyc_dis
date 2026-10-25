@@ -1,0 +1,157 @@
+# Embedded file name: ./client/new_turn.py
+import BigWorld
+import tmp_blends
+import math
+ROLL_RETURN_SPEED = 0.5
+TURNS = {'STAY': {'unarmed': {'TORSO_ROLL_MULT': 0.02,
+                      'MAX_YAW': math.radians(100),
+                      'START_TURN_YAW': math.radians(90),
+                      'L': 'turn_left90_stay_unarmed',
+                      'R': 'turn_right90_stay_unarmed'},
+          'incombat': {'TORSO_ROLL_MULT': 0.065,
+                       'MAX_YAW': math.radians(105),
+                       'START_TURN_YAW': math.radians(95),
+                       'L': 'turn_left135_stay_incombat',
+                       'R': 'turn_right135_stay_incombat'}},
+ 'CROUCH': {'unarmed': {'TORSO_ROLL_MULT': 0.07,
+                        'MAX_YAW': math.radians(80),
+                        'START_TURN_YAW': math.radians(65),
+                        'L': 'turn_left90_crouch_unarmed',
+                        'R': 'turn_right90_crouch_unarmed'},
+            'incombat': {'TORSO_ROLL_MULT': 0.1,
+                         'MAX_YAW': math.radians(90),
+                         'START_TURN_YAW': math.radians(75),
+                         'L': 'turn_left90_crouch_unarmed',
+                         'R': 'turn_right90_crouch_unarmed'}}}
+BigWorld.actionMatcherAdvancedTurnSettings(TURNS)
+
+class CppNewTurn:
+
+    def __init__(self, entity):
+        self.entity = entity
+        am = self.entity.model.motors[0]
+        am.type = 1
+        am.turnModelToEntity = True
+        am.setAddRollValue = self._setAddRollValue
+
+    def lockYaw(self, value):
+        am = self.entity.model.motors[0]
+        if am:
+            am.lockYaw = value
+
+    def setState(self, bBored, bCrouched, bIgnoreNewFootTwist):
+        am = self.entity.model.motors[0]
+        if am:
+            am.setTurnState(bBored, bCrouched, bIgnoreNewFootTwist)
+
+    def setLookingAround(self, bValue):
+        am = self.entity.model.motors[0]
+        if am:
+            am.bLockingAround = bValue
+
+    def setTorsoRollValue(self, torso_roll_value):
+        am = self.entity.model.motors[0]
+        if am:
+            am.torsoRollValue = torso_roll_value
+
+    def _setAddRollValue(self, newValue):
+        if self.entity.torso_nodeinfo:
+            self.entity.torso_nodeinfo.addRoll = newValue
+
+    def destroy(self):
+        if not self.entity:
+            return
+        else:
+            if not self.entity.isDestroyed and self.entity.model:
+                am = self.entity.model.motors[0]
+                am.setAddRollValue = None
+                am.type = 0
+            self.entity = None
+            return
+
+
+class NewTurn:
+
+    def __init__(self, entity):
+
+        def setwatcher():
+            BigWorld.setWatcher('tracker/!am/python turn active', 1)
+
+        BigWorld.callback(1, setwatcher)
+        self._to_left = False
+        self._fwd_blender = tmp_blends.LinearBlend(step=1.0)
+        self._roll_blender = tmp_blends.LinearBlend(step=ROLL_RETURN_SPEED)
+        self._lock_yaw = False
+        self._prev_yaw = entity.yaw
+        self._turn_played = False
+        self.entity = entity
+        self.entity.model.motors[0].turnModelToEntity = True
+        self.entity.model.motors[0].testfootTwistFoo = self.testfootTwistFoo
+        self.entity.model.motors[0].testYawFoo = self.testYawFoo
+
+    def lockYaw(self, value):
+        self._lock_yaw = value
+        if self.entity == BigWorld.player() and self.entity.physics:
+            self.entity.physics.useAnimationYawPromotion = not value
+
+    def testfootTwistFoo(self, lastFootTwist_, newFootTwist, rLen, slide_collide_angle, dTime, newFootTwistDetected, action_played_time, naturalYaw, rYaw, lastFootTwistTagert_):
+        if self.entity.need_ladder_yaw is not None:
+            newFootTwist = 0.0
+        delta = newFootTwist - lastFootTwist_
+        return lastFootTwist_ + delta * 0.1
+
+    def on_start(self, to_left):
+        self._to_left = to_left
+        isgun = 'unarmed' if self.entity.IsAvatarBored() else 'incombat'
+        state = 'CROUCH' if self.entity.IsAvatarCrouched() else 'STAY'
+        side = 'L' if to_left else 'R'
+        act_name = TURNS[state][isgun][side]
+        self.entity.model.action(act_name)(0, self.on_end)
+
+    def on_end(self):
+        self._turn_played = False
+
+    def testYawFoo(self, wCurrYaw, wLastYaw, tmp_delta_wCurwLastY, rLen, dTime):
+        if self._lock_yaw:
+            return wLastYaw
+        self._fwd_blender.updateBlend(dTime)
+        self._prev_yaw = wLastYaw
+        new_yaw = wCurrYaw
+        if self.entity.lookingaround:
+            new_yaw = self._prev_yaw
+        diff = self._prev_yaw - new_yaw
+        if new_yaw < 0 and self._prev_yaw > 0:
+            if diff > math.pi:
+                self._prev_yaw -= 2 * math.pi
+        if new_yaw > 0 and self._prev_yaw < 0:
+            if diff < -math.pi:
+                self._prev_yaw += 2 * math.pi
+        self._fwd_blender.setValueTo(0)
+        if rLen > 0.001:
+            self._fwd_blender.setValueTo(1.0)
+        else:
+            self.entity.model.motors[0].lastFootTwistTagertValue = 0.0
+        diff = self._prev_yaw - new_yaw
+        self._prev_yaw -= diff * self._fwd_blender.getCurrentValue()
+        diff = self._prev_yaw - new_yaw
+        state = 'CROUCH' if self.entity.IsAvatarCrouched() else 'STAY'
+        isgun = 'unarmed' if self.entity.IsAvatarBored() else 'incombat'
+        START_TURN_YAW = TURNS[state][isgun]['START_TURN_YAW']
+        MAX_YAW = TURNS[state][isgun]['MAX_YAW']
+        TORSO_ROLL_MULT = TURNS[state][isgun]['TORSO_ROLL_MULT']
+        self._roll_blender.setValueTo(0.0)
+        if abs(diff) > START_TURN_YAW:
+            if not self.entity.torso_roll_value:
+                self._roll_blender.setValueTo(diff * TORSO_ROLL_MULT)
+            if not self._turn_played:
+                self._turn_played = True
+                self.on_start(diff > 0)
+        self._roll_blender.updateBlend(dTime)
+        if self.entity.torso_nodeinfo:
+            self.entity.torso_nodeinfo.addRoll = self.entity.torso_roll_value + self._roll_blender.getCurrentValue()
+        if abs(diff) > MAX_YAW:
+            if diff < 0:
+                self._prev_yaw = new_yaw - MAX_YAW + 1e-07
+            else:
+                self._prev_yaw = new_yaw + MAX_YAW - 1e-07
+        return self._prev_yaw

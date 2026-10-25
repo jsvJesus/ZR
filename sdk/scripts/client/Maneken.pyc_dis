@@ -1,0 +1,231 @@
+# Embedded file name: ./client/Maneken.py
+import BigWorld
+import ResMgr
+import math_bw
+from random import uniform
+import traceback
+import ItemsUtils
+from Items import ItemsCatalog
+from Localization import lc
+from Victim import Victim
+from ArmorCollider import ArmorCollider
+import Config
+from Config.Damage import BODY_ZONES, SourceTypes, DamageTypes
+from EquipSlotsConfigs import EquipSlotTypes as EST
+from maneken_utils import maneken_model_id2name, maneken_hitboxes_id2name
+import ChatChannelConfig
+from client_utils import readable_space_pos
+CHANNEL_CONSTS = ChatChannelConfig.ChannelConsts()
+
+class Maneken(BigWorld.Entity, Victim):
+
+    def __init__(self):
+        BigWorld.Entity.__init__(self)
+        self._model_path = maneken_model_id2name[self.maneken_model]
+        self.set_equipped_armor(self.NPCEquippedArmor)
+
+    def __repr__(self):
+        if self.isDestroyed:
+            return 'Maneken[%s]Destroyed' % self.id
+        return 'Maneken[%s] at %s' % (self.id, readable_space_pos(self))
+
+    def _get_model_list(self):
+        model_list = [self._model_path]
+        equipped_types = self.NPCEquippedArmor
+        for item in equipped_types:
+            item_type = item['itemType']
+            if not item_type:
+                continue
+            item_param = ItemsCatalog.GetItemParam(item_type)
+            if item_param:
+                model_list.extend(item_param.get('ModelNames', {}).values())
+
+        return model_list
+
+    def onEnterWorld(self, prereqs):
+        model_list = self._get_model_list()
+
+        def on_load_model(model):
+            if self.isDestroyed:
+                return
+            self.model = model
+            self.add_collider()
+
+        model_list.append(on_load_model)
+        BigWorld.fetchModel(*model_list)
+
+    def set_equipped_armor(self, equiped_armor):
+        slot_to_item = {}
+        item_id = -1
+        for item in equiped_armor:
+            item_type = item['itemType']
+            if not item_type:
+                continue
+            slot_types = ItemsCatalog.GetItemParam(item_type).get('SlotType', [])
+            item_id -= 1
+            for slot_type in slot_types:
+                slot_to_item[slot_type] = {'itemID': item_id,
+                 'itemType': item_type}
+
+        for slot_type, item in slot_to_item.items():
+            EST.set_slot_data(self, slot_type, item)
+
+    def add_collider(self):
+        self.clearColliders()
+        self.canBeHurtByBullets = True
+        self.skeletonCollider = BigWorld.SkeletonCollider()
+        colliders_config = ResMgr.openSection(maneken_hitboxes_id2name[self.maneken_hitboxes])
+        try:
+            for entry in colliders_config.values():
+                bone = entry['nodeName'].asString
+                minBounds = entry['minBounds'].asVector3
+                maxBounds = entry['maxBounds'].asVector3
+                transform = entry['transform'].asMatrix if entry.has_key('transform') else None
+                body_zone = Config.Damage.get_body_zone(entry['bodyZone'].asString)
+                if transform:
+                    transform.translation = transform.translation
+                self.attach_collider_box(bone, bone, body_zone, minBounds, maxBounds, transform)
+
+        except:
+            traceback.print_exc()
+
+        box = BigWorld.ObstacleAttachment('characters2/skeleton_box/head_hb.model')
+        box.bodyIndex = 100
+        box.name = 'Head'
+        node = self.getCurrentModel().node('Head')
+        node.attach(box)
+        self.skeletonCollider.addCollider(box)
+        self.colliderNames['Head'] = BODY_ZONES.HEAD
+        self.collider_nodes['Head'] = ('Head', node)
+        self.collider_boxes['Head'] = box
+        return
+
+    def override_client_damage_calculation(self, victim_id, ammo_type, weapon_item_id, body_zones, speed_factor):
+        player = BigWorld.player()
+        if not player or player.isDestroyed:
+            return
+        weapon = player.active_weapon
+        if weapon.getItemID() != weapon_item_id:
+            return
+        ammo_params = ItemsCatalog.GetItemParam(ammo_type)
+        speed_factor = math_bw.clamp(speed_factor)
+        damage_type, damage_bounds = ammo_params['DamageMain'].iteritems().next()
+        dist_coef = weapon.getDamageDistAvatarCoef(self.position.distTo(player.position))
+        damage_value = (uniform(*damage_bounds) + weapon.getAddDamageMain()) * speed_factor * dist_coef
+        if damage_value < 1.0:
+            return
+        penetration = ammo_params.get('Penetration', 0) + weapon.getPenetration()
+        flags = 0
+        if weapon.haveSilencer():
+            flags = flags | Config.Damage.Flags.SILENCE
+        damage_data = {'type': damage_type,
+         'value': damage_value,
+         'penetration': penetration,
+         'flags': flags}
+        source_data = {'type': SourceTypes.AVATAR,
+         'subtype': []}
+        self.damage(source_data, damage_data, body_zones, weapon.getItemType(), ammo_type)
+        return True
+
+    def set_invulnerable(self, old_value):
+        pass
+
+    def set_canTakeDamage(self, old_value):
+        pass
+
+    def get_defence(self, body_zone, damage_type):
+        return 0
+
+    def get_penetration(self, body_zone, damage_type):
+        return 0
+
+    def getBodyZoneMultiplier(self, body_zone):
+        return Config.Damage.body_zone_damage_multiplier.get(body_zone, 1.0)
+
+    def getVulnerabilityAmmoDamageMult(self, ammo_type, body_zone_id):
+        return None
+
+    def absorbDamage(self, damage_type, health_decrement):
+        return health_decrement
+
+    def _get_sturdiness_on_body_zone(self, body_zone):
+        armor_item_type, armor_itemID = ItemsUtils.get_armor_on_body_zone(self, body_zone)
+        if armor_item_type:
+            param = ItemsCatalog.GetItemParam(armor_item_type)
+            return param.get('bodyzone_sturdiness', {}).get(body_zone, 0)
+        return 0
+
+    def _get_best_body_zone_damage(self, penetration, body_zones, damage_value, DamageKinetic):
+        best_summary_damage = 0
+        best_damage = 0
+        best_body_zone = 0
+        for body_zone in body_zones:
+            bz_mult = self.getBodyZoneMultiplier(body_zone)
+            sturdiness = 0
+            sturdiness += self._get_sturdiness_on_body_zone(body_zone)
+            real_probitie = penetration - sturdiness
+            if real_probitie < 0:
+                penetration_mult = real_probitie * 0.002 + 0.5
+            else:
+                penetration_mult = 0.005 * real_probitie + 0.5
+            penetration_mult = min(1.0, max(0.0, penetration_mult))
+            calc_damage = max(DamageKinetic, damage_value * penetration_mult)
+            summary_damage = calc_damage * bz_mult
+            if summary_damage > best_summary_damage:
+                best_summary_damage = summary_damage
+                best_damage = calc_damage
+                best_body_zone = body_zone
+
+        return (best_body_zone, best_damage)
+
+    def damage(self, source_data, damage_data, body_zones, item_type, ammo_type = 0):
+        """
+        self \xd0\xbf\xd0\xbe\xd0\xbb\xd1\x83\xd1\x87\xd0\xb8\xd0\xbb \xd1\x83\xd1\x80\xd0\xbe\xd0\xbd
+        """
+        penetration = max(0, damage_data['penetration'])
+        damage_type = damage_data['type']
+        damage_value = damage_data['value']
+        DamageKinetic = ItemsUtils.getAmmoDamageKinetic(ammo_type, item_type)
+        best_body_zone = body_zones[0]
+        if damage_type == Config.Damage.DamageTypes.BULLET:
+            best_body_zone, best_damage = self._get_best_body_zone_damage(penetration, body_zones, damage_value, DamageKinetic)
+            body_zones = [best_body_zone]
+            if best_damage <= 0:
+                return
+            damage_data['value'] = best_damage
+        body_zone = body_zones[0]
+        damage_type = damage_data['type']
+        penetration = damage_data['penetration']
+        damage_value = damage_data['value']
+        defence = self.get_defence(body_zone, damage_type)
+        penetration += self.get_penetration(body_zone, damage_type)
+        DEFENCE_MAXIMUM = 700
+        if penetration < 0:
+            penetration = 0.0
+        if defence < 0:
+            defence = 0.0
+        dmg_modByDefence = 1 - 0.001 * min(DEFENCE_MAXIMUM, defence)
+        total_damage = max(0.0, dmg_modByDefence * damage_value)
+        if source_data['type'] == SourceTypes.AVATAR:
+            dmg = self.getBodyZoneMultiplier(body_zone)
+            health_decrement = total_damage * dmg
+        elif source_data['type'] == SourceTypes.CREATURE or source_data['type'] == SourceTypes.ANOMALY:
+            health_decrement = total_damage
+        else:
+            health_decrement = total_damage * Config.Damage.body_zone_damage_multiplier.get(body_zone, 1.0)
+        if source_data['type'] == SourceTypes.EFFECT:
+            body_zone = damage_type
+        if damage_data['flags'] & Config.Damage.Flags.CRITICAL:
+            health_decrement *= 2
+        vulnerability_mult = self.getVulnerabilityAmmoDamageMult(ammo_type, body_zone)
+        if vulnerability_mult is not None:
+            health_decrement = total_damage = max(0.0, vulnerability_mult * damage_value)
+        health_decrement = self.absorbDamage(damage_type, health_decrement)
+        if health_decrement >= 0:
+            damage_taken = round(health_decrement, 1)
+            chatline = lc('PlayerAvatar.client.MSG28') + u'   (' + unicode(-round(damage_taken, 2)) + u')'
+            BigWorld.player().putMessage(CHANNEL_CONSTS.FIGHT_OUTPUT, chatline)
+        return
+
+    def onLeaveWorld(self):
+        pass

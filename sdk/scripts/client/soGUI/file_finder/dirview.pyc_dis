@@ -1,0 +1,390 @@
+# Embedded file name: ./client/soGUI/file_finder/dirview.py
+from itertools import chain
+import BigWorld
+import Keys
+from utils import Listenable
+from soGUI.donat_shop.window.win_ui.scroll_bar import ScrollBar
+from soGUI.donat_shop.window.win_ui.scroll_content import ScrollContent, ScrollPart
+from ui.transform import pixel_params, clip_params
+from ui.panel import Panel
+from Helpers.PyGUI.PyGUIBase import Interceptor
+import GUI
+from disc_parser import parse_path, ElementType, ElementEventType as ElementET
+
+class DirScroll(ScrollBar):
+
+    def __init__(self, content, parent, name):
+        ScrollBar.__init__(self, content, parent, name)
+        self.component.line.materialFX = 'BLEND'
+        self.component.handler.materialFX = 'SOLID'
+
+    def on_show(self, style):
+        self.component.line.colour = style.basescroll
+        self.component.handler.colour = style.base
+
+    def handleMouseButtonEvent(self, component, event):
+        ScrollBar.handleMouseButtonEvent(self, component, event)
+        return True
+
+
+class LineEventType:
+    OnDblClick, OnEnter, OnLeave, OnClick = ((r, 'dirline') for r in range(4))
+
+
+class Line(Interceptor, Listenable):
+
+    def __init__(self):
+        Listenable.__init__(self)
+        self._last_click_time = 0
+        self._hovered = False
+        self._element = None
+        self._style = None
+        comp = GUI.Window('soGUI/frame/paint/white.dds')
+        comp.materialFX = 'BLEND'
+        comp.wm, comp.hm = ('CLIP', 'PIXEL')
+        comp.ha, comp.va = ('LEFT', 'TOP')
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = (2, 30)
+        comp.position = (0, 0, 0.5)
+        Interceptor.__init__(self, comp)
+        comp = GUI.Window()
+        comp.materialFX = 'BLEND'
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('LEFT', 'CENTER')
+        comp.hpm, comp.vpm = ('PIXEL', 'CLIP')
+        comp.width, comp.height = (0, 0)
+        comp.position = (0, 0, 0.5)
+        self.component.addChild(comp, 'image')
+        comp = GUI.Text(u'', 'RobotoCondensedRegular_20.font')
+        comp.ha, comp.va = ('LEFT', 'CENTER')
+        comp.wm, comp.hm = ('CLIP', 'CLIP')
+        comp.hpm, comp.vpm = ('PIXEL', 'CLIP')
+        comp.width, comp.height = (2, 2)
+        comp.position = (76, 0, 0.9)
+        self.component.addChild(comp, 'txt')
+        return
+
+    def set_style(self, style):
+        self._style = style
+        self.component.image.colour = style.image
+        self.component.txt.colour = style.image
+        self._apply_color()
+
+    def handleMouseButtonEvent(self, comp, event):
+        Interceptor.handleMouseButtonEvent(self, comp, event)
+        if event.key == Keys.KEY_LEFTMOUSE and event.isKeyDown():
+            data = {'element': self._element}
+            self.notify_listeners(LineEventType.OnClick, data)
+            dbl_click = BigWorld.time() - self._last_click_time < 0.5
+            if dbl_click:
+                self._last_click_time = 0
+                self.notify_listeners(LineEventType.OnDblClick, data)
+                return True
+            self._last_click_time = BigWorld.time()
+        return False
+
+    def handleMouseEnterEvent(self, comp):
+        data = {'line': self}
+        self.notify_listeners(LineEventType.OnEnter, data)
+        return False
+
+    def _apply_color(self):
+        if not self._element or not self._style:
+            return
+        if self._element.selected:
+            self.component.colour = self._style.baseselect
+        elif self._hovered:
+            self.component.colour = self._style.basehover
+        else:
+            self.component.colour = self._style.background
+
+    def set_hovered(self, hovered):
+        self._hovered = hovered
+        self._apply_color()
+
+    def handleMouseLeaveEvent(self, comp):
+        data = {'line': self}
+        self.notify_listeners(LineEventType.OnLeave, data)
+        return False
+
+    def handleMouseEvent(self, component, event):
+        return False
+
+    def _on_element_event(self, event_type, data):
+        if event_type == ElementET.OnSelectionChanged:
+            self._apply_color()
+
+    def set_element(self, element):
+        if self._element:
+            self._element.remove_listener(self._on_element_event)
+        self._element = element
+        if element:
+            self._element.add_listener(self._on_element_event)
+            self.component.txt.text = element.name
+            if element.type == ElementType.Disc:
+                img = 'soGUI/frame/paint/pic_disc.dds'
+            elif element.type == ElementType.Folder:
+                img = 'soGUI/frame/paint/pic_folder.dds'
+            elif element.type == ElementType.File:
+                img = 'soGUI/frame/paint/pic_image.dds'
+            comp = self.component.image
+            comp.textureName = img
+            comp.width, comp.height = comp.texture.width, comp.texture.height
+        self._apply_color()
+
+
+class LinesEventType:
+    OnSelectionChanged, = ((r, 'dirlines') for r in range(1))
+
+
+class Lines(ScrollPart, Listenable):
+    line_height = 46.0
+
+    def __init__(self, component):
+        Listenable.__init__(self)
+        ScrollPart.__init__(self)
+        self._elements = None
+        self._visible_range = None
+        self._visible_lines = {}
+        self._pooled_lines = []
+        self._hovered = None
+        self._selected = None
+        self._style = None
+        self.component = component
+        self.component.script = self
+        return
+
+    def set_elements(self, elements):
+        for vl in self._visible_lines.itervalues():
+            self._send_to_pool(vl)
+
+        self._visible_lines = {}
+        self._elements = elements
+        if self._elements:
+            height = len(self._elements) * Lines.line_height
+        else:
+            height = 0
+        self._check_content()
+        return height
+
+    def on_visible_borders_changed(self, visible, start, end):
+        self._check_content()
+
+    def on_show(self, style):
+        self._style = style
+        for line in chain(self._visible_lines.itervalues(), self._pooled_lines):
+            line.set_style(style)
+
+    @property
+    def selected(self):
+        return self._selected
+
+    @selected.setter
+    def selected(self, value):
+        if value == self._selected:
+            return
+        if self._selected:
+            self._selected.set_selected(False)
+        self._selected = value
+        if self._selected:
+            self._selected.set_selected(True)
+        self.notify_listeners(LinesEventType.OnSelectionChanged)
+
+    @property
+    def hovered(self):
+        return self._hovered
+
+    @hovered.setter
+    def hovered(self, value):
+        if self._hovered == value:
+            return
+        if self._hovered:
+            self._hovered.set_hovered(False)
+        self._hovered = value
+        if self._hovered:
+            self._hovered.set_hovered(True)
+
+    def _on_line_event(self, event_type, data):
+        if event_type == LineEventType.OnDblClick:
+            self.notify_listeners(event_type, data)
+        elif event_type == LineEventType.OnClick:
+            self.selected = data['element']
+        elif event_type == LineEventType.OnEnter:
+            self.hovered = data['line']
+        elif event_type == LineEventType.OnLeave:
+            if self.hovered == data['line']:
+                self.hovered = None
+        return
+
+    def _send_to_pool(self, line):
+        line.set_element(None)
+        line.remove_listener(self._on_line_event)
+        line.component.visible = False
+        self._pooled_lines.append(line)
+        return
+
+    def _check_content(self):
+        if self._elements and self._end_local > self._start_local:
+            start_index = int(self._start_local / Lines.line_height)
+            if start_index >= len(self._elements):
+                visible_range = None
+            else:
+                end_index = int(self._end_local / Lines.line_height)
+                end_index = min(end_index, len(self._elements) - 1)
+                visible_range = (start_index, end_index)
+        else:
+            visible_range = None
+        self._visible_range = visible_range
+        if visible_range:
+            for index in self._visible_lines.keys():
+                if index < visible_range[0] or index > visible_range[1]:
+                    line = self._visible_lines.pop(index)
+                    self._send_to_pool(line)
+
+            for index in range(visible_range[0], visible_range[1] + 1):
+                if index not in self._visible_lines:
+                    if self._pooled_lines:
+                        line = self._pooled_lines.pop()
+                        line.component.visible = True
+                    else:
+                        line = Line()
+                        line.set_style(self._style)
+                        self.component.addChild(line.component)
+                    comp = line.component
+                    comp.height = Lines.line_height
+                    comp.position[1] = index * Lines.line_height
+                    line.add_listener(self._on_line_event)
+                    self._visible_lines[index] = line
+                line = self._visible_lines[index]
+                line.set_element(self._elements[index])
+
+        return
+
+
+class ViewEventType:
+    OnPathRequested, OnSelectionChanged, OnFileRequested, OnLoadChanged, OnPathInvalid = ((r, 'dirview') for r in range(5))
+
+
+class DirView(Interceptor, Listenable):
+    _request_id = 0
+
+    def __init__(self, component):
+        Listenable.__init__(self)
+        Interceptor.__init__(self, component)
+        self.path = None
+        scroll_width = 14
+        view = Panel(self.component, 'view')
+        view.transform.set_clip_mode((0, 0, 1, 1), (0,
+         0,
+         -scroll_width,
+         0))
+        comp = GUI.Window('soGUI/frame/paint/white.dds')
+        comp.materialFX = 'SOLID'
+        comp.wm, comp.hm = ('CLIP', 'CLIP')
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.width, comp.height = (2, 2)
+        comp.position = (0, 0, 0.1)
+        self.component.addChild(comp, 'loader')
+        Interceptor(comp)
+        comp = GUI.Simple('soGUI/frame/journal/load_anim/load_pips')
+        comp.materialFX = 'BLEND'
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = comp.texture.width, comp.texture.height
+        comp.position = (0, 0, 0.1)
+        self.component.loader.addChild(comp, 'pips')
+        content = ScrollContent(view.component, 'content')
+        cpx = clip_params((0, 1))
+        cpy = pixel_params(0, 0, 0)
+        content.transform.set_base_resolution(None)
+        content.transform.set_mixed_mode(cpx, cpy)
+        comp = GUI.Window()
+        self._lines = Lines(comp)
+        self._lines.add_listener(self._on_lines_event)
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('LEFT', 'TOP')
+        comp.wm, comp.hm = ('CLIP', 'PIXEL')
+        comp.width, comp.height = (2, 0)
+        comp.position = (0, 0, 0.5)
+        content.component.addChild(comp, 'lines')
+        self._scroll = DirScroll(content, self.component, 'scroll')
+        cpx = pixel_params(1, 1, scroll_width, 0)
+        cpy = clip_params((0, 1))
+        self._scroll.transform.set_mixed_mode(cpx, cpy)
+        return
+
+    def _on_lines_event(self, event_type, data):
+        if event_type == LineEventType.OnDblClick:
+            element = data['element']
+            data = {'path': element.path}
+            if element.type in (ElementType.Disc, ElementType.Folder):
+                self.notify_listeners(ViewEventType.OnPathRequested, data)
+            elif element.type == ElementType.File:
+                self.notify_listeners(ViewEventType.OnFileRequested, data)
+        elif event_type == LinesEventType.OnSelectionChanged:
+            self.notify_listeners(ViewEventType.OnSelectionChanged)
+
+    def selected_element(self):
+        return self._lines.selected
+
+    def on_show(self, style):
+        self.component.loader.pips.colour = style.base
+        self.component.loader.colour = style.background
+        self._lines.on_show(style)
+        self._scroll.on_show(style)
+
+    def set_path(self, path):
+        self.path = path
+        self._apply_path(None)
+        DirView._request_id += 1
+        parse_path(path, self._on_path_parsed, DirView._request_id)
+        return
+
+    def _on_path_parsed(self, elements, request_id):
+        if request_id != DirView._request_id:
+            return
+        elif elements is None:
+            self.notify_listeners(ViewEventType.OnPathInvalid)
+            self.loading = False
+            return
+        else:
+            self._apply_path(elements)
+            return
+
+    @property
+    def loading(self):
+        return self.component.loader.visible
+
+    @loading.setter
+    def loading(self, value):
+        if self.loading == value:
+            return
+        self.component.loader.visible = value
+        self.notify_listeners(ViewEventType.OnLoadChanged)
+
+    def _apply_path(self, elements):
+        self.loading = elements is None
+        if self.loading:
+            return
+        else:
+            self._lines.selected = None
+            height = self._lines.set_elements(elements)
+            content = self.component.view.content
+            self.component.view.content.lines.height = height
+            cpx, cpy = ScrollContent.calculate_mode(content, self.component.view, height)
+            content.script.transform.set_mixed_mode(cpx, cpy)
+            return
+
+    def handleMouseButtonEvent(self, comp, event):
+        return False
+
+    def handleMouseEvent(self, component, event):
+        if event.dz:
+            self._scroll.move_abs(-event.dz)
+        return False
+
+    def do_reposition(self):
+        self.component.view.script.transform.apply_mode()
+        self._scroll.transform.apply_mode()

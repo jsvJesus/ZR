@@ -1,0 +1,81 @@
+# Embedded file name: ./client/test_bot/test_bot_main.py
+import time
+import BigWorld
+from test_bot_win.test_bot_win import TestBotWin, EventType as WinET
+from test_bot import configs_parser
+from bot_brain import BotBrain, EventType as BotET
+from logger import log
+_instance = None
+
+def run():
+    global _instance
+    if _instance is None:
+        _instance = TestBot()
+    return
+
+
+class TestBot(object):
+
+    def __init__(self):
+        BigWorld.player().addListener('onBecomeNonPlayer', self._on_non_player)
+        self._test_bot_win = TestBotWin()
+        self._test_bot_win.add_listener(self._on_win_event)
+        self._test_bot_win.show()
+        self._brain = None
+        self._update_configs()
+        return
+
+    def _on_win_event(self, event_type, data):
+        if event_type == WinET.OnReloadConfigsRequested:
+            self._update_configs()
+        elif event_type == WinET.OnStopRequested:
+            self.brain.destroy()
+        elif event_type == WinET.OnRunRequested:
+            self._config_name = data['config']
+            run_params, commands = configs_parser.get_config_commands(self._config_name)
+            self.brain = BotBrain(run_params, commands)
+            self.brain.start()
+        elif event_type == WinET.OnCloseRequest:
+            self.destroy()
+
+    def _on_brain_event(self, event_type, data):
+        if event_type == BotET.OnStarted:
+            self._start_time = time.strftime('%H_%M_%S')
+        elif event_type == BotET.OnStopped:
+            log(self._start_time, self._config_name, self._brain.statistics.errors)
+            if data['close_window']:
+                self._test_bot_win.hide()
+
+    @property
+    def brain(self):
+        return self._brain
+
+    @brain.setter
+    def brain(self, value):
+        if self._brain == value:
+            return
+        if self._brain:
+            self._brain.remove_listener(self._on_brain_event)
+            self._brain.destroy()
+        self._brain = value
+        if self._brain:
+            self._brain.add_listener(self._on_brain_event)
+        if self._test_bot_win:
+            self._test_bot_win.connect_brain(self._brain)
+
+    def _update_configs(self):
+        paths = configs_parser.parse()
+        self._test_bot_win.set_config_names(paths)
+
+    def _on_non_player(self):
+        self.destroy()
+
+    def destroy(self):
+        global _instance
+        _instance = None
+        if self._test_bot_win:
+            self._test_bot_win.hide()
+            self._test_bot_win.destroy()
+            self._test_bot_win = None
+        self.brain = None
+        return

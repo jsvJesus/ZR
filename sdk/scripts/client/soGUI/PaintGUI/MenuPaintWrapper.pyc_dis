@@ -1,0 +1,245 @@
+# Embedded file name: ./client/soGUI/PaintGUI/MenuPaintWrapper.py
+import BWPersonality
+import GUI
+import BigWorld
+from soGUI.PaintGUI.PaintScreen import PaintScreen
+from Helpers.BWCoroutine import BWMemberCoroutine, BWWaitForPeriod, BWWaitForCoroutine, BWWaitForCondition
+import math_bw
+import ItemsUtils
+import DyeConstant
+from cloth_paint_utils import PaintNotifyCode as PNC
+from collections import defaultdict
+import TutorialUtils
+from Localization import lc
+
+class MenuPaintWrapper(object):
+
+    def clear_cache(self):
+        self._data_cache.clear()
+
+    def _create_paint_screen(self):
+        self._paint_screen = PaintScreen()
+        self._paint_screen.on_hide = self._on_paint_hide
+        self._paint_screen.on_apply = self._on_apply_paint
+        comp = self._paint_screen.component
+        comp.position[2] = 0.5
+        self.component.addChild(comp, 'paint_screen')
+
+    def __init__(self):
+        self._paint_screen = None
+        self._data_cache = {}
+        self._db_id = None
+        self._lock_screen = False
+        comp = GUI.Window()
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.width, comp.height = (2, 2)
+        comp.visible = False
+        comp.materialFX = 'BLEND'
+        comp.position = (0, 0, 0.2)
+        self.component = comp
+        self.component.script = self
+        comp = GUI.Window('soGUI/frame/paint/black.dds')
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.width, comp.height = (2, 2)
+        comp.materialFX = 'BLEND'
+        comp.position = (0, 0, 0)
+        self.component.addChild(comp, 'fader')
+        self._coroutine = None
+        self._alpha = 0
+        return
+
+    def show(self):
+        cur_char = BigWorld.player().current_character()
+        if cur_char['last_space'] in TutorialUtils.TUTORIAL_SPACES:
+            BWPersonality.GUICore.loginFlash.show_dialog_message(lc('PaintScreen.screen.MODIFICATION'), lc('PaintScreen.screen.AFTER_TUTORIAL_ONLY'))
+            return
+        if self._coroutine:
+            return
+        if self.component.visible:
+            return
+        self.component.visible = True
+        self._coroutine = self._show()
+        self._coroutine.run()
+
+    def load_paint_result(self, db_id, data):
+        self._data_cache[db_id] = data
+
+    @BWMemberCoroutine
+    def _show(self):
+        yield BWWaitForCoroutine(self._fade())
+        if not self._paint_screen:
+            self._create_paint_screen()
+        cur_char = BigWorld.player().current_character()
+        self._db_id = cur_char['avatar_dbid']
+        if self._db_id not in self._data_cache:
+            BigWorld.player().loadPaintData(self._db_id)
+            self._data_cache[self._db_id] = None
+        yield BWWaitForCondition(lambda : bool(self._data_cache[self._db_id] or self._lock_screen))
+        if self._lock_screen:
+            yield BWWaitForCoroutine(self._fade())
+            self._coroutine = None
+            BWPersonality.GUICore.loginFlash.show_dialog_message(lc('PaintScreen.screen.MODIFICATION'), lc('PaintScreen.screen.AFTER_TUTORIAL_ONLY'))
+            self.hide()
+            return
+        else:
+            cur_char = BigWorld.player().current_character()
+            modify_items = self._data_cache[self._db_id]['modify_items']
+            equipped_armor = cur_char['equippedArmor']
+            equip_modes = cur_char['equipModes']
+            equipped_cond = self._data_cache[self._db_id]['equipped_cond']
+            equipped_ids = set([ item_data['itemID'] for item_data in equipped_armor.values() ])
+            equipped_ids |= set([ w['itemID'] for w in cur_char['weapon'].values() if w['itemID'] > 0 ])
+            equipped_items = filter(lambda item: item['complexItemID'] in equipped_ids, modify_items)
+            modify_items = filter(lambda item: item['complexItemID'] not in equipped_ids, modify_items)
+            personal_emblems = self._data_cache[self._db_id]['personal_emblems']
+            standard_emblems = self._data_cache[self._db_id]['standard_emblems']
+            consumables = self._data_cache[self._db_id]['consumables']
+            inventory_consumables = self._data_cache[self._db_id]['inventory_consumables']
+            personality = cur_char['personality']
+            self._paint_screen.show(modify_items, equipped_items, equipped_armor, equipped_cond, equip_modes, personality, consumables, inventory_consumables)
+            self._paint_screen.got_emblems_ids(personal_emblems, True)
+            self._paint_screen.got_emblems_ids(standard_emblems, False)
+            self._paint_screen.doReposition()
+            yield BWWaitForCoroutine(self._fade())
+            self._coroutine = None
+            return
+
+    def consumable_added(self, items):
+        consumables = self._data_cache[self._db_id]['consumables']
+        inventory_consumables = self._data_cache[self._db_id]['inventory_consumables']
+        for item in items:
+            for c in consumables:
+                if item['item_id'] == c['item_id']:
+                    c['count'] = item['count']
+                    break
+            else:
+                consumables.append(item)
+
+        if not self._paint_screen.visible:
+            return
+        self._paint_screen.consumables_updated(consumables, inventory_consumables)
+
+    @BWMemberCoroutine
+    def _hide(self):
+        yield BWWaitForCoroutine(self._fade())
+        self._paint_screen.hide()
+        yield BWWaitForCoroutine(self._fade())
+        self._coroutine = None
+        self.hide()
+        return
+
+    @BWMemberCoroutine
+    def _fade(self):
+        self._alpha = math_bw.clamp(self._alpha)
+        fade_speed = 3.0
+        if self._alpha == 0.0:
+            factor = 1.0
+        elif self._alpha == 1.0:
+            factor = -1.0
+        else:
+            ValueError(factor)
+        while True:
+            time_step = min(0.05, BigWorld.getTimeDelta())
+            self._alpha += time_step * factor * fade_speed
+            if not 0.0 < self._alpha < 1.0:
+                break
+            yield BWWaitForPeriod(0)
+
+        self._alpha = math_bw.clamp(self._alpha)
+
+    def update_consumables(self, consumables, inventory_consumables):
+        for data in self._data_cache.values():
+            if data is None:
+                continue
+            data['consumables'] = consumables
+            data['inventory_consumables'] = inventory_consumables
+
+        if self._paint_screen and self._paint_screen.visible:
+            self._paint_screen.consumables_updated(consumables, inventory_consumables)
+        return
+
+    def _on_apply_paint(self, painted_items, emblemed_items, consumables, inventory_consumables):
+        paint_data = defaultdict(lambda : {'item_id': item_id,
+         'colors': (0, 0),
+         'emblem_id': 0,
+         'new_colors': False,
+         'new_emblem': False})
+        for item_id, data in painted_items.items():
+            item_data = paint_data[item_id]
+            int1 = ItemsUtils.ColorAndTintToINT64(tint=data['camo_id'], *data['colors'][:6])
+            int2 = ItemsUtils.ColorAndEmblemToUINT64(emblem=0, *data['colors'][6:])
+            item_data['colors'] = (int1, int2)
+            item_data['new_colors'] = True
+
+        for item_id, emblem_id in emblemed_items.items():
+            item_data = paint_data[item_id]
+            item_data['emblem_id'] = emblem_id
+            item_data['new_emblem'] = True
+
+        send_data = {'avatar_dbid': self._db_id,
+         'paint_items': paint_data.values(),
+         'consumables': consumables,
+         'inventory_consumables': inventory_consumables}
+        BigWorld.player().paintCloth(send_data)
+
+    def on_paint_event(self, event_id):
+        if self._db_id is None:
+            return
+        elif event_id == PNC.PAINT_OK:
+            if self._coroutine:
+                raise RuntimeError
+            BWPersonality.GUICore.loginFlash.show_dialog_message(lc('PaintScreen.screen.CONGRATULATIONS'), lc('PaintScreen.screen.MODIFICATION_SUCCESS'))
+            self._coroutine = self._hide()
+            self._coroutine.run()
+            del self._data_cache[self._db_id]
+            return
+        elif event_id == PNC.ERR_TUTOR_SPACE:
+            self._lock_screen = True
+            return
+        else:
+            self._paint_screen.show_error(event_id)
+            return
+
+    def _on_paint_hide(self):
+        if self._coroutine:
+            return
+        self.hide()
+
+    def hide(self):
+        if self._coroutine:
+            return
+        else:
+            self._db_id = None
+            if self._paint_screen:
+                self._paint_screen.hide()
+            self.component.visible = False
+            self.clear_cache()
+            self._lock_screen = False
+            return
+
+    def handleKeyEvent(self, event):
+        if not self.component.visible:
+            return False
+        if self._coroutine:
+            return True
+        if self._paint_screen and self._paint_screen.visible:
+            return self._paint_screen.handleKeyEvent(event)
+        return True
+
+    def doReposition(self):
+        if self._paint_screen and self._paint_screen.visible:
+            self._paint_screen.doReposition()
+
+    @property
+    def _alpha(self):
+        return self.component.fader.colour[3] / 255.0
+
+    @_alpha.setter
+    def _alpha(self, value):
+        value *= 255
+        self.component.fader.colour[3] = value
+        self.component.fader.visible = value > 0.0
+
+    @property
+    def visible(self):
+        return self.component.visible

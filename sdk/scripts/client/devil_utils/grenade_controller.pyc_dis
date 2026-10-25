@@ -1,0 +1,118 @@
+# Embedded file name: ./client/devil_utils/grenade_controller.py
+from Math import Matrix
+import BigWorld
+from utils import Destructable
+import ResourceLoader
+from cdevil_utils.dutils import d_config
+
+class GrenadeController(Destructable):
+    _grenade_point = 'HP_GrenadePoint'
+
+    def __init__(self, parent_entity):
+        Destructable.__init__(self)
+        self._parent_entity = parent_entity
+        parent_entity.prepare_grenade = self._prepare_grenade
+        parent_entity.spawn_grenade = self._spawn_grenade
+        parent_entity.onThrowingEntityAppears = self._on_grenaded_appears
+        self._subscribed_model = None
+        self._premode_name = None
+        self._premodel = None
+        self._clear()
+        self.update_config(d_config)
+        return
+
+    def _load_premodel(self):
+
+        def callback(prereqs):
+            if self._premodel:
+                if self._subscribed_model and self._premodel.inWorld:
+                    self._subscribed_model.node(GrenadeController._grenade_point).detach(self._premodel)
+            self._premodel = prereqs.produce(0)
+            self._premodel.visible = False
+            self._think_about_grenade()
+
+        ResourceLoader.asyncLoad([(ResourceLoader.MODEL, self._premode_name)], callback)
+
+    def update_config(self, config):
+        self._grenade_id = config['strike_params']['Throw']['grenade_id']
+        new_name = config['strike_params']['Throw']['premodel']
+        if new_name != self._premode_name:
+            self._premode_name = new_name
+            self._load_premodel()
+
+    def _clear(self):
+        self._prepared_grenade = {'id': None,
+         'cue': False,
+         'startcue': False,
+         'spawned': False,
+         'created': False,
+         'throwned': False}
+        return
+
+    def _think_about_grenade(self):
+        if self.destroyed or self._parent_entity.isDestroyed or not self._parent_entity.model or not self._subscribed_model:
+            return
+        pg = self._prepared_grenade
+        if pg['id'] and pg['created'] and pg['cue'] and not pg['throwned']:
+            pg['throwned'] = True
+            grenade = BigWorld.entities.get(pg['id'])
+            if not grenade:
+                self._clear()
+                return
+            grenade.visible = True
+            pos = Matrix(self._subscribed_model.node(GrenadeController._grenade_point)).translation
+            grenade.throw(pos)
+            self._clear()
+        if self._premodel:
+            self._premodel.visible = bool(pg['id'] and pg['startcue'] and not pg['throwned'])
+            if not self._premodel.inWorld and self._subscribed_model:
+                self._subscribed_model.node(GrenadeController._grenade_point).attach(self._premodel)
+
+    def subscribe_to_model(self, model):
+        if self._subscribed_model:
+            self._subscribed_model.cue('onThrowItem', None)
+            self._subscribed_model.cue('ThrowItem', None)
+            if self._premodel:
+                self._subscribed_model.node(GrenadeController._grenade_point).detach(self._premodel)
+        self._subscribed_model = model
+        if self._subscribed_model:
+            self._subscribed_model.cue('onThrowItem', self._on_cue_throwitem)
+            self._subscribed_model.cue('ThrowItem', self._on_cue_startthrowitem)
+            if self._premodel:
+                self._subscribed_model.node(GrenadeController._grenade_point).attach(self._premodel)
+        self._think_about_grenade()
+        return
+
+    def _on_grenaded_appears(self, entity):
+        entity.model.visible = False
+        self._prepared_grenade['created'] = True
+        self._think_about_grenade()
+
+    def _spawn_grenade(self):
+        self._prepared_grenade['spawned'] = True
+        self._think_about_grenade()
+
+    def _prepare_grenade(self, position, velocity, target_id):
+        throwing_params = {'ownerID': self._parent_entity.id,
+         'fromServer': False,
+         'startPosition': position,
+         'velocity': velocity,
+         'grenade_type': self._grenade_id,
+         'targetID': target_id}
+        self._clear()
+        self._prepared_grenade['id'] = BigWorld.createEntity('Grenade', self._parent_entity.spaceID, 0, position, (0, self._parent_entity.pitch, self._parent_entity.yaw), throwing_params)
+        self._think_about_grenade()
+
+    def _on_cue_startthrowitem(self):
+        self._prepared_grenade['startcue'] = True
+        self._think_about_grenade()
+
+    def _on_cue_throwitem(self):
+        self._prepared_grenade['cue'] = True
+        self._think_about_grenade()
+
+    def on_release(self):
+        Destructable.on_release(self)
+        self._parent_entity = None
+        self.subscribe_to_model(None)
+        return

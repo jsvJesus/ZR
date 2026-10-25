@@ -1,0 +1,90 @@
+# Embedded file name: ./client/soGUI/gifts_gui/loader.py
+from functools import partial
+import BigWorld
+from utils import Listenable
+
+class EventType:
+    OnLoaded, OnLoadListChanged = ((r, 'Gift.LoaderET') for r in range(2))
+
+
+class Loader(Listenable):
+    _request_id = 0
+
+    @staticmethod
+    def next_id():
+        Loader._request_id += 1
+        return Loader._request_id
+
+    def __init__(self, type_gift):
+        Listenable.__init__(self)
+        self._type_gift = type_gift
+        self._awaited_list_request = None
+        self._load_list_delay_handler = None
+        self._load_detail_delay_handler = None
+        return
+
+    def load_details(self, gift_id):
+        if self._load_detail_delay_handler:
+            BigWorld.cancelCallback(self._load_detail_delay_handler)
+        self._load_detail_delay_handler = BigWorld.callback(0.3, partial(self._load_details_now, gift_id))
+
+    def _load_details_now(self, gift_id):
+        self._load_detail_delay_handler = None
+        BigWorld.player().base.load_gift_details(self._type_gift, gift_id)
+        return
+
+    def load_next(self, index, sort_mode, sort_dir):
+        self.awaited_list_request = (Loader.next_id(), index)
+        if self._load_list_delay_handler:
+            BigWorld.cancelCallback(self._load_list_delay_handler)
+        self._load_list_delay_handler = BigWorld.callback(0.3, partial(self._load_next_now, index, sort_mode, sort_dir))
+
+    def _load_next_now(self, index, sort_mode, sort_dir):
+        self._load_list_delay_handler = None
+        BigWorld.player().base.get_gifts(index, self._type_gift, sort_mode, sort_dir, self.awaited_list_request[0])
+        return
+
+    def got_gifts4(self, total, request_id, items):
+        if not self.awaited_list_request or self.awaited_list_request[0] != request_id:
+            return
+        else:
+            index = self.awaited_list_request[1]
+            self.awaited_list_request = None
+            data = {'total': total,
+             'index': index,
+             'items': items}
+            self.notify_listeners(EventType.OnLoaded, data)
+            return
+
+    def request_delete(self, type_gift, gift_id):
+        BigWorld.player().base.deleteGift(type_gift, gift_id)
+
+    def request_delete_emtpty(self):
+        BigWorld.player().base.delete_empty_gifts()
+
+    def stop_loading(self):
+        self.awaited_list_request = None
+        if self._load_list_delay_handler:
+            BigWorld.cancelCallback(self._load_list_delay_handler)
+            self._load_list_delay_handler = None
+        if self._load_detail_delay_handler:
+            BigWorld.cancelCallback(self._load_detail_delay_handler)
+            self._load_detail_delay_handler = None
+        return
+
+    @property
+    def awaited_list_request(self):
+        return self._awaited_list_request
+
+    @awaited_list_request.setter
+    def awaited_list_request(self, value):
+        if value == self._awaited_list_request:
+            return
+        was_loading = self.list_loading
+        self._awaited_list_request = value
+        if was_loading != self.list_loading:
+            self.notify_listeners(EventType.OnLoadListChanged)
+
+    @property
+    def list_loading(self):
+        return bool(self._awaited_list_request)

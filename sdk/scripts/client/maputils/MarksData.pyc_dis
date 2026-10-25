@@ -1,0 +1,398 @@
+# Embedded file name: ./client/maputils/MarksData.py
+import traceback
+import BWPersonality
+import BigWorld
+from collections import defaultdict
+import AdditionalNPCParameters as AP
+import MapNotes
+import QuestDispatcher as qd
+from utils import Listenable
+from maputils.data_loader import ValidType
+DEATH_MARK_LIFETIME = 300
+CORPSE_MARK_LIFETIME = 20
+
+class LoadStatus:
+    Empty, Pending, Ready = range(3)
+
+
+def _uid_generator():
+    index = 0
+    while True:
+        index += 1
+        yield index
+
+
+_uid_provider = _uid_generator()
+
+class MarksData(Listenable):
+    EVENT_COMMON_LOADED, EVENT_PERSONAL_LOADED, EVENT_PERSONAL_ADDED, EVENT_PERSONAL_DELETED, EVENT_NPC_VISITED, TARGET_MARK_CHANGED, EVENT_PVP_FLAGS_UPDATED, EVENT_PLAYER_DIE, EVENT_PLAYER_UNDIE, EVENT_CORPSE_ADDED, EVENT_CORPSE_REMOVED, EVENT_NPC_DELETED, EVENT_CTRIGGER_DELETED, EVENT_CTRIGGER_VISITED, EVENT_QUESTMARK_CHANGED, WANTED_MARK_CHANGED, EVENT_WORLDPLACE_ADDED, EVENT_WORLDPLACE_REMOVED, EVENT_COMPOUND_ADDED, EVENT_COMPOUND_REMOVED = xrange(20)
+
+    def __init__(self):
+        Listenable.__init__(self)
+        self.invalid_spaces = set()
+        self.quest_marks = {}
+        self.npcs_marks = {}
+        self.ctriggers_marks = {}
+        self.personal_marks = {}
+        self.worldplace_marks = {}
+        self.compound_marks = {}
+        self.death_marks = defaultdict(list)
+        self.corpses_marks = defaultdict(dict)
+        self._target_mark = None
+        self._wanted_mark = None
+        self._death_timer_callback = None
+        self._corpse_timer_callback = None
+        return
+
+    def request_data(self, playername, spacename):
+        player = BigWorld.player()
+        if player.name != playername:
+            raise RuntimeError
+        targetspace, position = BWPersonality.settings.get_target_data(BigWorld.player().name)
+        if targetspace:
+            self.set_target_mark(targetspace, position)
+        if spacename not in self.npcs_marks and spacename not in self.personal_marks:
+            self.npcs_marks[spacename] = None
+            self.personal_marks[spacename] = None
+            player.load_marks(spacename)
+        elif spacename in self.npcs_marks and spacename in self.personal_marks:
+            pass
+        else:
+            RuntimeError
+        return
+
+    def has_loaded_common_data(self, space_name):
+        if space_name not in self.npcs_marks:
+            return LoadStatus.Empty
+        elif self.npcs_marks[space_name] is None:
+            return LoadStatus.Pending
+        else:
+            return LoadStatus.Ready
+
+    def has_loaded_personal_data(self, space_name):
+        if space_name not in self.personal_marks:
+            return LoadStatus.Empty
+        elif self.personal_marks[space_name] is None:
+            return LoadStatus.Pending
+        else:
+            return LoadStatus.Ready
+
+    def on_player_rise(self, position, space_id):
+        space_name = BWPersonality.game.get_space_name_advanced(space_id)
+        self.death_marks[space_name].append((position, BigWorld.time() + DEATH_MARK_LIFETIME))
+        self._update_death_timer()
+        data = {'spacename': space_name,
+         'position': position}
+        self.notify_listeners(MarksData.EVENT_PLAYER_DIE, data)
+
+    def _update_death_timer(self):
+        if self._death_timer_callback:
+            BigWorld.cancelCallback(self._death_timer_callback)
+            self._death_timer_callback = None
+        cur_time = BigWorld.time()
+        min_delay = None
+        for space_name, die_data in self.death_marks.items():
+            for i in xrange(len(die_data) - 1, -1, -1):
+                pos, die_time = die_data[i]
+                if cur_time > die_time:
+                    del die_data[i]
+                    data = {'spacename': space_name,
+                     'position': pos}
+                    self.notify_listeners(MarksData.EVENT_PLAYER_UNDIE, data)
+                    if not die_data:
+                        del self.death_marks[space_name]
+                else:
+                    delay = die_time - cur_time
+                    min_delay = min(min_delay, delay) if min_delay else delay
+
+        if min_delay:
+            self._death_timer_callback = BigWorld.callback(min_delay, self._update_death_timer)
+        return
+
+    def _update_corpse_timer(self):
+        if self._corpse_timer_callback:
+            BigWorld.cancelCallback(self._corpse_timer_callback)
+            self._corpse_timer_callback = None
+        cur_time = BigWorld.time()
+        min_delay = None
+        for space_name, corpses in self.corpses_marks.items():
+            for name, data in corpses.items():
+                if cur_time > data['time']:
+                    data = {'spacename': space_name,
+                     'name': name,
+                     'position': corpses[name]['pos']}
+                    self.notify_listeners(MarksData.EVENT_CORPSE_REMOVED, data)
+                    del corpses[name]
+                else:
+                    delay = data['time'] - cur_time
+                    min_delay = min(min_delay, delay) if min_delay else delay
+
+            if not corpses:
+                del self.corpses_marks[space_name]
+
+        if min_delay:
+            self._corpse_timer_callback = BigWorld.callback(min_delay, self._update_corpse_timer)
+        return
+
+    def wipe_npcs_and_ctriggers(self):
+        for space_name in self.npcs_marks.keys():
+            npc_ids = self.npcs_marks[space_name]
+            self.npcs_marks[space_name] = []
+            data = {'spacename': space_name,
+             'npc_ids': npc_ids}
+            self.notify_listeners(MarksData.EVENT_NPC_DELETED, data)
+            ctrigger_ids = self.ctriggers_marks[space_name]
+            self.ctriggers_marks[space_name] = []
+            data = {'spacename': space_name,
+             'ctriggers': ctrigger_ids}
+            self.notify_listeners(MarksData.EVENT_CTRIGGER_DELETED, data)
+
+    def new_npc_visited(self, npc_id):
+        space_name = AP.get_npc_space_from_data(npc_id)
+        if not space_name:
+            return
+        if space_name in MapNotes.MapNotes.ignore_npc_spaces:
+            return
+        space_name = 'spaces/' + space_name
+        if space_name not in self.npcs_marks:
+            return
+        self.npcs_marks[space_name].append(npc_id)
+        data = {'spacename': space_name,
+         'npc_id': npc_id}
+        self.notify_listeners(MarksData.EVENT_NPC_VISITED, data)
+
+    def add_corpse(self, name, position, space_id):
+        space_name = BWPersonality.game.get_space_name_advanced(space_id)
+        if space_name in self.corpses_marks and name in self.corpses_marks[space_name]:
+            data = {'spacename': space_name,
+             'name': name,
+             'position': self.corpses_marks[space_name][name]['pos']}
+            self.notify_listeners(MarksData.EVENT_CORPSE_REMOVED, data)
+        self.corpses_marks[space_name][name] = {'pos': position,
+         'time': BigWorld.time() + CORPSE_MARK_LIFETIME}
+        data = {'spacename': space_name,
+         'name': name,
+         'position': position}
+        self.notify_listeners(MarksData.EVENT_CORPSE_ADDED, data)
+        self._update_corpse_timer()
+
+    def new_ctrigger_visited(self, space_name, ctrigger_index):
+        if space_name not in self.ctriggers_marks:
+            return
+        ctrigger_id = MapNotes.get_space_ctriggers(space_name)[ctrigger_index]
+        self.ctriggers_marks[space_name].append(ctrigger_id)
+        data = {'spacename': space_name,
+         'ctrigger': ctrigger_id}
+        self.notify_listeners(MarksData.EVENT_CTRIGGER_VISITED, data)
+
+    def markquest_active_changed(self, quest_id, is_active):
+        for mark_data in qd.get_marks(quest_id):
+            space_name = mark_data['space_name']
+            if space_name not in self.quest_marks:
+                continue
+            data = {'spacename': space_name,
+             'quest_id': quest_id,
+             'is_active': is_active}
+            if is_active:
+                if quest_id not in self.quest_marks[space_name]:
+                    self.quest_marks[space_name].append(quest_id)
+                    self.notify_listeners(MarksData.EVENT_QUESTMARK_CHANGED, data)
+            elif quest_id in self.quest_marks[space_name]:
+                self.quest_marks[space_name].remove(quest_id)
+                self.notify_listeners(MarksData.EVENT_QUESTMARK_CHANGED, data)
+
+    def update_uid(self, uid, server_uid):
+        for space_marks in self.personal_marks.itervalues():
+            for mark_data in space_marks:
+                if mark_data['uid'] == uid:
+                    mark_data['servuid'] = server_uid
+                    break
+
+    def personal_marks_loaded(self, space_name, marks, valid_type):
+        if valid_type != ValidType.Valid:
+            self.invalid_spaces.add(space_name)
+        for mark in marks:
+            mark['servuid'] = mark['uid']
+            mark['uid'] = _uid_provider.next()
+
+        self.personal_marks[space_name] = marks
+        data = {'spacename': space_name}
+        self.notify_listeners(MarksData.EVENT_PERSONAL_LOADED, data)
+
+    def common_marks_loaded(self, space_name, npc_ids, area_indices, markquest_ids):
+        self.npcs_marks[space_name] = npc_ids
+        self.quest_marks[space_name] = markquest_ids
+        ctrigger_ids = []
+        for ctrigger_index in area_indices:
+            ctrigger_id = MapNotes.get_space_ctriggers(space_name)[ctrigger_index]
+            ctrigger_ids.append(ctrigger_id)
+
+        self.ctriggers_marks[space_name] = ctrigger_ids
+        data = {'spacename': space_name}
+        self.notify_listeners(MarksData.EVENT_COMMON_LOADED, data)
+
+    def add_compound_marks(self, space_id, marks):
+        space_name = BWPersonality.game.get_space_name_advanced(space_id)
+        if space_name not in self.compound_marks:
+            self.compound_marks[space_name] = {}
+        data = {'spacename': space_name,
+         'marks': []}
+        for m in marks:
+            m_id = m['id']
+            if m_id in self.compound_marks[space_name]:
+                continue
+            mark = (m_id, m['pos'])
+            self.compound_marks[space_name][m_id] = mark
+            data['marks'].append(mark)
+
+        if data['marks']:
+            self.notify_listeners(MarksData.EVENT_COMPOUND_ADDED, data)
+
+    def remove_compound_marks(self, space_id, mark_ids):
+        space_name = BWPersonality.game.get_space_name_advanced(space_id)
+        marks = self.compound_marks.get(space_name)
+        if not marks:
+            return
+        data = {'spacename': space_name,
+         'marks': []}
+        for mark_id in mark_ids:
+            mark = marks.get(mark_id)
+            if not mark:
+                continue
+            data['marks'].append(mark)
+            del marks[mark_id]
+
+        if not self.compound_marks[space_name]:
+            del self.compound_marks[space_name]
+        self.notify_listeners(MarksData.EVENT_COMPOUND_REMOVED, data)
+
+    def clear_compounds_except_space(self, space_id):
+        space_name = BWPersonality.game.get_space_name_advanced(space_id)
+        for sn in self.compound_marks.keys():
+            if sn == space_name:
+                continue
+            marks = self.compound_marks.get(sn)
+            if not marks:
+                continue
+            data = {'spacename': sn,
+             'marks': marks.values()}
+            del self.compound_marks[sn]
+            self.notify_listeners(MarksData.EVENT_COMPOUND_REMOVED, data)
+
+    def add_personal_mark(self, position, space_name, mark):
+        if space_name in self.invalid_spaces:
+            return None
+        else:
+            if space_name not in self.personal_marks:
+                print 'MarksData (add personal mark):', space_name, self.personal_marks.keys()
+                raise RuntimeError
+            self.personal_marks[space_name].append(mark)
+            mark['uid'] = _uid_provider.next()
+            data = {'spacename': space_name,
+             'mark': mark}
+            self.notify_listeners(MarksData.EVENT_PERSONAL_ADDED, data)
+            return mark
+
+    def set_worldplace_mark(self, space_id, place_id, position, radius):
+        space_name = BWPersonality.game.get_space_name_advanced(space_id)
+        if space_name not in self.worldplace_marks:
+            self.worldplace_marks[space_name] = {}
+        mark = (place_id, position, radius)
+        self.worldplace_marks[space_name][place_id] = mark
+        data = {'spacename': space_name,
+         'mark': mark}
+        self.notify_listeners(MarksData.EVENT_WORLDPLACE_ADDED, data)
+
+    def remove_worldspace_mark(self, space_id, place_id):
+        space_name = BWPersonality.game.get_space_name_advanced(space_id)
+        if space_name not in self.worldplace_marks:
+            return
+        if place_id not in self.worldplace_marks[space_name]:
+            return
+        del self.worldplace_marks[space_name][place_id]
+        if not self.worldplace_marks[space_name]:
+            del self.worldplace_marks[space_name]
+        data = {'spacename': space_name,
+         'place_id': place_id}
+        self.notify_listeners(MarksData.EVENT_WORLDPLACE_REMOVED, data)
+
+    def set_wanted_mark(self, space_name, position):
+        wanted_mark = (space_name, position)
+        self._wanted_mark = wanted_mark
+        data = {'spacename': space_name,
+         'wantedmark': wanted_mark}
+        self.notify_listeners(MarksData.WANTED_MARK_CHANGED, data)
+
+    def delete_wanted_mark(self):
+        if not self._wanted_mark:
+            return
+        else:
+            space_name = self._wanted_mark[0]
+            self._wanted_mark = None
+            data = {'spacename': space_name,
+             'wantedmark': None}
+            self.notify_listeners(MarksData.WANTED_MARK_CHANGED, data)
+            return
+
+    def set_target_mark(self, space_name, position):
+        target_mark = (space_name, position)
+        if self._target_mark == target_mark:
+            return
+        self._target_mark = target_mark
+        data = {'spacename': space_name,
+         'targetmark': target_mark}
+        self.notify_listeners(MarksData.TARGET_MARK_CHANGED, data)
+
+    def delete_target_mark(self):
+        if not self._target_mark:
+            return
+        else:
+            space_name = self._target_mark[0]
+            self._target_mark = None
+            data = {'spacename': space_name,
+             'targetmark': None}
+            self.notify_listeners(MarksData.TARGET_MARK_CHANGED, data)
+            return
+
+    def get_target_mark(self):
+        return self._target_mark
+
+    def get_wanted_mark(self):
+        return self._wanted_mark
+
+    def pvp_flags_updated(self, blue_pos, red_pos):
+        player = BigWorld.player()
+        data = {'spacename': player.getSpaceName(),
+         'bluepos': blue_pos,
+         'redpos': red_pos}
+        self.notify_listeners(MarksData.EVENT_PVP_FLAGS_UPDATED, data)
+
+    def delete_personal_mark(self, note, space_name):
+        if space_name in self.invalid_spaces:
+            return None
+        else:
+            mark = note.note_data
+            space_name = mark['spaceName']
+            for i, m in enumerate(self.personal_marks[space_name]):
+                if m['uid'] == mark['uid']:
+                    break
+            else:
+                print 'MarksData (ERROR) mark not found', mark
+                traceback.print_stack()
+                return None
+
+            del self.personal_marks[space_name][i]
+            data = {'spacename': space_name,
+             'note': note,
+             'mark': mark}
+            self.notify_listeners(MarksData.EVENT_PERSONAL_DELETED, data)
+            return mark
+
+    def on_release(self):
+        if self._death_timer_callback:
+            BigWorld.cancelCallback(self._death_timer_callback)
+            self._death_timer_callback = None
+        if self._corpse_timer_callback:
+            BigWorld.cancelCallback(self._corpse_timer_callback)
+        self._corpse_timer_callback = None
+        return

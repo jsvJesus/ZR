@@ -1,0 +1,218 @@
+# Embedded file name: ./client/soGUI/BloodGUI/BloodGUIArrow.py
+import BigWorld
+import GUI
+from Math import Matrix, Vector2
+import math
+import Helpers.PyGUI as PyGUI
+from random import random
+import math_bw
+from soGUI.BloodGUI.BloodGUI import BloodGUI, DEFAULT_COLOUR
+
+class Arrow:
+    """ \xd0\xbe\xd1\x82\xd0\xb4\xd0\xb5\xd0\xbb\xd1\x8c\xd0\xbd\xd0\xb0\xd1\x8f \xd1\x81\xd1\x82\xd1\x80\xd0\xb5\xd0\xbb\xd0\xba\xd0\xb0 \xd0\xb4\xd0\xb0\xd0\xbc\xd0\xb0\xd0\xb3\xd0\xb0 """
+    LIFE_TIME = 5.0
+    JUMP_PERIOD = 0.05
+    FROM_CENTER_DIST = 0.3
+    OFFSET = Vector2(0.0, 0.0)
+    ARROW_LENGTH = 2.0
+    IMAGE_PATH = 'soGUI/maps/damage_vector/DamageBloodVector.tga'
+
+    def __init__(self, parent, name):
+        self.parent = parent
+        self.name = name
+        screen_width, screen_height = BigWorld.screenSize()
+        self.aspect_ratio = float(screen_width) / screen_height
+        diagonal_length = math.sqrt(2 * screen_height * screen_height) * 0.5
+        arrow_height = diagonal_length * (1.0 - Arrow.FROM_CENTER_DIST + Arrow.OFFSET.length) * Arrow.ARROW_LENGTH
+        self.arrow = GUI.Simple(Arrow.IMAGE_PATH)
+        texture_ratio = float(self.arrow.texture.width) / self.arrow.texture.height
+        self.arrow.horizontalPositionMode = self.arrow.verticalPositionMode = 'PIXEL'
+        self.arrow.widthMode = self.arrow.heightMode = 'PIXEL'
+        self.arrow.horizontalAnchor = 'CENTER'
+        self.arrow.verticalAnchor = 'BOTTOM'
+        self.arrow.height = arrow_height
+        self.arrow.width = self.arrow.height * texture_ratio
+        self.arrow.position = (screen_width * 0.5, screen_height * 0.5, 0.5)
+        self.arrow.colour = DEFAULT_COLOUR
+        self.arrow.materialFX = 'BLEND'
+        self.matrix = Matrix()
+        self.rotate_matrix = Matrix()
+        self.center_disp_matrix = Matrix()
+        self.center_offset_matrix = Matrix()
+        self.scale_matrix = Matrix()
+        matrix_shader = GUI.MatrixShader()
+        matrix_shader.blend = False
+        matrix_shader.target = self.matrix
+        alpha_shader = GUI.AlphaShader()
+        alpha_shader.mode = 'ALL'
+        alpha_shader.speed = 4
+        self.arrow.addShader(matrix_shader, 'matrix_shader')
+        self.arrow.addShader(alpha_shader, 'alpha_shader')
+        self.stop_callback_id = None
+        self.update_callback_id = None
+        self.damager_position = None
+        self.damager_id = None
+        self.force_stoppped = False
+        self.jump_ratio = 0.0
+        return
+
+    def start(self, damager_position, damager_id, damage_level, colour = DEFAULT_COLOUR):
+        """ \xd0\xb7\xd0\xb0\xd0\xbf\xd1\x83\xd1\x81\xd1\x82\xd0\xb8\xd1\x82\xd1\x8c \xd1\x81\xd1\x82\xd1\x80\xd0\xb5\xd0\xbb\xd0\xba\xd1\x83 """
+        self.damager_position = damager_position
+        self.damager_id = damager_id
+        self.jump_ratio = 1.0
+        damage_level = math_bw.clamp(damage_level, 0, 1)
+        self.damage_scale = damage_level * 3.0 + 1.2
+        self.arrow.colour = colour
+        self._colour = colour
+        if self.force_stoppped:
+            self.force_stoppped = False
+            self.jump_ratio = 0.0
+        self.arrow.alpha_shader.alpha = 1
+        self.arrow.alpha_shader.reset()
+        self.arrow.alpha_shader.alpha = 0
+        if self.stop_callback_id:
+            BigWorld.cancelCallback(self.stop_callback_id)
+        if self.update_callback_id:
+            BigWorld.cancelCallback(self.update_callback_id)
+        self.stop_callback_id = BigWorld.callback(Arrow.LIFE_TIME + 0.5, self._stop)
+        self.last_update_time = BigWorld.time()
+        self._update_position()
+
+    def _update_position(self):
+        if self.damager_position:
+            cur_time = BigWorld.time()
+            delta_time = cur_time - self.last_update_time
+            self.last_update_time = cur_time
+            self.jump_ratio = max(0.0, self.jump_ratio - delta_time / Arrow.JUMP_PERIOD) if Arrow.JUMP_PERIOD != 0 else 0.0
+            angle = BloodGUI.damager_position_to_angle(self.damager_position)
+            self._set_position(angle)
+            self.update_callback_id = BigWorld.callback(0, self._update_position)
+
+    def _set_position(self, angle):
+        try:
+            self.rotate_matrix.setRotateZ(angle)
+        except:
+            print repr(angle), repr(self.damager_position)
+            print repr(BigWorld.player())
+            print BigWorld.player().position
+            raise
+
+        self.center_disp_matrix.setTranslate((0, Arrow.FROM_CENTER_DIST + self.jump_ratio, 0))
+        self.center_offset_matrix.setTranslate((self.camera_horiz * Arrow.OFFSET[0] / self.aspect_ratio, -Arrow.OFFSET[1], 0))
+        self.scale_matrix.setScale((self.damage_scale, 1, 1))
+        self.matrix.setIdentity()
+        self.matrix.postMultiply(self.scale_matrix)
+        self.matrix.postMultiply(self.center_disp_matrix)
+        self.matrix.postMultiply(self.rotate_matrix)
+        self.matrix.postMultiply(self.center_offset_matrix)
+
+    @property
+    def camera_horiz(self):
+        camera_horiz = getattr(BigWorld.player(), 'camera_horiz', 0)
+        if camera_horiz > 0:
+            return -1
+        return 1
+
+    def _stop(self):
+        """ \xd1\x81\xd0\xbe\xd0\xb1\xd1\x8b\xd1\x82\xd0\xb8\xd1\x8f \xd0\xbe\xd0\xba\xd0\xbe\xd0\xbd\xd1\x87\xd0\xb0\xd0\xbd\xd0\xb8\xd1\x8f \xd0\xbe\xd1\x82\xd0\xbe\xd0\xb1\xd1\x80\xd0\xb0\xd0\xb6\xd0\xb5\xd0\xbd\xd0\xb8\xd1\x8f \xd1\x81\xd1\x82\xd1\x80\xd0\xb5\xd0\xbb\xd0\xba\xd0\xb8 """
+        BigWorld.cancelCallback(self.update_callback_id)
+        self.update_callback_id = None
+        self.stop_callback_id = None
+        self.damager_position = None
+        self.parent.arrow_stopped(self)
+        return
+
+    def force_stop(self):
+        """ \xd0\xbf\xd1\x80\xd0\xb8\xd0\xbd\xd1\x83\xd0\xb4\xd0\xb8\xd1\x82\xd0\xb5\xd0\xbb\xd1\x8c\xd0\xbd\xd0\xbe \xd0\xbe\xd1\x81\xd1\x82\xd0\xb0\xd0\xbd\xd0\xbe\xd0\xb2\xd0\xb8\xd1\x82\xd1\x8c \xd1\x81\xd1\x82\xd1\x80\xd0\xb5\xd0\xbb\xd0\xba\xd1\x83 """
+        self.force_stoppped = True
+        BigWorld.cancelCallback(self.stop_callback_id)
+        self.stop_callback_id = None
+        self._stop()
+        return
+
+    @property
+    def component(self):
+        return self.arrow
+
+
+class BloodGUIArrow(PyGUI.PyGUIBase):
+    factoryString = 'soGUI.soBloodGUI'
+    MAX_POOL_SIZE = 10
+    MAX_ARROWS_PER_DAMAGER = 3
+
+    def __init__(self):
+        component = GUI.Window()
+        PyGUI.PyGUIBase.__init__(self, component)
+        component.script = self
+        screen_width, screen_height = BigWorld.screenSize()
+        self.component.verticalPositionMode = self.component.horizontalPositionMode = 'PIXEL'
+        self.component.horizontalAnchor = 'LEFT'
+        self.component.verticalAnchor = 'TOP'
+        self.component.widthMode = 'PIXEL'
+        self.component.heightMode = 'PIXEL'
+        self.component.width = screen_width
+        self.component.height = screen_height
+        self.component.position = (0.0, 0.0, 0.0)
+        self.arrow_counter = 0
+        self.arrow_pool = []
+        self.active_arrows = []
+        self.active_arrows_dict = {}
+        GUI.addRoot(self.component)
+
+    def draw_damage(self, damager_hashable_id, damager_position, damage_level):
+        """ \xd0\xbd\xd0\xb0\xd1\x80\xd0\xb8\xd1\x81\xd0\xbe\xd0\xb2\xd0\xb0\xd1\x82\xd1\x8c \xd1\x81\xd1\x82\xd1\x80\xd0\xb5\xd0\xbb\xd0\xba\xd1\x83 \xd0\xb4\xd0\xb0\xd0\xbc\xd0\xb0\xd0\xb3\xd0\xb0
+                damager_hashable_id - \xd0\xbb\xd1\x8e\xd0\xb1\xd0\xbe\xd0\xb9 \xd1\x85\xd1\x8d\xd1\x88\xd0\xb8\xd1\x80\xd1\x83\xd0\xb5\xd0\xbc\xd1\x8b\xd0\xb9 \xd0\xb8\xd0\xb4\xd0\xb5\xd0\xbd\xd1\x82\xd0\xb8\xd1\x84\xd0\xb8\xd0\xba\xd0\xb0\xd1\x82\xd0\xbe\xd1\x80 \xd0\xb4\xd0\xb0\xd0\xbc\xd0\xb0\xd0\xb3\xd0\xb5\xd1\x80\xd0\xb0 (\xd1\x80\xd0\xb5\xd0\xba\xd0\xbe\xd0\xbc\xd0\xb5\xd0\xbd\xd0\xb4\xd1\x83\xd1\x82\xd1\x81\xd1\x8f entity.id), \xd0\xbc\xd0\xbe\xd0\xb6\xd0\xb5\xd1\x82 \xd0\xb1\xd1\x8b\xd1\x82\xd1\x8c None
+                damager_position - \xd0\xba\xd0\xbe\xd0\xbe\xd1\x80\xd0\xb4\xd0\xb8\xd0\xbd\xd0\xb0\xd1\x82\xd1\x8b \xd0\xb4\xd0\xb0\xd0\xbc\xd0\xb0\xd0\xb3\xd0\xb5\xd1\x80\xd0\xb0
+                damage_level - \xd1\x81\xd0\xb8\xd0\xbb\xd0\xb0 \xd0\xbf\xd0\xbe\xd0\xb2\xd1\x80\xd0\xb5\xd0\xb6\xd0\xb4\xd0\xb5\xd0\xbd\xd0\xb8\xd1\x8f \xd0\xbe\xd1\x82 0 \xd0\xb4\xd0\xbe 1
+        """
+        if damager_hashable_id is None:
+            damager_hashable_id = random()
+        arrow = self.create_arrow(damager_hashable_id)
+        self.active_arrows.append(arrow)
+        if damager_hashable_id not in self.active_arrows_dict:
+            self.active_arrows_dict[damager_hashable_id] = []
+        self.active_arrows_dict[damager_hashable_id].append(arrow)
+        arrow.start(damager_position, damager_hashable_id, damage_level)
+        self.component.addChild(arrow.component, arrow.name)
+        return
+
+    def create_arrow(self, damager_id):
+        """ \xd1\x81\xd0\xbe\xd0\xb7\xd0\xb4\xd0\xb0\xd1\x91\xd1\x82, \xd0\xb2\xd1\x8b\xd1\x82\xd0\xb0\xd1\x81\xd0\xba\xd0\xb8\xd0\xb2\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xb8\xd0\xb7 \xd0\xbf\xd1\x83\xd0\xbb\xd0\xb0 \xd0\xb8\xd0\xbb\xd0\xb8 \xd0\xb7\xd0\xb0\xd0\xb1\xd0\xb8\xd1\x80\xd0\xb0\xd0\xb5\xd1\x82 \xd1\x81 \xd1\x8d\xd0\xba\xd1\x80\xd0\xb0\xd0\xbd\xd0\xb0 \xd1\x81\xd1\x82\xd1\x80\xd0\xb5\xd0\xbb\xd1\x83 \xd0\xb4\xd0\xbb\xd1\x8f \xd0\xb5\xd1\x91 \xd0\xbe\xd1\x82\xd0\xbe\xd0\xb1\xd1\x80\xd0\xb0\xd0\xb6\xd0\xb5\xd0\xbd\xd0\xb8\xd1\x8f
+        """
+        if len(self.active_arrows_dict.get(damager_id, [])) >= BloodGUIArrow.MAX_ARROWS_PER_DAMAGER:
+            arrow = self.active_arrows_dict[damager_id][-1]
+            arrow.force_stop()
+            return self.arrow_pool.pop()
+        elif self.arrow_pool:
+            return self.arrow_pool.pop()
+        elif len(self.active_arrows) < BloodGUIArrow.MAX_POOL_SIZE:
+            arrow_name = 'arrow' + str(self.arrow_counter)
+            self.arrow_counter += 1
+            return Arrow(self, arrow_name)
+        else:
+            arrow = self.active_arrows[-1]
+            arrow.force_stop()
+            return self.arrow_pool.pop()
+
+    def arrow_stopped(self, arrow):
+        self.component.delChild(arrow.component)
+        try:
+            self.active_arrows.remove(arrow)
+            self.arrow_pool.append(arrow)
+            self.active_arrows_dict[arrow.damager_id].remove(arrow)
+            if not self.active_arrows_dict[arrow.damager_id]:
+                del self.active_arrows_dict[arrow.damager_id]
+        except:
+            pass
+
+    def doReposition(self):
+        screen_width, screen_height = BigWorld.screenSize()
+        self.component.width = screen_width
+        self.component.height = screen_height
+        for arrow in self.active_arrows:
+            arrow.force_stop()
+
+        self.arrow_pool = []
+        self.active_arrows = []
+        self.active_arrows_dict = {}

@@ -1,0 +1,112 @@
+# Embedded file name: ./client/Container.py
+"""
+from Localization import lc
+Created on 17.08.2010
+
+@author: muzhig
+"""
+import FX
+import json
+import BigWorld
+from ItemHolder import ItemHolder
+from Lootable import Lootable
+from Helpers.Caps import CAP_CAN_OPEN_AND_EXPLORE
+import ResMgr
+import Math
+from Localization import lc
+from utils_bw import inRange
+import Constants
+from FX.persistent_ext_bg import loadPersistentExtAsync
+from client_utils import readable_space_pos
+section = ResMgr.openSection('scripts/common/EnumProps/Containers.json')
+CONFIG = json.loads(section.asBinary)['model_index']['values']
+
+class Container(BigWorld.Entity, ItemHolder, Lootable):
+
+    def __init__(self):
+        self.targetCaps = [CAP_CAN_OPEN_AND_EXPLORE]
+        self._model_path = next((model for index, model in CONFIG if index == self.modelSelect), None)
+        self.effect = None
+        self.filter = BigWorld.NoneFilter()
+        return
+
+    def __repr__(self):
+        if self.isDestroyed:
+            return 'Container[%s]Destroyed' % self.id
+        return 'Container[%s] at %s' % (self.id, readable_space_pos(self))
+
+    def prerequisites(self):
+        if self._model_path:
+            return [self._model_path]
+        return []
+
+    def onEnterWorld(self, prereqs):
+        if self._model_path:
+            scale = 1
+            self.model = prereqs[self._model_path]
+            self.model.isObstacle = True
+            self.model.visible = True
+            self.model.scale = (scale, scale, scale)
+            self.model.newScaleTest = (scale, scale, scale)
+            if hasattr(self.model, 'no_draw'):
+                self.model.no_draw = 'no_draw'
+        self.height = Math.Matrix(self.model.bounds).get(1, 1) if self.model else 1.0
+        if self.containerName:
+            self.name = self.containerName
+        else:
+            self.name = self.GetContainerName(self.modelSelect)
+        self.load_sfx()
+
+    def load_sfx(self):
+        if not self.sfx:
+            return
+
+        def on_load(prereqs):
+            if self.isDestroyed:
+                return
+            self.effect = FX.PersistentExt(self.sfx, prereqs)
+            self.effect.attach(self.model)
+            self.effect.go()
+
+        loadPersistentExtAsync([self.sfx], on_load)
+
+    def GetContainerName(self, container_type):
+        poll_str = 'Container.Names.TYPE_' + str(container_type)
+        return lc(poll_str)
+
+    def set_CarryingItems(self, old_value):
+        if inRange(self, BigWorld.player(), Constants.INTERACTION_DISTANCE ** 2):
+            BigWorld.player().NeedToUpdateItemCache()
+        items, _ = BigWorld.player().filterItemsWithoutQuests(self.CarryingItems)
+        if not items:
+            BigWorld.player().NeedToCloseItemCache(self)
+
+    def onLeaveWorld(self):
+        if inRange(self, BigWorld.player(), Constants.INTERACTION_DISTANCE ** 2):
+            BigWorld.player().NeedToCloseItemCache(self)
+        if self.effect:
+            self.effect.stop()
+            self.effect = None
+        return
+
+    def onOpen(self, player):
+        self.cell.onOpenContainer()
+        return True
+
+    def onClose(self, player):
+        self.cell.onCloseContainer()
+
+    def get_hightlight(self, distance):
+        if distance > self.get_interaction_dist():
+            return None
+        else:
+            return True
+
+    def get_interaction_dist(self):
+        return 2.0
+
+    def get_time_looting(self, open_type):
+        return Constants.CONTAINER_LOOT_TIME
+
+    def get_looting_types(self):
+        return [Constants.TYPE_SEARCH, Constants.TYPE_LOOT_SEARCH]

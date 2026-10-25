@@ -1,0 +1,116 @@
+# Embedded file name: ./client/soGUI/DialogGUI/ButtonsBlock.py
+import GUI
+from Helpers.PyGUI.PyGUIBase import PyGUIBase
+from soGUI.soButton import soButton
+import DialogsLocalization as DL
+import functools
+from Helpers.BWCoroutine import BWMemberCoroutine, BWWaitForCoroutine
+from AsyncLoader import AsyncLoader
+import Constants
+from Localization import lc
+from base_to_capture_common.properties_loaders import BasesDataLoader
+bases_config = BasesDataLoader.get_instance()
+
+class DisposableButton(soButton):
+
+    def __init__(self, comp):
+        soButton.__init__(self, comp, fontLabel='RobotoCondensedRegular_16.font', isOptions=True)
+
+    def dispose(self):
+        self.onClick = None
+        self.component.script = None
+        self.component = None
+        return
+
+
+class ButtonsBlock(PyGUIBase):
+
+    def __init__(self, component):
+        PyGUIBase.__init__(self, component)
+        component.script = self
+        self._async_loader = AsyncLoader()
+        self._async_loader.need_break = lambda : not self._visible
+        self._setup_content()
+        self.on_line_click = lambda dialog_id: None
+        self._button_height = 33
+        self.on_size_changed = lambda size: None
+        self._visible = False
+
+    def _setup_content(self):
+        comp = GUI.Simple('')
+        self.component.addChild(comp, 'buttonsblock')
+
+    def on_show(self):
+        self._visible = True
+        self._clear_buttons()
+        self.on_size_changed(self._calc_height())
+
+    def on_hide(self):
+        self._visible = False
+        self._clear_buttons()
+
+    @BWMemberCoroutine
+    def set_lines(self, dialog_ids, random_dialogs_provider, preliminary_data_provider):
+        self._clear_buttons()
+        for i, dialog_id in enumerate(dialog_ids):
+            comp = GUI.Window()
+            comp.widthMode, comp.heightMode = ('CLIP', 'PIXEL')
+            comp.width, comp.height = 2, self._button_height
+            comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'PIXEL')
+            comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'TOP')
+            comp.position = (0, i * comp.height, 0.9)
+            btn = DisposableButton(comp)
+            btn.initVSC('soGUI/elements/button_1.xml')
+            btn.setVisualState('normal')
+            btn.onBound()
+            if dialog_id == Constants.NO_RADIO_DIALOG_ID:
+                text = lc('Dialogs.Interface.RadioAnswer')
+            elif dialog_id in Constants.WORK_DIALOG_IDS:
+                text = random_dialogs_provider(dialog_id)
+            elif Constants.DYNAMIC_CONSTANTS_RANGE[0] <= dialog_id <= Constants.DYNAMIC_CONSTANTS_RANGE[1]:
+                prem_data = preliminary_data_provider(dialog_id)
+                if isinstance(prem_data, int):
+                    base_name = bases_config.get_name(prem_data)
+                    base_name = lc('BaseToCaptureNames.' + base_name)
+                elif isinstance(prem_data, str):
+                    base_name = lc('DonateBases.name.{0}'.format(prem_data))
+                text = lc('Dialogs.Interface.TeleportBaseAnswer').format(base_name)
+            else:
+                text = DL.get_short_title(dialog_id)
+            yield BWWaitForCoroutine(self._async_loader.replace_text(text))
+            text = self._async_loader.text
+            btn.setLabel(text)
+            btn.onClick = functools.partial(self._on_line_click, dialog_id)
+            self.component.buttonsblock.addChild(comp)
+            comp.widthMode = 'PIXEL'
+            comp.width -= 4
+
+        self.on_size_changed(self._calc_height())
+
+    def _calc_height(self):
+        return len(self.component.buttonsblock.children) * self._button_height
+
+    def _clear_buttons(self):
+        for button_name, comp in self.component.buttonsblock.children:
+            self.component.buttonsblock.delChild(button_name)
+            comp.script.dispose()
+
+    def release_buttons(self):
+        for _, button in self.component.buttonsblock.children:
+            button.script.buttonDisabled = False
+            button.script._updateVisualState()
+
+    def _on_line_click(self, dialog_id):
+        for _, button in self.component.buttonsblock.children:
+            button.script.buttonDisabled = True
+            button.script._updateVisualState()
+
+        self.on_line_click(dialog_id)
+
+    @property
+    def pending(self):
+        """ \xd0\xb6\xd0\xb4\xd1\x91\xd1\x82 \xd0\xbe\xd1\x82\xd0\xb2\xd0\xb5\xd1\x82\xd0\xb0 \xd0\xbe\xd1\x82 \xd1\x81\xd0\xb5\xd1\x80\xd0\xb2\xd0\xb5\xd1\x80\xd0\xb0 """
+        buttons = self.component.buttonsblock.children
+        if not buttons:
+            return True
+        return any((b.script.buttonDisabled for _, b in buttons))

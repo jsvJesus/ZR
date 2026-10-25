@@ -1,0 +1,185 @@
+# Embedded file name: ./common/user_fire_common.py
+import ItemsUtils
+from Items import ItemsCatalog
+from EffectData import EffectNames
+from bwdecorators import callableOnGhost
+from utils import force_unicode
+POT_SLOT_ID = 3
+POT_SLOT_NAME = 'slot%s' % POT_SLOT_ID
+
+class UserFireCommon(object):
+    max_slot = 6
+    max_slot_cooking = 6
+    max_life_time = 320
+
+    @callableOnGhost
+    def canAccess(self, avatar, avatar_name = None):
+        if self.isPublicAcces:
+            return True
+        if avatar_name:
+            if force_unicode(avatar_name) == self.pOwnerName:
+                return True
+        elif force_unicode(avatar.name) == self.pOwnerName:
+            return True
+        return False
+
+    @callableOnGhost
+    def checkStarCookingPot(self, avatar):
+        if not self.canAccess(avatar):
+            return ItemsUtils.FAIL_USER_FIRE_ACCESS
+        if self.cookingpot_items['end_time']:
+            return ItemsUtils.FAIL_USER_FIRE_COOKING_PROGRESS
+        for i in xrange(3):
+            if self.cookingpot_items['slot%s' % i]['complexItemID']:
+                return
+
+        return ItemsUtils.FAIL_USER_FIRE_COOKING_EMPTY
+
+    @callableOnGhost
+    def _checkAddWater(self):
+        for i in xrange(3):
+            slot_item = self.cookingpot_items['slot%s' % i]
+            if slot_item['complexItemID']:
+                param = ItemsCatalog.GetItemParam(slot_item['complexItemType'])
+                if param.get('water_type') is not None:
+                    return ItemsUtils.FAIL_USER_FIRE_COOKING_MAX_STACK
+
+        return
+
+    @callableOnGhost
+    def checkAddCookingPotIngredien(self, item, slot_id, avatar):
+        if not self.canAccess(avatar):
+            return ItemsUtils.FAIL_USER_FIRE_ACCESS
+        elif ItemsUtils.IsItemFixed(item, check_block_steam=False):
+            return ItemsUtils.FAIL_IMPOSSIBLE_COOK
+        elif not ItemsUtils.IsCanPlaceToContainer(item['complexItemType']):
+            return ItemsUtils.FAIL_IMPOSSIBLE_COOK
+        elif self.cookingpot_items['end_time']:
+            return ItemsUtils.FAIL_USER_FIRE_IN_PROGRESS
+        else:
+            if slot_id == POT_SLOT_ID:
+                if not self.cookingpot_items[POT_SLOT_NAME]['complexItemID']:
+                    if not ItemsUtils.thisIsCookingPot(item):
+                        return ItemsUtils.FAIL_USER_FIRE_ONLY_COOKINGPOT
+                    if ItemsUtils.GetItemCondition(None, item) <= 0:
+                        return ItemsUtils.FAIL_UF_COOKINGPOT_BROKEN
+                    return
+            if not ItemsUtils.canCookingInPot(item):
+                return ItemsUtils.FAIL_USER_FIRE_NO_COOKING
+            elif not self.cookingpot_items[POT_SLOT_NAME]['complexItemID']:
+                return ItemsUtils.FAIL_USER_FIRE_COOKINGPOT_EMPTY
+            item_type = item['complexItemType']
+            item_params = ItemsCatalog.GetItemParam(item_type)
+            if item_params.get('waterNumberOfSips'):
+                sips = ItemsUtils.getWaterSipsPot(item)
+                if not sips:
+                    return ItemsUtils.FAIL_IMPOSSIBLE_COOK
+                return self._checkAddWater()
+            elif item_params.get('water_type') is not None:
+                return self._checkAddWater()
+            count = 1
+            for i in xrange(3):
+                slot_item = self.cookingpot_items['slot%s' % i]
+                if slot_item['complexItemID'] and slot_item['complexItemType'] == item_type:
+                    all_count = count + ItemsUtils.GetItemNumber(slot_item)
+                    if item_params['CookingPotIngredientMaxStack'] < all_count:
+                        return ItemsUtils.FAIL_USER_FIRE_COOKING_MAX_STACK
+                    if not ItemsUtils.isStackedItemType(item_type):
+                        return ItemsUtils.FAIL_USER_FIRE_COOKING_MAX_STACK
+                    return
+
+            for i in xrange(3):
+                slot_name = 'slot%s' % i
+                if not self.cookingpot_items[slot_name]['complexItemID']:
+                    if item_params['CookingPotIngredientMaxStack'] < count:
+                        return ItemsUtils.FAIL_USER_FIRE_COOKING_MAX_STACK
+                    return
+
+            return ItemsUtils.FAIL_USER_FIRE_COOKING_MAX_SLOTS
+
+    @callableOnGhost
+    def getCountCanAddIngredient(self, item):
+        item_type = item['complexItemType']
+        item_params = ItemsCatalog.GetItemParam(item_type)
+        if not item_params.get('CookingPotIngredientMaxStack', 0):
+            return None
+        else:
+            for i in xrange(3):
+                slot_item = self.cookingpot_items['slot%s' % i]
+                if slot_item['complexItemID'] and slot_item['complexItemType'] == item_type:
+                    return item_params['CookingPotIngredientMaxStack'] - ItemsUtils.GetItemNumber(slot_item)
+
+            for i in xrange(3):
+                slot_name = 'slot%s' % i
+                if not self.cookingpot_items[slot_name]['complexItemID']:
+                    return item_params['CookingPotIngredientMaxStack']
+
+            return None
+
+    @callableOnGhost
+    def checkAddItem(self, item, avatar):
+        if not self.canAccess(avatar):
+            return ItemsUtils.FAIL_USER_FIRE_ACCESS
+        elif not ItemsUtils.canCookingItem(item, avatar):
+            return ItemsUtils.FAIL_IMPOSSIBLE_COOK
+        elif ItemsUtils.isUFFireWoodItem(item):
+            return None
+        elif len(self.inTheProcessItems) >= self.max_slot_cooking:
+            return ItemsUtils.FAIL_USERFIRE_FULL
+        else:
+            return None
+
+    def getCookTime(self):
+        cook_time = 1.0
+        for item in self.getIngredienItems():
+            if item:
+                item_params = ItemsCatalog.GetItemParam(item['complexItemType'])
+                cook_time = max(cook_time, item_params.get('CookingPotIngredientTime', 1.0))
+
+        return cook_time
+
+    def isEmpty(self):
+        if self.CarryingItems:
+            return False
+        if self.inTheProcessItems:
+            return False
+        if self.getCookingPotItem():
+            return False
+        if any(self.getIngredienItems()):
+            return False
+        return True
+
+    def getinTheProcessItems(self):
+        return [ e['itm'] for e in self.inTheProcessItems ]
+
+    def getCookingPotItem(self):
+        if self.cookingpot_items[POT_SLOT_NAME]['complexItemID']:
+            return self.cookingpot_items[POT_SLOT_NAME]
+        else:
+            return None
+
+    def getIngredienItems(self):
+        items = []
+        for i in xrange(3):
+            slot_item = self.cookingpot_items['slot%s' % i]
+            if not slot_item['complexItemID']:
+                slot_item = None
+            items.append(slot_item)
+
+        return items
+
+    def isItemSteamBlockedInside(self):
+        """ \xd0\x92 \xd0\xba\xd0\xbe\xd1\x81\xd1\x82\xd1\x80\xd0\xb5 \xd0\xb5\xd1\x81\xd1\x82\xd1\x8c \xd1\x85\xd0\xbe\xd1\x82\xd1\x8f\xd0\xb1\xd1\x8b \xd0\xbe\xd0\xb4\xd0\xb8\xd0\xbd \xd0\xb7\xd0\xb0\xd0\xb1\xd0\xbb\xd0\xbe\xd1\x87\xd0\xb5\xd0\xbd\xd0\xbd\xd1\x8b\xd0\xb9 \xd0\xb4\xd0\xbe\xd0\xbd\xd0\xb0\xd1\x82 \xd0\xbf\xd1\x80\xd0\xb5\xd0\xb4\xd0\xbc\xd0\xb5\xd1\x82
+        """
+        for item in self.getinTheProcessItems():
+            if item and ItemsUtils.IsItemBlockBySteam(item):
+                return True
+
+        for item in self.CarryingItems:
+            if item and ItemsUtils.IsItemBlockBySteam(item):
+                return True
+
+        for slot_name, item in self.cookingpot_items.items():
+            if slot_name.startswith('slot') and item['complexItemID']:
+                if ItemsUtils.IsItemBlockBySteam(item):
+                    return True

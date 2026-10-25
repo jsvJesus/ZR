@@ -1,0 +1,112 @@
+# Embedded file name: ./client/PostProcessZone.py
+import json
+import ResMgr
+import BigWorld
+import PostProcessing
+from Math import Vector3, Vector4
+from ClientFiguredTrapInterface import ClientFiguredTrapInterface
+EPS = 0.001
+CONFIG_PATH = 'scripts/client/data/PPZoneConfig.json'
+CONFIG = None
+
+def load_config_ppzone(purge = False):
+    global CONFIG
+    ResMgr.purge(CONFIG_PATH)
+    CONFIG = json.loads(ResMgr.openSection(CONFIG_PATH).asBinary)
+
+
+load_config_ppzone()
+
+class PostProcessZoneInterface(ClientFiguredTrapInterface):
+
+    def __init__(self):
+        ClientFiguredTrapInterface.__init__(self)
+        self.postproc_ids = {}
+        self.mult = 0
+
+    def onPlayerInside(self):
+        if not self.config_name:
+            return
+        for pp_name in CONFIG[self.config_name]:
+            try:
+                self.postproc_ids[pp_name] = PostProcessing.addPPChainByName(pp_name)
+            except:
+                print '\nERROR FOR', self, repr(self.config_name), self.position
+                raise
+
+    def onPlayerOutside(self):
+        for pp_name, pp_id in self.postproc_ids.items():
+            PostProcessing.removePPChain(pp_id)
+
+        self.postproc_ids = {}
+
+    def onEnterWorld(self, prereq):
+        pass
+
+    def onTimer(self):
+        ClientFiguredTrapInterface.onTimer(self)
+        if not self.player_in_trap:
+            return
+        max_radius = min(self.radius_max_effect, self.radius)
+        r1 = self.radius - max_radius
+        if r1 == 0:
+            self.mult = 1
+        else:
+            self.mult = (r1 - max(0, BigWorld.player().position.distTo(self.position) - self.radius_max_effect)) / float(r1)
+        self.update_postprocess()
+
+    def update_postprocess(self):
+        for pp_name, pp_id in self.postproc_ids.items():
+            chain = PostProcessing.getPPChainByID(pp_id)
+            if chain is None:
+                continue
+            for ef in chain[1]:
+                if ef.name not in CONFIG[self.config_name][pp_name].keys():
+                    continue
+                for phase in ef.phases:
+                    if phase.name not in CONFIG[self.config_name][pp_name][ef.name].keys():
+                        continue
+                    params = CONFIG[self.config_name][pp_name][ef.name][phase.name]
+                    for param_name, values in params.items():
+                        if not hasattr(phase.material, param_name):
+                            print 'WARNING PPZoneConfig.json. {0} has no attribute[{1}] in {2}->{3}->{4} '.format(phase.name, param_name, self.config_name, pp_name, ef.name)
+                            print dir(phase.material)
+                            continue
+                        old_val = getattr(phase.material, param_name, None)
+                        min_val, max_val = values
+                        if isinstance(old_val, (list,
+                         tuple,
+                         Vector3,
+                         Vector4)):
+                            new_value = []
+                            flag = False
+                            for i in xrange(len(min_val)):
+                                tmp = min_val[i] + (max_val[i] - min_val[i]) * self.mult
+                                if abs(old_val[i] - tmp) >= EPS:
+                                    flag = True
+                                new_value.append(tmp)
+
+                            if flag:
+                                setattr(phase.material, param_name, tuple(new_value))
+                        else:
+                            new_value = min_val + (max_val - min_val) * self.mult
+                            if abs(old_val - new_value) >= EPS:
+                                setattr(phase.material, param_name, new_value)
+
+        return
+
+    def onLeaveWorld(self):
+        ClientFiguredTrapInterface.onLeaveWorld(self)
+
+
+class PostProcessZone(BigWorld.Entity, PostProcessZoneInterface):
+
+    def __init__(self):
+        BigWorld.Entity.__init__(self)
+        PostProcessZoneInterface.__init__(self)
+
+    def onEnterWorld(self, prereq):
+        PostProcessZoneInterface.onEnterWorld(self, prereq)
+
+    def onLeaveWorld(self):
+        PostProcessZoneInterface.onLeaveWorld(self)

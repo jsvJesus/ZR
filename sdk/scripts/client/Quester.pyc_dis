@@ -1,0 +1,707 @@
+# Embedded file name: ./client/Quester.py
+"""
+Created on 02.09.2010
+
+@author: Madcat
+"""
+import BWPersonality
+import Quest
+import colorCodes
+import Config
+import gui_jokes
+from Localization import lc
+import QuestDispatcher as qd
+import ItemsUtils
+import ChatChannelConfig
+import Fractions
+import EffectUtils
+from gui_const import MESSAGEBOX
+from Quest import CTQ
+import sounds_manager as sounds
+from utils import lazyproperty
+from collections import defaultdict
+from NPCs import NPCs
+from soGUI.note_box import NoteBox
+import csconstans
+import rep_utils
+from knowledge import knowledge_parser as kp
+from functools import partial
+import os
+import utils
+import pyson
+import traceback
+from Quest import ReadStatus
+from Constants import MESSAGE_TYPES as MT
+CHANNEL_CONSTS = ChatChannelConfig.ChannelConsts()
+UNREAD_SAVE_PATH = os.path.join(utils.stalker_path(), 'usercontent/unreadquests.pyson')
+
+class Quester:
+    _all_quests_callbacks = {}
+    _mark_listeners = defaultdict(list)
+    _quest_listeners = defaultdict(lambda : {'listeners': [],
+     'last_state': None})
+
+    @property
+    def unread_quests(self):
+        if not hasattr(self, '_unread_quests'):
+            self._unread_quests = {'unread': set(),
+             'changed': set()}
+            if os.path.exists(UNREAD_SAVE_PATH):
+                with open(UNREAD_SAVE_PATH, 'rb') as f:
+                    try:
+                        data = pyson.loads(f.read())
+                        if not isinstance(data, dict):
+                            data = {'unread': data,
+                             'changed': set()}
+                        self._unread_quests = data
+                    except:
+                        print 'Quester (ERROR) bad unread quests:'
+                        traceback.print_stack()
+                        traceback.print_exc()
+
+        return self._unread_quests
+
+    def request_cancel_quest(self, quest_id):
+        quest = qd.getQuestOnID(quest_id)
+
+        def listener(event):
+            if event == gui_jokes.askUserYesNoDelayDeafultNo.YES:
+                self.end_dialog()
+                if qd.cancel_fail_mode(quest):
+                    self.cell.request_fail_quest(quest_id)
+                else:
+                    self.base.removeQuestFromJournal(quest_id)
+                if message_quest_cancel:
+                    self.questerMessageToConsole(message_quest_cancel)
+
+        quest_title = qd.getQuestTitleByID(quest_id)
+        message_quest_cancel = None
+        cancel_header = lc('Quests.Journal.CANCEL_QUEST_HEADER')
+        if quest['Additional']['CantCancel']:
+            cancel_question = lc('Quests.Journal.CANTCANCEL_QUEST_QUESTION')
+            gui_jokes.askUserOk(cancel_header, cancel_question.format(quest_title), listener)
+            message_quest_cancel = lc('Quests.Messages.CANTCANCEL_QUEST_QUESTION').format(quest_title)
+        else:
+            if qd.cancel_fail_mode(quest):
+                groups_data = None
+                know_ids = []
+                for rep_id in qd.get_penalty(quest).get('Reputation2', []):
+                    if not rep_utils.is_group_hidden(rep_id):
+                        know_ids.append(kp.get_group_acquaintance_id(rep_id) or 0)
+
+                if know_ids:
+                    know_ids.sort()
+                    knowledge_data = getattr(self, '_quester_knowledge_data', None)
+                    if not knowledge_data:
+
+                        def on_got_knowledge(quest_id, knowledge_data):
+                            self._quester_knowledge_data = knowledge_data
+                            self.request_cancel_quest(quest_id)
+
+                        self.notify_knowledge0(know_ids, partial(on_got_knowledge, quest_id))
+                        return
+                    del self._quester_knowledge_data
+                    group_ids = map(kp.get_groupid_from_knowledge, know_ids)
+                    groups_data = dict(zip(group_ids, knowledge_data))
+                win_width = 600
+                title = colorCodes.active_xml + quest_title + colorCodes.inactive_xml
+                cancel_question = lc('Quests.CancelQuest.CANCEL_QUEST_QUESTION_F').format(title)
+                penalty_string = qd.get_penalty_string(quest_id, groups_data)
+                if penalty_string:
+                    cancel_question += u' {0}\n{1}'.format(lc('Quests.CancelQuest.CANCEL_QUEST_QUESTION_F2'), colorCodes.active_xml + penalty_string)
+            else:
+                win_width = 400
+                title = colorCodes.active_xml + quest_title + colorCodes.inactive_xml
+                cancel_question = lc('Quests.CancelQuest.CANCEL_QUEST_QUESTION_C').format(title)
+
+            def callbackHandler(event, data):
+                if event == MESSAGEBOX.EVENT_BTNPRESS:
+                    if data['btn'] == MESSAGEBOX.BTN_YES:
+                        listener(gui_jokes.askUserYesNoDelayDeafultNo.YES)
+
+            addControls = [{'type': MESSAGEBOX.ADDCONTROL_TEXTFIELD,
+              'ID': 'main_text',
+              'text': cancel_question,
+              'hAnchor': MESSAGEBOX.ANCHOR_CENTER}]
+            BWPersonality.GUICore.showMsgBox('cancelquest', caption=cancel_header, width=win_width, addControls=addControls, btn_set=[{'type': MESSAGEBOX.BTN_YES,
+              'width': 120}, {'type': MESSAGEBOX.BTN_NO,
+              'width': 120}], callback=callbackHandler, defaultAction=None)
+        return
+
+    def _mark_quest_as_changed(self, quest_id):
+        if quest_id not in self.unread_quests['changed']:
+            self.unread_quests['changed'].add(quest_id)
+            if BWPersonality.GUICore.journal_win_visible():
+                BWPersonality.GUICore.journal_win.mark_quest_status(quest_id, ReadStatus.Changed)
+
+    def _mark_quest_as_new(self, quest_id):
+        if quest_id not in self.unread_quests['unread']:
+            self.unread_quests['unread'].add(quest_id)
+            if BWPersonality.GUICore.journal_win_visible():
+                BWPersonality.GUICore.journal_win.mark_quest_status(quest_id, ReadStatus.New)
+
+    def mark_quest_as_read(self, quest_id):
+        changed = False
+        if quest_id in self.unread_quests['unread']:
+            self.unread_quests['unread'].remove(quest_id)
+            changed = True
+        if quest_id in self.unread_quests['changed']:
+            self.unread_quests['changed'].remove(quest_id)
+            changed = True
+        if changed and BWPersonality.GUICore.journal_win_visible():
+            BWPersonality.GUICore.journal_win.mark_quest_status(quest_id, ReadStatus.Common)
+
+    def get_read_status(self, quest_id):
+        if quest_id in self.unread_quests['unread']:
+            return ReadStatus.New
+        if quest_id in self.unread_quests['changed']:
+            return ReadStatus.Changed
+        return ReadStatus.Common
+
+    def getNPCName(self, quest, id):
+        for e in quest['Information']['NPCs']:
+            if e['id'] == id:
+                return e['name']
+
+        return u''
+
+    def tellAboutQuesterStatus(self, data, stringData, status):
+        if status == Quest.STATES_MESSAGE_STATE_CHANGED:
+            quest_id, state_from, state_to = data
+            local_messages = qd.get_quest_mesages(quest_id)
+            for i, message in enumerate(qd.notify_messages(quest_id, state_from, state_to)):
+                to_screen = message['screen']
+                local_text = local_messages[message['index']]
+                local_text = BWPersonality.settings.keyBindings.parse_actions_and_replace(local_text)
+                if to_screen:
+                    BWPersonality.gpd.sendHightMessage(local_text, MT.QUEST)
+                else:
+                    self.questerMessageToConsole(local_text)
+
+            return
+        else:
+
+            def getItemName(item_type, attr):
+                name = u''
+                if attr:
+                    q_item_info = qd.getQItemInfo(questID, item_type)
+                    if q_item_info:
+                        name = q_item_info.get('title')
+                    else:
+                        quest = qd.getQuestOnID(questID)
+                        quest_attrs = quest['Target']['AObjectAttrs']
+                        if len(quest_attrs) == 1:
+                            q_item_info = qd.getQItemInfo(quest_attrs[0], item_type)
+                            if q_item_info:
+                                name = q_item_info.get('title')
+                if not name:
+                    name = ItemsUtils.GetItemName(item_type)
+                return name
+
+            def getCreatureName(mob_type, mob_level):
+                return Config.Creatures.get_mob_name(mob_type, mob_level)
+
+            def getFractionName(fraction_id):
+                return lc(Fractions.FractionNames[fraction_id])
+
+            def getNPCName(displayName, npcName):
+                from NPCs import NPCs
+                if displayName:
+                    name = lc(displayName)
+                elif NPCs.getName(npcName) != u'' and NPCs.getName(self.npcName) != '<NO DATA>':
+                    name = NPCs.getName(npcName)
+                else:
+                    raise RuntimeError
+                return name
+
+            message = u''
+            sound = None
+            screen_message = None
+            if data:
+                if data[0]:
+                    questID = qd.get_parent_by_id(data[0])
+                    if questID:
+                        quest = qd.getQuestOnID(questID)
+                        if quest:
+                            if not BWPersonality.GUICore.journal_win_visible() or BWPersonality.GUICore.journal_win.get_selected_quest_id() != questID:
+                                self._mark_quest_as_changed(questID)
+                    if status == Quest.STATUS_WIPE_OVER:
+                        message = lc('Quests.Messages.WIPE_COMPLETE')
+                    elif status == Quest.STATUS_OPENED and quest:
+                        message = lc('Quests.Messages.MISSION_TAKEN').format(quest['Information']['Title'])
+                        sound = 'ui/quest_changes'
+                        if not BWPersonality.GUICore.journal_win_visible() or BWPersonality.GUICore.journal_win.get_selected_quest_id() != questID:
+                            self._mark_quest_as_new(questID)
+                    elif status == Quest.STATUS_CLOSED and quest:
+                        message = lc('Quests.Messages.MISSION_COMPLETE').format(quest['Information']['Title'])
+                        sound = 'ui/accomplish'
+                    elif status == Quest.STATUS_FAILED and quest:
+                        message = lc('Quests.Messages.MISSION_FAILED').format(quest['Information']['Title'])
+                    elif status == Quest.STATUS_SUCCESSFULL_COLLECT_ITEMS:
+                        questID, item_type, attr = data
+                        name = getItemName(item_type, attr)
+                        message = lc('Quests.Messages.COLLECT_COMPLETE').format(name, qd.getQuestTitleByID(questID))
+                    elif status == Quest.STATUS_ONPROCESS_COLLECT_ITEMS:
+                        questID, itemID, attr, numOfItem, needOfItem = data
+                        name = getItemName(itemID, attr)
+                        numOfItem = needOfItem if numOfItem > needOfItem else numOfItem
+                        message = lc('Quests.Messages.COLLECT_PROCESS').format(str(numOfItem), str(needOfItem), name, qd.getQuestTitleByID(questID))
+                    elif status == Quest.STATUS_FAILED_COLLECT_ITEMS:
+                        questID, itemID, attr = data
+                        name = getItemName(itemID, attr)
+                        message = lc('Quests.Messages.COLLECT_FAILED').format(name)
+                    elif status == Quest.STATUS_SUCCESSFULL_KILLED_CREATURE:
+                        questID, mobID, mobAttr = data
+                        name = getCreatureName(mobID, mobAttr)
+                        title = qd.getQuestTitleByID(questID)
+                        message = lc('Quests.Messages.FARM_COMPLETE').format(title, name)
+                    elif status == Quest.STATUS_SUCCESSFULL_CRAFT:
+                        quest_id, cur_count = data
+                        title = qd.getQuestTitleByID(quest_id)
+                        message = lc('Quests.Messages.CRAFT_COMPLETE').format(title, cur_count)
+                    elif status == Quest.STATUS_SUCCESSFULL_NPCKILL:
+                        quest_id, cur_count = data
+                        title = qd.getQuestTitleByID(quest_id)
+                        message = lc('Quests.Messages.NPCKILL_COMPLETE').format(title, cur_count)
+                    elif status == Quest.STATUS_SUCCESSFULL_COOK:
+                        quest_id, cur_count = data
+                        title = qd.getQuestTitleByID(quest_id)
+                        message = lc('Quests.Messages.COOK_COMPLETE').format(title, cur_count)
+                    elif status == Quest.STATUS_SUCCESSFULL_ART:
+                        quest_id = data[0]
+                        title = qd.getQuestTitleByID(quest_id)
+                        message = lc('Quests.Messages.ART_COMPLETE').format(title)
+                    elif status == Quest.STATUS_SUCCESSFULL_KILLED_NPC:
+                        title = qd.getQuestTitleByID(data[0])
+                        name = getNPCName(stringData[0], stringData[1])
+                        message = lc('Quests.Messages.NPC_KILLED').format(title, name)
+                    elif status == Quest.STATUS_SOMEBODY_KILL_NPC:
+                        title = qd.getQuestTitleByID(data[0])
+                        message = lc('Quests.Messages.NPC_KILLED_SOMEBODY').format(title)
+                    elif status == Quest.STATUS_ONPROCESS_KILLED_CREATURE:
+                        questID, mobID, mobAttr, count, neededCount = data
+                        name = getCreatureName(mobID, mobAttr)
+                        title = qd.getQuestTitleByID(questID)
+                        message = lc('Quests.Messages.FARM_PROCESS').format(title, count, neededCount, name)
+                    elif status == Quest.STATUS_NEED_MORE_MONEY:
+                        message = lc('Quests.Messages.MONEY_FAILED')
+                    elif status == Quest.STATUS_AREA_FOUNDED:
+                        areaName = stringData[0]
+                        message = lc('Quests.Messages.AREA_COMPLETED').format(areaName)
+                    elif status == Quest.STATUS_CANT_TELEPORT_TO_INSTANCE:
+                        message = lc('Quests.Messages.PARTI_INSTANCE_LEADER_ONLY')
+                    elif status == Quest.STATUS_NO_FREE_INSTANCE:
+                        message = lc('Quests.Messages.SERVER_TOO_BUSY')
+                    elif status == Quest.STATUS_JOURNAL_RENEW:
+                        message = lc('Quests.Messages.JOURNAL_UPDATED').format(qd.getQuestTitleByID(questID))
+                        sound = 'ui/quest_changes'
+                    elif status == Quest.STATUS_NPC_IS_TOO_FAR:
+                        message = lc('Quests.Messages.TOO_FAR')
+                    elif status == Quest.STATUS_CANT_TAKE_MISSION_NOW:
+                        text = qd.getQuestTitleByID(data[2])
+                        message = lc('Quests.Messages.CANT_TAKE_MISSION_NOW').format(text, data[0], data[1])
+                    elif status == Quest.STATUS_QUEST_ITEM_EQUIPPED:
+                        message = lc('Quests.Messages.QUEST_ITEM_EQUIPPED')
+                    elif status == Quest.STATUS_SUCCESSFULL_COLLECT_REPUTATION:
+                        title = qd.getQuestTitleByID(data[3])
+                        if data[0] == 0:
+                            message = lc('Quests.Messages.COLLECT_PERREPUTATION').format(data[1], data[2], lc(NPCs.names_by_npcName.get(stringData[0])), title)
+                        else:
+                            message = lc('Quests.Messages.COLLECT_REPUTATION').format(data[1], data[2], getFractionName(data[0]), title)
+                    elif status == Quest.STATUS_SUCCESSFULL_COLLECT_EFFECT:
+                        effect_name = EffectUtils.getEffectLcName(data[1])
+                        message = lc('Quests.Messages.COLLECT_EFFECT').format(effect_name, qd.getQuestTitleByID(questID))
+                    elif status == Quest.STATUS_QUESTS_LIMIT:
+                        message = lc('Quests.Messages.QUESTS_LIMIT')
+                    elif status == Quest.STATUS_QUEST_DELETED:
+                        if not qd.is_subquest(questID):
+                            message = lc('Quests.Messages.QUEST_DELETED').format(qd.getQuestTitleByID(questID))
+                    elif status == Quest.STATUS_CABMAN_NO_PLACES:
+                        message = lc('Quests.Messages.CABMAN_NO_PLACES')
+                    elif status == Quest.STATUS_CABMAN_NO_MONEY:
+                        message = lc('Quests.Messages.CABMAN_NO_MONEY')
+                    elif status == Quest.STATUS_CANT_COMPLETE:
+                        self.restart_current_dialog_node()
+                    elif status == Quest.STATUS_CANT_TAKE_SUBCHAPTER:
+                        self.restart_current_dialog_node()
+                        message = lc('Quests.Messages.CANT_TAKE_SUBCHAPTER')
+                    elif status == Quest.STATUS_USEITEM_FAIL:
+                        message = lc('Quests.Messages.USEITEM_FAIL')
+                    elif status == Quest.STATUS_VISOBJECT_VISIBLE:
+                        message = lc('Quests.Messages.VISOBJECT_COMPLETE')
+                    elif status == Quest.STATUS_SUCCESSFULL_COLLECT_BOXES:
+                        message = lc('Quests.Messages.COLLECT_BOXES').format(qd.getQuestTitleByID(questID))
+                    elif status == Quest.STATUS_ONPROCESS_COLLECT_BOXES:
+                        message = lc('Quests.Messages.ONPROCESS_BOXES').format(qd.getQuestTitleByID(questID), data[1], qd.get_dung_data(questID)[1])
+                    elif status == Quest.STATUS_ONPROCESS_KILLED_CAPTURE:
+                        count = quest['Target']['NumOfObjects']
+                        kills, deaths = Quest.unpack_double_count(data[1])
+                        need_finishdead = bool(quest['Target'].get('ObjectAttr'))
+                        if need_finishdead:
+                            local = lc('Quests.Messages.FINISH_PROCESS')
+                        else:
+                            local = lc('Quests.Messages.KILL_PROCESS')
+                        message = local.format(qd.getQuestTitleByID(questID), kills, count)
+                    elif status == Quest.STATUS_ONPROCESS_FLAGS_CAPTURE:
+                        count = quest['Target']['NumOfObjects']
+                        flags, deaths = Quest.unpack_double_count(data[1])
+                        message = lc('Quests.Messages.FLAGS_PROCESS').format(qd.getQuestTitleByID(questID), flags, count)
+                    elif status == Quest.STATUS_ONPROCESS_REVIVES_CAPTURE:
+                        count = quest['Target']['NumOfObjects']
+                        revives, deaths = Quest.unpack_double_count(data[1])
+                        message = lc('Quests.Messages.REVIVE_PROCESS').format(qd.getQuestTitleByID(questID), revives, count)
+                    if message:
+                        message = BWPersonality.settings.keyBindings.parse_actions_and_replace(message)
+                        self.questerMessageToConsole(message)
+                        screen_message = screen_message and (BWPersonality.settings.keyBindings.parse_actions_and_replace(screen_message[0]), screen_message[1])
+                        BWPersonality.gpd.sendHightMessage(screen_message[0], MT.QUEST)
+                sound and sounds.playSound(sound)
+            return
+
+    def questerMessageToConsole(self, string):
+        self.putMessage(CHANNEL_CONSTS.QUESTS, string)
+
+    def setPVPStatus(self, status):
+        self.PVPInfo['State'] = status
+
+    def deleteTriggerMarkers(self, qID):
+        if qID in self.trigger_markers:
+            self.trigger_markers.remove(qID)
+        if qID in self._mark_listeners:
+            for listener in self._mark_listeners[qID]:
+                listener.on_mark_changed(False)
+
+    def addTriggerMarkers(self, qID):
+        self.trigger_markers.append(qID)
+        if qID in self._mark_listeners:
+            for listener in self._mark_listeners[qID]:
+                listener.on_mark_changed(True)
+
+    def removeAllTriggerMarkers(self):
+        self.trigger_markers[:] = []
+        for listeners in self._mark_listeners.values():
+            for listener in listeners:
+                listener.on_mark_changed(False)
+
+    @lazyproperty
+    def trigger_markers(self):
+        return []
+
+    @staticmethod
+    def findTitleQuest(quest_id):
+        try:
+            return qd.getQuestTitleByID(qd.get_parent_by_id(quest_id))
+        except:
+            return u'!!! internal error !!!'
+
+    def _countQItems(self, quest):
+        attr = quest['Target']['ObjectAttr']
+        itemDict = []
+        if attr:
+            itemDict = [ dict(count=self.getNumberOfItemsForQuester(quest['Target']['ObjectType'], at), quest=at) for at in quest['Target']['AObjectAttrs'] ]
+            return (sum([ at['count'] for at in itemDict ]), itemDict)
+        else:
+            return (self.getNumberOfItemsForQuester(quest['Target']['ObjectType'], quest['Target']['ObjectAttr']), itemDict)
+
+    def getNumberOfItemsForQuester(self, itemType, itemAttr):
+        return ItemsUtils.GetItemQuanity(self.CarryingItems, itemType, itemAttr)
+
+    def got_reward(self, quest_id):
+        BWPersonality.GUICore.show_quest_reward_window(quest_id)
+
+    def get_quest_status_callback(self, status):
+        from Helpers.Autoquester import Autoquester
+        Autoquester.get_quest_status_callback(status)
+
+    def request_board_quests(self):
+        """ \xd0\xb7\xd0\xb0\xd0\xbf\xd1\x80\xd0\xbe\xd1\x81\xd0\xb8\xd1\x82\xd1\x8c \xd1\x81\xd0\xbf\xd0\xb8\xd1\x81\xd0\xbe\xd0\xba \xd0\xb0\xd0\xba\xd1\x82\xd0\xb8\xd0\xb2\xd0\xbd\xd1\x8b\xd1\x85 \xd0\xba\xd0\xb2\xd0\xb5\xd1\x81\xd1\x82\xd0\xbe\xd0\xb2 """
+        self.base.request_board_quests()
+
+    def got_board_quests(self, quest_ids):
+        """ \xd0\xbe\xd1\x82\xd0\xb2\xd0\xb5\xd1\x82 \xd0\xb7\xd0\xb0\xd0\xbf\xd1\x80\xd0\xbe\xd1\x81\xd0\xb0 \xd1\x81\xd0\xbf\xd0\xb8\xd1\x81\xd0\xba\xd0\xb0 \xd0\xb0\xd0\xba\xd1\x82\xd0\xb8\xd0\xb2\xd0\xbd\xd1\x8b\xd1\x85 \xd0\xba\xd0\xb2\xd0\xb5\xd1\x81\xd1\x82\xd0\xbe\xd0\xb2 """
+        self._quest_board.update_quests(quest_ids)
+
+    def register_mark_listener(self, listener, mark_id):
+        """ \xd1\x81\xd0\xb8\xd0\xb3\xd0\xbd\xd0\xb0\xd1\x82\xd1\x83\xd1\x80\xd0\xb0: listener.on_mark_changed(exist) """
+        self._mark_listeners[mark_id].append(listener)
+        listener.on_mark_changed(mark_id in self.trigger_markers)
+
+    def unregister_mark_listener(self, listener):
+        for mark_id, listeners in self._mark_listeners.items():
+            if listener in listeners:
+                listeners.remove(listener)
+                if not listeners:
+                    del self._mark_listeners[mark_id]
+
+    def register_quest_listener(self, listener, quest_ids):
+        """ \xd1\x81\xd0\xb8\xd0\xb3\xd0\xbd\xd0\xb0\xd1\x82\xd1\x83\xd1\x80\xd0\xb0: listener.on_quest_state_changed(quest_id, state) """
+        server_send_quest_ids = []
+        for quest_id in quest_ids:
+            self._quest_listeners[quest_id]['listeners'].append(listener)
+            if len(self._quest_listeners[quest_id]['listeners']) == 1:
+                server_send_quest_ids.append(quest_id)
+            else:
+                last_state = self._quest_listeners[quest_id]['last_state']
+                if last_state is not None:
+                    listener.on_quest_state_changed(quest_id, last_state)
+
+        if server_send_quest_ids:
+            self.base.register_quest_listener(server_send_quest_ids)
+        return
+
+    def stop_quest_listen(self, listener, quest_ids):
+        unregister_q_ids = []
+        for quest_id in quest_ids:
+            if quest_id not in self._quest_listeners:
+                continue
+            listeners_data = self._quest_listeners[quest_id]
+            if listener not in listeners_data['listeners']:
+                continue
+            listeners_data['listeners'].remove(listener)
+            if not listeners_data['listeners']:
+                del self._quest_listeners[quest_id]
+                unregister_q_ids.append(quest_id)
+
+        if not self.isDestroyed and unregister_q_ids and self.isConnected:
+            self.base.unregister_quest_listener(unregister_q_ids)
+
+    def unregister_quest_listener(self, listener):
+        unregister_q_ids = []
+        for q_id, listeners_data in self._quest_listeners.items():
+            if listener in listeners_data['listeners']:
+                listeners_data['listeners'].remove(listener)
+                if not listeners_data['listeners']:
+                    del self._quest_listeners[q_id]
+                    unregister_q_ids.append(q_id)
+
+        if not self.isDestroyed and unregister_q_ids and self.isConnected:
+            self.base.unregister_quest_listener(unregister_q_ids)
+
+    def on_quest_changed_state(self, quest_ids, states):
+        for quest_id, state in zip(quest_ids, states):
+            if quest_id not in self._quest_listeners:
+                continue
+            self._quest_listeners[quest_id]['last_state'] = state
+            listeners = self._quest_listeners[quest_id]['listeners']
+            for i in xrange(len(listeners) - 1, -1, -1):
+                if getattr(listeners[i], 'isDestroyed', False):
+                    self.unregister_quest_listener(listeners[i])
+                    continue
+                listeners[i].on_quest_state_changed(quest_id, state)
+
+    def request_quest_from_board(self, quest_id):
+        """ \xd0\xb2\xd0\xb7\xd1\x8f\xd1\x82\xd1\x8c \xd0\xb2\xd1\x8b\xd0\xb1\xd1\x80\xd0\xb0\xd0\xbd\xd0\xbd\xd1\x8b\xd0\xb9 \xd0\xba\xd0\xb2\xd0\xb5\xd1\x81\xd1\x82 """
+        self.base.request_quest_from_board(quest_id)
+
+    def got_requested_quest(self, quest_id, request_result, update_result, quest_ids):
+        """ \xd0\xbe\xd1\x82\xd0\xb2\xd0\xb5\xd1\x82 \xd0\xb7\xd0\xb0\xd0\xbf\xd1\x80\xd0\xbe\xd1\x81\xd0\xb0 \xd0\xb2\xd0\xb7\xd1\x8f\xd1\x82\xd0\xb8\xd1\x8f \xd0\xb2\xd1\x8b\xd0\xb1\xd1\x80\xd0\xb0\xd0\xbd\xd0\xbd\xd0\xbe\xd0\xb3\xd0\xbe \xd0\xba\xd0\xb2\xd0\xb5\xd1\x81\xd1\x82\xd0\xb0
+                \xd0\xb4\xd0\xbe \xd0\xba\xd1\x83\xd1\x87\xd0\xb8 \xd0\xbf\xd1\x80\xd0\xb8\xd1\x81\xd1\x8b\xd0\xbb\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xbe\xd0\xb1\xd0\xbd\xd0\xbe\xd0\xb2\xd0\xbb\xd1\x91\xd0\xbd\xd0\xbd\xd1\x8b\xd0\xb9 \xd1\x81\xd0\xbf\xd0\xb8\xd1\x81\xd0\xbe\xd0\xba \xd0\xb4\xd0\xbe\xd1\x81\xd1\x82\xd1\x83\xd0\xbf\xd0\xbd\xd1\x8b\xd1\x85 \xd0\xba\xd0\xb2\xd0\xb5\xd1\x81\xd1\x82\xd0\xbe\xd0\xb2
+        """
+        if update_result:
+            self._quest_board.update_quests(quest_ids)
+        if request_result == CTQ.OK:
+            return
+        if request_result == CTQ.ERROR_TIMEPOS:
+            self._wating_for_time_remain = quest_id
+            self.base.get_time_remain(quest_id)
+        else:
+            self.questerMessageToConsole(CTQ.get_error_message(request_result))
+
+    def got_time_remain(self, time):
+        if not hasattr(self, '_wating_for_time_remain'):
+            return
+        del self._wating_for_time_remain
+        from soGUI.DialogGUI.AsyncLoader import time_to_string
+        time = time_to_string(time)
+        message = CTQ.get_error_message(CTQ.ERROR_TIMEPOS).format(time)
+        self.questerMessageToConsole(message)
+
+    @property
+    def _quest_board(self):
+        return BWPersonality.GUICore.soBulletinBoard.quest_board
+
+    def request_acquaintances(self, callback):
+        self._request_acquaintances_callback = callback
+        self.base.request_acquaintances()
+
+    def got_acquaintances(self, data):
+        self._request_acquaintances_callback(data)
+        del self._request_acquaintances_callback
+
+    def on_document_read(self, item_type, quest_id):
+        description = qd.getQItemInfo(quest_id, item_type)['content']
+        item_name = ItemsUtils.GetItemName(item_type, fGetShortName=True)
+        NoteBox(description, item_name)
+
+    def got_pvp_quests(self, quest_ids):
+        if not hasattr(self, '_last_pvp_game_data'):
+            return
+
+        def resolve_pvp_quest(quest_id):
+            quest = qd.getQuestOnID(quest_id)
+            pvp_data = self._last_pvp_game_data
+            game_mode = quest['Target'].get('additional')
+            if game_mode is not None and game_mode != pvp_data['game_mode']:
+                return False
+            else:
+                not_die_count = quest['Conditions'].get('notDieCount')
+                if not_die_count is not None and pvp_data['deaths'] > not_die_count:
+                    return False
+                be_pvp_winner_color = quest['Conditions'].get('bePvpWinner')
+                if be_pvp_winner_color is not None and be_pvp_winner_color != csconstans.TEAM_NO:
+                    if not pvp_data['winner']:
+                        return False
+                    if be_pvp_winner_color != csconstans.TEAM_ANY and pvp_data['teamID'] != be_pvp_winner_color:
+                        return False
+                pvp_win_team = quest['Conditions'].get('pvpWinTeam')
+                if pvp_win_team is not None:
+                    if pvp_data['is_best'] < pvp_win_team:
+                        return False
+                quest_type = qd.get_type(quest)
+                need_count = quest['Target']['NumOfObjects']
+                if quest_type == Quest.TYPE_PVP_MAP_KILL:
+                    use_weapon_type = quest['Conditions'].get('useWeaponType')
+                    if use_weapon_type:
+                        count = pvp_data['weapon_kills'].get(use_weapon_type, 0)
+                    else:
+                        count = pvp_data['kills']
+                    return count >= need_count
+                if quest_type == Quest.TYPE_PVP_MAP_CAPTURE_FLAG:
+                    bring_mode = quest['Target'].get('ObjectType', 0)
+                    if bring_mode:
+                        count = pvp_data['return_flags']
+                    else:
+                        count = pvp_data['brought_flags']
+                    mode = int(quest['Target'].get('ObjectName', '0'))
+                    if mode:
+                        return quest['Target'].get('ObjectAttr', 0) >= pvp_data['is_best']
+                    else:
+                        return count >= need_count
+                elif quest_type == Quest.TYPE_PVP_MAP_SCORE:
+                    mode = quest['Target'].get('ObjectType', 0)
+                    if mode:
+                        return quest['Target'].get('ObjectAttr', 0) >= pvp_data['is_best']
+                    else:
+                        return pvp_data['plscore'] >= need_count
+                raise RuntimeError
+                return
+
+        resolved = filter(resolve_pvp_quest, quest_ids)
+        del self._last_pvp_game_data
+        if resolved:
+            self.base.resolve_pvp_quests(resolved)
+
+    def on_pvp_game_end(self, data, isPrivate):
+        if isPrivate:
+            return
+        self._last_pvp_game_data = data
+        self.base.request_pvp_quests()
+
+    def subscribe_all_quests_changes(self, callbacks, hashable_id, quest_ids = None):
+        """ quest_ids == None, \xd0\xb7\xd0\xbd\xd0\xb0\xd1\x87\xd0\xb8\xd1\x82 \xd0\xb2\xd0\xbe\xd0\xbe\xd0\xb1\xd1\x89\xd0\xb5 \xd0\xb2\xd1\x81\xd0\xb5 \xd0\xba\xd0\xb2\xd0\xb5\xd1\x81\xd1\x82\xd1\x8b """
+        subscribe = []
+        if quest_ids:
+            for q_id in quest_ids:
+                if q_id not in self._all_quests_callbacks:
+                    self._all_quests_callbacks[q_id] = {}
+                    subscribe.append(q_id)
+                self._all_quests_callbacks[q_id][hashable_id] = callbacks
+
+        else:
+            if None not in self._all_quests_callbacks:
+                self._all_quests_callbacks[None] = {}
+                subscribe.append(0)
+            self._all_quests_callbacks[None][hashable_id] = callbacks
+        if subscribe:
+            self.base.subscribe_all_quests_changes(True, subscribe)
+        return
+
+    def unsubscribe_all_quests_changes(self, hashable_id, quest_ids = None):
+        unsubscribe = []
+        if quest_ids:
+            for q_id in quest_ids:
+                if q_id not in self._all_quests_callbacks:
+                    continue
+                if hashable_id in self._all_quests_callbacks[q_id]:
+                    del self._all_quests_callbacks[q_id][hashable_id]
+                if not self._all_quests_callbacks[q_id]:
+                    del self._all_quests_callbacks[q_id]
+                    unsubscribe.append(q_id)
+
+        elif None in self._all_quests_callbacks:
+            if hashable_id in self._all_quests_callbacks[None]:
+                del self._all_quests_callbacks[None][hashable_id]
+            if not self._all_quests_callbacks[None]:
+                del self._all_quests_callbacks[None]
+                unsubscribe.append(0)
+        if unsubscribe and not self.isDestroyed and self.isConnected:
+            self.base.subscribe_all_quests_changes(False, unsubscribe)
+        return
+
+    def on_quest_event(self, quest_id, prev_state, state):
+        for key in (quest_id, None):
+            if key not in self._all_quests_callbacks:
+                continue
+            for callbacks in self._all_quests_callbacks[key].values():
+                callbacks[0] and callbacks[0](quest_id, prev_state, state)
+
+        return
+
+    def get_active_subs_and_params0(self, quest_id, callback):
+        if not hasattr(self, '_get_active_subs_and_params_callback'):
+            self._get_active_subs_and_params_callback = []
+        self._get_active_subs_and_params_callback.append((quest_id, callback))
+        self.base.get_active_subs_and_params1(quest_id)
+
+    def get_active_subs_and_params3(self, base_state, sub_states, data_ints, known_groups):
+        for i in xrange(len(sub_states) - 1, -1, -1):
+            ss = sub_states[i]
+            if not qd.get_description_by_id(ss['id'], ss['state']):
+                del sub_states[i]
+                data_ints = filter(lambda (q_id, _): q_id != ss['id'], data_ints)
+
+        if hasattr(self, '_get_active_subs_and_params_callback'):
+            index = next((i for i, (quest_id, _) in enumerate(self._get_active_subs_and_params_callback) if quest_id == base_state['id']), None)
+            if index is not None:
+                callback = self._get_active_subs_and_params_callback[index][1]
+                del self._get_active_subs_and_params_callback[index]
+                if not self._get_active_subs_and_params_callback:
+                    del self._get_active_subs_and_params_callback
+                callback(base_state, sub_states, data_ints, known_groups)
+        return
+
+    def on_quest_internal_event(self, quest_id, int_value):
+        for key in (quest_id, None):
+            if key not in self._all_quests_callbacks:
+                continue
+            for callbacks in self._all_quests_callbacks[key].values():
+                callbacks[1] and callbacks[1](quest_id, int_value)
+
+        return
+
+    def force_auto_tracked_quest(self, quest_id):
+        if self._quests_tracker:
+            self._quests_tracker.force_queue(quest_id)
+
+    def request_story_quest0(self, story_id):
+        self.base.request_story_quest1(story_id)
+
+    def onLeaveWorld(self):
+        self._quest_listeners.clear()
+        self._all_quests_callbacks.clear()
+        self._mark_listeners.clear()
+        if hasattr(self, '_unread_quests'):
+            with open(UNREAD_SAVE_PATH, 'wb') as f:
+                f.write(pyson.dumps(self.unread_quests))
+
+    def load_journal_quests1(self, *args):
+        raise NotImplementedError
+
+    def load_journal_subquests1(self, *args):
+        raise NotImplementedError
+
+    def notify_quest_filter_change1(self, *args):
+        raise NotImplementedError
+
+    def load_npc_quests1(self, *args):
+        raise NotImplementedError

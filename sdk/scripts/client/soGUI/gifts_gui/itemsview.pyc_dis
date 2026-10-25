@@ -1,0 +1,140 @@
+# Embedded file name: ./client/soGUI/gifts_gui/itemsview.py
+from Localization import lc
+import GiftBankUtils
+import BigWorld
+import ItemsUtils
+import BWPersonality
+import GUI
+from soGUI.soItemView import soItemView, LOCKED_COLOR
+from soGUI.soItemCache import soItemCacheSlot
+from gui_const import ITSLOT
+from ChatChannelConfig import CHANNEL_CONSTS
+from Constants import MESSAGE_TYPES as MT
+
+class Slot(soItemCacheSlot):
+    factoryString = 'soGUI.ItemGiftSlot'
+    show_special_context_actions = False
+
+    def setupContent(self):
+        soItemCacheSlot.setupContent(self)
+        self._enabled = True
+        self._draggable = True
+
+    def onDragStart(self):
+        if self._draggable:
+            return soItemCacheSlot.onDragStart(self)
+        else:
+            return False
+
+    def checkTransferItem(self):
+        return not self._enabled
+
+    def lockSlot(self, doLock):
+        soItemCacheSlot.lockSlot(self, doLock)
+        self.component.itemIcon.colour = LOCKED_COLOR if self.locked else (255, 255, 255, 255)
+
+    def set_enabled(self, enabled):
+        self._enabled = enabled
+        self.lockSlot(not enabled)
+
+    def initialize(self, draggable, drop_callback):
+        self._drop_callback = drop_callback
+        self._draggable = draggable
+
+    def on_itemcache_drop(self):
+        if self._draggable:
+            self._drop_callback(self)
+
+
+class ItemsView:
+
+    def __init__(self, interactable):
+        self._interactable = interactable
+        event_handler = self._slot_handler if interactable else (lambda event, data: None)
+        self._view = soItemView(GUI.Window(), Slot, slot_eventsHandler=event_handler, scroll_auto_hide=True, rowWidth=5, cols=5, hScroll=False, borderWidth=0, rows=2)
+        self._view.set_multiselectable()
+        self._items = []
+        self.on_items_changed_callback = lambda : None
+        comp = self._view.component
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.materialFX = 'BLEND'
+        self._view.onBound()
+        self._view.setRestrictingComponent(None)
+        self._view.setItems(None)
+        self.component = comp
+        self._slots = []
+        for i in range(self._view.cols * self._view.rows):
+            slot = getattr(self.component, 'slot' + str(i))
+            self._slots.append(slot.script)
+            slot.script.initialize(interactable, self._drop_callback)
+
+        return
+
+    def _drop_callback(self, slot):
+        item_ids = slot.get_multiselection()
+        self._del_items(item_ids)
+
+    def set_items(self, items):
+        self._set_items(items or [])
+
+    def _slot_handler(self, event, data):
+        if event == ITSLOT.SLOTEVENT_DROP:
+            if data[1].factoryString == 'soGUI.soItemCacheSlot':
+                slot = data[1]
+                item_ids = slot.get_multiselection()
+                items = BWPersonality.GUICore.itemCacheGUI.find_items_by_ids(item_ids)
+                cur_ids = set([ item['complexItemID'] for item in self._items ])
+                for item in items:
+                    if not item or not ItemsUtils.is_item_giftable(item) or ItemsUtils.IsItemFixed(item) or item['complexItemID'] in cur_ids:
+                        BigWorld.player().putMessage(CHANNEL_CONSTS.ITEMS, lc('ItemHolder.isnotGiftable_msg'))
+                        return True
+
+                free_space = GiftBankUtils.MAX_ITEM_IN_GIFT - len(self._items)
+                if free_space <= 0:
+                    BigWorld.player().putMessage(CHANNEL_CONSTS.ITEMS, lc('ItemHolder.maxitems'))
+                    return True
+                if free_space < len(items):
+                    items = items[:free_space]
+                    BWPersonality.gpd.sendHightMessage(lc('soTradeInterface.tradescreen.BADACTION'), MT.PERSONAL)
+                self._extend_items(items)
+                return True
+        return True
+
+    def contains(self, item_id):
+        return next((True for item in self._items if item['complexItemID'] == item_id), False)
+
+    def _on_items_removed(self, item_ids):
+        if self._interactable:
+            BWPersonality.GUICore.itemCacheGUI.del_block_multiple_items(item_ids)
+            BWPersonality.GUICore.itemCacheGUI.update()
+
+    def _on_items_added(self, item_ids):
+        if self._interactable:
+            BWPersonality.GUICore.itemCacheGUI.add_block_multiple_items(item_ids)
+            BWPersonality.GUICore.itemCacheGUI.update()
+
+    def _set_items(self, items):
+        old_items = set([ item['complexItemID'] for item in self._items ])
+        self._items = items
+        new_items = set([ item['complexItemID'] for item in self._items ])
+        self._view.setItems(self._items)
+        removed_items = old_items - new_items
+        if removed_items:
+            self._on_items_removed(removed_items)
+        added_items = new_items - old_items
+        if added_items:
+            self._on_items_added(added_items)
+        self.on_items_changed_callback()
+
+    def _extend_items(self, items):
+        extended_items = self._items + items
+        self._set_items(extended_items)
+
+    def _del_items(self, item_ids):
+        updated_items = filter(lambda it: it['complexItemID'] not in item_ids, self._items)
+        self._set_items(updated_items)
+
+    def set_enabled(self, enabled):
+        for slot in self._slots:
+            slot.set_enabled(enabled)

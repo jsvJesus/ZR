@@ -1,0 +1,110 @@
+# Embedded file name: ./client/journal/stories_tab/story_renderer.py
+from math import pi
+from Math import Matrix, Vector3
+import math_bw
+import Keys
+import BigWorld
+import GUI
+from StoriesListenerCommon import STORIES_DATA
+from Helpers.PyGUI.PyGUIBase import Interceptor
+
+class StoryRenderer(Interceptor):
+    _zoom_sensivity = 0.0005
+    _rotate_sensivity = 0.01
+    _clamp_pitch = (-2.5, -0.5)
+    _start_distance = 2
+    _clamp_distance = (0.5, 2.5)
+
+    def __init__(self, component):
+        Interceptor.__init__(self, component)
+        self._story_id = None
+        self._model_name = None
+        self._waiting_model = False
+        self._max_distance = 2
+        self._min_distance = 0.2
+        self._yaw = pi
+        self._pitch = 0
+        self._distance = 0
+        comp = GUI.Simple('soGUI/frame/journal/unknown_note.dds')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = comp.texture.width, comp.texture.height
+        comp.materialFX = 'BLEND'
+        self.component.addChild(comp, 'unknown_image')
+        self._mr = BigWorld.PyModelRenderer(int(self.component.width), int(self.component.height))
+        self._mr.addAmbientColor((0.6, 0.6, 0.6, 0.6))
+        self._mr.addOmniLight((0.7, 0.7, 0.7, 0.9), (0, 0, 1), 0.6, 2.0)
+        self._mr.nearPlane = 0.01
+        self._mr.farPlane = 10.0
+        return
+
+    def set_story_id(self, story_id):
+        if self._story_id == story_id:
+            return
+        else:
+            self._story_id = story_id
+            if not (self._story_id and STORIES_DATA[self._story_id].get('ModelName')):
+                model_name = None
+                if self._model_name == model_name:
+                    return
+                self._model_name = model_name
+                self._mr.models = []
+                self._mr.dynamic = False
+                self.component.texture = None
+                self.component.textureName = ''
+                self.component.unknown_image.visible = True
+                self._waiting_model = False
+                self._yaw = pi
+                self._min_distance = 0.2
+                self._distance = 1
+                self._max_distance = 2
+                self._pitch = -1.2
+                self._waiting_model = self._model_name and True
+                self.component.unknown_image.visible = False
+                BigWorld.fetchModel(self._model_name, self._on_model_loaded)
+            return
+
+    def _on_model_loaded(self, model):
+        if not self._waiting_model:
+            return
+        b_min, b_max = model.getMinMaxbounds
+        center = (b_max - b_min) * 0.5 + b_min
+        model.position = -center
+        self._distance = max((b_min - center).length, (b_max - center).length) * StoryRenderer._start_distance
+        self._min_distance = self._distance * StoryRenderer._clamp_distance[0]
+        self._max_distance = self._distance * StoryRenderer._clamp_distance[1]
+        self._mr.models = [model]
+        self.component.texture = self._mr.texture
+        self._mr.dynamic = True
+        self.component.unknown_image.visible = False
+        self._update_matrix()
+
+    def _update_matrix(self):
+        model = self._mr.models[0]
+        m1 = Matrix()
+        m1.setRotateZ(-self._yaw)
+        m2 = Matrix()
+        m2.setRotateX(self._pitch)
+        m1.postMultiply(m2)
+        model.setWorldTransform(m1)
+        pos = Vector3()
+        pos.setPitchYaw(0, 0)
+        pos.normalise()
+        pos = Vector3(0, 0, -1)
+        pos *= -self._distance
+        direction = Vector3(-pos)
+        direction.normalise()
+        m = Matrix()
+        m.lookAt(pos, direction, (0, -1, 0))
+        self._mr.viewMatrix = m
+
+    def handleMouseEvent(self, comp, event):
+        if event.dz:
+            self._distance = math_bw.clamp(self._distance - event.dz * StoryRenderer._zoom_sensivity * self._max_distance, self._min_distance, self._max_distance)
+            self._update_matrix()
+        if BigWorld.isKeyDown(Keys.KEY_LEFTMOUSE):
+            if event.dx:
+                self._yaw -= event.dx * StoryRenderer._rotate_sensivity
+            if event.dy:
+                self._pitch = math_bw.clamp(self._pitch - event.dy * StoryRenderer._rotate_sensivity, StoryRenderer._clamp_pitch[0], StoryRenderer._clamp_pitch[1])
+            self._update_matrix()
+        return Interceptor.handleMouseEvent(self, comp, event)

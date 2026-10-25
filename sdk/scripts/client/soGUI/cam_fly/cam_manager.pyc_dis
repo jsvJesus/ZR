@@ -1,0 +1,1289 @@
+# Embedded file name: ./client/soGUI/cam_fly/cam_manager.py
+import BigWorld
+import BWPersonality
+from Math import Matrix, Vector3
+import os
+import pyson
+import traceback
+import time
+import copy
+import Keys
+import PostProcessing
+from blender_object import Blender
+from Localization import lc
+from Constants import MESSAGE_TYPES as MT
+gi = BigWorld.getGeometricInstance()
+try:
+    from Helpers.show_text_label import addText, resetAllText
+except:
+    addText = lambda *w, **kw: 0
+    resetAllText = lambda *w, **kw: 0
+
+try:
+    import BWConsole
+except ImportError:
+    BWConsole = None
+
+from cam_editor_utils import *
+SEE_OBJ_DIST = 5
+LOOP_PY_INTERVAL = 0.01
+MAX_LOOP_PY_INTERVAL = LOOP_PY_INTERVAL * 2
+
+def is_player_cam():
+    player = BigWorld.player()
+    if not player:
+        return
+    if not hasattr(player, 'AvatarCam'):
+        return
+    return BigWorld.camera() == player.AvatarCam
+
+
+class CamManager:
+    __instance = None
+    SEE_NONE, SEE_PERS, SEE_OBJ = (0, 1, 2)
+    SEE_MAX_RANGE = 100
+
+    @staticmethod
+    def get_instance():
+        if CamManager.__instance == None:
+            CamManager()
+        return CamManager.__instance
+
+    def __init__(self):
+        if CamManager.__instance != None:
+            raise Exception('This class is a singleton!')
+        else:
+            CamManager.__instance = self
+        self._init_manager()
+        return
+
+    def _init_manager(self):
+        self._cam_models = []
+        self.is_play = 0
+        self.is_stop = 0
+        self.is_pause = 0
+        self.is_loop_active = 0
+        self.play_forward = 1
+        self._loop_cid = 0
+        self._loop_py_cid = 0
+        self._pause_speed_coef = 0
+        self._speed_start_val = 0
+        self._speed_end_val = 0
+        self._speed_delta_val = 0
+        self._speed_mouse_coef = 1.0
+        self.cam_pos = None
+        self.cam_matrix = None
+        self._see_pers_model = None
+        self._see_obj_model = None
+        self._blender = Blender(0.01, 1)
+        self._init_player_win()
+        self._init_cam_list_win()
+        self.get_sync_space()
+        return
+
+    _last_space_name = None
+
+    def get_sync_space(self):
+        """
+        \xd0\xbf\xd1\x80\xd0\xbe\xd0\xb2\xd0\xb5\xd1\x80\xd1\x8f\xd0\xb5\xd1\x82 \xd1\x81\xd0\xbe\xd0\xbe\xd1\x82\xd0\xb2\xd0\xb5\xd1\x82\xd1\x81\xd1\x82\xd0\xb2\xd0\xb8\xd0\xb5 \xd0\xba\xd0\xbe\xd0\xbd\xd1\x84\xd0\xb8\xd0\xb3\xd0\xb0 \xd1\x82\xd0\xb5\xd0\xba\xd1\x83\xd1\x89\xd0\xb5\xd0\xb9 \xd0\xba\xd0\xb0\xd1\x80\xd1\x82\xd0\xb5
+        \xd0\xb2\xd0\xbe\xd0\xb7\xd0\xb2\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xbd\xd0\xb0\xd0\xb7\xd0\xb2\xd0\xb0\xd0\xbd\xd0\xb8\xd0\xb5 \xd1\x82\xd0\xb5\xd0\xba\xd1\x83\xd1\x89\xd0\xb5\xd0\xb9 \xd0\xba\xd0\xb0\xd1\x80\xd1\x82\xd1\x8b
+        """
+        space_name = BigWorld.player().getSpaceName()
+        if space_name == self._last_space_name:
+            return space_name
+        self.stop_force()
+        self.clear_all()
+        self._last_space_name = space_name
+        self.reload_config()
+        if space_name not in self.space2tracks:
+            self.space2tracks[space_name] = {}
+        self._create_models()
+        return space_name
+
+    def _write_file(self, file_path, data):
+        try:
+            _str = pyson.dumps(data)
+            with open(file_path, 'wb') as fh:
+                fh.write(_str)
+        except:
+            print '[ERROR] _write_file', [file_path]
+            traceback.print_exc()
+
+    def _read_file(self, file_path):
+        try:
+            with open(file_path, 'rb') as fh:
+                data = pyson.loads(fh.read())
+        except:
+            print '[ERROR] _read_file', [file_path]
+            traceback.print_exc()
+            return
+
+        return data
+
+    def get_track_list(self):
+        track_list = []
+        space_name = self.get_sync_space()
+        for i, track_name in enumerate(sorted(self.space2tracks[space_name].keys())):
+            track_list.append({'track_name': track_name,
+             'track_index': i})
+
+        return track_list
+
+    def save_config(self):
+        """\xd1\x81\xd0\xbe\xd1\x85\xd1\x80\xd0\xb0\xd0\xbd\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5 \xd0\xbd\xd0\xb0 \xd0\xb4\xd0\xb8\xd1\x81\xd0\xba"""
+        for space_name in self.space2tracks:
+            for track_name, track_data in self.space2tracks[space_name].items():
+                _track_data = copy.deepcopy(track_data)
+                to_del_keys = ('see_code', 'see_id', 'see_pos')
+                for k in to_del_keys:
+                    if k in _track_data:
+                        del _track_data[k]
+
+                file_path = os.path.join(CAM_EDITOR_DIR, '%s.ced' % track_name)
+                self._write_file(file_path, _track_data)
+
+        self._draw_cam_models()
+        self._cam_list_win.deactivate_all()
+
+    def _validate_track_data(self, track_data):
+        if 'cam_list' not in track_data:
+            track_data['cam_list'] = []
+        try:
+            for cam in track_data['cam_list']:
+                if 'cam_id' not in cam:
+                    raise ValueError('no cam_id')
+                if 'pos' not in cam:
+                    raise ValueError('no pos')
+                if 'rotate' not in cam:
+                    raise ValueError('no rotate')
+                if 'active' not in cam:
+                    cam['active'] = True
+                if 'speed' not in cam:
+                    cam['speed'] = DEFAULT_SPEED
+                if 'fov' not in cam:
+                    cam['fov'] = DEFAULT_FOV
+                if 'dof' not in cam:
+                    cam['dof'] = DEFAULT_DOF
+
+        except:
+            print '[ERROR] _validate_track_data', track_data
+            raise
+
+        return track_data
+
+    space2tracks = dict()
+
+    def load_track(self, file_path):
+        """
+        \xd0\xb7\xd0\xb0\xd0\xb3\xd1\x80\xd1\x83\xd0\xb6\xd0\xb0\xd1\x82\xd1\x8c \xd0\xbc\xd0\xbe\xd0\xb6\xd0\xbd\xd0\xbe \xd0\xb8\xd0\xb7 \xd0\xbb\xd1\x8e\xd0\xb1\xd0\xbe\xd0\xb9 \xd0\xbf\xd0\xb0\xd0\xbf\xd0\xba\xd0\xb8, \xd0\xbd\xd0\xbe \xd1\x81\xd0\xbe\xd1\x85\xd1\x80\xd0\xb0\xd0\xbd\xd1\x8f\xd0\xb5\xd1\x82\xd1\x81\xd1\x8f \xd0\xb2\xd1\x81\xd0\xb5\xd0\xb3\xd0\xb4\xd0\xb0 \xd0\xb2 \xd0\xb4\xd0\xb5\xd1\x84\xd0\xbe\xd0\xbb\xd1\x82\xd0\xbd\xd1\x83\xd1\x8e
+        \xd1\x83 \xd1\x82\xd1\x80\xd0\xb5\xd0\xba\xd0\xb0 \xd0\xb4\xd0\xbe\xd0\xbb\xd0\xb6\xd0\xb5\xd0\xbd \xd0\xb1\xd1\x8b\xd1\x82\xd1\x8c \xd1\x83\xd0\xba\xd0\xb0\xd0\xb7\xd0\xb0\xd0\xbd space_name
+        """
+        track_name = os.path.basename(file_path).rsplit('.', 1)[0]
+        space_name = self.get_sync_space()
+        if track_name in self.space2tracks[space_name]:
+            print '[WARNING] load_track. duplicate track_name', [track_name], self.space2tracks[space_name].keys()
+            return
+        track_data = self._read_file(file_path)
+        if track_data:
+            if track_data.get('space_name') == space_name:
+                self.space2tracks[space_name][track_name] = self._validate_track_data(track_data)
+            else:
+                print '[WARNING] load_track. Invalid space_name: %s | %s' % (space_name, file_path)
+        self._apply_config()
+
+    def create_track(self, track_name):
+        """
+        \xd0\xbf\xd1\x80\xd0\xbe\xd0\xb2\xd0\xb5\xd1\x80\xd0\xba\xd0\xb0 \xd0\xb8\xd0\xbc\xd0\xb5\xd0\xbd\xd0\xb8 \xd0\xb8 \xd1\x81\xd0\xbe\xd0\xb7\xd0\xb4\xd0\xb0\xd0\xbd\xd0\xb8\xd0\xb5
+        """
+        if not track_name:
+            return
+        space_name = self.get_sync_space()
+        if track_name in self.space2tracks[space_name]:
+            print '[ERROR] create_track. duplicate track_name', [track_name], self.space2tracks[space_name].keys()
+            return
+        track_data = copy.deepcopy(DEFAULT_TRACK_DATA)
+        track_data['space_name'] = space_name
+        self.space2tracks[space_name][track_name] = track_data
+        file_path = os.path.join(CAM_EDITOR_DIR, '%s.ced' % track_name)
+        self._write_file(file_path, track_data)
+        self._apply_config()
+
+    def _read_all_user_files(self):
+        if not os.path.exists(CAM_EDITOR_DIR):
+            os.makedirs(CAM_EDITOR_DIR)
+            return
+        for filename in os.listdir(CAM_EDITOR_DIR):
+            if not filename.endswith('.ced'):
+                continue
+            file_path = os.path.join(CAM_EDITOR_DIR, filename)
+            self.load_track(file_path)
+
+    def reload_config(self):
+        """\xd0\xb7\xd0\xb0\xd0\xb3\xd1\x80\xd1\x83\xd0\xb7\xd0\xba\xd0\xb0 \xd1\x81\xd0\xb8\xd1\x81\xd1\x82\xd0\xb5\xd0\xbc\xd0\xbd\xd0\xbe\xd0\xb3\xd0\xbe \xd0\xba\xd0\xbe\xd0\xbd\xd1\x84\xd0\xb8\xd0\xb3\xd0\xb0"""
+        space_name = self.get_sync_space()
+        self.space2tracks = {}
+        self.space2tracks[space_name] = {}
+        self._read_all_user_files()
+        self._apply_config()
+
+    def _apply_config(self):
+        if getattr(BWPersonality.GUICore, 'cam_editor', None):
+            BWPersonality.GUICore.cam_editor.apply_track_list()
+        self._cam_list_win.hide()
+        return
+
+    _last_track_name = None
+    _cam_list = list()
+    _cam_dict = dict()
+
+    def _init_cam_list(self, track_name):
+        """
+        \xd0\xb8\xd0\xbd\xd0\xb8\xd1\x86\xd0\xb8\xd0\xb0\xd0\xbb\xd0\xb8\xd0\xb7\xd0\xb0\xd1\x86\xd0\xb8\xd1\x8f \xd1\x81\xd0\xbf\xd0\xb8\xd1\x81\xd0\xba\xd0\xb0 \xd0\xb4\xd0\xbb\xd1\x8f \xd0\xbe\xd0\xba\xd0\xbd\xd0\xb0 \xd0\xba\xd0\xb0\xd0\xbc\xd0\xb5\xd1\x80
+        \xd0\xb2\xd0\xbe\xd0\xb7\xd0\xb2\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 True \xd0\xb2 \xd1\x81\xd0\xbb\xd1\x83\xd1\x87\xd0\xb0\xd0\xb5 \xd1\x83\xd1\x81\xd0\xbf\xd0\xb5\xd1\x85\xd0\xb0
+        """
+        self._stop()
+        space_name = self.get_sync_space()
+        if track_name not in self.space2tracks[space_name]:
+            print '[ERROR] init_cam_list. no such track_name', [track_name]
+            return
+        self._last_track_name = track_name
+        self._cam_list = self.space2tracks[space_name][track_name]['cam_list']
+        self._cam_dict = dict()
+        for cam in self._cam_list:
+            self._cam_dict[cam['cam_id']] = cam
+
+        if not self._cam_list:
+            self.add_cam()
+        self._filtered = []
+        return True
+
+    def init_cam_list(self, track_name, to_show = False):
+        space_name = BigWorld.player().getSpaceName()
+        if space_name != self._last_space_name or self._last_track_name != track_name:
+            self._init_cam_list(track_name)
+        self._update_state_btns2()
+        if to_show or self._cam_list_win.is_visible():
+            self._cam_list_win.apply_cam_list()
+        if to_show:
+            self._cam_list_win.show()
+
+    _line_ids = []
+
+    def _add_line(self, lineStart, lineEnd, colour, alwaysDraw = True):
+        self._line_ids.append(gi.addLine(lineStart, lineEnd, colour, alwaysDraw))
+
+    def _del_cam_models(self):
+        resetAllText()
+        for m in self._cam_models:
+            BigWorld.delModel(m)
+
+        self._cam_models = []
+        while self._line_ids:
+            lineid = self._line_ids.pop()
+            gi.remove(lineid)
+
+    def _draw_spline(self):
+        dest_idx = 0
+        t = 1
+        self._filtered = [ c for c in self._cam_list if c['active'] ]
+        if self.cam_active_count < 2:
+            return
+        else:
+            step = 0.01
+            n_iter = self.cam_active_count + 1
+            n_steps = int(1 / step)
+            prev_cam_pos = None
+            for _ in xrange(n_iter * n_steps):
+                t += step
+                t = clamp_val(t, -1, 1)
+                if t >= 1.0 or t < 0:
+                    if t > 0:
+                        _dest_idx = dest_idx + 1
+                        if _dest_idx >= self.cam_active_count:
+                            if not self.is_loop_active:
+                                return
+                            _dest_idx = 0
+                        dest_idx = _dest_idx
+                    else:
+                        _dest_idx = dest_idx - 1
+                        if _dest_idx <= 0:
+                            if not self.is_loop_active:
+                                return
+                            _dest_idx = self.cam_active_count
+                        dest_idx = _dest_idx
+                    p0 = self.get_pos(dest_idx - 2)
+                    p1 = self.get_pos(dest_idx - 1)
+                    p2 = self.get_pos(dest_idx)
+                    p3 = self.get_pos(dest_idx + 1)
+                    t = 0 if t > 0 else 1
+                t2 = t * t
+                t3 = t * t2
+                cam_pos = 0.5 * (2 * p1 + (-p0 + p2) * t + (2 * p0 - 5 * p1 + 4 * p2 - p3) * t2 + (-p0 + 3 * p1 - 3 * p2 + p3) * t3)
+                if prev_cam_pos:
+                    self._add_line(prev_cam_pos, cam_pos, COLOR.RED)
+                prev_cam_pos = cam_pos
+
+            return
+
+    def _draw_cam_models(self):
+        if BWPersonality.GUICore.hiddenState:
+            return
+        else:
+            self._del_cam_models()
+            prev_pos = None
+            first_pos = None
+            index = 0
+
+            def set_scale_model(model, scale):
+                model.scale = (scale, scale, scale)
+                model.newScaleTest = (scale, scale, scale)
+
+            def add_arrow(start_pos, end_pos):
+                _dir = end_pos - start_pos
+                dist = _dir.length / 2
+                _dir.normalise()
+                matrix = get_look_at_matrix(start_pos + _dir * dist, end_pos)
+                model_arrow = BigWorld.Model('helpers/models/directional_arrow.model')
+                set_scale_model(model_arrow, 2)
+                BigWorld.addModel(model_arrow)
+                model_arrow.setWorldTransform(matrix)
+                self._cam_models.append(model_arrow)
+
+            for index, cam in enumerate(self._cam_list, 1):
+                rotate = cam['rotate']
+                pos = Vector3(cam['pos'])
+                matrix = Matrix()
+                matrix.setRotateYPR(rotate)
+                matrix.translation = pos
+                model = BigWorld.Model('models/bolvan/helpers/camera_node.model')
+                set_scale_model(model, 0.5)
+                BigWorld.addModel(model)
+                model.setWorldTransform(matrix)
+                text = str(index)
+                addText(pos + (0, 1.5, 0), text, 1.0)
+                self._cam_models.append(model)
+                if prev_pos:
+                    add_arrow(prev_pos, pos)
+                prev_pos = pos
+                if first_pos is None:
+                    first_pos = pos
+
+            if prev_pos and first_pos and len(self._cam_list) > 2:
+                add_arrow(prev_pos, first_pos)
+            self._draw_spline()
+            return
+
+    def get_cam_index(self, cam_id):
+        for i in xrange(self.cam_count):
+            if self._cam_list[i]['cam_id'] == cam_id:
+                return i
+
+        return -1
+
+    def get_name(self, cam_id):
+        return 'Camera %s' % (self.get_cam_index(cam_id) + 1)
+
+    def get_cam_info(self, cam_id):
+        return self._cam_dict[cam_id]
+
+    def get_cam_list(self):
+        return copy.deepcopy(self._cam_list)
+
+    @property
+    def cam_count(self):
+        return len(self._cam_list)
+
+    @property
+    def cam_active_count(self):
+        return len(self._filtered)
+
+    def get_filtered_elem(self, index):
+        size = len(self._filtered)
+        if self.is_loop_active:
+            if index >= size:
+                index = index - size
+        else:
+            index = clamp_val(index, 0, size - 1)
+        try:
+            return self._filtered[index]
+        except:
+            print 'size', size
+            print 'index', index
+            raise
+
+    def get_pos(self, index):
+        return Vector3(self.get_filtered_elem(index)['pos'])
+
+    def get_rotate(self, index):
+        return Vector3(self.get_filtered_elem(index)['rotate'])
+
+    def get_speed(self, index):
+        val = self.get_filtered_elem(index)['speed']
+        return self.clamp_speed(val)
+
+    def get_fov(self, index):
+        val = self.get_filtered_elem(index)['fov']
+        return self.clamp_fov(val)
+
+    def get_dof(self, index):
+        val = self.get_filtered_elem(index)['dof']
+        return self.clamp_dof(val)
+
+    def clamp_speed(self, val):
+        try:
+            speed = float(val)
+        except:
+            print '[ERROR] clamp_speed', [val]
+            traceback.print_exc()
+            return float(DEFAULT_SPEED)
+
+        return clamp_val(speed, CAM_SPEED_MIN, CAM_SPEED_MAX)
+
+    def clamp_fov(self, val):
+        try:
+            fov = float(val)
+        except:
+            print '[ERROR] clamp_fov', [val]
+            traceback.print_exc()
+            return float(DEFAULT_FOV)
+
+        return clamp_val(fov, CAM_FOV_MIN, CAM_FOV_MAX)
+
+    def clamp_dof(self, val):
+        try:
+            dof = float(val)
+        except:
+            print '[ERROR] clamp_dof', [val]
+            traceback.print_exc()
+            return float(DEFAULT_DOF)
+
+        return clamp_val(dof, CAM_DOF_MIN, CAM_DOF_MAX)
+
+    def _new_cam_id(self):
+        cam_id = (int(time.time()), 0)
+        while cam_id in self._cam_dict:
+            cam_id = (cam_id[0], cam_id[1] + 1)
+
+        return cam_id
+
+    def _get_camera_matrix(self):
+        cam = BigWorld.camera()
+        try:
+            matrix = Matrix(cam.invViewProvider)
+        except:
+            matrix = Matrix(cam.invViewMatrix)
+
+        return matrix
+
+    def apply_fov(self, val):
+        BigWorld.projection().fov = float(val)
+
+    def apply_dof(self, val):
+        self._postprocess_set_val(float(val))
+
+    def _can_edit_cam(self):
+        if self.is_play:
+            if not self.is_stop:
+                print '[WARNING] forbidden to edit cam'
+                BWPersonality.gpd.sendHightMessageTimed(lc('cam_editor_win.need_stop'), show_time=1, message_type=MT.SYSTEM)
+                return False
+        return True
+
+    def add_cam(self, cam_id = None):
+        if not self._can_edit_cam():
+            return
+        else:
+            if cam_id is None:
+                index = 0
+            else:
+                index = self.get_cam_index(cam_id) + 1
+            matrix = self._get_camera_matrix()
+            cam = dict()
+            cam['cam_id'] = self._new_cam_id()
+            cam['pos'] = matrix.translation.tuple()
+            cam['rotate'] = (matrix.yaw, matrix.pitch, matrix.roll)
+            cam['active'] = True
+            if cam_id is None:
+                cam['speed'] = unicode(DEFAULT_SPEED)
+                cam['fov'] = unicode(DEFAULT_FOV)
+                cam['dof'] = unicode(DEFAULT_DOF)
+            else:
+                prev_cam = self.get_cam_info(cam_id)
+                cam['speed'] = prev_cam['speed']
+                cam['fov'] = prev_cam['fov']
+                cam['dof'] = prev_cam['dof']
+            self._cam_list.insert(index, cam)
+            self._cam_dict[cam['cam_id']] = cam
+            self.save_config()
+            self._cam_list_win.apply_cam_list()
+            self._cam_list_win.apply_cam_list_index(index, cam['cam_id'])
+            return
+
+    def del_cam(self, cam_id):
+        if not self._can_edit_cam():
+            return
+        if self.cam_count <= 1:
+            return
+        deleted = 0
+        for i in xrange(self.cam_count - 1, -1, -1):
+            if self._cam_list[i]['cam_id'] == cam_id:
+                del self._cam_list[i]
+                deleted += 1
+
+        if deleted != 1:
+            print '[ERROR] del_cam. deleted != 1', cam_id, deleted
+        if cam_id in self._cam_dict:
+            del self._cam_dict[cam_id]
+        else:
+            print '[ERROR] del_cam. no such cam_id=%s in cam_dict' % cam_id
+        self.save_config()
+        self._cam_list_win.apply_cam_list()
+
+    def save_cam(self, cam_id, save_matrix = False, active = None, speed = None, fov = None, dof = None):
+        if not self._can_edit_cam():
+            return
+        else:
+            cam = self._cam_dict[cam_id]
+            if save_matrix:
+                matrix = self._get_camera_matrix()
+                cam['pos'] = matrix.translation.tuple()
+                cam['rotate'] = (matrix.yaw, matrix.pitch, matrix.roll)
+            if active is not None:
+                cam['active'] = active
+            if speed is not None:
+                cam['speed'] = speed
+            if fov is not None:
+                cam['fov'] = fov
+            if dof is not None:
+                cam['dof'] = dof
+            self.save_config()
+            return
+
+    def _prepare_play(self, dest_idx = None):
+        self.dist_coef = 0.0
+        if self.play_forward:
+            self.dest_idx = 0
+            self.t = 1
+        else:
+            self.dest_idx = self.cam_active_count - 1
+            self.t = -1
+        if self._cam_list_win.component.visible:
+            index = self._cam_list_win.get_selected_index()
+            if index != -1:
+                self.dest_idx = index
+        if dest_idx is not None:
+            self.dest_idx = dest_idx
+        self._filtered = [ c for c in self._cam_list if c['active'] ]
+        if not self.play_forward:
+            self.dest_idx += 1
+        return
+
+    def _apply_cam_matrix(self, dest_idx):
+        matrix = Matrix()
+        matrix.setRotateYPR(self.get_rotate(dest_idx))
+        matrix.translation = self.get_pos(dest_idx)
+        self.cam_matrix = matrix
+        self.cam_pos = matrix.translation
+
+    def _get_blended_params(self):
+        weight = min(abs(self.t), 1)
+
+        def get_blended_val(start_val, end_val):
+            delta = end_val - start_val
+            res = start_val + delta * weight
+            return res
+
+        speed = get_blended_val(self.get_speed(self.dest_idx - 1), self.get_speed(self.dest_idx))
+        fov = get_blended_val(self.get_fov(self.dest_idx - 1), self.get_fov(self.dest_idx))
+        dof = get_blended_val(self.get_dof(self.dest_idx - 1), self.get_dof(self.dest_idx))
+        return (speed, fov, dof)
+
+    _speed_coef = 6.25
+
+    def _calc_cam_matrix(self, step_mul = 1):
+        self.t += self._result_speed * self._speed_coef * self.dist_coef * self._last_dt * step_mul
+        self.t = clamp_val(self.t, -1, 1)
+        if self.t >= 1.0 or self.t < 0:
+            if self.t > 0:
+                _dest_idx = self.dest_idx + 1
+                if _dest_idx >= self.cam_active_count:
+                    if not self.is_loop_active:
+                        return
+                    _dest_idx = 0
+                self.dest_idx = _dest_idx
+            else:
+                _dest_idx = self.dest_idx - 1
+                if _dest_idx <= 0:
+                    if not self.is_loop_active:
+                        return
+                    _dest_idx = self.cam_active_count
+                self.dest_idx = _dest_idx
+            p0 = self.p0 = self.get_pos(self.dest_idx - 2)
+            p1 = self.p1 = self.get_pos(self.dest_idx - 1)
+            p2 = self.p2 = self.get_pos(self.dest_idx)
+            p3 = self.p3 = self.get_pos(self.dest_idx + 1)
+            r0 = self.r0 = self.get_rotate(self.dest_idx - 2)
+            r1 = self.r1 = self.get_rotate(self.dest_idx - 1)
+            r2 = self.r2 = self.get_rotate(self.dest_idx + 0)
+            r3 = self.r3 = self.get_rotate(self.dest_idx + 1)
+            clampAngles(self.r0, self.r1)
+            clampAngles(self.r1, self.r2)
+            clampAngles(self.r2, self.r3)
+            d1 = (p0 - p1).length
+            d2 = (p1 - p2).length
+            d3 = (p2 - p3).length
+            _d = d1 + 2 * d2 + d3
+            self.dist_coef = 1 / _d if _d else 0
+            self.t = 0 if self.t > 0 else 1
+        t = self.t
+        p0 = self.p0
+        p1 = self.p1
+        p2 = self.p2
+        p3 = self.p3
+        r0 = self.r0
+        r1 = self.r1
+        r2 = self.r2
+        r3 = self.r3
+        t2 = t * t
+        t3 = t * t2
+        self.cam_pos = 0.5 * (2 * p1 + (-p0 + p2) * t + (2 * p0 - 5 * p1 + 4 * p2 - p3) * t2 + (-p0 + 3 * p1 - 3 * p2 + p3) * t3)
+        cam_rot = 0.5 * (2 * r1 + (-r0 + r2) * t + (2 * r0 - 5 * r1 + 4 * r2 - r3) * t2 + (-r0 + 3 * r1 - 3 * r2 + r3) * t3)
+        matrix = Matrix()
+        matrix.setRotateYPR(cam_rot)
+        matrix.translation = self.cam_pos
+        self.cam_matrix = matrix
+
+    def _upd_cam_matrix(self):
+        if len(self._filtered) == 1:
+            BigWorld.projection().fov = self.get_fov(0)
+            self._postprocess_set_val(self.get_dof(0))
+            self._apply_cam_matrix(0)
+            return
+        else:
+            speed, fov, dof = self._get_blended_params()
+            BigWorld.projection().fov = fov
+            self._postprocess_set_val(dof)
+            if self.is_stop:
+                self._apply_cam_matrix(self.dest_idx)
+                return
+            if speed == 0:
+                return
+            if self._pause_speed_coef <= 0:
+                return
+            play_direction_mul = 1 if self.play_forward else -1
+            self._result_speed = speed * play_direction_mul * self._pause_speed_coef * self._speed_mouse_coef
+            self._target_step = abs(self._result_speed * self._last_dt)
+            step = 0
+            for i in xrange(100):
+                self._calc_cam_matrix(step_mul=0.05)
+                d = 0 if self.prev_cam_pos is None else (self.prev_cam_pos - self.cam_pos).length
+                self.prev_cam_pos = self.cam_pos
+                step += d
+                if step < self._target_step:
+                    continue
+                break
+
+            return
+
+    _t_step = 0
+    _prev_t_step = 0
+    _last_dt = 0
+
+    def update_cam_tick(self):
+        if not self._filtered:
+            print '[WARNING] no active cams'
+            return
+        now = time.time()
+        dt = now - getattr(self, '_last_t', 0)
+        self._last_t = now
+        self._last_dt = min(dt, MAX_LOOP_PY_INTERVAL)
+        self._upd_cam_matrix()
+
+        def get_see_matrix():
+            if self.is_stop:
+                return None
+            see_code = self.get_track_see_code()
+            if see_code == self.SEE_PERS:
+                return get_look_at_matrix(self.cam_pos, self._see_pers_model.position)
+            elif see_code == self.SEE_OBJ:
+                return get_look_at_matrix(self.cam_pos, self._see_obj_model.position)
+            else:
+                return None
+
+        m = get_see_matrix()
+        if m:
+            return m
+        return self.cam_matrix
+
+    _see_cid = 0
+
+    def see_tick(self):
+        """
+        \xd1\x86\xd0\xb8\xd0\xba\xd0\xbb \xd0\xb7\xd0\xb0\xd0\xbf\xd1\x83\xd1\x81\xd0\xba\xd0\xb0\xd0\xb5\xd1\x82\xd1\x81\xd1\x8f \xd0\xbf\xd0\xbe \xd0\xba\xd0\xbd\xd0\xbe\xd0\xbf\xd0\xba\xd0\xb5
+        \xd0\xb4\xd0\xb2\xd0\xb8\xd0\xb3\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xbc\xd0\xbe\xd0\xb4\xd0\xb5\xd0\xbb\xd1\x8c\xd0\xba\xd1\x83 \xd0\xb7\xd0\xb0 \xd1\x81\xd1\x83\xd1\x89\xd0\xbd\xd0\xbe\xd1\x81\xd1\x82\xd1\x8c\xd1\x8e, \xd0\xbf\xd0\xbe\xd0\xba\xd0\xb0 \xd0\xb2\xd0\xba\xd0\xbb\xd1\x8e\xd1\x87\xd1\x91\xd0\xbd \xd1\x80\xd0\xb5\xd0\xb6\xd0\xb8\xd0\xbc SEE_PERS
+        """
+        if self._see_cid:
+            BigWorld.cancelCallback(self._see_cid)
+        see_code = self.get_track_see_code()
+        if see_code != self.SEE_PERS:
+            return
+
+        def move_model():
+            see_id = self.get_track_see_id()
+            try:
+                entity = BigWorld.entities.get(see_id)
+            except:
+                return
+
+            if not entity or entity.isDestroyed:
+                return
+            if self.cam_pos and self.cam_pos.distTo(entity.position) > self.SEE_MAX_RANGE:
+                return
+            try:
+                height = Matrix(entity.model.bounds).get(1, 1)
+            except:
+                height = 1
+
+            self._see_pers_model.position = entity.position + Vector3(0, height, 0)
+
+        move_model()
+        self._see_cid = BigWorld.callback(0.01, self.see_tick)
+
+    def set_track_see_code(self, see_code):
+        space_name = self.get_sync_space()
+        track_name = self._last_track_name
+        track_data = self.space2tracks[space_name].get(track_name)
+        if track_data is None:
+            return
+        else:
+            self.space2tracks[space_name][track_name]['see_code'] = see_code
+            return
+
+    def get_track_see_code(self, track_name = None):
+        space_name = self.get_sync_space()
+        if not track_name:
+            track_name = self._last_track_name
+        if not track_name:
+            print '[ERROR] No selected track'
+            BWPersonality.gpd.sendHightMessageTimed(lc('cam_editor_win.no_selected_track'), show_time=1, message_type=MT.SYSTEM)
+            return
+        else:
+            track_data = self.space2tracks[space_name].get(track_name)
+            if track_data is None:
+                return
+            return track_data.get('see_code', self.SEE_NONE)
+
+    def set_track_see_pos(self, see_pos):
+        space_name = self.get_sync_space()
+        track_name = self._last_track_name
+        track_data = self.space2tracks[space_name].get(track_name)
+        if track_data is None:
+            return
+        else:
+            self.space2tracks[space_name][track_name]['see_pos'] = see_pos
+            return
+
+    def get_track_see_pos(self):
+        space_name = self.get_sync_space()
+        track_name = self._last_track_name
+        track_data = self.space2tracks[space_name].get(track_name)
+        if track_data is None:
+            return
+        else:
+            return track_data.get('see_pos')
+
+    def set_track_see_id(self, see_id):
+        space_name = self.get_sync_space()
+        track_name = self._last_track_name
+        track_data = self.space2tracks[space_name].get(track_name)
+        if track_data is None:
+            return
+        else:
+            self.space2tracks[space_name][track_name]['see_id'] = see_id
+            return
+
+    def get_track_see_id(self):
+        space_name = self.get_sync_space()
+        track_name = self._last_track_name
+        track_data = self.space2tracks[space_name].get(track_name)
+        if track_data is None:
+            return
+        else:
+            return track_data.get('see_id')
+
+    def on_btn_set_see_pers(self, entity_id):
+        self.set_track_see_id(entity_id)
+        self.on_btn_see_pers(force=True)
+
+    def on_btn_set_see_obj(self):
+        if self.is_set_obj_mode:
+            self.is_set_obj_mode = False
+            self.set_track_see_pos(self._see_obj_model.position)
+        else:
+            self.stop_force()
+            self.is_set_obj_mode = True
+            self._set_obj_tick()
+        self.show_models(True)
+
+    is_set_obj_mode = None
+    _set_obj_cid = 0
+
+    def _set_obj_tick(self):
+        if self._set_obj_cid:
+            BigWorld.cancelCallback(self._set_obj_cid)
+        if not self.is_set_obj_mode:
+            return
+        if not self.is_visible_editor():
+            return
+
+        def move_model():
+            cam = BigWorld.camera()
+            pos = cam.position + cam.direction * SEE_OBJ_DIST
+            try:
+                self._see_obj_model.position = pos
+                self._see_obj_model.visible = True
+            except:
+                print '[ERROR] Failed set see_obj pos', pos
+                self.is_set_obj_mode = False
+                self.show_models(True)
+                raise
+
+        move_model()
+        self._set_obj_cid = BigWorld.callback(0.01, self._set_obj_tick)
+
+    def on_btn_see_pers(self, force = False):
+        see_code = self.get_track_see_code()
+        if see_code == self.SEE_PERS:
+            see_code = self.SEE_NONE
+        else:
+            see_code = self.SEE_PERS
+        if force:
+            see_code = self.SEE_PERS
+        self.set_track_see_code(see_code)
+        self._update_state_btns2()
+
+    def on_btn_see_obj(self):
+        see_code = self.get_track_see_code()
+        if see_code == self.SEE_OBJ:
+            see_code = self.SEE_NONE
+        else:
+            see_code = self.SEE_OBJ
+            see_pos = self.get_track_see_pos()
+            if see_pos is None:
+                if not self.is_set_obj_mode:
+                    self.on_btn_set_see_obj()
+        if see_code == self.SEE_NONE and self.is_set_obj_mode:
+            self.on_btn_set_see_obj()
+        self.set_track_see_code(see_code)
+        self._update_state_btns2()
+        return
+
+    def _create_models(self, to_show = True):
+        self._see_pers_model = BigWorld.Model('models/bolvan/helpers/flycam_sign.model')
+        BigWorld.addModel(self._see_pers_model)
+        self._see_obj_model = BigWorld.Model('models/bolvan/helpers/flycam_box.model')
+        BigWorld.addModel(self._see_obj_model)
+        self.show_models(to_show)
+
+    def show_models(self, to_show):
+        if not self._see_pers_model and not self._see_pers_model:
+            self._create_models(to_show)
+            return
+        else:
+            self._see_pers_model.visible = False
+            self._see_obj_model.visible = False
+            if to_show:
+                see_code = self.get_track_see_code()
+                if see_code == self.SEE_PERS:
+                    self._see_pers_model.visible = not BWPersonality.GUICore.hiddenState
+                    self.see_tick()
+                elif see_code == self.SEE_OBJ:
+                    see_pos = self.get_track_see_pos()
+                    if see_pos is not None:
+                        try:
+                            self._see_obj_model.position = see_pos
+                        except:
+                            print '[ERROR] Failed set see_pos', [see_pos]
+                            traceback.print_exc()
+                        else:
+                            self._see_obj_model.visible = not BWPersonality.GUICore.hiddenState
+
+                self._draw_cam_models()
+            else:
+                self._del_cam_models()
+            return
+
+    _ppid = None
+
+    def _postprocess_set_val(self, val):
+        if self._ppid is None:
+            self._ppid = PostProcessing.addPPChainByName('Clear_DOF')
+        chain = PostProcessing.getPPChainByID(self._ppid)
+        if not chain:
+            print '[ERROR] _postprocess_set_val. no chain', self._ppid
+            return
+        else:
+            for eff in chain[1]:
+                if eff.name != 'Explicit Lens Simulation':
+                    continue
+                for phase in eff.phases:
+                    if phase.name != 'DOF depth blur map write 2':
+                        continue
+                    phase.material.zFar = val
+
+            return
+
+    def _remove_postprocess(self):
+        if self._ppid is None:
+            return
+        else:
+            PostProcessing.removePPChain(self._ppid)
+            self._ppid = None
+            return
+
+    def _update_state_btns(self):
+        self._cam_player_win.update_state_btns()
+
+    def _update_state_btns2(self):
+        if getattr(BWPersonality.GUICore, 'cam_editor', None):
+            BWPersonality.GUICore.cam_editor.update_state_btns2()
+        self.show_models(True)
+        return
+
+    def _play(self, play_forward = True, dest_idx = None):
+        self.play_forward = play_forward
+        self.is_play = 1
+        self._pause_speed_coef = 1
+        self._target_step = None
+        self.prev_cam_pos = None
+        self._prepare_play(dest_idx)
+        cam = BigWorld.camera()
+        self.free_cam_track = BigWorld.FreeCamera()
+        self.free_cam_track.invViewProvider = Matrix(cam.invViewMatrix)
+        BigWorld.camera(self.free_cam_track)
+        if self._loop_py_cid:
+            BigWorld.cancelCallback(self._loop_py_cid)
+        self._loop_py_cid = BigWorld.callback(0.1, self.loop_py)
+        if self._loop_cid:
+            BigWorld.cancelCallback(self._loop_cid)
+        self._loop_cid = BigWorld.callback(0.01, self.loop)
+        BWPersonality.debugHOOKPostGUIHandleMouseEvent = self.on_mouse_event_for_speed
+        return
+
+    def on_mouse_event_for_speed(self, event):
+        if event.dz:
+            _dir = 1 if event.dz > 0 else -1
+            step = 0.1
+            if self._speed_mouse_coef <= 0.11:
+                step = 0.01
+            self._speed_mouse_coef += step * _dir
+            self._speed_mouse_coef = max(0.0, self._speed_mouse_coef)
+            self._speed_mouse_coef = min(self._speed_mouse_coef, 999.0)
+
+    def play(self):
+        self.is_stop = False
+        if self.is_pause:
+            self.play_forward = True
+            self.pause()
+            return
+        self._play(play_forward=True)
+        self._update_state_btns()
+
+    def backplay(self):
+        self.is_stop = False
+        if self.is_pause:
+            self.play_forward = False
+            self.pause()
+            return
+        self._play(play_forward=False)
+        self._update_state_btns()
+
+    def pause(self):
+        self.is_pause = not self.is_pause
+        if self.is_pause:
+            self._speed_start_val = 1
+            self._speed_end_val = 0
+        else:
+            self._speed_start_val = 0
+            self._speed_end_val = 1
+        self._speed_delta_val = self._speed_end_val - self._speed_start_val
+
+        def callback(weight):
+            self._pause_speed_coef = self._speed_start_val + self._speed_delta_val * weight
+            if abs(self._pause_speed_coef - self._speed_end_val) < 0.001:
+                self._pause_speed_coef = self._speed_end_val
+
+        self._blender.run_blend(callback)
+        self._update_state_btns()
+
+    def stop(self, on_select_cam = None):
+        self.is_stop = True
+        if on_select_cam:
+            self._play()
+        else:
+            self._play()
+        self._update_state_btns()
+        BigWorld.callback(0.2, self._stop)
+
+    def _stop(self, to_free_cam = True):
+        if self._loop_py_cid:
+            BigWorld.cancelCallback(self._loop_py_cid)
+        if self._loop_cid:
+            BigWorld.cancelCallback(self._loop_cid)
+        self.is_stop = True
+        self.is_play = False
+        self.is_pause = False
+        self.apply_fov(DEFAULT_FOV)
+        self._remove_postprocess()
+        self.on_free_cam_change(to_free_cam)
+        self._update_state_btns()
+
+    def stop_force(self, to_free_cam = True):
+        self._stop(to_free_cam)
+
+    def _to_stop(self):
+        if not self.is_play:
+            return True
+        player = BigWorld.player()
+        if not player:
+            return True
+        self.get_sync_space()
+
+    def loop_py(self):
+        if self._to_stop():
+            self.stop_force()
+            return
+        matrix = self.update_cam_tick()
+        if not matrix:
+            self.stop_force()
+            return
+        self.free_cam_track.invViewProvider = matrix
+        self._loop_py_cid = BigWorld.callback(LOOP_PY_INTERVAL, self.loop_py)
+
+    def loop(self):
+        if self._to_stop():
+            self.stop_force()
+            return
+
+    def _init_player_win(self):
+        import cam_player_window
+        self._cam_player_win = cam_player_window.CamPlayerWin()
+
+    def _init_cam_list_win(self):
+        import cam_list_window
+        self._cam_list_win = cam_list_window.CamListWindow()
+
+    def show_hide_gui(self, force_show = None):
+        if BWPersonality.GUICore.hiddenState or force_show:
+            BWPersonality.GUICore.showGui()
+            self.show_models(True)
+        else:
+            BWPersonality.GUICore.hideGui()
+            self.show_models(False)
+
+    _player_caps = None
+
+    def show_all(self):
+        """
+        \xd0\xb2\xd1\x8b\xd0\xb7\xd1\x8b\xd0\xb2\xd0\xb0\xd0\xb5\xd1\x82\xd1\x81\xd1\x8f \xd0\xb8\xd0\xb7 \xd0\xb3\xd0\xbb\xd0\xb0\xd0\xb2\xd0\xbd\xd0\xbe\xd0\xb3\xd0\xbe \xd0\xbe\xd0\xba\xd0\xbd\xd0\xb0
+        """
+        self.get_sync_space()
+        self.on_free_cam_change(False)
+        self.show_models(True)
+        self._cam_player_win.show()
+        player = BigWorld.player()
+        if player:
+            BigWorld.target.exclude = None
+            if self._player_caps is None:
+                self._player_caps = tuple(player.targetCaps)
+            player.targetCaps = []
+        self._update_icon_loop()
+        return
+
+    def hide_all(self):
+        """
+        \xd0\xb2\xd1\x8b\xd0\xb7\xd1\x8b\xd0\xb2\xd0\xb0\xd0\xb5\xd1\x82\xd1\x81\xd1\x8f \xd0\xb8\xd0\xb7 \xd0\xb3\xd0\xbb\xd0\xb0\xd0\xb2\xd0\xbd\xd0\xbe\xd0\xb3\xd0\xbe \xd0\xbe\xd0\xba\xd0\xbd\xd0\xb0
+        """
+        self.on_free_cam_change(False)
+        self.show_models(False)
+        self._cam_player_win.hide()
+        self._cam_list_win.hide()
+        self.stop_force()
+        player = BigWorld.player()
+        if player:
+            BigWorld.target.exclude = player
+            if self._player_caps is not None:
+                player.targetCaps = list(self._player_caps)
+        if self._update_icon_cid:
+            BigWorld.cancelCallback(self._update_icon_cid)
+            self._update_icon_cid = 0
+        return
+
+    def clear_all(self):
+        self._last_space_name = None
+        if self._see_pers_model or self._see_obj_model:
+            try:
+                BigWorld.delModel(self._see_pers_model)
+                BigWorld.delModel(self._see_obj_model)
+            except:
+                print '[ERROR] Failed delete models'
+                traceback.print_exc()
+
+        self._see_pers_model = None
+        self._see_obj_model = None
+        self._del_cam_models()
+        return
+
+    def is_visible_editor(self):
+        if getattr(BWPersonality.GUICore, 'cam_editor', None):
+            return BWPersonality.GUICore.cam_editor.is_visible()
+        else:
+            return
+
+    def switch_player_free_cam(self):
+        if is_player_cam():
+            self.stop_force(to_free_cam=True)
+        else:
+            self.stop_force(to_free_cam=False)
+
+    _update_icon_cid = 0
+
+    def _update_icon_loop(self):
+        if self._update_icon_cid:
+            BigWorld.cancelCallback(self._update_icon_cid)
+        if getattr(BWPersonality.GUICore, 'cam_editor', None):
+            BWPersonality.GUICore.cam_editor.update_btn_switch_cam(is_player_cam())
+        self._cam_list_win.update_save_cam_icon_all()
+        self._cam_player_win.set_label_speed()
+        self._update_icon_cid = BigWorld.callback(0.1, self._update_icon_loop)
+        return
+
+    _free_cam_cid = 0
+
+    def _free_cam_tick(self):
+        if self.free_cam != BigWorld.camera():
+            self._reset_hooks()
+            return
+        else:
+            self._free_cam_cid = BigWorld.callback(0, self._free_cam_tick)
+            if BWConsole and BWConsole.getActive() == 'Python':
+                return
+            if BWPersonality.GUICore.is_chat_visible():
+                return
+            if getattr(BWPersonality.GUICore, 'cam_editor', None):
+                if BWPersonality.GUICore.cam_editor.is_track_win_visible():
+                    return
+            dir_ = Vector3()
+            if BigWorld.isKeyDown(Keys.KEY_W):
+                dir_[2] = 1
+            if BigWorld.isKeyDown(Keys.KEY_S):
+                dir_[2] = -1
+            if BigWorld.isKeyDown(Keys.KEY_D):
+                dir_[0] = 1
+            if BigWorld.isKeyDown(Keys.KEY_A):
+                dir_[0] = -1
+            if BigWorld.isKeyDown(Keys.KEY_Q):
+                dir_[1] = -0.5
+            if BigWorld.isKeyDown(Keys.KEY_E):
+                dir_[1] = 0.5
+            if dir_:
+                inview = Matrix(self.free_cam.invViewProvider)
+                m = Matrix()
+                m.setTranslate(dir_ * self._wasd_speed)
+                inview.preMultiply(m)
+                self.free_cam.invViewProvider = inview
+            return
+
+    def _reset_hooks(self, to_default = None):
+        if self._debugHOOKPostGUIHandleMouseEvent is not None:
+            if to_default or BWPersonality.debugHOOKPostGUIHandleMouseEvent == self.onMouseEvent:
+                BWPersonality.debugHOOKPostGUIHandleMouseEvent = self._debugHOOKPostGUIHandleMouseEvent
+        if self._debugHOOKHandleKeyEvent is not None:
+            BWPersonality.debugHOOKHandleKeyEvent = self._debugHOOKHandleKeyEvent
+        return
+
+    _debugHOOKPostGUIHandleMouseEvent = None
+    _debugHOOKHandleKeyEvent = None
+    _wasd_speed = 0.1
+
+    def on_free_cam_change(self, to_free_cam):
+        if not self.is_visible_editor():
+            to_free_cam = False
+        player = BigWorld.player()
+        if not hasattr(player, 'AvatarCam'):
+            return
+        else:
+            import view_control
+            view_control.DEBUG_DRAW_CAM = False
+            if self._debugHOOKPostGUIHandleMouseEvent is None:
+                self._debugHOOKPostGUIHandleMouseEvent = BWPersonality.debugHOOKPostGUIHandleMouseEvent
+            if self._debugHOOKHandleKeyEvent is None:
+                self._debugHOOKHandleKeyEvent = BWPersonality.debugHOOKHandleKeyEvent
+            if self._free_cam_cid:
+                BigWorld.cancelCallback(self._free_cam_cid)
+            if not to_free_cam:
+                self._reset_hooks(to_default=True)
+                BigWorld.camera(player.AvatarCam)
+                player.updateCameraPosition()
+                return
+            view_control.DEBUG_DRAW_CAM = True
+            cam = BigWorld.camera()
+            self.free_cam = BigWorld.FreeCamera()
+            self.free_cam.invViewProvider = Matrix(cam.invViewMatrix)
+            BigWorld.camera(self.free_cam)
+            self._free_cam_tick()
+            self._roll = 0.0
+            BWPersonality.debugHOOKPostGUIHandleMouseEvent = self.onMouseEvent
+            BWPersonality.debugHOOKHandleKeyEvent = self.onKeyEvent
+            return
+
+    def onMouseEvent(self, event):
+        if event.dz:
+            _dir = 1 if event.dz > 0 else -1
+            step = 0.1
+            if self._wasd_speed <= 0.11:
+                step = 0.01
+            self._wasd_speed += step * _dir
+            self._wasd_speed = max(0.0, self._wasd_speed)
+            self._wasd_speed = min(self._wasd_speed, 999.0)
+        if not hasattr(BigWorld, 'debugFaceWin'):
+            is_context_menu_visible = False
+            if getattr(BWPersonality.GUICore, 'entityContextMenu', None):
+                is_context_menu_visible = BWPersonality.GUICore.entityContextMenu.isVisible
+            if not BWPersonality.GUICore.mouseAltMode and not is_context_menu_visible:
+                rotate_speed = 0.005
+                m = Matrix()
+                yaw = self.free_cam.direction.yaw
+                pitch = self.free_cam.direction.pitch
+                if BigWorld.isKeyDown(Keys.KEY_LSHIFT):
+                    self._roll += event.dy * rotate_speed
+                else:
+                    yaw += event.dx * rotate_speed
+                    pitch += event.dy * rotate_speed
+                m.setRotateYPR((yaw, pitch, self._roll))
+                m_pos = Matrix()
+                m_pos.setTranslate(self.free_cam.invViewProvider.translation)
+                m.postMultiply(m_pos)
+                self.free_cam.invViewProvider = m
+        return True
+
+    def onKeyEvent(self, event):
+        if BWPersonality.GUICore.is_chat_visible():
+            return
+        else:
+            if getattr(BWPersonality.GUICore, 'cam_editor', None):
+                if BWPersonality.GUICore.cam_editor.is_track_win_visible():
+                    return
+            if event.isKeyDown():
+                if event.key in (Keys.KEY_W,
+                 Keys.KEY_S,
+                 Keys.KEY_D,
+                 Keys.KEY_A,
+                 Keys.KEY_LCONTROL,
+                 Keys.KEY_Q,
+                 Keys.KEY_E):
+                    return True
+                if event.key == Keys.KEY_LEFTMOUSE and event.isKeyDown():
+                    if self.is_set_obj_mode:
+                        self.on_btn_set_see_obj()
+            return

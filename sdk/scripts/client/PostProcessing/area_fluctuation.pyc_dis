@@ -1,0 +1,126 @@
+# Embedded file name: ./client/PostProcessing/area_fluctuation.py
+SPEED1 = 2.0
+SPEED2 = 2.5
+LIVE_TIME = 7.0
+POWER = 1.5
+RADIUS = 1.0
+import BWPersonality
+import sys, os
+import BigWorld
+import traceback
+import Math
+import math
+import GUI
+from Math import Matrix, Vector3, Vector2
+import PostProcessing
+from PostProcessing.RenderTargets import rt
+from PostProcessing import Effect
+from PostProcessing import BW_BLEND_ONE, BW_BLEND_ZERO
+from PostProcessing import BW_BLEND_SRCALPHA, BW_BLEND_INVSRCALPHA
+from PostProcessing.FilterKernels import straightTransfer4Tap
+from PostProcessing.Phases import buildPhase
+from PostProcessing.Phases import buildBackBufferCopyPhase
+
+def buildAreaFluctuationPhase(input_texture, output, srcBlend = BW_BLEND_SRCALPHA, destBlend = BW_BLEND_INVSRCALPHA):
+    p = buildPhase(input_texture, output, 'shaders/post_processing/area_fluctuation.fx', straightTransfer4Tap, srcBlend, destBlend)
+    p.name = 'area_fluctuation'
+    return p
+
+
+class AreaFluctuationEff(object):
+    instance = None
+
+    def __new__(cls, *w, **kw):
+        if cls.instance is None:
+            cls.instance = object.__new__(cls, *w, **kw)
+        return cls.instance
+
+    def __init__(self):
+        self._enabled = False
+        self._binoc_black_time_init = 0.0
+        self.tmpShader = GUI.MatrixShader()
+        self.target_node = None
+        self._callback = None
+        self.target_model = None
+        self._disable_id = None
+        self._pp_effect_id = None
+        self._live = 0.0
+        self._createPostEffect()
+        return
+
+    def fini(self):
+        self.disable()
+
+    def _createPostEffect(self):
+        self.pp_effect = Effect()
+        self.pp_effect.name = 'AreaFluctuationEff'
+        backBufferCopy = rt('backBufferCopy')
+        self._backBufferCopy = backBufferCopy
+        self.ph_copy = buildBackBufferCopyPhase(backBufferCopy)
+        self.ph_fluct = buildAreaFluctuationPhase(backBufferCopy.texture, None, BW_BLEND_SRCALPHA, BW_BLEND_INVSRCALPHA)
+        self.pp_effect.preTickDebug = self._tick
+        self.pp_effect.preDrawDebug = self._preDrawEffect
+        self.pp_effect.phases = [self.ph_copy, self.ph_fluct]
+        return
+
+    def _tick(self, dtime):
+        if not self.target_model:
+            return
+        else:
+            if self._live < math.pi / 2:
+                self._live += dtime * SPEED1
+                live_out = math.sin(self._live)
+            else:
+                self._live += dtime * SPEED2
+                if self._callback:
+                    BigWorld.callback(0, self._callback)
+                    self._callback = None
+                max_ = (LIVE_TIME - self._live) / LIVE_TIME
+                max_ = max(max_, 0)
+                live_out = math.sin(self._live * self._live) * max_
+            self.ph_fluct.material.live = live_out * POWER
+            return
+
+    def _preDrawEffect(self):
+        """
+        \xd0\xbf\xd0\xb5\xd1\x80\xd0\xb5\xd0\xb4\xd0\xb0\xd1\x87\xd0\xb0 \xd0\xbf\xd0\xb0\xd1\x80\xd0\xb0\xd0\xbc\xd0\xb5\xd1\x82\xd1\x80\xd0\xbe\xd0\xb2 \xd0\xb2 \xd1\x88\xd0\xb5\xd0\xb9\xd0\xb4\xd0\xb5\xd1\x80. \xd0\xb2\xd1\x81\xd0\xb5 \xd0\xba\xd0\xbe\xd1\x81\xd1\x82\xd0\xb8 \xd1\x80\xd0\xb0\xd1\x81\xd1\x87\xd0\xb8\xd1\x82\xd1\x8b\xd0\xb2\xd0\xb0\xd1\x8e\xd1\x82\xd1\x81\xd1\x8f \xd0\xb2 \xd1\x81\xd0\xb8\xd1\x81\xd1\x82\xd0\xb5\xd0\xbc\xd0\xb5 \xd0\xba\xd0\xbe\xd0\xbe\xd1\x80\xd0\xb4\xd0\xb8\xd0\xbd\xd0\xb0\xd1\x82 \xd0\xba\xd0\xb0\xd0\xbc\xd0\xb5\xd1\x80\xd1\x8b
+        
+        """
+        cam_inv = Math.Matrix(BigWorld.camera().invViewMatrix)
+        cam_inv.invert()
+        if not self.target_model:
+            return
+        back_matrix = Matrix(self.target_model.matrix)
+        back_matrix.postMultiply(cam_inv)
+        back_pos = back_matrix.translation + (0, 0.5, 0)
+        pos2d = self.tmpShader.calcWorldToScreen(back_pos, True)
+        pos2dLeft = self.tmpShader.calcWorldToScreen(back_pos + (RADIUS, 0, 0), True)
+        self.ph_fluct.material.screenRadius = pos2d.distTo(pos2dLeft)
+        self.ph_fluct.material.screenPoint = ((pos2d.x + 1) * 0.5,
+         (1 - pos2d.y) * 0.5,
+         0,
+         0)
+
+    def enable(self, model, callback):
+        self._callback = callback
+        self.target_model = model
+        self._live = 0.0
+        if self._disable_id:
+            BigWorld.cancelCallback(self._disable_id)
+        self._disable_id = BigWorld.callback(LIVE_TIME, self.disable)
+        self._pp_effect_id = PostProcessing.addPPChainEffects(self.pp_effect)
+        self._enabled = True
+
+    def disable(self):
+        if self._disable_id:
+            BigWorld.cancelCallback(self._disable_id)
+        self._enabled = False
+        self._callback = None
+        self.target_model = None
+        if self._pp_effect_id:
+            PostProcessing.removePPChain(self._pp_effect_id)
+            self._pp_effect_id = None
+        return
+
+
+fluctuation_eff = AreaFluctuationEff()

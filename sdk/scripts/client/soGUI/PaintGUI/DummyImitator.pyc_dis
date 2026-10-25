@@ -1,0 +1,310 @@
+# Embedded file name: ./client/soGUI/PaintGUI/DummyImitator.py
+import traceback
+import ResMgr
+import BigWorld
+import StalkerModel
+import utils
+from Fabric.FaceController import FaceController
+from Fabric.FaceSettings import LimitsConfigurator as LC
+from EquipSlotsConfigs import EquipSlotTypes as EST
+from Items import ItemsCatalog
+from DressInterface import DressInterface, VISOR_OPEN_LOOP_ACTION
+import ItemsUtils
+import UCManager
+import functools
+import clweapon
+from weapon_attachment import WeaponAttachment
+
+class DummyImitator(object, DressInterface):
+
+    def __init__(self):
+        DressInterface.__init__(self)
+        self._position = None
+        self.model = None
+        self.on_model_updated = lambda : None
+        self._weapon = None
+        self._has_look = False
+        self._weapon_item = None
+        return
+
+    def set_look(self, equipped_armor, equip_modes, personality, carrying_items):
+        self.CarryingItems = carrying_items
+        self._prefered_equip_modes = equip_modes
+        self.EquippedArmor = utils.pyFixedToNativePythonType(equipped_armor)
+        self.personality = personality
+        self._weapon_item = None
+        self._has_look = True
+        self._update_model()
+        return
+
+    def clear(self):
+        self._has_look = False
+
+    def _update_model(self):
+        self._saved_action_queue = None
+        if self.model:
+            self._saved_action_queue = ResMgr.DataSection('saved_action_queue')
+            self.model.saveActionQueue(self._saved_action_queue)
+        self.colorDelegates = []
+        items = self.EquippedArmor.values()
+        for item_data in items:
+            if item_data['itemID'] <= 0:
+                continue
+            complex_item = ItemsUtils.GetComplexItemByID(self, item_data['itemID'])
+            for sub_item in complex_item['itemList']:
+                subitem_param = ItemsCatalog.GetItemParam(sub_item['itemType'])
+                if item_data['itemType'] in subitem_param.get('ParentItemTypes', []):
+                    self.colorDelegates.append(sub_item['itemType'])
+
+        player_models_data = StalkerModel.compose_player_model_list(self)
+        self.model = BigWorld.Model(*player_models_data['models'])
+        self.model.megaLodInOutDistance = (24, 31)
+        self.model.basem_skinned = 'LOD_personage'
+        self.model.position = self._position
+        if self._weapon_item:
+            self._weapon = clweapon.ClWeapon(self._weapon_item)
+            self.model.Rhand = self._weapon.getModel()
+        else:
+            self._weapon = None
+        self.update_colors()
+        StalkerModel.update_hairs(self, totally_hidden_slots=player_models_data['hidden_slots'])
+        self.on_model_updated()
+        return
+
+    def on_model_in_world(self):
+        new_actions = set(['gesture_weapon_shoulder_loop' if self._weapon_item else 'idle_0_stay_bored'])
+        if self.EquipModes & 1 << EST.MODE_TUCK:
+            tuck_animation = ItemsUtils.get_tuck_animation(self)
+            if tuck_animation:
+                new_actions.add(tuck_animation)
+        if self.EquipModes & 1 << EST.MODE_VISOR:
+            new_actions.add(VISOR_OPEN_LOOP_ACTION)
+        if self._saved_action_queue:
+            old_actions = set([ act['name'].asString for act in self._saved_action_queue.values() if act['name'].asString and act['finish'].asFloat == -1 ])
+            self.model.restoreActionQueue(self._saved_action_queue)
+        else:
+            old_actions = set()
+        self._saved_action_queue = None
+        stop_actions = old_actions - new_actions
+        run_actions = new_actions - old_actions
+        for action_string in stop_actions:
+            action = getattr(self.model, action_string, None)
+            if action:
+                action.stop()
+
+        for action_string in run_actions:
+            action = getattr(self.model, action_string, None)
+            if action:
+                action()
+
+        StalkerModel.update_filter_mask(self)
+        try:
+            face_controller = FaceController.create_controller(self, justOnePythonDraw=True)
+            StalkerModel.apply_face(self, face_controller)
+        except:
+            traceback.print_stack()
+            traceback.print_exc()
+
+        return
+
+    def update_colors(self):
+
+        def on_icon_loaded(dye, image_id, feed_name, texture):
+            if self._has_look:
+                StalkerModel.setFeed(self.model, None, dye, feed_name, texture)
+            return
+
+        def paint_item(model, dye, complex_item):
+            paint_data = ItemsUtils.getItemColorise(complex_item)
+            if paint_data:
+                colors, camo_id, _ = paint_data
+                color_data = {'R': colors[0:3] + (255,),
+                 'G': colors[3:6] + (255,),
+                 'B': colors[6:9] + (255,),
+                 'A': colors[9:12] + (255,)}
+                StalkerModel.setColoredTexture(model, dye, camo_id, color_data)
+            emblem = ItemsUtils.get_item_emblem_unsafe(complex_item)
+            if emblem:
+                if ItemsUtils.is_textured_emblem(emblem):
+                    StalkerModel.set_dye(model, dye, emblem)
+                else:
+                    UCManager.ucmanager.loadImg(emblem, functools.partial(on_icon_loaded, dye))
+
+        models = set(self.model.sources)
+
+        def apply_item(item):
+            if ItemsUtils.is_sub_item(item):
+                item_type = item['itemType']
+            else:
+                item_type = item['complexItemType']
+            tint = StalkerModel.getItemTints(item_type)
+            if not tint:
+                return
+            item_param = ItemsCatalog.GetItemParam(item_type)
+            item_models = set(item_param.get('ModelNames', {}).values())
+            alt_models = item_param.get('AlternativeModelsList', [])
+            for mode_, ams in alt_models:
+                item_models |= set(ams)
+
+            if not item_models & models:
+                return
+            for dye, tint_name in tint.items():
+                StalkerModel.setTint(self.model, dye, tint_name)
+                paint_item(self.model, dye, item)
+
+        for item_data in self.EquippedArmor.values():
+            item_id = item_data['itemID']
+            if item_id <= 0:
+                continue
+            item = ItemsUtils.GetComplexItemByID(self, item_id)
+            for sub_item in item['itemList']:
+                apply_item(sub_item)
+
+            apply_item(item)
+
+        if self._weapon_item:
+
+            def apply_color(complex_item):
+                if ItemsUtils.is_sub_item(complex_item):
+                    item_id = complex_item['itemID']
+                    inconstant_params = ItemsUtils.GetSubItemInconstanParams(complex_item)
+                else:
+                    item_id = complex_item['complexItemID']
+                    inconstant_params = ItemsUtils.GetComplexItemInconstanParams(complex_item)
+                colorise_a = inconstant_params.get(ItemsCatalog.INC_COLORISE_A, 0)
+                colorise_b = inconstant_params.get(ItemsCatalog.INC_COLORISE_B, 0)
+                attach = self._weapon.findAttach(item_id)
+                WeaponAttachment.update_color(attach.getItemType(), (colorise_a, colorise_b), attach.getModel())
+
+            apply_color(self._weapon_item)
+            for subitem in self._weapon_item.get('itemList', []):
+                apply_color(subitem)
+
+    def compile_hash(self):
+        result = []
+        for item in self.VisualArmor.itervalues():
+            if item['itemID'] > 0:
+                result.append(item['itemID'])
+
+        if self._weapon_item:
+            result.append(self._weapon_item['complexItemID'])
+        return hash(tuple(result))
+
+    def put_item_on(self, complex_item):
+        """ \xd0\xb2\xd0\xbe\xd0\xb7\xd0\xb2\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd1\x80\xd0\xb5\xd0\xb7\xd1\x83\xd0\xbb\xd1\x8c\xd1\x82\xd0\xb0\xd1\x82 \xd0\xb8 \xd1\x81\xd0\xbf\xd0\xb8\xd1\x81\xd0\xbe\xd0\xba \xd0\xbf\xd1\x80\xd0\xb5\xd0\xb4\xd0\xbc\xd0\xb5\xd1\x82\xd0\xbe\xd0\xb2, \xd0\xba\xd0\xbe\xd1\x82\xd0\xbe\xd1\x80\xd1\x8b\xd0\xb5 \xd0\xbf\xd1\x80\xd0\xb8\xd1\x88\xd0\xbb\xd0\xbe\xd1\x81\xd1\x8c \xd1\x81\xd0\xb1\xd1\x80\xd0\xbe\xd1\x81\xd0\xb8\xd1\x82\xd1\x8c """
+        item_type = complex_item['complexItemType']
+        item_param = ItemsCatalog.GetItemParam(item_type)
+        if ItemsCatalog.GetItemClass(item_type) == ItemsCatalog.WEAPON:
+            off_weapon = self._weapon_item
+            self._weapon_item = complex_item
+            self._update_model()
+            return (True, [off_weapon] if off_weapon else [])
+        elif not self.can_put_on_item(complex_item):
+            return (False, [])
+        else:
+            slot_types = item_param.get('SlotType')
+            if not slot_types:
+                return (False, [])
+            undress_items = self.get_items_slots(slot_types)
+            if undress_items:
+                if not ItemsUtils.can_items_be_replaced((it['complexItemType'] for it in undress_items), item_type):
+                    return (False, [])
+                clear_slots = set(slot_types)
+                for undress_item in undress_items:
+                    item_param = ItemsCatalog.GetItemParam(undress_item['complexItemType'])
+                    clear_slots |= set(item_param['SlotType'])
+
+                EST.clear_multiple_slots(self, list(clear_slots))
+            EST.set_multiple_slots_data(self, slot_types, [{'itemID': complex_item['complexItemID'],
+              'itemType': item_type}] * len(slot_types))
+            self._update_model()
+            return (True, undress_items)
+
+    def put_item_off(self, complex_item):
+        """ \xd0\xb2\xd0\xbe\xd0\xb7\xd0\xb2\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd1\x80\xd0\xb5\xd0\xb7\xd1\x83\xd0\xbb\xd1\x8c\xd1\x82\xd0\xb0\xd1\x82 \xd0\xb8 \xd1\x81\xd0\xbf\xd0\xb8\xd1\x81\xd0\xbe\xd0\xba \xd0\xbf\xd1\x80\xd0\xb5\xd0\xb4\xd0\xbc\xd0\xb5\xd1\x82\xd0\xbe\xd0\xb2, \xd0\xba\xd0\xbe\xd1\x82\xd0\xbe\xd1\x80\xd1\x8b\xd0\xb5 \xd0\xbf\xd1\x80\xd0\xb8\xd1\x88\xd0\xbb\xd0\xbe\xd1\x81\xd1\x8c \xd1\x81\xd0\xb1\xd1\x80\xd0\xbe\xd1\x81\xd0\xb8\xd1\x82\xd1\x8c """
+        item_type = complex_item['complexItemType']
+        item_param = ItemsCatalog.GetItemParam(item_type)
+        if ItemsCatalog.GetItemClass(item_type) == ItemsCatalog.WEAPON:
+            off_weapon = self._weapon_item
+            self._weapon_item = None
+            self._update_model()
+            return (True, [off_weapon] if off_weapon else [])
+        else:
+            slot_types = item_param['SlotType']
+            if not self.can_put_off_items([complex_item]):
+                return (False, [])
+            EST.clear_multiple_slots(self, slot_types)
+            self._update_model()
+            return (True, [])
+            return
+
+    @property
+    def position(self):
+        return self._position
+
+    @position.setter
+    def position(self, value):
+        self._position = value
+        if self.model:
+            self.model.position = value
+
+    @property
+    def face_limits_type(self):
+        return LC.PLAYER
+
+    @property
+    def VisualArmor(self):
+        return self.EquippedArmor
+
+    @property
+    def VisualColoriseEmblems(self):
+        return self.coloriseEmblems
+
+    @property
+    def VisualColorDelegates(self):
+        return getattr(self, 'colorDelegates', [])
+
+    @property
+    def VisualEquipModes(self):
+        return self.EquipModes
+
+    def apply_ignore_bones_items(self):
+        """ \xd0\xbf\xd0\xbe\xd0\xb7\xd0\xb2\xd0\xbe\xd0\xbb\xd1\x8f\xd1\x82\xd1\x8c \xd0\xbf\xd1\x80\xd0\xb5\xd0\xb4\xd0\xbc\xd0\xb5\xd1\x82\xd0\xb0\xd0\xbc \xd0\xbd\xd0\xb0 \xd0\xbb\xd0\xb8\xd1\x86\xd0\xb5 \xd0\xbc\xd0\xb5\xd0\xbd\xd1\x8f\xd1\x82\xd1\x8c \xd0\xbb\xd0\xb8\xd1\x86\xd0\xbe """
+        return True
+
+    @property
+    def EquipModes(self):
+        result = self._prefered_equip_modes
+        boots_type = self.EquippedArmor['shoes']['itemType']
+        if boots_type > 0:
+            tuck_force = ItemsCatalog.GetItemParam(boots_type).get('TuckForce', False)
+            if tuck_force:
+                result |= 1 << EST.MODE_TUCK
+        hood_block = False
+        for equipped_type in ItemsUtils.get_equipped_item_types(self):
+            item_params = ItemsCatalog.GetItemParam(equipped_type)
+            if item_params.get('LockVisor', False):
+                result |= 1 << EST.MODE_VISOR
+            for slot_type in item_params.get('SlotType', []):
+                if slot_type in EST._hood_slots:
+                    hood_block = True
+
+        if hood_block:
+            result &= ~(1 << EST.MODE_HOOD)
+        return result
+
+    @EquipModes.setter
+    def EquipModes(self, value):
+        pass
+
+    @property
+    def ActiveWeaponSet2(self):
+        return {}
+
+    @property
+    def ActiveGadgetList(self):
+        return []
+
+    @property
+    def ActiveArtifactList(self):
+        return []

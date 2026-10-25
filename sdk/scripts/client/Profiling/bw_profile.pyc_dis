@@ -1,0 +1,168 @@
+# Embedded file name: ./client/Profiling/bw_profile.py
+import socket
+import cPickle
+import sys
+import zlib
+import time
+import BigWorld
+
+class RemoteResourceCounter:
+    address = '127.0.0.1'
+    port = 61250
+    fSendDelay = 0.5
+    fTimeoutSec = 0.5
+    fSendTimeout = 3.0
+    fFailConnectMultipler = 3.0
+    bCompress = True
+    bPrinting = False
+    bAdvancedPrinting = False
+    iHeaderSize = 6
+
+    def __init__(self):
+        self._sending = False
+        self._connected = False
+        self._sock = None
+        self._c_budgets = BigWorld.PyBudget()
+        self._last_time = time.time()
+        return
+
+    def startSending(self):
+        self._sending = True
+        try:
+            self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self._sock.settimeout(self.fTimeoutSec)
+        except:
+            self._sending = False
+            self._connected = False
+            msg = '[RemoteResourceCounter]: Error creating socket: ' + str(sys.exc_info()[0]) + str(sys.exc_info()[1])
+            print msg
+            raise Exception(msg)
+
+        BigWorld.callback(self.fSendDelay, self._sendCallback)
+
+    def stopSending(self):
+        self._sending = False
+        try:
+            if self._connected:
+                try:
+                    self._sock.shutdown(0)
+                except:
+                    if self.bAdvancedPrinting:
+                        print 'Err shutdown'
+
+                self._sock.close()
+            self._sock = None
+        except:
+            print '[RemoteResourceCounter]: Error closing __socket, something gonna wrong ', sys.exc_info()[0], sys.exc_info()[1]
+
+        return
+
+    def _estabilishConnection(self):
+        if not self._sending:
+            return
+        try:
+            self._sock.connect((self.address, self.port))
+            self._connected = True
+            self._last_time = time.time()
+        except:
+            self._connected = False
+            exception_info = sys.exc_info()
+            try:
+                self._closeConnection()
+            except:
+                pass
+
+            if self.bPrinting:
+                if not self.bAdvancedPrinting:
+                    print '[RemoteResourceCounter]: Failed to setup connection'
+                else:
+                    print '[RemoteResourceCounter]: Failed to setup connection:\n\t\t', exception_info[0], exception_info[1]
+            return False
+
+        return True
+
+    def _closeConnection(self):
+        if self.bAdvancedPrinting:
+            print 'Close connection'
+        self._connected = False
+        try:
+            self._sock.shutdown(0)
+        except:
+            if self.bAdvancedPrinting:
+                print 'Err shutdown'
+
+        self._sock.close()
+        self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._sock.settimeout(self.fTimeoutSec)
+
+    def _sendCallback(self):
+        if not self._sending:
+            return
+        multipler = 1
+        if not self._connected:
+            result = self._estabilishConnection()
+            if not result:
+                multipler = self.fFailConnectMultipler
+            else:
+                multipler = 1
+        if self._connected:
+            self.sendData()
+        BigWorld.callback(self.fSendDelay * multipler, self._sendCallback)
+
+    def getDataLength(self, data):
+        data_size_str = str(len(data))
+        while len(data_size_str) < self.iHeaderSize:
+            data_size_str = '0' + data_size_str
+
+        return data_size_str
+
+    def sendData(self):
+        if not self.bPrinting:
+            self.bAdvancedPrinting = False
+        dc = self._c_budgets.getResourceDict()
+        data = cPickle.dumps(dc)
+        bCompressed = False
+        compress_ratio = 0.0
+        if self.bCompress:
+            uncompressed_size = len(data)
+            compressed_data = zlib.compress(data)
+            compressed_size = len(compressed_data)
+            if compressed_size < uncompressed_size:
+                compress_ratio = float(len(data)) / float(len(compressed_data))
+                data_size = len(compressed_data)
+                data_size_str = str(data_size)
+                data = 'C1' + self.getDataLength(compressed_data) + compressed_data
+                bCompressed = True
+            else:
+                data = 'C0' + self.getDataLength(data) + data
+        else:
+            data = 'C0' + self.getDataLength(data) + data
+        bError = False
+        try:
+            bytesSended = self._sock.send(data)
+            if self.bAdvancedPrinting:
+                print 'sended', data[:12]
+            self._last_time = time.time()
+        except:
+            bError = True
+            if sys.exc_info()[0] == socket.error:
+                self._closeConnection()
+                if self.bAdvancedPrinting:
+                    print 'Socket error occured', sys.exc_info()[0], sys.exc_info()[1]
+            if sys.exc_info()[0] == socket.timeout:
+                if time.time() - self._last_time > self.fSendTimeout:
+                    if self.bPrinting:
+                        print '[RemoteResourceCounter]: Timeout sending, abort connection'
+                    self._closeConnection()
+
+        additional_string = ''
+        if bCompressed:
+            additional_string = 'compress ratio[' + str(compress_ratio) + ']'
+        if self.bPrinting:
+            if not bError:
+                print '[RemoteResourceCounter]: Sended total [', bytesSended, '] bytes, ', additional_string
+            else:
+                additional_string = ''
+                if self.bAdvancedPrinting:
+                    additional_string = str(sys.exc_info()[0]) + ' ' + str(sys.exc_info()[1])
+                print '[RemoteResourceCounter] Send error ', additional_string

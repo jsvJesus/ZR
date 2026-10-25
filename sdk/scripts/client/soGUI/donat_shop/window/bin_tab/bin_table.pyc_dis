@@ -1,0 +1,310 @@
+# Embedded file name: ./client/soGUI/donat_shop/window/bin_tab/bin_table.py
+from functools import partial
+import ItemsUtils
+import BigWorld
+import GUI
+from ui.panel import Panel
+from ui.button import Button
+from ui.text import Text, Align
+from ui.transform import pixel_params, clip_params
+from soGUI.donat_shop.window.win_ui.scroll_content import ScrollContent, ScrollPart
+from soGUI.donat_shop.window.win_ui.scroll_bar import ScrollBar
+from soGUI.donat_shop.models.bin_model import EventType as BinET
+from bin_counter import BinCounter
+from soGUI.donat_shop.window import element
+from soGUI.StorehouseGUI.ShopUtils import MultilineText
+from soGUI.donat_shop.models.shop_model import get_currency_name
+import colorCodes as cc
+import sounds_manager as sm
+
+class BinLine:
+
+    def __init__(self, component, bin_model, shop_model):
+        self.component = component
+        self._item_type = None
+        self._bin_model = bin_model
+        self._bin_model.add_listener(self._on_binmodel_event)
+        self._shop_model = shop_model
+
+        def create_default_comp():
+            comp = GUI.Window()
+            comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+            comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+            comp.ha, comp.va = ('LEFT', 'TOP')
+            self.component.addChild(comp)
+            return comp
+
+        self._image = create_default_comp()
+        self._image.position = (0, 0, 0.5)
+        self._image.materialFX = 'BLEND'
+        self._counter = BinCounter(self.component, 'counter', bin_model, False)
+        hm = pixel_params(0, 0, 0, 0)
+        vm = clip_params((0, 1))
+        self._counter.transform.set_mixed_mode(hm, vm)
+        comp = GUI.Window()
+        comp.materialFX = 'SOLID'
+        comp.hpm, comp.vpm = ('PIXEL', 'CLIP')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('LEFT', 'CENTER')
+        comp.position = (0, 0, 0.5)
+        self._text = MultilineText(comp, u'', 'Shop_18', alignment='LEFT')
+        self._text.set_color(cc.active_rgba)
+        self.component.addChild(comp)
+        btn = Button(self.component, 'btn')
+        btn.transform.set_pixel_mode((1, 0.5), (1, 0.5), (18, 18))
+        btn.set_visual('soGUI/frame/buttons/bincross.json')
+        btn.on_click = self._on_clear_click
+        btn._frame.component.filterType = 'LINEAR'
+        self._cost = Text(self.component, 'cost')
+        self._cost.set_color(cc.active_rgba)
+        self._cost.set_alignment(Align.Right, Align.Center)
+        hm = pixel_params(0, 0, 0, 0)
+        vm = clip_params((0, 1))
+        self._cost.transform.set_mixed_mode(hm, vm)
+        return
+
+    def _on_binmodel_event(self, event_type, data):
+        if event_type == BinET.OnCountChanged:
+            if data and self._item_type and self._item_type == data['item_type']:
+                self._update_count()
+        elif event_type == BinET.PricesInvalidated:
+            self._update_count()
+
+    def _on_clear_click(self):
+        sm.playSound('ui/inventory/item_drop')
+        self._bin_model.clear_item_type(self._item_type)
+
+    def align_content(self):
+        pixel_ratio = self._counter.transform.pixel_ratio
+        btn = self.component.btn.script
+        height = self.component.height
+        image_width = height
+        text_width = height * 3
+        counter_width = height * 1
+        cost_width = height * 0.7
+        btn_mode = btn.transform._mode[1:]
+        btn_width = btn_mode[2][0] * pixel_ratio
+        self.component.btn.script.transform.apply_mode()
+        free_space = self.component.width - image_width - text_width - counter_width - cost_width - btn_width
+        space3 = free_space * 0.1
+        space0 = free_space * 0.15
+        space1 = free_space * 0.3
+        space4 = free_space * 0.15
+        space2 = free_space - space0 - space1 - space3 - space4
+        raise space2 >= 0 or AssertionError
+        comp = self._image
+        comp.width, comp.height = image_width, height
+        pos_x = image_width + space0
+        comp = self._text.component
+        comp.position[0] = pos_x
+        comp.width, comp.height = text_width, height
+        self._text.do_reposition()
+        comp.height = self._text.height
+        pos_x += text_width + space1
+        mode = self._counter.transform._mode[1:]
+        hm, vm = mode
+        hm = list(hm)
+        hm[3] = height / pixel_ratio
+        hm[4] = pos_x / pixel_ratio
+        self._counter.transform.set_mixed_mode(tuple(hm), vm)
+        pos_x += cost_width + space2
+        mode = self._cost.transform._mode[1:]
+        hm, vm = mode
+        hm = list(hm)
+        hm[3] = height / pixel_ratio
+        hm[4] = pos_x / pixel_ratio
+        self._cost.transform.set_mixed_mode(tuple(hm), vm)
+        btn_mode[3] = (-space4 / pixel_ratio, 0)
+        btn.transform.set_pixel_mode(*btn_mode)
+
+    def _on_icon_load(self, item_type, icon):
+        if self._item_type != item_type:
+            return
+        self._image.texture = icon.values()[0]
+
+    def set_type(self, item_type):
+        if item_type == self._item_type:
+            return
+        else:
+            self._item_type = item_type
+            self._counter.item_type = item_type
+            if not item_type:
+                self.component.visible = False
+                return
+            self.component.visible = True
+            icon_name = ItemsUtils.GetIconShopName(None, item_type=item_type)
+            BigWorld.loadResourceListBG([icon_name], partial(self._on_icon_load, item_type))
+            item_name = ItemsUtils.get_shop_name(self._item_type) or ItemsUtils.GetItemName(self._item_type, fGetShortName=True)
+            self._text.set_text(item_name)
+            self._update_count()
+            return
+
+    def _update_count(self):
+        item_data = self._bin_model.get_item_type(self._item_type)
+        if item_data:
+            is_valid = 'original_cost' in item_data
+            cost = is_valid and item_data['actual_cost'] * item_data['bincount']
+            text = u'{0} {1}'.format(cost, get_currency_name(self._shop_model.currency))
+        else:
+            text = u'???'
+        self._cost.set_text(text)
+
+
+class Lines(ScrollPart):
+
+    def __init__(self, component, bin_model, shop_model):
+        ScrollPart.__init__(self)
+        self._bin_model = bin_model
+        self._shop_model = shop_model
+        self.component = component
+        self.component.script = self
+        self._row_height = 0
+        self._visible_lines = {}
+        self._invisible_lines = []
+
+    def on_show(self):
+        self.mark_align_content()
+
+    def mark_align_content(self):
+        element.add_pre_gui_callback(self._align_content)
+
+    def on_hide(self):
+        for line in self._visible_lines.itervalues():
+            line.component.visible = False
+            line.set_type(None)
+            self._invisible_lines.append(line)
+
+        self._visible_lines.clear()
+        return
+
+    def set_row_height(self, height):
+        self._row_height = height
+        self.mark_align_content()
+
+    def on_visible_borders_changed(self, visible, start, end):
+        self.mark_align_content()
+
+    def _assert_lines_count(self, count):
+
+        def create_line():
+            comp = GUI.Window()
+            comp.colour = (150, 150, 100, 255)
+            comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+            comp.ha, comp.va = ('LEFT', 'TOP')
+            comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+            comp.materialFX = 'SOLID'
+            comp.position = (0, 0, 0.5)
+            comp.visible = False
+            self.component.addChild(comp)
+            return BinLine(comp, self._bin_model, self._shop_model)
+
+        while len(self._visible_lines) + len(self._invisible_lines) < count:
+            self._invisible_lines.append(create_line())
+
+    def _align_content(self):
+        line_range = None
+        if self._row_height and self._end_local > self._start_local:
+            start_index = max(0, int(self._start_local / self._row_height))
+            end_index = int(self._end_local / self._row_height)
+            end_index = min(end_index, self._bin_model.get_size() - 1)
+            line_range = (start_index, end_index)
+        lines_count = line_range[1] - line_range[0] + 1 if line_range else 0
+        self._assert_lines_count(lines_count)
+        needed_types = set()
+        if line_range:
+            for index in range(line_range[0], line_range[1] + 1):
+                item_type = self._bin_model.get_item(index)
+                if item_type:
+                    needed_types.add(item_type)
+
+        visible_types = set(self._visible_lines)
+        free_types = visible_types - needed_types
+        for i in range(lines_count):
+            index = line_range[0] + i
+            item_type = self._bin_model.get_item(index)
+            pos_y = index * self._row_height
+            if item_type in visible_types:
+                line = self._visible_lines[item_type]
+            elif free_types:
+                pop_item_type = free_types.pop()
+                line = self._visible_lines[pop_item_type]
+                del self._visible_lines[pop_item_type]
+            else:
+                line = self._invisible_lines.pop()
+            self._visible_lines[item_type] = line
+            comp = line.component
+            comp.visible = True
+            comp.position[1] = pos_y
+            line.set_type(item_type)
+            if (comp.width, comp.height) != (self.component.width, self._row_height):
+                comp.width, comp.height = self.component.width, self._row_height
+                line.align_content()
+
+        while free_types:
+            item_type = free_types.pop()
+            line = self._visible_lines[item_type]
+            del self._visible_lines[item_type]
+            line.component.visible = False
+            line.set_type(None)
+            self._invisible_lines.append(line)
+
+        return
+
+
+class BinTable(Panel):
+
+    def __init__(self, component, bin_model, shop_model):
+        Panel.__init__(self, component, 'bintable')
+        self.change_interseption(intercept_moving=True)
+        self._bin_model = bin_model
+        self._bin_model.add_listener(self._on_binmodel_event)
+        view = Panel(self.component, 'view')
+        view.transform.set_clip_mode((0, 0, 1, 1), pixel_anchors=(0, 0, -32, 0))
+        content = ScrollContent(view.component, 'content')
+        cpx = clip_params((0, 1))
+        cpy = pixel_params(0, 0, 0)
+        content.transform.set_mixed_mode(cpx, cpy)
+        comp = GUI.Window()
+        comp.materialFX = 'SOLID'
+        self._lines = Lines(comp, bin_model, shop_model)
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('LEFT', 'TOP')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.height = 0
+        comp.position = (0, 0, 0.5)
+        content.component.addChild(comp, 'lines')
+        self._scroll = ScrollBar(content, self.component, 'scroll')
+        cpx = pixel_params(0.5, 1, 14, -16)
+        cpy = clip_params((0, 1))
+        self._scroll.transform.set_mixed_mode(cpx, cpy)
+
+    def on_show(self):
+        self._lines.on_show()
+
+    def on_hide(self):
+        self._lines.on_hide()
+
+    def align_content(self):
+        view_comp = self.component.view
+        content = view_comp.content
+        line_height = view_comp.height * (1.0 / 6)
+        self._lines.set_row_height(line_height)
+        self._lines.component.width = view_comp.width
+        self._lines.component.height = line_height * self._bin_model.get_size()
+        cpx, cpy = ScrollContent.calculate_mode(content, view_comp, self._lines.component.height)
+        content.script.transform.set_mixed_mode(cpx, cpy)
+        self._lines.mark_align_content()
+
+    def _on_binmodel_event(self, event_type, data):
+        if event_type == BinET.OnSizeChanged:
+            self.align_content()
+
+    def on_size_changed(self):
+        Panel.on_size_changed(self)
+        self.align_content()
+
+    def handleMouseEvent(self, component, event):
+        result = Panel.handleMouseEvent(self, component, event)
+        if event.dz:
+            self._scroll.move_abs(-event.dz)
+        return result

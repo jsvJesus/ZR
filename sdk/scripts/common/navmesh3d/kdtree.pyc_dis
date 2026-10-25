@@ -1,0 +1,105 @@
+# Embedded file name: ./common/navmesh3d/kdtree.py
+from random import choice
+from Math import Vector3
+from navmesh_math import Triangle, closer_distance
+from collections import defaultdict
+
+class KdTree:
+
+    def __init__(self, s_points, s_triangles):
+        id_to_point = {}
+        for p in s_points:
+            id_to_point[p.id] = p
+
+        id_to_striangle = {}
+        for t in s_triangles:
+            id_to_striangle[t.id] = t
+
+        self._point_to_triangles = defaultdict(list)
+        id_to_triangle = {}
+        for s_triangle in s_triangles:
+            triangle = Triangle(s_triangle.p0.v, s_triangle.p1.v, s_triangle.p2.v, s_triangle.pp.v, s_triangle.n)
+            id_to_triangle[s_triangle.id] = triangle
+            self._point_to_triangles[tuple(s_triangle.p0.v)].append(triangle)
+            self._point_to_triangles[tuple(s_triangle.p1.v)].append(triangle)
+            self._point_to_triangles[tuple(s_triangle.p2.v)].append(triangle)
+            self._point_to_triangles[tuple(s_triangle.pp.v)].append(triangle)
+
+        for s_triangle in s_triangles:
+            triangle = id_to_triangle[s_triangle.id]
+            for i in range(len(s_triangle.neigbs)):
+                neigb = id_to_triangle[s_triangle.neigbs[i]]
+                s_portal = s_triangle.portals[i]
+                portal = (id_to_point[s_portal[0]].v, id_to_point[s_portal[1]].v)
+                triangle.add_neigbour(neigb, portal, s_triangle.costs[i])
+
+        self._kdtree = self._build_tree(map(Vector3, self._point_to_triangles.keys()), 0)
+
+    def _build_tree(self, points, depth):
+        if not depth < 20:
+            raise AssertionError
+            n = len(points)
+            return n <= 0 and None
+        else:
+            axis = depth % 3
+            sorted_points = sorted(points, key=lambda p: p[axis])
+            return {'point': sorted_points[n / 2],
+             'left': self._build_tree(sorted_points[:n / 2], depth + 1),
+             'right': self._build_tree(sorted_points[n / 2 + 1:], depth + 1)}
+
+    def _search(self, root, point, depth):
+        if root is None:
+            return
+        else:
+            axis = depth % 3
+            if point[axis] < root['point'][axis]:
+                next_branch = root['left']
+                opposite_branch = root['right']
+            else:
+                next_branch = root['right']
+                opposite_branch = root['left']
+            best = closer_distance(point, self._search(next_branch, point, depth + 1), root['point'])
+            plane_dist = point[axis] - root['point'][axis]
+            if point.distSqrTo(best) > plane_dist * plane_dist:
+                best = closer_distance(point, self._search(opposite_branch, point, depth + 1), best)
+            return best
+
+    def search_closest(self, point):
+        closest_point = self._search(self._kdtree, point, 0)
+        nearest_dist = None
+        nearest_triange_and_point = (None, None)
+        if closest_point:
+            for t in self._point_to_triangles[tuple(closest_point)]:
+                dist, p = t.to_point_distance(point)
+                if nearest_dist is None or nearest_dist > dist:
+                    nearest_dist = dist
+                    nearest_triange_and_point = (t, p)
+
+        return nearest_triange_and_point
+
+    def get_random_point(self, position, distance):
+        triangle, point = self.search_closest(position)
+        dist = 0
+        point = triangle.pivot
+
+        def next_triangle(triangle):
+            valid_neigbs = []
+            for neigb in triangle.neigbours:
+                d = neigb.pivot.distTo(point)
+                if d > dist:
+                    valid_neigbs.append((d, neigb))
+
+            if valid_neigbs:
+                return choice(valid_neigbs)
+
+        while True:
+            result = next_triangle(triangle)
+            if not result:
+                break
+            new_dist, new_triangle = result
+            if new_dist > distance:
+                break
+            raise new_dist > dist or AssertionError
+            dist, triangle = new_dist, new_triangle
+
+        return triangle.pivot

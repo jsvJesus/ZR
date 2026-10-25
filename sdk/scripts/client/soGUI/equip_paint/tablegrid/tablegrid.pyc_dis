@@ -1,0 +1,373 @@
+# Embedded file name: ./client/soGUI/equip_paint/tablegrid/tablegrid.py
+import BWPersonality
+import BigWorld
+from utils import Tickable
+import Keys
+from utils import Listenable
+from math_bw import clamp
+from math import ceil, floor
+import GUI
+from Helpers.PyGUI.PyGUIBase import Interceptor
+from table_model import EventType as ModelET
+from collections import defaultdict
+from Helpers.PyGUI import Utils
+from soGUI.donat_shop.window.auxwins.auxwins import Auxwins
+from sounds_manager import playSound
+
+class Cell(Interceptor, Listenable):
+
+    def __init__(self, component):
+        Listenable.__init__(self)
+        Interceptor.__init__(self, component)
+        self._item = None
+        return
+
+    def handleMouseButtonEvent(self, comp, event):
+        if event.isKeyDown() and event.key == Keys.KEY_LEFTMOUSE:
+            self._on_mouse_down()
+        return True
+
+    def handleMouseEnterEvent(self, comp):
+        tttext = self.get_tooltip_text()
+        if tttext:
+            Auxwins.show_tooltip(tttext)
+        playSound('ui/equip_modification/soft_hover')
+        return True
+
+    def handleMouseLeaveEvent(self, comp):
+        Auxwins.hide_tooltip()
+        return True
+
+    def handleMouseEvent(self, comp, event):
+        return False
+
+    def get_tooltip_text(self):
+        return None
+
+    def _on_mouse_down(self):
+        pass
+
+    def set_item(self, item):
+        if self._item:
+            self._item.remove_listener(self._on_itemdata_event)
+        self._item = item
+        if self._item:
+            self._item.add_listener(self._on_itemdata_event)
+
+    def _on_itemdata_event(self, event_type, data):
+        pass
+
+
+class HandlerET:
+    OnRatioRequested, = ((r, 'equiphandler') for r in range(1))
+
+
+class Handler(Interceptor, Tickable, Listenable):
+
+    def __init__(self, component):
+        Tickable.__init__(self)
+        Interceptor.__init__(self, component)
+        Listenable.__init__(self)
+        self._click_pos = None
+        return
+
+    def handleMouseButtonEvent(self, comp, event):
+        if event.isKeyDown() and event.key == Keys.KEY_LEFTMOUSE:
+            mpos = (event.cursorPosition[0], event.cursorPosition[1])
+            self._click_pos = (self.component.position[1], self.component.parent.screenToLocal(mpos)[1])
+            self.start_tick()
+        return True
+
+    def handleMouseEvent(self, comp, event):
+        return False
+
+    def on_tick(self):
+        pos = BWPersonality.game.mcursor.position
+        mpos = self.component.parent.screenToLocal(pos)[1]
+        potential_pos = self._click_pos[0] - (self._click_pos[1] - mpos)
+        data = {'ratio': clamp(float(potential_pos) / (self.component.parent.height - self.component.height))}
+        self.notify_listeners(HandlerET.OnRatioRequested, data)
+
+    def can_tick(self):
+        if not BigWorld.isKeyDown(Keys.KEY_LEFTMOUSE):
+            return False
+        if not Utils.is_visible_in_hierarchy(self.component):
+            return False
+        return True
+
+
+class Bar(Interceptor):
+
+    def __init__(self, component, view):
+        Interceptor.__init__(self, component)
+        self._view = view
+        self._content = view._content
+        self._content.add_listener(self._on_content_event)
+        comp = GUI.Window('soGUI/frame/paint/white.dds')
+        comp.materialFX = 'BLEND'
+        comp.colour = (255, 255, 255, 100)
+        comp.wm, comp.hm = ('PIXEL', 'CLIP')
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.height = 2
+        comp.position = (0, 0, 0.5)
+        self.component.addChild(comp, 'stripe')
+        comp = GUI.Window('soGUI/frame/paint/white.dds')
+        comp.materialFX = 'SOLID'
+        comp.colour = (200, 200, 200, 255)
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('CENTER', 'TOP')
+        comp.hpm, comp.vpm = ('CLIP', 'PIXEL')
+        comp.position = (0, 0, 0.5)
+        self.component.addChild(comp)
+        self._handler = Handler(comp)
+        self._handler.add_listener(self._on_handler_event)
+
+    def handleMouseButtonEvent(self, comp, event):
+        if event.isKeyDown() and event.key == Keys.KEY_LEFTMOUSE:
+            mpos = (event.cursorPosition[0], event.cursorPosition[1])
+            hheight = self._handler.component.height
+            mpos = self.component.screenToLocal(mpos)[1]
+            ratio = float(mpos - hheight * 0.5) / (self.component.height - hheight)
+            self._view.request_ratio(ratio)
+        return True
+
+    def _update_size(self):
+        ch, vh = self._content.component.height, self._view.component.height
+        scroll_space = ch - vh
+        if scroll_space <= 0:
+            self.component.visible = False
+            return
+        self.component.visible = True
+        self._handler.component.height = vh / ch * vh
+        pos = self.component.height * abs(self._content.component.position[1]) / ch
+        self._handler.component.position[1] = pos
+
+    def handleMouseEvent(self, comp, event):
+        return False
+
+    def _on_handler_event(self, event_type, data):
+        if event_type == HandlerET.OnRatioRequested:
+            self._view.request_ratio(data['ratio'])
+
+    def _on_content_event(self, event_type, data):
+        if event_type == ContentET.OnSizeDirty:
+            self._update_size()
+
+    def do_reposition(self):
+        self._update_size()
+        self.component.stripe.width = max(1, int(self.component.width * 0.15))
+        self._handler.component.width = self.component.width * 0.5
+
+
+class ContentET:
+    OnSizeDirty, = ((r, 'equiptgcontent') for r in range(1))
+
+
+class Content(Listenable):
+
+    def __init__(self, component, table_model, cell_listener):
+        Listenable.__init__(self)
+        self.component = component
+        self._table_model = table_model
+        self._cell_listener = cell_listener
+        self._cell_size = (0, 0)
+        self._cols = 0
+        self._active_cells = {}
+        self._pooled_cells = defaultdict(list)
+
+    def _calc_visible_range(self):
+        if not self._table_model.size():
+            return None
+        else:
+            start = -self.component.position[1]
+            end = start + self.component.parent.height
+            row_height = self._cell_size[1]
+            start_row = int(floor(float(start) / row_height))
+            end_row = int(ceil(float(end) / row_height) - 1)
+            last_table_index = self._table_model.size() - 1
+            start_index = min(start_row * self._cols, last_table_index)
+            end_index = min((end_row + 1) * self._cols - 1, last_table_index)
+            start_row = start_index / self._cols
+            end_row = end_index / self._cols
+            return {'start_index': start_index,
+             'end_index': end_index,
+             'start_row': start_row,
+             'end_row': end_row}
+
+    def on_possize_changed(self):
+        visible_range = self._calc_visible_range()
+        if visible_range:
+            start_row, end_row = visible_range['start_row'], visible_range['end_row']
+            for col, row in self._active_cells.keys():
+                if row < start_row or row > end_row:
+                    self._send_cell_to_pool(col, row)
+
+            for row in range(start_row, end_row + 1):
+                for col in range(self._cols):
+                    if (col, row) not in self._active_cells:
+                        index = row * self._cols + col
+                        if index < self._table_model.size():
+                            cell = self._create_cached_cell(col, row)
+                            cell.set_item(self._table_model.get_item(index))
+
+        else:
+            self.clear()
+        self.notify_listeners(ContentET.OnSizeDirty)
+
+    def _create_cached_cell(self, col, row):
+        if not (col, row) not in self._active_cells:
+            raise AssertionError
+            cell_class = self._cell_listener._get_cell_class(col, row)
+            cell = self._pooled_cells[cell_class] and self._pooled_cells[cell_class].pop()
+            cell.component.visible = True
+        else:
+            comp = GUI.Window()
+            comp.materialFX = 'SOLID'
+            comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+            comp.width, comp.height = self._cell_size
+            comp.ha, comp.va = ('LEFT', 'TOP')
+            comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+            self.component.addChild(comp)
+            cell = cell_class(comp)
+        comp = cell.component
+        comp.position = (col * comp.width, row * comp.height, 0.5)
+        cell.add_listener(self._on_cell_event)
+        self._active_cells[col, row] = cell
+        return cell
+
+    def _on_cell_event(self, event_type, data):
+        return self._cell_listener._on_cell_event(event_type, data)
+
+    def _send_cell_to_pool(self, col, row):
+        cell = self._active_cells[col, row]
+        cell.remove_listener(self._on_cell_event)
+        cell.set_item(None)
+        cell.component.visible = False
+        del self._active_cells[col, row]
+        self._pooled_cells[cell.__class__].append(cell)
+        return
+
+    def clear(self):
+        for key in self._active_cells.keys():
+            self._send_cell_to_pool(*key)
+
+    def do_reposition(self, cell_size, cols):
+        self.clear()
+        for cells in self._pooled_cells.itervalues():
+            for cell in cells:
+                self.component.delChild(cell.component)
+
+        self._pooled_cells.clear()
+        self._cell_size = cell_size
+        self._cols = cols
+        self.on_possize_changed()
+        self.component.tileWidth, self.component.tileHeight = self._cell_size
+
+
+class View:
+
+    def __init__(self, component, table_model, cell_listener):
+        self.component = component
+        self._table_model = table_model
+        self._table_model.add_listener(self._on_tablemodel_event)
+        self.component.isClip = False
+        self._columns = 0
+        self._cell_height = 0
+        comp = GUI.Window('soGUI/frame/paint/slot.dds')
+        comp.materialFX = 'BLEND'
+        comp.colour = (255,
+         255,
+         255,
+         76.5)
+        comp.tiled = True
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('LEFT', 'TOP')
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        self._content = Content(comp, self._table_model, cell_listener)
+        self.component.addChild(comp)
+
+    def _on_tablemodel_event(self, event_type, data):
+        if event_type == ModelET.OnItemAppended:
+            self._content.component.height = self._calc_needed_height()
+            self._content.on_possize_changed()
+        elif event_type in (ModelET.OnItemsSet, ModelET.OnItemsDeleted, ModelET.OnItemPrepended):
+            self._content.clear()
+            self._content.component.height = self._calc_needed_height()
+            self._content.on_possize_changed()
+
+    def _calc_needed_height(self):
+        rows = (self._table_model.size() + self._columns - 1) / self._columns
+        return max(rows * self._cell_height, self.component.parent.height)
+
+    def request_ratio(self, ratio):
+        comp = self._content.component
+        space = comp.height - self.component.height
+        if space > 0:
+            pos = -ratio * space
+            pos = clamp(pos, self.component.height - comp.height, 0)
+        else:
+            pos = 0
+        comp.position[1] = pos
+        self._content.on_possize_changed()
+
+    def scroll(self, value):
+        comp = self._content.component
+        if self.component.height > comp.height:
+            pos = 0
+        else:
+            pos = comp.position[1] + value * 0.2
+            pos = clamp(pos, self.component.height - comp.height, 0)
+        comp.position[1] = pos
+        self._content.on_possize_changed()
+
+    def do_reposition(self, cols, cell_width, cell_height):
+        self._columns = cols
+        cell_width, self._cell_height = cell_width, cell_height
+        comp = self._content.component
+        comp.width, comp.height = self.component.width, self._calc_needed_height()
+        comp.position = (0, 0, 0.5)
+        self._content.do_reposition((cell_width, self._cell_height), self._columns)
+
+
+class TableGrid(Interceptor, Listenable):
+
+    def __init__(self, component, table_model):
+        Listenable.__init__(self)
+        Interceptor.__init__(self, component)
+        self._tm = table_model
+        comp = GUI.Window()
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('LEFT', 'TOP')
+        self._view = View(comp, self._tm, self)
+        self.component.addChild(comp)
+        comp = GUI.Window()
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('RIGHT', 'TOP')
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        self._bar = Bar(comp, self._view)
+        self.component.addChild(comp)
+
+    def _get_cell_class(self, col, row):
+        return Cell
+
+    def _on_cell_event(self, event_type, data):
+        pass
+
+    def handleMouseEvent(self, comp, event):
+        dz = event.dz
+        if dz:
+            self._view.scroll(dz)
+            return True
+        return False
+
+    def do_reposition(self, cols, rows, cell_width, cell_height, scroll_width):
+        comp = self._view.component
+        comp.width, comp.height = cols * cell_width, rows * cell_height
+        comp.position = (0, 0, 0.5)
+        self._view.do_reposition(cols, cell_width, cell_height)
+        comp = self._bar.component
+        comp.width, comp.height = scroll_width, self.component.height
+        comp.position = (self.component.width, 0, 0.5)
+        self._bar.do_reposition()

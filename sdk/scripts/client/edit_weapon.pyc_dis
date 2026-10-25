@@ -1,0 +1,640 @@
+# Embedded file name: ./client/edit_weapon.py
+import BigWorld
+import Math
+import math
+import random
+import time
+import itertools
+from Math import Vector3, Matrix
+import ItemsUtils
+import traceback
+import Keys
+import math_bw
+import weapon
+from functools import partial
+from nodes_attach import INCOMPATIBLE_NODES
+import Items
+from Items import ItemsCatalog
+import clweapon
+from clweapon import ClWeapon
+import DyeConstant
+from utils import ignoreError
+from weapon_attachment import WeaponAttachment, Magazine
+import weapon_attachment
+GREEN = (0.5, 1, 0.5, 1)
+RED = (1, 0, 0, 1)
+WHITE = (1, 1, 1, 1)
+LIMEGREEN = (0.7, 0.9, 0.7, 1)
+BLUE = (0.5, 0.5, 0.9, 1)
+
+class EditWeapon(ClWeapon):
+
+    def __init__(self, *w, **kw):
+        ClWeapon.__init__(self, *w, **kw)
+
+    def registerRender(self, render_wind):
+        self._render_wind = render_wind
+
+    def registerDebugGeometryRender(self, wind_gi):
+        self._weapon.debug_geometry_inst = wind_gi
+
+    def checkAllLinks(self):
+        self._weapon.checkAllLinks()
+
+    def getIncompatibleItemsOnFireGrenadeForItem(self, new_item_type):
+        if not new_item_type:
+            return
+        new_item_prop = ItemsCatalog.GetItemParam(new_item_type)
+        if not new_item_prop:
+            return
+        incompl_items = new_item_prop.get('IncompatibleItemsOnFireGrenade', [])
+        for att in self._weapon._allChildren():
+            if att.getItemType() in incompl_items:
+                return att.getItemType()
+            if new_item_type in att.getProp().get('IncompatibleItemsOnFireGrenade', []):
+                return att.getItemType()
+
+    _colliders = None
+    _collidersDrag = None
+    skeletonCollider = None
+
+    def clearCollider(self):
+        self.skeletonCollider = BigWorld.SkeletonCollider()
+        self._weapon.clearCollideBoxReacursive()
+        self._colliders = {}
+        self._collidersDrag = {}
+
+    def addCollidersModiff(self):
+        self.clearCollider()
+        self._weapon.addCollidersModiff(self.skeletonCollider, self._colliders)
+
+    def hitTest(self, scrpoint, direction):
+        direction = Vector3(direction)
+        direction.normalise()
+        if self.skeletonCollider.doDistanceCollide(scrpoint, direction, 50):
+            if self.skeletonCollider.impactCollider:
+                return self.skeletonCollider.impactPoint
+
+    def hitTestCollider(self, scrpoint, direction):
+        direction = Vector3(direction)
+        direction.normalise()
+        if self.skeletonCollider.doDistanceCollide(scrpoint, direction, 50):
+            if self.skeletonCollider.impactCollider:
+                return (self.skeletonCollider.impactCollider.name, self.skeletonCollider.impactPoint)
+
+    def _hitTestAttach(self, scrpoint, direction):
+        res = self.hitTestCollider(scrpoint, direction)
+        if not res:
+            return
+        bone_id, impactPoint = res
+        attach, nodeID, parent = self._colliders[bone_id]
+        return dict(point=impactPoint, bone_id=bone_id, attach=attach, nodeID=nodeID)
+
+    _moved_weapon_node = None
+    _moved_impactPoint = None
+    _moved_tm_model = None
+    _moved_AttachPosY = 0
+
+    def handleMouseButtonEvent(self, comp, event):
+        if self._tmp_attach:
+            return False
+        if event.key == Keys.KEY_RIGHTMOUSE:
+            return self._onRightButton(event)
+        if event.key == Keys.KEY_LEFTMOUSE:
+            return self._onLeftButton(event)
+        return False
+
+    def __resert_move_model(self):
+        attach, nodeID, parent = self._moved_weapon_node
+        attach.model.stipple = False
+        self._moved_parent_bwnode.detach(self._moved_tm_model)
+        attach.model.visible = True
+        attach.setAttachPosY(self._moved_AttachPosY)
+        attach.setTmpMovedModel(None)
+        self._render_wind.onSelectedAttach(None)
+        self._moved_weapon_node = None
+        self._moved_tm_model = None
+        self._moved_parent_bwnode = None
+        parent.hideAllVisbleBox()
+        self._conturHitMouseUpdate()
+        if self._moved_model_in_world:
+            self._moved_model_in_world = None
+            self._render_wind.addTmpModel(self._moved_model_in_world)
+        return
+
+    def _onLeftButton(self, event):
+        down = event.isKeyDown()
+        if self._rmb_seleceted_attach:
+            return False
+        else:
+            if not down:
+                BigWorld.callback(0.0, lambda : self.addCollidersModiff())
+            if not down and self._moved_weapon_node:
+                attach, nodeID, parent = self._moved_weapon_node
+                self.__resert_move_model()
+                if self.wrest_attach:
+                    self.detachNodeByID(attach._itemID)
+                return True
+            if down:
+                pos, direct = self._render_wind.getMousePosDir()
+                res = self.hitTestCollider(pos, direct)
+                if res:
+                    bone_id, impactPoint = res
+                    data = self._colliders[bone_id]
+                    attach, nodeID, parent = self._colliders[bone_id]
+                    canattach, offset = parent.checkCanAttach(attach, nodeID, attach._attachPosY)
+                    if not canattach:
+                        self.detachNodeByID(attach._itemID)
+                        return True
+                    self._moved_weapon_node = data
+                    self._moved_impactPoint = impactPoint
+                    parent.addVisibleBox(nodeID)
+                    self._moved_AttachPosY = attach._attachPosY
+                    attach.model.visible = False
+                    moved_copy_att = attach.createDuplicate()
+                    moved_copy_att.recursiveLoadModels()
+                    moved_copy_att.getModel()
+                    self._moved_tm_model = moved_copy_att.getModel()
+                    self._moved_parent_bwnode = parent.getBwNode(nodeID)
+                    self._moved_parent_bwnode.attach(self._moved_tm_model)
+                    attach.setTmpMovedModel(self._moved_tm_model)
+                    self._moved_tm_model.attachOffset = (0, 0, attach._attachPosY)
+                    world_point, height_mouse, offset = self._getPointAxisClick(Matrix(self._moved_parent_bwnode))
+                    self._delta_moved_offset = offset - attach._attachPosY
+                    self._render_wind.onSelectedAttach(attach._itemID, attach.model, attach.loadNewModel(), GREEN)
+                    return True
+                self._moved_weapon_node = None
+                self._moved_impactPoint = None
+            return
+
+    _rmb_seleceted_attach = None
+
+    def _onRightButton(self, event):
+        if self._moved_weapon_node:
+            return
+        else:
+            if self._rmb_seleceted_attach:
+                self._rmb_seleceted_attach.select(False)
+            pos, direct = self._render_wind.getMousePosDir()
+            res = self.hitTestCollider(pos, direct)
+            if res:
+                bone_id, impactPoint = res
+                attach = self._colliders[bone_id][0]
+                if event.isKeyDown():
+                    attach.select(True)
+                    self._render_wind.onSelectedAttach(attach._itemID, attach.model, attach.loadNewModel(), BLUE)
+                    self._rmb_seleceted_attach = attach
+                    return True
+                if self._rmb_seleceted_attach == attach:
+                    self._render_wind.onRMBAttach(attach.getFakeItem(), attach)
+                    self._rmb_seleceted_attach = None
+                    return True
+            self._rmb_seleceted_attach = None
+            return
+
+    def detachNodeByID(self, itemID):
+        attach = self.findAttach(itemID)
+        if attach:
+            detached_items = []
+            attach.detach(detached_items, self)
+            cur_mag = self.getMagazine()
+            if cur_mag and cur_mag.getID() == itemID:
+                self._magazine = None
+            self._render_wind.onWeaponDetach(detached_items)
+            self.addCollidersModiff()
+            self._onChange()
+        return
+
+    def _getPointAxisClick(self, matrix):
+        """
+                \xd0\xb2\xd1\x8b\xd1\x87\xd0\xb8\xd1\x81\xd0\xbb\xd0\xb8\xd1\x82\xd1\x8c \xd1\x82\xd0\xbe\xd1\x87\xd0\xba\xd1\x83 \xd0\xbf\xd0\xb5\xd1\x80\xd0\xb5\xd1\x81\xd0\xb5\xd1\x87\xd0\xb5\xd0\xbd\xd0\xb8\xd1\x8f \xd0\xba\xd1\x83\xd1\x80\xd1\x81\xd0\xbe\xd1\x80\xd0\xb0 \xd0\xb8 \xd0\xbe\xd1\x81\xd0\xb8 Y \xd0\xbc\xd0\xb0\xd1\x82\xd1\x80\xd0\xb8\xd1\x86\xd1\x8b
+                @ret:\xd1\x82\xd0\xbe\xd1\x87\xd0\xba\xd0\xb0 \xd0\xb2 \xd0\xbc\xd0\xb8\xd1\x80\xd0\xbe\xd0\xb2\xd0\xbe\xd0\xb9 \xd1\x81\xd0\xb8\xd1\x81\xd1\x82\xd0\xb5\xd0\xbc\xd0\xb5 \xd0\xbf\xd0\xbe \xd0\xbe\xd1\x81\xd0\xb8 \xd1\x81\xd0\xbc\xd0\xb5\xd1\x89\xd0\xb5\xd0\xbd\xd0\xb8\xd1\x8f  Vector3,
+                        \xd1\x80\xd0\xb0\xd1\x81\xd1\x82\xd0\xbe\xd1\x8f\xd0\xbd\xd0\xb8\xd0\xb5 \xd0\xbc\xd1\x8b\xd1\x88\xd0\xb8 \xd0\xbf\xd0\xbe \xd0\xb2\xd0\xb5\xd1\x80\xd1\x82 \xd0\xbe\xd1\x81\xd0\xb8 ,
+                        \xd1\x81\xd0\xbc\xd0\xb5\xd1\x89\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5 \xd0\xbe\xd1\x82 \xd1\x86\xd0\xb5\xd0\xbd\xd1\x82\xd1\x80\xd0\xb0 float
+        """
+        pos, direct = self._render_wind.getMousePosDir()
+        matrix_inv = Matrix(matrix)
+        matrix_inv.invert()
+        camlocal = matrix_inv.applyPoint(pos)
+        camlocaldir = matrix_inv.applyVector(direct)
+        camlocal[1] = 0
+        camlocaldir[1] = 0
+        camlocaldir.normalise()
+        norm_node = Vector3(0, 0, 1)
+        b = camlocal.length
+        camlocal_n = Vector3(camlocal)
+        camlocal_n.normalise()
+        beta = math_bw.safe_acos(norm_node.dot(camlocaldir * -1))
+        yeta = math_bw.safe_acos(norm_node.dot(camlocal_n))
+        c = b * math.sin(yeta) / math.sin(beta)
+        xpoint = camlocaldir * c + camlocal
+        offset = xpoint[2]
+        world_point = matrix.applyPoint(xpoint)
+        camlocal = matrix_inv.applyPoint(pos)
+        camlocaldir = matrix_inv.applyVector(direct)
+        camlocal[2] = 0
+        camlocaldir[2] = 0
+        camlocaldir.normalise()
+        b = camlocal.length
+        camlocal_n = Vector3(camlocal)
+        camlocal_n.normalise()
+        norm_node = Vector3(0, 1, 0)
+        beta = math_bw.safe_acos(norm_node.dot(camlocaldir * -1))
+        yeta = math_bw.safe_acos(norm_node.dot(camlocal_n))
+        c = b * math.sin(yeta) / math.sin(beta)
+        xpoint = camlocaldir * c + camlocal
+        return (world_point, xpoint[1], offset)
+
+    def _conturHitMouseUpdate(self):
+        if self._moved_tm_model:
+            return
+        elif self._moved_weapon_node:
+            return
+        else:
+            pos, direct = self._render_wind.getMousePosDir()
+            res = self.hitTestCollider(pos, direct)
+            if res:
+                bone_id, impactPoint = res
+                attach = self._colliders[bone_id][0]
+                self._render_wind.onSelectedAttach(attach._itemID, attach.model, attach.loadNewModel(), WHITE)
+                self._render_wind.parent.enableEventRightPanel(False)
+            else:
+                self._render_wind.onSelectedAttach(None)
+                self._render_wind.parent.enableEventRightPanel(True)
+            return
+
+    _moved_model_in_world = None
+    wrest_attach = False
+
+    def handleMouseEvent(self, component, event):
+        self._conturHitMouseUpdate()
+        if not self._moved_tm_model or not self._moved_weapon_node:
+            if self._moved_model_in_world:
+                self._moved_model_in_world = None
+                self._render_wind.addTmpModel(self._moved_model_in_world)
+            return False
+        elif not BigWorld.isKeyDown(Keys.KEY_LEFTMOUSE):
+            self.__resert_move_model()
+            return False
+        else:
+            attach, nodeID, parent = self._moved_weapon_node
+            world_point, height_mouse, offset = self._getPointAxisClick(Matrix(self._moved_parent_bwnode))
+            offset_a = offset - self._delta_moved_offset
+            offset = offset - self._delta_moved_offset
+            canattach, offset = parent.checkCanAttach(attach, nodeID, offset)
+            if canattach and not attach.checkLinkCanMoveTo(offset):
+                offset = self._moved_AttachPosY
+                canattach = False
+            if canattach:
+                if attach.getParentSnap() and self._moved_AttachPosY != offset:
+                    self._render_wind.onPiaktiniMoveAttach()
+            self._moved_AttachPosY = offset
+            self._moved_tm_model.attachOffset = (0, 0, offset)
+            attach.setAttachPosY(offset)
+            attach._updateDebugMountLabels()
+            if not abs(offset_a - offset) > 0.05:
+                wrest_attach = height_mouse > 0.15
+                self._moved_tm_model.visible = True
+                if wrest_attach != self.wrest_attach:
+                    self.wrest_attach = wrest_attach
+                    if self.wrest_attach:
+                        self._render_wind.onSelectedAttach(attach._itemID, attach.model, attach.loadNewModel(), RED)
+                        self._render_wind.onDetachTmpPart()
+                    else:
+                        self._render_wind.onSelectedAttach(attach._itemID, attach.model, attach.loadNewModel(), LIMEGREEN)
+                        self._render_wind.onAttachTmpPart()
+                if self.wrest_attach:
+                    self._moved_tm_model.visible = False
+                if not self._moved_model_in_world and self.wrest_attach:
+                    self._moved_model_in_world = attach.loadNewModel()
+                    self._render_wind.addTmpModel(self._moved_model_in_world)
+                    self._moved_model_in_world.setWorldTransform(self._moved_tm_model.matrix)
+                    self._moved_model_in_world.attachOffset = self._moved_tm_model.attachOffset
+                elif self._moved_model_in_world and not self.wrest_attach:
+                    self._moved_model_in_world = None
+                    self._render_wind.addTmpModel(self._moved_model_in_world)
+                prev_pos = getattr(self, '_prev_mouse_pos', None)
+                cur_pos = self._render_wind.getMousePosDir()
+                self._prev_mouse_pos = cur_pos
+                prev_pos = self._moved_model_in_world and prev_pos and prev_pos[0]
+                cur_pos = cur_pos[0]
+                direction = cur_pos - prev_pos
+                world = Matrix(self._moved_model_in_world.matrix)
+                m = Matrix()
+                m.setTranslate(direction * 60)
+                world.postMultiply(m)
+                self._moved_model_in_world.setWorldTransform(world)
+            return True
+
+    matrixpitch = Matrix()
+    matrixyaw = Matrix()
+
+    def rotateModel(self, x, y, cam):
+        self.matrixyaw.setRotateY(self.matrixyaw.yaw - x)
+        pitch = self.matrixpitch.pitch - y
+        pitch = max(-1.2, min(1.2, pitch))
+        self.matrixpitch.setRotateX(pitch)
+        self.updateTransform()
+
+    _position = Vector3(0, 0, 0)
+    _m_matrix = Matrix()
+
+    def updateTransform(self):
+        matrixpos = Matrix()
+        matrixpos.setTranslate(self._position)
+        res = Matrix()
+        res.preMultiply(self.matrixpitch)
+        res.preMultiply(self.matrixyaw)
+        res.postMultiply(matrixpos)
+        self._m_matrix = res
+        if self._anim_matrix:
+            self._model.setWorldTransform(self._anim_matrix)
+        else:
+            self._model.setWorldTransform(res)
+
+    def setPos(self, position):
+        self._position = Vector3(position)
+        self.updateTransform()
+
+    def setPosAndYPR(self, position, yaw = 0.0, pitch = 0.0, roll = 0.0):
+        self._position = Vector3(position)
+        self.matrixyaw.setRotateY(yaw)
+        self.matrixpitch.setRotateX(pitch)
+        self._model.position = position
+        self.updateTransform()
+
+    _anim_matrix = None
+
+    def blendAnimFromMatrix(self, from_matrix, time_):
+        self._anim_matrix = Matrix(from_matrix)
+        self._from_matrix = Matrix(from_matrix)
+        self._start_anim_time = time.time()
+        if time_ <= 0.001:
+            time_ = 0.001
+        self._end_anim_time = self._start_anim_time + time_
+
+        def _stop(reason):
+            self._from_matrix = None
+            self._anim_matrix = None
+            return
+
+        def tickanim():
+            if not self._model:
+                return _stop('no model')
+            if not self._model.inWorld:
+                return _stop('no model inWorld')
+            cur_time = time.time()
+            if cur_time >= self._end_anim_time:
+                _stop('stop time')
+                self.updateTransform()
+                return
+            bf = (self._end_anim_time - cur_time) / time_
+            bf = math_bw.clamp(bf)
+            bf = math.sin(math.pi / 2 - bf * math.pi / 2)
+            self._anim_matrix = Matrix(self._from_matrix)
+            self._anim_matrix.blendMatrix(bf, self._m_matrix)
+            self.updateTransform()
+            BigWorld.callback(0.001, tickanim)
+
+        BigWorld.callback(0.001, tickanim)
+
+    _tmp_attach_nodeID = 0
+    _tmp_attach = None
+    _tmp_last_parent_attach = None
+
+    @ignoreError
+    def eventDragStart(self, item):
+        self.clearCollider()
+        if Magazine.itemIsMagazine(item):
+            if not self.canLoadMagazineItem(item):
+                return
+            self._tmp_attach = Magazine()
+        else:
+            self._tmp_attach = WeaponAttachment()
+        self._tmp_attach.makeFromComplexItem(item)
+        self._tmp_attach.debug_geometry_inst = self._weapon.debug_geometry_inst
+        self._weapon.addCollidersAttach(self._tmp_attach, self.skeletonCollider, self._collidersDrag)
+        need_contours = []
+        for data in self._collidersDrag.values():
+            box_model = data[-1]
+            box_model_new = BigWorld.Model(*box_model.sources)
+            box_model_new.newScaleTest = box_model.newScaleTest
+            need_contours.append([box_model, box_model_new])
+
+        def add_bb_cont():
+            self._render_wind.addContoursBoxs(need_contours, LIMEGREEN)
+
+        BigWorld.callback(0.05, add_bb_cont)
+
+    @ignoreError
+    def eventDragStop(self, item):
+        self.clearCollider()
+        if self._tmp_last_parent_attach:
+            self._tmp_last_parent_attach.clearTmpChildModel()
+        if self._tmp_last_parent_attach and self._tmp_attach:
+            self._tmp_attach.removeModel()
+            link_attach = None
+            if self._tmp_attach.getRequiredDoubleClamping():
+                link_attach = self._tmp_last_parent_attach._findDoubleClampAttach(self._tmp_attach)
+            self._tmp_last_parent_attach.attachChildren(self._tmp_attach, self._tmp_attach_nodeID)
+            if link_attach:
+                self._tmp_last_parent_attach.setLinkDoubleClamping(link_attach, self._tmp_attach)
+            self._tmp_last_parent_attach.recursiveLoadModels()
+        attached_item_type = None
+        if self._tmp_attach:
+            attached_item_type = self._tmp_attach.getItemType()
+            prohibit_items = self._tmp_attach.getProp().get('ProhibitItems')
+
+            def detach_item(att):
+                if not att._parentAttach:
+                    return
+                self.detachNodeByID(att.getID())
+
+            if prohibit_items:
+                for att in self._weapon._allChildren():
+                    if att.getItemType() in prohibit_items:
+                        BigWorld.callback(0.01, partial(detach_item, att))
+
+            node2forbidden = {}
+            for arr in INCOMPATIBLE_NODES:
+                s = set(arr)
+                for _id in arr:
+                    node2forbidden[_id] = s.difference([_id])
+
+            if self._tmp_attach_nodeID in node2forbidden:
+                forbidden = node2forbidden[self._tmp_attach_nodeID]
+                to_detach = []
+                for nodeID, att_list in self._weapon.getChildren().items():
+                    if nodeID in forbidden:
+                        for att in att_list:
+                            to_detach.append(att)
+
+                for att in to_detach:
+                    detach_item(att)
+
+        self._tmp_last_parent_attach = None
+        if self._tmp_attach:
+            self._tmp_attach._clearLinesAll()
+            self._tmp_attach.debug_geometry_inst = None
+        self._tmp_attach = None
+        self._tmp_attach_nodeID = 0
+        self.addCollidersModiff()
+        self._render_wind.onWeaponChange()
+        self._onChange()
+        self._render_wind.onAttachItemType(attached_item_type)
+        return
+
+    @ignoreError
+    def eventDragMove(self, item, event_pos, delta_pos):
+        if not self._tmp_attach:
+            return
+        else:
+            pos, direct = self._render_wind.getMousePosDir()
+            res = self.hitTestCollider(pos, direct)
+            if res:
+                bone_id, pos = res
+                parent_attach, nodeID, bw_node, box_model = self._collidersDrag[bone_id]
+                matr = Matrix(bw_node)
+                matr.invert()
+                localpos = matr.applyPoint(pos)
+                attachPosY = localpos[2]
+                if self._tmp_last_parent_attach != parent_attach:
+                    if self._tmp_last_parent_attach:
+                        self._tmp_last_parent_attach.clearTmpChildModel()
+                        self._tmp_attach.model = None
+                    parent_attach.addTmpChildModel(nodeID, self._tmp_attach.getModel(), attachPosY)
+                    self._tmp_attach.applyOriginModel()
+                    self._render_wind.onAttachTmpPart()
+                    self._tmp_attach_nodeID = nodeID
+                    self._onChange()
+                canattach, attachPosY = parent_attach.checkCanAttach(self._tmp_attach, nodeID, attachPosY, findDoubleMount=True)
+                if parent_attach.getSnap(nodeID) and self._tmp_attach._attachPosY != attachPosY:
+                    self._render_wind.onPiaktiniMoveAttach()
+                self._tmp_attach._clearLinesAll()
+                self._tmp_attach.setAttachPosY(attachPosY)
+                self._tmp_last_parent_attach = parent_attach
+            elif self._tmp_last_parent_attach:
+                self._tmp_last_parent_attach.clearTmpChildModel()
+                self._tmp_last_parent_attach = None
+                self._render_wind.onDetachTmpPart()
+            return
+
+    def onClickID(self, itemID):
+        """
+        \xd0\xba\xd0\xbb\xd0\xb8\xd0\xba \xd0\xbf\xd0\xbe \xd0\xb2\xd0\xb5\xd1\x80\xd1\x85\xd0\xbd\xd0\xb5\xd0\xb9 \xd0\xbf\xd0\xb0\xd0\xbd\xd0\xb5\xd0\xbb\xd0\xb8 \xd0\xb0\xd1\x82\xd0\xb0\xd1\x87\xd0\xb5\xd0\xb9
+        """
+        attach = self.findAttach(itemID)
+        if attach:
+            attach.blink()
+            self._render_wind.onSelectedAttach(attach._itemID, attach.model, attach.loadNewModel(), WHITE)
+
+    def _clearLinesAll(self):
+        if self._weapon:
+            self._weapon._clearLinesAll()
+
+    def onModelLeave(self):
+        try:
+            if self._weapon.hasScope():
+                self._model.sight_front_down.testNoWroldPlay(0.5)
+                self._model.sight_back_down.testNoWroldPlay(0.5)
+                self.__sight_front_down_played = True
+        except AttributeError as e:
+            pass
+
+    def _onChange(self):
+        try:
+            if self._weapon.hasScope():
+                self._model.sight_front_down()
+                self._model.sight_back_down()
+            else:
+                self._model.sight_front_up()
+                self._model.sight_back_up()
+        except AttributeError as e:
+            pass
+
+    def getTmpAttachedItems(self):
+        """
+        \xd0\xb2\xd0\xbe\xd0\xb7\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd1\x81\xd0\xbf\xd0\xb8\xd1\x81\xd0\xbe\xd0\xba \xd1\x84\xd0\xb5\xd0\xb9\xd0\xba\xd0\xbe\xd0\xb2\xd1\x8b\xd1\x85 \xd0\xb8\xd1\x82\xd0\xb5\xd0\xbc\xd0\xbe\xd0\xb2 \xd0\xb4\xd0\xbb\xd1\x8f \xd0\xbe\xd1\x82\xd0\xbe\xd0\xb1\xd1\x80\xd0\xb0\xd0\xb6\xd0\xb5\xd0\xbd\xd0\xb8\xd1\x8f  \xd0\xb2 \xd0\xb3\xd1\x83\xd0\xb8 \xd0\xbc\xd0\xbe\xd0\xb4\xd0\xb8\xd1\x84\xd0\xb8\xd0\xba\xd0\xb0\xd1\x86\xd0\xb8\xd0\xb8
+        """
+        items = []
+        lst_ignore_itemsID = [self._weapon._itemID]
+        self._weapon.findAllItemsAttached(items, lst_ignore_itemsID)
+        return items
+
+    def getTmpAttachedItemsID(self):
+        """
+        \xd0\xb2\xd0\xbe\xd0\xb7\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd1\x81\xd0\xbf\xd0\xb8\xd1\x81\xd0\xbe\xd0\xba \xd0\xb8\xd0\xb7 itemID, \xd0\xba\xd0\xbe\xd1\x82\xd0\xbe\xd1\x80\xd1\x8b\xd0\xb5 \xd0\xbf\xd1\x80\xd0\xb8\xd1\x81\xd0\xbe\xd0\xb5\xd0\xb4\xd0\xb8\xd0\xbd\xd0\xb5\xd0\xbd\xd1\x8b \xd0\xba \xd0\xbe\xd1\x80\xd1\x83\xd0\xb6\xd0\xb8\xd1\x8e
+        """
+        itemids = []
+        lst_ignore_itemsID = [self._weapon._itemID]
+        self._weapon.findAllItemIDsAttached(itemids, [])
+        return itemids
+
+    @ignoreError
+    def _debugAttachItem(self, item):
+        """
+        \xd1\x82\xd0\xbe\xd0\xbb\xd1\x8c\xd0\xba\xd0\xbe \xd0\xb4\xd0\xbb\xd1\x8f \xd0\xb4\xd0\xb5\xd0\xb1\xd0\xb0\xd0\xb3\xd0\xb0!!!! \xd0\xbf\xd1\x80\xd0\xb8\xd0\xb0\xd1\x82\xd0\xb0\xd1\x87\xd0\xb8\xd1\x82\xd1\x8c \xd0\xb8\xd1\x82\xd0\xb5\xd0\xbc \xd0\xba\xd1\x83\xd0\xb4\xd0\xb0\xd0\xbd\xd0\xb8\xd0\xb1\xd1\x83\xd0\xb4\xd1\x8c
+        """
+        tmp_attach = WeaponAttachment()
+        tmp_attach.makeFromComplexItem(item)
+        print 'tmp_attach:', tmp_attach
+        self._weapon.addCollidersAttach(tmp_attach, self.skeletonCollider, self._colliders)
+        print 'self._colliders', self._colliders
+        for bone_id in self._colliders:
+            parent_attach, nodeID, bw_node = self._colliders[bone_id]
+            attachPosY = 0
+            canattach, attachPosY = parent_attach.checkCanAttach(tmp_attach, nodeID, attachPosY)
+            tmp_attach.setAttachPosY(attachPosY)
+            if canattach:
+                print 'canattach ok', bone_id
+                print 'nodeID', nodeID
+                print 'attachPosY', attachPosY
+                parent_attach.attachChildren(tmp_attach, nodeID)
+                parent_attach.recursiveLoadModels()
+                break
+        else:
+            print 'not found slot :('
+
+        self.clearCollider()
+        self.addCollidersModiff()
+        self._render_wind.onWeaponChange()
+
+    def onChangePositionWM(self):
+        if not weapon_attachment.DEBUG:
+            return
+        self._weapon.updateDebugLabels()
+
+    def resetCacheParam(self):
+        self._weapon.resetCacheParam()
+
+    def debugDumpToItem(self):
+        """ \xd1\x82\xd0\xbe\xd0\xbb\xd1\x8c\xd0\xba\xd0\xbe \xd0\xb4\xd0\xbb\xd1\x8f \xd0\xb4\xd0\xb5\xd0\xb1\xd0\xb0\xd0\xb3\xd0\xb0 \xd0\xb8\xd0\xbb\xd0\xb8 \xd0\xbe\xd1\x84\xd0\xbb\xd0\xb0\xd0\xb9\xd0\xbd \xd1\x80\xd0\xb5\xd0\xb6\xd0\xb8\xd0\xbc\xd0\xb0!!!! 
+                \xd0\xb8\xd1\x82\xd0\xb5\xd0\xbc \xd0\xbf\xd0\xb5\xd1\x80\xd0\xb5\xd1\x81\xd0\xbe\xd0\xb7\xd0\xb4\xd0\xb0\xd0\xb5\xd1\x82\xd1\x81\xd1\x8f \xd0\xbd\xd0\xbe\xd0\xb2\xd1\x8b\xd0\xb9!!!
+        """
+        if not self._weapon:
+            return None
+        else:
+            itemList = []
+
+            def recurs_rec(att):
+                for nodeID, childs in att.getChildren().items():
+                    for ch in childs:
+                        sub_item = {}
+                        sub_item['itemType'] = ch._itemType
+                        sub_item['itemID'] = ch._itemID
+                        sub_item['creationTime'] = 0.0
+                        inc_param = {}
+                        inc_param[ItemsCatalog.INC_WEAPON_ATTACH_PARENT_ID] = ch._parentItemID
+                        inc_param[ItemsCatalog.INC_WEAPON_ATTACH_PARENT_NODE] = ch._parentNodeID
+                        inc_param[ItemsCatalog.INC_WEAPON_ATTACH_POSY] = int(ch._attachPosY * ItemsUtils.ATTACH_POSY_MULT)
+                        keys, values = ItemsUtils.packItemDict(inc_param)
+                        sub_item['itemParametresKeys'] = keys
+                        sub_item['itemParametresValues'] = values
+                        itemList.append(sub_item)
+                        recurs_rec(ch)
+
+            recurs_rec(self._weapon)
+            if not self._complex_item:
+                self._complex_item = ItemsUtils.CreateComplexItem(self.getItemID(), self.getItemType(), [], [])
+            self._complex_item['itemList'] = itemList
+            return self._complex_item

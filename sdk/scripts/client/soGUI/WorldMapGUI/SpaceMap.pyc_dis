@@ -1,0 +1,727 @@
+# Embedded file name: ./client/soGUI/WorldMapGUI/SpaceMap.py
+import BigWorld
+from Helpers.PyGUI.PyGUIBase import PyGUIBase, Interceptor
+import GUI
+import soGUI
+import Keys
+from Math import Vector2, Vector3
+from itertools import chain
+from Note import PlayerMark, Mark, PersonalMark, TargetMark, CtriggerMark, QuestMark, WorldplaceMark, CompoundMark
+from Localization import lc
+import BWPersonality
+from functools import partial
+import MapNotes as MapNotesModule
+from MapNotes import MapNotes, get_npcmarks_config
+import AdditionalNPCParameters as AP
+from NPCs import NPCs
+import traceback
+import QuestDispatcher as qd
+from marks_filter import FilterMode as FM, FilterEventType
+from background_controller import BackgroundController
+from maputils.MarksData import MarksData, LoadStatus
+import sounds_manager
+CUSTOM_MARK_TEXT_LIMIT = 50
+
+class SpaceMap(PyGUIBase):
+    interface_id = 'WorldMap.SpaceMap'
+    CONTEXT_EVENT_TELEPORT, CONTEXT_EVENT_CREATE_MARK, CONTEXT_EVENT_PLACE_TARGET = xrange(3)
+
+    def __init__(self, parent_component, space_name, player_data_provider, delegate, filterset):
+        component = GUI.Window('')
+        parent_component.addChild(component, 'map_' + space_name)
+        PyGUIBase.__init__(self, component)
+        component.script = self
+        self._captured = False
+        self._wait_load = None
+        self._delegate = delegate
+        self._filterset = filterset
+        self._marks_data = None
+        self._space_name = space_name
+        self._player_data_provider = player_data_provider
+        self._personal_marks = []
+        self._die_marks = []
+        self._corpse_marks = {}
+        self._worldevent_marks = []
+        self._compound_marks = {}
+        self._npcs_marks = []
+        self._quest_marks = []
+        self._ctriggers_marks = []
+        self._members_marks = []
+        self._target_mark = None
+        self._wanted_mark = None
+        self._blue_flag_mark = None
+        self._red_flag_mark = None
+        self._quest_tick_controller = None
+        self._prev_hover_mark = None
+        self._hover = False
+        self.component.focus = True
+        self.component.moveFocus = True
+        self.component.crossFocus = True
+        self.component.mouseButtonFocus = True
+        config = get_npcmarks_config(self._space_name)
+        self._notes_data = config['npcs_data']
+        static_marks_data = config['ndata']
+        self._bounds = config['bounds']
+        self._setup_content()
+        self._setup_static_marks(static_marks_data)
+        return
+
+    def _setup_content(self):
+        self.component.widthMode, self.component.heightMode = ('PIXEL', 'PIXEL')
+        self.component.horizontalPositionMode, self.component.verticalPositionMode = ('CLIP', 'CLIP')
+        self.component.materialFX = 'SOLID'
+        self.component.width, self.component.height = self.component.parent.width, self.component.parent.height
+        self.component.horizontalAnchor, self.component.verticalAnchor = ('CENTER', 'CENTER')
+        self.component.position = (0, 0, 1)
+        comp = GUI.Window()
+        self.component.addChild(comp, 'back')
+        comp.position.z = 0.9
+        self._back = BackgroundController(comp, self._space_name)
+        self._player_mark = PlayerMark(size=(34, 34))
+        self._back.add_note(self._player_mark)
+
+    def _setup_static_marks(self, notes_data):
+        for note_text, note_position in notes_data:
+            note = Mark(lc('MappedObjects.' + note_text), note_position, 'soGUI/frame/map/mark_questNPC.dds')
+            self._back.add_note(note)
+
+    def _on_marks_data_event(self, event_type, data):
+        space_name = data.get('spacename')
+        if space_name != self._space_name:
+            return
+        if event_type == MarksData.EVENT_COMMON_LOADED:
+            self._wait_load -= 1
+            if self._wait_load <= 0:
+                if hasattr(self.component, 'load') and self.component.hasChild(self.component.load, False):
+                    self.component.delChild(self.component.load)
+            self._regenerate_common_marks()
+        elif event_type == MarksData.EVENT_PERSONAL_LOADED:
+            self._wait_load -= 1
+            if self._wait_load <= 0:
+                if hasattr(self.component, 'load') and self.component.hasChild(self.component.load, False):
+                    self.component.delChild(self.component.load)
+            self._regenerate_personal_marks()
+        elif event_type == MarksData.EVENT_PERSONAL_ADDED:
+            self._create_personal_mark(data['mark'])
+        elif event_type == MarksData.EVENT_PERSONAL_DELETED:
+            self._del_personal_mark(data['note'])
+        elif event_type == MarksData.EVENT_WORLDPLACE_ADDED:
+            self._create_worldplace_mark(data['mark'])
+        elif event_type == MarksData.EVENT_WORLDPLACE_REMOVED:
+            self._del_worldplace_mark(data['place_id'])
+        elif event_type == MarksData.EVENT_COMPOUND_ADDED:
+            self._create_compound_marks(data['marks'])
+        elif event_type == MarksData.EVENT_COMPOUND_REMOVED:
+            self._del_compound_marks(data['marks'])
+
+    def add_questmark(self, quest_id):
+        self._create_quest_marks(quest_id)
+
+    def add_npc_marks(self, npc_ids):
+        for npc_id in npc_ids:
+            self._create_npc_mark(npc_id)
+
+    def add_ctrigger_marks(self, ctrigger_ids):
+        for ctrigger_id in ctrigger_ids:
+            self._create_ctrigger_mark(ctrigger_id)
+
+    def _regenerate_common_marks(self):
+        npc_ids = self._marks_data.npcs_marks[self._space_name]
+        ctriggers = self._marks_data.ctriggers_marks[self._space_name]
+        die_positions = [ d[0] for d in self._marks_data.death_marks[self._space_name] ]
+        quest_marks = self._marks_data.quest_marks[self._space_name]
+        worldplace_marks = self._marks_data.worldplace_marks.get(self._space_name, {})
+        compound_marks = self._marks_data.compound_marks.get(self._space_name, {})
+        corpses_marks = self._marks_data.corpses_marks.get(self._space_name, {})
+        targetspace, position = BWPersonality.settings.get_target_data(BigWorld.player().name)
+        if targetspace and targetspace == self._space_name:
+            self.create_target_mark(targetspace, position)
+        else:
+            self.clear_target_mark()
+        wanted_mark = self._marks_data.get_wanted_mark()
+        if wanted_mark and wanted_mark[0] == self._space_name:
+            self.set_wanted_mark(wanted_mark[1])
+        else:
+            self.clear_wanted_mark()
+        for mark in chain(self._npcs_marks, self._quest_marks, self._die_marks, self._ctriggers_marks, self._worldevent_marks, self._corpse_marks.itervalues(), self._compound_marks.itervalues()):
+            self._back.del_note(mark)
+
+        self._compound_marks = {}
+        self._worldevent_marks = []
+        self._ctriggers_marks = []
+        self._npcs_marks = []
+        self._quest_marks = []
+        self._die_marks = []
+        self._corpse_marks = {}
+        for pos in die_positions:
+            self._create_die_mark(pos)
+
+        for npc_id in npc_ids:
+            self._create_npc_mark(npc_id)
+
+        for ctrigger_id in ctriggers:
+            self._create_ctrigger_mark(ctrigger_id)
+
+        for quest_id in quest_marks:
+            self._create_quest_marks(quest_id)
+
+        for mark in worldplace_marks.itervalues():
+            self._create_worldplace_mark(mark)
+
+        if compound_marks:
+            self._create_compound_marks(compound_marks.values())
+        for name, mark_data in corpses_marks.iteritems():
+            self.add_corpse_mark(name, mark_data['pos'])
+
+    def _regenerate_personal_marks(self):
+        for mark in self._personal_marks:
+            self._back.del_note(mark)
+
+        self._personal_marks = []
+        notes_data = self._marks_data.personal_marks[self._space_name]
+        for note_data in notes_data:
+            self._create_personal_mark(note_data)
+
+    def _create_ctrigger_mark(self, ctrigger_id):
+        data = MapNotesModule.get_ctrigger_data(ctrigger_id)
+        mark = CtriggerMark(data)
+        mark.ctrigger_id = ctrigger_id
+        self._ctriggers_marks.append(mark)
+        self._back.add_note(mark)
+
+    def _create_quest_marks(self, quest_id):
+        for mark_data in qd.get_marks(quest_id):
+            if self._space_name != mark_data['space_name']:
+                continue
+            mark = QuestMark(quest_id, mark_data['pos'], mark_data['radius'])
+            mark.visible = FM.Quests not in self._filterset.mode
+            self._quest_marks.append(mark)
+            self._back.add_note(mark)
+
+        self._check_run_tick_update_quests()
+
+    def _create_npc_mark(self, npc_id):
+        try:
+            npc_name = AP.get_npc_name_by_id(npc_id)
+            local_name = NPCs.names_by_npcName[npc_name]
+            note = Mark(lc(local_name), self._notes_data[npc_name], 'soGUI/frame/map/mark_questNPC.dds')
+        except:
+            print 'SpaceMap (ERROR)', npc_name, npc_id
+            traceback.print_stack()
+            traceback.print_exc()
+            return
+
+        note.npc_id = npc_id
+        note.component.visible = FM.Npc not in self._filterset.mode
+        self._npcs_marks.append(note)
+        self._back.add_note(note)
+
+    def _create_die_mark(self, position):
+        note = Mark(lc('MapNotesHolder.PLAYER_DEATHPLACE'), position, 'soGUI/frame/map/mark_player_death.dds')
+        note.die_position = position
+        self._die_marks.append(note)
+        self._back.add_note(note)
+
+    def _create_personal_mark(self, note_data):
+        note = PersonalMark(note_data)
+        note.on_delege_callback = partial(self._on_del_click, note)
+        note.on_amend_callback = partial(self._on_amend_personal_mark, note)
+        note.component.visible = FM.Personal not in self._filterset.mode
+        self._personal_marks.append(note)
+        self._back.add_note(note)
+
+    def _create_compound_marks(self, marks):
+        for mark in marks:
+            mark_id, position = mark
+            note = CompoundMark(position)
+            if mark_id not in self._compound_marks:
+                self._compound_marks[mark_id] = note
+                self._back.add_note(note)
+
+    def _del_compound_marks(self, marks):
+        for mark_id, _ in marks:
+            if mark_id not in self._compound_marks:
+                continue
+            self._back.del_note(self._compound_marks[mark_id])
+            del self._compound_marks[mark_id]
+
+    def _create_worldplace_mark(self, mark):
+        place_id, position, radius = mark
+        note = WorldplaceMark(position, radius)
+        note.place_id = place_id
+        self._worldevent_marks.append(note)
+        self._back.add_note(note)
+
+    def _del_worldplace_mark(self, place_id):
+        for i in range(len(self._worldevent_marks) - 1, -1, -1):
+            mark = self._worldevent_marks[0]
+            if mark.place_id == place_id:
+                self._back.del_note(mark)
+                del self._worldevent_marks[i]
+
+    def set_wanted_mark(self, position):
+        if self._wanted_mark is None:
+            self._wanted_mark = Mark(lc('soGPSMap.soGUI.hunted'), position, 'soGUI/frame/map/hunted_anim/hunt_mark')
+            self._back.add_note(self._wanted_mark)
+        self._wanted_mark.visible = True
+        self._wanted_mark.set_position(position)
+        self._back.update_note_position(self._wanted_mark)
+        return
+
+    def clear_wanted_mark(self):
+        if self._wanted_mark:
+            self._wanted_mark.visible = False
+
+    def create_target_mark(self, spacename, position):
+        self.clear_target_mark()
+        self._target_mark = TargetMark(position)
+        self._target_mark.on_delege_callback = self._on_delete_target_mark
+        self._target_mark.visible = FM.Target not in self._filterset.mode
+        self._back.add_note(self._target_mark)
+        self._delegate.on_target_mark_created(spacename, position)
+
+    def clear_target_mark(self):
+        if self._target_mark:
+            self._back.del_note(self._target_mark)
+            self._raget_mark = None
+        return
+
+    def _on_delete_target_mark(self):
+        self.clear_target_mark()
+        self._delegate.on_target_mark_deleted()
+
+    def _on_amend_personal_mark(self, note):
+        note_data = note.note_data
+
+        def amend_mark_callback(text, mark_type, color):
+            if len(text) >= CUSTOM_MARK_TEXT_LIMIT:
+                self._delegate.show_error(lc('MapNotesHolder.TOO_LONG_TEXT'))
+                return
+            self._delegate.request_delete_personal_mark0(note)
+            pos = Vector2(note_data['position'].x, note_data['position'].z)
+            self._delegate.request_create_personal_mark0(pos, self._space_name, text, mark_type, color)
+
+        self._delegate.show_add_mark_win(amend_mark_callback, init_note_data=note_data)
+
+    def _on_del_click(self, note):
+        self._delegate.request_delete_personal_mark0(note)
+
+    def _del_personal_mark(self, note):
+        self._personal_marks.remove(note)
+        self._back.del_note(note)
+
+    def on_hide(self):
+        self._filterset.remove_listener(self._on_marks_filterset_event)
+        self._set_captured(False)
+        if self._red_flag_mark:
+            self._back.del_note(self._red_flag_mark)
+            self._red_flag_mark = None
+        if self._blue_flag_mark:
+            self._back.del_note(self._blue_flag_mark)
+            self._blue_flag_mark = None
+        self._stop_tick_update_quest()
+        self._set_hover_quest_mark(None)
+        self._marks_data.remove_listener(self._on_marks_data_event)
+        self._marks_data = None
+        self.clear_target_mark()
+        for mark in chain(self._personal_marks, self._npcs_marks, self._quest_marks, self._die_marks, self._ctriggers_marks, self._corpse_marks.itervalues()):
+            self._back.del_note(mark)
+
+        self._personal_marks = []
+        self._ctriggers_marks = []
+        self._npcs_marks = []
+        self._quest_marks = []
+        self._die_marks = []
+        self._corpse_marks = {}
+        return
+
+    def on_show(self, has_player, marks_data):
+        self._player_mark.visible = has_player
+        self._update_player_mark()
+        self._update_note_marks()
+        self._set_captured(False)
+        self._set_hover_quest_mark(None)
+        self._check_run_tick_update_quests()
+        self._update_marks_visibility()
+        self._filterset.add_listener(self._on_marks_filterset_event)
+        self._back.on_show()
+        if not not self._marks_data:
+            raise AssertionError
+            self._marks_data = marks_data
+            self._marks_data.add_listener(self._on_marks_data_event)
+            personal_load_status = self._marks_data.has_loaded_personal_data(self._space_name)
+            if personal_load_status == LoadStatus.Ready:
+                self._regenerate_personal_marks()
+            common_load_status = self._marks_data.has_loaded_common_data(self._space_name)
+            if common_load_status == LoadStatus.Ready:
+                self._regenerate_common_marks()
+            if LoadStatus.Empty in (personal_load_status, common_load_status):
+                self._marks_data.request_data(BigWorld.player().name, self._space_name)
+            if self._wait_load is None:
+                self._wait_load = 0
+                if self._marks_data.has_loaded_common_data(self._space_name) != LoadStatus.Ready:
+                    self._wait_load += 1
+                if self._marks_data.has_loaded_personal_data(self._space_name) != LoadStatus.Ready:
+                    self._wait_load += 1
+                comp = self._wait_load > 0 and not BigWorld.player().offline_mode and GUI.Window('soGUI/frame/paint/white.dds')
+                comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+                comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+                comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+                comp.width, comp.height = (2, 2)
+                comp.position = (0, 0, 0)
+                comp.colour = (0, 0, 0, 150)
+                comp.materialFX = 'BLEND'
+                self.component.addChild(comp, 'load')
+                Interceptor(comp)
+                comp = GUI.Simple('soGUI/frame/journal/load_anim/load_pips')
+                comp.materialFX = 'BLEND'
+                comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+                comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+                comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+                comp.width, comp.height = (35, 10)
+                comp.position = (0, 0, 0)
+                self.component.load.addChild(comp)
+        return
+
+    def _on_marks_filterset_event(self, event_type, data):
+        if event_type == FilterEventType.FilterChanged:
+            self._update_marks_visibility()
+
+    def _update_marks_visibility(self):
+        for mark in self._personal_marks:
+            mark.component.visible = FM.Personal not in self._filterset.mode
+
+        for mark in self._npcs_marks:
+            mark.component.visible = FM.Npc not in self._filterset.mode
+
+        for mark in self._members_marks:
+            mark.component.visible = FM.Party not in self._filterset.mode
+
+        for mark in self._quest_marks:
+            mark.component.visible = FM.Quests not in self._filterset.mode
+
+        for mark in self._corpse_marks.itervalues():
+            mark.component.visible = FM.Corpses not in self._filterset.mode
+
+        if self._target_mark:
+            self._target_mark.visible = FM.Target not in self._filterset.mode
+        self._check_run_tick_update_quests()
+
+    def on_player_changed(self):
+        self._update_player_mark()
+
+    def _update_player_mark(self):
+        if self._player_mark.visible:
+            player_data = self._player_data_provider()
+            if player_data:
+                self._player_mark.update_rotation(player_data)
+                self._back.update_note_position(self._player_mark)
+
+    def _update_note_marks(self):
+        for mark in self._members_marks:
+            mark.update_rotation(None)
+            self._back.update_note_position(mark)
+
+        return
+
+    def _check_run_tick_update_quests(self):
+        if any((m.is_circle_type for m in self._quest_marks)) and FM.Quests not in self._filterset.mode:
+            self._run_tick_update_quests()
+        else:
+            self._stop_tick_update_quest()
+
+    def _run_tick_update_quests(self):
+        if not self._quest_tick_controller:
+            self._quest_tick_controller = BigWorld.callback(0, self._tick_update_quests)
+
+    def _stop_tick_update_quest(self):
+        if self._quest_tick_controller:
+            BigWorld.cancelCallback(self._quest_tick_controller)
+            self._quest_tick_controller = None
+        return
+
+    def _tick_update_quests(self):
+        if not self.component.visible or not self._quest_marks:
+            self._quest_tick_controller = None
+            return
+        else:
+            for qmark in self._quest_marks:
+                if qmark.is_circle_type:
+                    if qmark.calc_cursor() and self._hover:
+                        self._set_hover_quest_mark(qmark)
+                        break
+            else:
+                self._set_hover_quest_mark(None)
+
+            self._quest_tick_controller = BigWorld.callback(0, self._tick_update_quests)
+            return
+
+    def _set_hover_quest_mark(self, mark):
+        if self._prev_hover_mark == mark:
+            return
+        if BWPersonality.GUICore.toolTip:
+            if self._prev_hover_mark:
+                BWPersonality.GUICore.toolTip.hide(toolTipID=id(self._prev_hover_mark))
+            else:
+                BWPersonality.GUICore.toolTip.hide()
+        self._prev_hover_mark = mark
+        if mark:
+            mark.show_tooltip()
+
+    def _tick_update_members(self):
+        if not self.component.visible or not self._members_marks:
+            return
+        for mark in self._members_marks:
+            entity = BigWorld.entities.get(mark.member_id)
+            if not entity:
+                continue
+            color = (255, 0, 0, 255) if entity.is_dead() else (0, 255, 0, 255)
+            player_data = {'position': entity.position,
+             'yaw': entity.yaw,
+             'color': color}
+            mark.update_rotation(player_data)
+            self._back.update_note_position(mark)
+
+        BigWorld.callback(0, self._tick_update_members)
+
+    def add_corpse_mark(self, name, position):
+        if name not in self._corpse_marks:
+            note = Mark(lc('MapNotesHolder.CORPSE').format(name.decode('utf8')), position, 'soGUI/frame/map/dead_clanmate.dds')
+            note.component.visible = FM.Corpses not in self._filterset.mode
+            self._corpse_marks[name] = note
+            self._back.add_note(note)
+
+    def del_corpse_mark(self, name):
+        mark = self._corpse_marks.get(name)
+        if mark:
+            del self._corpse_marks[name]
+            self._back.del_note(mark)
+
+    def add_die_mark(self, position):
+        self._create_die_mark(position)
+
+    def del_die_mark(self, position):
+        for i in xrange(len(self._die_marks) - 1, -1, -1):
+            mark = self._die_marks[i]
+            if mark.die_position.distTo(position) < 0.01:
+                del self._die_marks[i]
+                self._back.del_note(mark)
+
+    def del_ctrigger_mark(self, ctrigger_ids):
+        for i in xrange(len(self._ctriggers_marks) - 1, -1, -1):
+            mark = self._ctriggers_marks[i]
+            if mark.ctrigger_id in ctrigger_ids:
+                self._back.del_note(mark)
+                del self._ctriggers_marks[i]
+
+    def del_questmark(self, quest_id):
+        for i in xrange(len(self._quest_marks) - 1, -1, -1):
+            mark = self._quest_marks[i]
+            if mark.quest_id == quest_id:
+                self._back.del_note(mark)
+                del self._quest_marks[i]
+
+        self._check_run_tick_update_quests()
+
+    def del_npc_mark(self, npc_ids):
+        for i in xrange(len(self._npcs_marks) - 1, -1, -1):
+            mark = self._npcs_marks[i]
+            if mark.npc_id in npc_ids:
+                self._back.del_note(mark)
+                del self._npcs_marks[i]
+
+    def update_pvp_flags(self, blue_pos, red_pos):
+        if not self._blue_flag_mark:
+            mark = Mark(None, red_pos, 'soGUI/maps/Icons/pvp/flag_blue.dds')
+            mark.component.visible = True
+            mark.component.verticalAnchor = 'CENTER'
+            self._back.add_note(mark)
+            self._blue_flag_mark = mark
+        if not self._red_flag_mark:
+            mark = Mark(None, red_pos, 'soGUI/maps/Icons/pvp/flag_red.dds')
+            mark.component.visible = True
+            mark.component.verticalAnchor = 'CENTER'
+            self._back.add_note(mark)
+            self._red_flag_mark = mark
+        self._red_flag_mark.set_position(red_pos)
+        self._back.update_note_position(self._red_flag_mark)
+        self._blue_flag_mark.set_position(blue_pos)
+        self._back.update_note_position(self._blue_flag_mark)
+        return
+
+    def update_members_marks(self, members_data):
+
+        def compile_player_data(mark_data):
+            position = Vector3(mark_data['position'][0], 0, mark_data['position'][1])
+            color = (255, 0, 0, 255) if mark_data['is_dead'] else (0, 255, 0, 255)
+            return {'position': position,
+             'yaw': mark_data['direction'],
+             'color': color}
+
+        def update_mark(mark, mark_data):
+            mark.update_rotation(compile_player_data(mark_data))
+            self._back.update_note_position(mark)
+
+        def create_mark(mark_data):
+            mark = PlayerMark(texture_name='soGUI/frame/map/mark_partner_mini.dds')
+            mark.component.visible = FM.Party not in self._filterset.mode
+            mark.member_id = mark_data['id']
+            self._members_marks.append(mark)
+            self._back.add_note(mark)
+            mark.update_rotation(compile_player_data(mark_data))
+            self._back.update_note_position(mark)
+
+        def remove_mark(mark):
+            self._members_marks.remove(mark)
+            self._back.del_note(mark)
+
+        had_members = bool(self._members_marks)
+        new_set = set()
+        old_set = set()
+        for member_data in members_data:
+            new_set.add(member_data['id'])
+
+        for mark in self._members_marks:
+            old_set.add(mark.member_id)
+
+        def find_member_data(member_id):
+            return next((m for m in members_data if m['id'] == member_id))
+
+        def find_mark(member_id):
+            return next((m for m in self._members_marks if m.member_id == member_id))
+
+        create_marks = new_set - old_set
+        remove_marks = old_set - new_set
+        update_marks = new_set & old_set
+        for member_id in create_marks:
+            create_mark(find_member_data(member_id))
+
+        for member_id in remove_marks:
+            remove_mark(find_mark(member_id))
+
+        for member_id in update_marks:
+            update_mark(find_mark(member_id), find_member_data(member_id))
+
+        has_members = bool(self._members_marks)
+        if has_members and not had_members:
+            self._tick_update_members()
+
+    def onParentSizeChanged(self, component):
+        self.component.width, self.component.height = self.component.parent.width, self.component.parent.height
+        self._back.on_parent_size_changed()
+
+    def handleMouseButtonEvent(self, comp, event):
+        if event.key == Keys.KEY_LEFTMOUSE:
+            self._set_captured(event.isKeyDown())
+        elif event.key == Keys.KEY_RIGHTMOUSE and event.isKeyDown():
+            sounds_manager.playSound('ui/map/rmb_click')
+            actions = {SpaceMap.CONTEXT_EVENT_CREATE_MARK: lc('Inventory.ADD_MARK'),
+             SpaceMap.CONTEXT_EVENT_PLACE_TARGET: lc('Inventory.PLACE_TARGET')}
+            pl = BigWorld.player()
+            if BigWorld.isKeyDown(BigWorld.stringToKey('F2')) and (pl.isAdminAccess(6) or pl.isMediaPlayer):
+                actions[SpaceMap.CONTEXT_EVENT_TELEPORT] = lc('Inventory.DO_TELEPORT')
+            BWPersonality.GUICore.removeListener('contextMenuEvent', self._context_menu_event)
+            BWPersonality.GUICore.addListener('contextMenuEvent', self._context_menu_event)
+            BWPersonality.GUICore.showContextMenu(SpaceMap.interface_id, actions, data=event.cursorPosition)
+        return True
+
+    def _set_captured(self, value):
+        self._captured = value
+        if self._captured:
+            BWPersonality.GUICore.global_interceptor.set_proxy(self)
+            BWPersonality.GUICore.global_interceptor.component.visible = True
+        else:
+            BWPersonality.GUICore.global_interceptor.set_proxy(None)
+            BWPersonality.GUICore.global_interceptor.component.visible = False
+        return
+
+    def _context_menu_event(self, interface_id, eventid, caption, event, data = None):
+        if event == soGUI.soContextMenuComponent.EVENT_SHOW and SpaceMap.interface_id == interface_id:
+            return
+        BWPersonality.GUICore.removeListener('contextMenuEvent', self._context_menu_event)
+        if SpaceMap.interface_id != interface_id:
+            return
+        if eventid == SpaceMap.CONTEXT_EVENT_CREATE_MARK:
+
+            def create_mark_callback(text, mark_type, color):
+                if len(text) >= CUSTOM_MARK_TEXT_LIMIT:
+                    self._delegate.show_error(lc('MapNotesHolder.TOO_LONG_TEXT'))
+                    return
+                cursor_pos = data
+                world_pos = self._back.get_cursor_world_position(cursor_pos)
+                self._delegate.request_create_personal_mark0(world_pos, self._space_name, text, mark_type, color)
+
+            self._delegate.show_add_mark_win(create_mark_callback)
+        elif eventid == SpaceMap.CONTEXT_EVENT_PLACE_TARGET:
+            cursor_pos = data
+            world_pos = self._back.get_cursor_world_position(cursor_pos)
+            self.create_target_mark(self._space_name, Vector3(world_pos[0], 0, world_pos[1]))
+        elif eventid == SpaceMap.CONTEXT_EVENT_TELEPORT:
+            cursor_pos = data
+            world_pos = self._back.get_cursor_world_position(cursor_pos)
+            self._delegate.world_teleport(world_pos, self._space_name)
+
+    def center_on_player(self):
+        position = self._player_mark.position
+        self._back.center_on(Vector2(position[0], position[2]))
+
+    def center_on_position(self, position):
+        self._back.center_on(Vector2(position[0], position[2]))
+
+    def center_on_npc(self, npc_id):
+        npc_name = AP.get_npc_name_by_id(npc_id)
+        position = self._notes_data[npc_name]
+        self._back.center_on(Vector2(position[0], position[2]))
+
+    def zoom(self, direction):
+        cursor_pos = self.component.localToScreen((0, 0))
+        self._back.zoom(direction * 100, cursor_pos)
+
+    def handleMouseEnterEvent(self, comp):
+        self._hover = True
+        return False
+
+    def handleMouseLeaveEvent(self, comp):
+        self._hover = False
+        return False
+
+    def handleMouseEvent(self, comp, event):
+        if not BigWorld.isKeyDown(Keys.KEY_LEFTMOUSE):
+            self._set_captured(False)
+        if self._captured and (event.dx or event.dy):
+            if not getattr(self, '_sound_movement', None):
+                self._sound_movement = sounds_manager.getSound('ui/map/movement')
+                self._sound_movement.set_param('move', 1)
+                self._sound_movement.play()
+            self._back.pan(event.dx, event.dy)
+            if getattr(self, '_stop_movement_sound_cid', 0):
+                BigWorld.cancelCallback(self._stop_movement_sound_cid)
+            self._stop_movement_sound_cid = BigWorld.callback(0.1, self._stop_movement_sound)
+        if event.dz:
+            if self._back.zoom(event.dz, event.cursorPosition):
+                if not getattr(self, '_sound_zoom', None):
+                    self._sound_zoom = sounds_manager.getSound('ui/map/zoom')
+                    self._sound_zoom.set_param('zoom', 1)
+                    self._sound_zoom.play()
+                if getattr(self, '_stop_zoom_sound_cid', 0):
+                    BigWorld.cancelCallback(self._stop_zoom_sound_cid)
+                self._stop_zoom_sound_cid = BigWorld.callback(0.1, self._stop_zoom_sound)
+        return True
+
+    def get_visible_world_coords(self):
+        return self._back and self._back.get_visible_world_coords()
+
+    def get_visible_texture_coords(self):
+        return self._back and self._back.get_visible_texture_coords()
+
+    def _stop_movement_sound(self):
+        self._stop_movement_sound_cid = 0
+        self._sound_movement.stop()
+        self._sound_movement = None
+        return
+
+    def _stop_zoom_sound(self):
+        self._stop_zoom_sound_cid = 0
+        self._sound_zoom.stop()
+        self._sound_zoom = None
+        return

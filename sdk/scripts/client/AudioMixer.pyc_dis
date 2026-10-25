@@ -1,0 +1,389 @@
+# Embedded file name: ./client/AudioMixer.py
+"""
+\xd0\x92\xd0\xa1\xd0\x81 \xd0\xa3\xd0\x9f\xd0\xa0\xd0\x90\xd0\x92\xd0\x9b\xd0\x95\xd0\x9d\xd0\x98\xd0\x95 \xd0\x93\xd0\xa0\xd0\x9e\xd0\x9c\xd0\x9a\xd0\x9e\xd0\xa1\xd0\xa2\xd0\xaf\xd0\x9c\xd0\x98 \xd0\x98 \xd0\x9c\xd0\x9e\xd0\x94\xd0\x98\xd0\xa4\xd0\x98\xd0\x9a\xd0\x90\xd0\xa2\xd0\x9e\xd0\xa0\xd0\x90\xd0\x9c\xd0\x98 \xd0\xa8\xd0\x98\xd0\x9d \xd0\x92 \xd0\xad\xd0\xa2\xd0\x9e\xd0\x9c \xd0\x9c\xd0\x9e\xd0\x94\xd0\xa3\xd0\x9b\xd0\x95
+
+[mixer_bus_volume] \xd0\xb8\xd0\xb7\xd0\xbc\xd0\xb5\xd0\xbd\xd1\x8f\xd1\x8e\xd1\x82\xd1\x81\xd1\x8f \xd1\x82\xd0\xbe\xd0\xbb\xd1\x8c\xd0\xba\xd0\xbe \xd0\xbf\xd0\xbe\xd0\xbb\xd0\xb7\xd1\x83\xd0\xbd\xd0\xba\xd0\xb0\xd0\xbc\xd0\xb8 \xd0\xb2 \xd0\xbd\xd0\xb0\xd1\x81\xd1\x82\xd1\x80\xd0\xbe\xd0\xb9\xd0\xba\xd0\xb0\xd1\x85
+[mixer_bus_modifier] \xd0\xb8\xd0\xb7\xd0\xbc\xd0\xb5\xd0\xbd\xd1\x8f\xd1\x8e\xd1\x82\xd1\x81\xd1\x8f \xd0\xb2 \xd0\xba\xd0\xbe\xd0\xb4\xd0\xb5
+fmod_bus_volume = mixer_bus_volume * mixer_bus_modifier
+"""
+try:
+    import BigWorld
+    import _BWSound
+    from Settings import Settings
+    from utils import Tickable, plog
+except ImportError:
+
+    class __BigWorld:
+        pass
+
+
+    BigWorld = __BigWorld()
+    BigWorld.time = lambda : 0.0
+    BigWorld.getTimeDelta = lambda : 0.01
+
+    class _SoundGroup(object):
+
+        def __init__(self, name):
+            self.volume = 1.0
+
+
+    class _BWSound:
+
+        @staticmethod
+        def SoundGroup(name):
+            return _SoundGroup(name)
+
+
+    class Settings:
+
+        def getMusicVolume(self):
+            return 1.0
+
+        def getVoiceVolume(self):
+            return 1.0
+
+        def getMainVolume(self):
+            return 1.0
+
+        def getEnvironmentVolume(self):
+            return 1.0
+
+
+    class Tickable(object):
+
+        def start_tick(self):
+            pass
+
+        def stop_tick(self):
+            pass
+
+        def start_blending(self):
+            pass
+
+        def stop_blending(self):
+            pass
+
+
+    def plog(*args):
+        pass
+
+
+import traceback
+MUSIC_BUS = tuple(['music'])
+ENVIRONMENT_BUS = tuple(['to_muffle',
+ 'items',
+ 'guns',
+ 'anomaly'])
+VOICE_BUS = tuple(['npc'])
+UI_BUS = tuple(['ui'])
+CUTSCENES_BUS = tuple(['cutscenes'])
+MAIN_BUS = tuple([''])
+MUSIC_BUS_ID, ENVIRONMENT_BUS_ID, VOICE_BUS_ID, UI_BUS_ID, MAIN_BUS_ID, CUTSCENES_BUS_ID = FULL_BUS_IDS = range(6)
+NO_UI_BUS_IDS = (MUSIC_BUS_ID,
+ ENVIRONMENT_BUS_ID,
+ VOICE_BUS_ID,
+ CUTSCENES_BUS_ID)
+NO_UI_CUTSCENES_BUS_IDS = (MUSIC_BUS_ID, ENVIRONMENT_BUS_ID, VOICE_BUS_ID)
+mixer_bus_id2fmod_bus_list = {MUSIC_BUS_ID: MUSIC_BUS,
+ ENVIRONMENT_BUS_ID: ENVIRONMENT_BUS,
+ VOICE_BUS_ID: VOICE_BUS,
+ UI_BUS_ID: UI_BUS,
+ MAIN_BUS_ID: MAIN_BUS,
+ CUTSCENES_BUS_ID: CUTSCENES_BUS}
+
+def clamp_val(val, min_val, max_val):
+    return min(max(min_val, val), max_val)
+
+
+def move_towards(current_value, target_value, step_size):
+    """
+    \xd0\x92\xd0\xbe\xd0\xb7\xd0\xb2\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xb7\xd0\xbd\xd0\xb0\xd1\x87\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5 \xd0\xbc\xd0\xb5\xd0\xb6\xd0\xb4\xd1\x83 current_value \xd0\xb8 target_value, \xd0\xbf\xd1\x80\xd0\xb8\xd0\xb1\xd0\xbb\xd0\xb8\xd0\xb6\xd0\xb5\xd0\xbd\xd0\xbd\xd0\xbe\xd0\xb5 \xd0\xba \xd1\x86\xd0\xb5\xd0\xbb\xd0\xb8 \xd0\xbd\xd0\xb5 \xd0\xb1\xd0\xbe\xd0\xbb\xd0\xb5\xd0\xb5 \xd1\x87\xd0\xb5\xd0\xbc \xd0\xbd\xd0\xb0 step_size
+    """
+    distance_to_target = target_value - current_value
+    if abs(distance_to_target) <= step_size:
+        return target_value
+    if current_value < target_value:
+        return current_value + step_size
+    return current_value - step_size
+
+
+def apply_all_fmod_bus_volumes():
+    global _set_fmod_bus_volumes
+    for bus_id in FULL_BUS_IDS:
+        _set_fmod_bus_volumes(bus_id)
+
+
+def _set_fmod_bus_volumes(bus_id):
+    """
+    \xd0\xa3\xd1\x81\xd1\x82\xd0\xb0\xd0\xbd\xd0\xb0\xd0\xb2\xd0\xbb\xd0\xb8\xd0\xb2\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xb8\xd1\x82\xd0\xbe\xd0\xb3\xd0\xbe\xd0\xb2\xd0\xbe\xd0\xb5 \xd0\xb7\xd0\xbd\xd0\xb0\xd1\x87\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5 \xd0\xb3\xd1\x80\xd0\xbe\xd0\xbc\xd0\xba\xd0\xbe\xd1\x81\xd1\x82\xd0\xb8 \xd1\x88\xd0\xb8\xd0\xbd \xd0\xb2 FMOD
+    """
+    fmod_bus_volume = audio_mixer.get_fmod_bus_volume(bus_id)
+    bus_list = mixer_bus_id2fmod_bus_list[bus_id]
+    for bus in bus_list:
+        try:
+            sound_group = _BWSound.SoundGroup('bus:/{0}'.format(bus))
+            sound_group.volume = fmod_bus_volume
+        except:
+            plog('[ERROR] bus {0} not found'.format(bus))
+            traceback.print_exc()
+
+
+def main_volume_settings_changed():
+    _set_fmod_bus_volumes(MAIN_BUS_ID)
+
+
+def environment_volume_settings_changed():
+    _set_fmod_bus_volumes(ENVIRONMENT_BUS_ID)
+    _set_fmod_bus_volumes(UI_BUS_ID)
+
+
+def music_volume_settings_changed():
+    _set_fmod_bus_volumes(MUSIC_BUS_ID)
+
+
+def voice_volume_settings_changed():
+    _set_fmod_bus_volumes(VOICE_BUS_ID)
+
+
+EPS = 0.01
+
+class AudioMixer(Tickable):
+    """
+    \xd0\x9c\xd0\xb8\xd0\xba\xd1\x88\xd0\xb5\xd1\x80 \xd0\xb3\xd1\x80\xd0\xbe\xd0\xbc\xd0\xba\xd0\xbe\xd1\x81\xd1\x82\xd0\xb8 \xd1\x81 \xd0\xbf\xd0\xbe\xd0\xb4\xd0\xb4\xd0\xb5\xd1\x80\xd0\xb6\xd0\xba\xd0\xbe\xd0\xb9 \xd0\xbf\xd0\xbb\xd0\xb0\xd0\xb2\xd0\xbd\xd1\x8b\xd1\x85 \xd0\xb8\xd0\xb7\xd0\xbc\xd0\xb5\xd0\xbd\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb9
+    \xd0\xa3\xd0\xbf\xd1\x80\xd0\xb0\xd0\xb2\xd0\xbb\xd1\x8f\xd0\xb5\xd1\x82 \xd0\xbe\xd0\xb4\xd0\xbd\xd0\xbe\xd0\xb2\xd1\x80\xd0\xb5\xd0\xbc\xd0\xb5\xd0\xbd\xd0\xbd\xd1\x8b\xd0\xbc\xd0\xb8 \xd0\xbd\xd0\xb0\xd0\xbb\xd0\xbe\xd0\xb6\xd0\xb5\xd0\xbd\xd0\xb8\xd1\x8f\xd0\xbc\xd0\xb8
+    """
+
+    def __init__(self):
+        Tickable.__init__(self)
+        self._debug_start_time = BigWorld.time()
+        self._target_blends = {}
+        self._curr_mixer_bus_modifiers = [ 1.0 for _ in xrange(len(FULL_BUS_IDS)) ]
+
+    def start_blending(self):
+        """\xd0\x97\xd0\xb0\xd0\xbf\xd1\x83\xd1\x81\xd0\xba\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xbf\xd1\x80\xd0\xbe\xd1\x86\xd0\xb5\xd1\x81\xd1\x81 \xd0\xbf\xd0\xbb\xd0\xb0\xd0\xb2\xd0\xbd\xd0\xbe\xd0\xb3\xd0\xbe \xd0\xb1\xd0\xbb\xd0\xb5\xd0\xbd\xd0\xb4\xd0\xb0 \xd0\xb3\xd1\x80\xd0\xbe\xd0\xbc\xd0\xba\xd0\xbe\xd1\x81\xd1\x82\xd0\xb8"""
+        Tickable.start_tick(self)
+        self._debug_start_time = BigWorld.time()
+
+    def stop_blending(self):
+        """\xd0\x9e\xd1\x81\xd1\x82\xd0\xb0\xd0\xbd\xd0\xb0\xd0\xb2\xd0\xbb\xd0\xb8\xd0\xb2\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xbf\xd1\x80\xd0\xbe\xd1\x86\xd0\xb5\xd1\x81\xd1\x81 \xd0\xb1\xd0\xbb\xd0\xb5\xd0\xbd\xd0\xb4\xd0\xb0 \xd0\xb3\xd1\x80\xd0\xbe\xd0\xbc\xd0\xba\xd0\xbe\xd1\x81\xd1\x82\xd0\xb8"""
+        Tickable.stop_tick(self)
+
+    def can_tick(self):
+        return bool(self.is_blending_active())
+
+    def is_blending_active(self):
+        """\xd0\x9f\xd1\x80\xd0\xbe\xd0\xb2\xd0\xb5\xd1\x80\xd1\x8f\xd0\xb5\xd1\x82, \xd0\xb5\xd1\x81\xd1\x82\xd1\x8c \xd0\xbb\xd0\xb8 \xd0\xb0\xd0\xba\xd1\x82\xd0\xb8\xd0\xb2\xd0\xbd\xd1\x8b\xd0\xb5 \xd0\xb1\xd0\xbb\xd0\xb5\xd0\xbd\xd0\xb4\xd1\x8b \xd0\xb3\xd1\x80\xd0\xbe\xd0\xbc\xd0\xba\xd0\xbe\xd1\x81\xd1\x82\xd0\xb8"""
+        for data in self._target_blends.values():
+            if data['blend_time'] > 0:
+                return True
+
+        return False
+
+    def on_tick(self):
+        """\xd0\x9e\xd1\x81\xd0\xbd\xd0\xbe\xd0\xb2\xd0\xbd\xd0\xbe\xd0\xb9 \xd0\xbc\xd0\xb5\xd1\x82\xd0\xbe\xd0\xb4 \xd0\xbe\xd0\xb1\xd0\xbd\xd0\xbe\xd0\xb2\xd0\xbb\xd0\xb5\xd0\xbd\xd0\xb8\xd1\x8f, \xd0\xb2\xd1\x8b\xd0\xb7\xd1\x8b\xd0\xb2\xd0\xb0\xd0\xb5\xd0\xbc\xd1\x8b\xd0\xb9 \xd0\xbf\xd0\xb5\xd1\x80\xd0\xb8\xd0\xbe\xd0\xb4\xd0\xb8\xd1\x87\xd0\xb5\xd1\x81\xd0\xba\xd0\xb8"""
+        now = BigWorld.time()
+        dt = now - self._debug_start_time
+        if dt > 60:
+            plog('[WARNING] Long blend operation ({0})'.format(len(self._target_blends)), self._target_blends, self._curr_mixer_bus_modifiers)
+            self._debug_start_time = now
+        self._update_volumes()
+        if not self.is_blending_active():
+            self.stop_blending()
+
+    def _update_volumes(self):
+        """\xd0\x92\xd1\x8b\xd1\x87\xd0\xb8\xd1\x81\xd0\xbb\xd1\x8f\xd0\xb5\xd1\x82 \xd0\xb8 \xd0\xbf\xd1\x80\xd0\xb8\xd0\xbc\xd0\xb5\xd0\xbd\xd1\x8f\xd0\xb5\xd1\x82 \xd0\xbd\xd0\xbe\xd0\xb2\xd1\x8b\xd0\xb5 \xd0\xb7\xd0\xbd\xd0\xb0\xd1\x87\xd0\xb5\xd0\xbd\xd0\xb8\xd1\x8f \xd0\xb3\xd1\x80\xd0\xbe\xd0\xbc\xd0\xba\xd0\xbe\xd1\x81\xd1\x82\xd0\xb8"""
+        dt = BigWorld.getTimeDelta()
+        bus_id2blends = {}
+        for (blend_id, bus_id), data in self._target_blends.items():
+            if bus_id not in bus_id2blends:
+                bus_id2blends[bus_id] = []
+            bus_id2blends[bus_id].append(data)
+
+        target_modifiers = {}
+        target_blend_times = {}
+        for bus_id, blends in bus_id2blends.items():
+            target_modifiers[bus_id] = min((b['modifier'] for b in blends))
+            target_blend_times[bus_id] = max((b['blend_time'] for b in blends))
+
+        for bus_id, target_modifier in target_modifiers.items():
+            blend_time = target_blend_times.get(bus_id, 0)
+            curr_modifier = self._curr_mixer_bus_modifiers[bus_id]
+            if blend_time > 0:
+                distance = abs(target_modifier - curr_modifier)
+                speed = distance / blend_time
+                curr_modifier = move_towards(curr_modifier, target_modifier, speed * dt)
+            else:
+                curr_modifier = target_modifier
+            self._curr_mixer_bus_modifiers[bus_id] = curr_modifier
+            _set_fmod_bus_volumes(bus_id)
+
+        to_delete_unused = []
+        for key, data in self._target_blends.items():
+            if data['blend_time'] > 0:
+                data['blend_time'] = max(data['blend_time'] - dt, 0)
+            if data['blend_time'] == 0 and abs(1 - data['modifier']) < EPS:
+                to_delete_unused.append(key)
+
+        for key in to_delete_unused:
+            del self._target_blends[key]
+
+    def get_fmod_bus_volume(self, bus_id):
+        settings = Settings()
+        if bus_id == MUSIC_BUS_ID:
+            mixer_bus_volume = settings.getMusicVolume()
+        elif bus_id == VOICE_BUS_ID:
+            mixer_bus_volume = settings.getVoiceVolume()
+        elif bus_id == MAIN_BUS_ID:
+            mixer_bus_volume = settings.getMainVolume()
+        else:
+            mixer_bus_volume = settings.getEnvironmentVolume()
+        mixer_bus_modifier = self._curr_mixer_bus_modifiers[bus_id]
+        fmod_bus_volume = mixer_bus_volume * mixer_bus_modifier
+        return fmod_bus_volume
+
+    def add_volume_blend(self, modifier, blend_id, blend_time, bus_ids):
+        plog('[AudioMixer] add_volume_blend', modifier, blend_id, blend_time, bus_ids)
+        modifier = clamp_val(modifier, 0, 1)
+        for bus_id in bus_ids:
+            self._target_blends[blend_id, bus_id] = {'modifier': modifier,
+             'blend_time': blend_time}
+
+        if blend_time > 0:
+            self.start_blending()
+        else:
+            self._update_volumes()
+
+
+audio_mixer = AudioMixer()
+
+def blend_volume_to(modifier, blend_id, blend_time = 3.0, bus_ids = None):
+    if bus_ids is None:
+        bus_ids = [MAIN_BUS_ID]
+    audio_mixer.add_volume_blend(modifier, blend_id, blend_time, bus_ids)
+    return
+
+
+import unittest
+
+class TestAudioMixer(unittest.TestCase):
+
+    def setUp(self):
+        self.mixer = AudioMixer()
+
+    def tearDown(self):
+        pass
+
+    def test_clamp_val(self):
+        self.assertEqual(clamp_val(1.5, 0, 1), 1)
+        self.assertEqual(clamp_val(-0.5, 0, 1), 0)
+        self.assertEqual(clamp_val(0.7, 0, 1), 0.7)
+
+    def test_move_towards(self):
+        self.assertEqual(move_towards(0.5, 1.0, 0.3), 0.8)
+        self.assertEqual(move_towards(0.5, 0.0, 0.3), 0.2)
+        self.assertEqual(move_towards(0.5, 0.7, 0.3), 0.7)
+
+    def test_volume_calculation(self):
+        """
+        \xd0\x9f\xd1\x80\xd0\xbe\xd0\xb2\xd0\xb5\xd1\x80\xd0\xba\xd0\xb0 \xd0\xb8\xd1\x82\xd0\xbe\xd0\xb3\xd0\xbe\xd0\xb2\xd0\xbe\xd0\xb3\xd0\xbe \xd0\xb7\xd0\xbd\xd0\xb0\xd1\x87\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5 \xd0\xb3\xd1\x80\xd0\xbe\xd0\xbc\xd0\xba\xd0\xbe\xd1\x81\xd1\x82\xd0\xb8 \xd1\x88\xd0\xb8\xd0\xbd\xd1\x8b \xd0\xb2 FMOD
+        """
+        original_main = Settings.getMainVolume
+        Settings.getMainVolume = lambda *e: 0.8
+        try:
+            self.mixer._curr_mixer_bus_modifiers[MAIN_BUS_ID] = 0.5
+            self.assertAlmostEqual(self.mixer.get_fmod_bus_volume(MAIN_BUS_ID), 0.4)
+        finally:
+            Settings.getMainVolume = original_main
+
+    def test_add_volume_blend(self):
+        """
+        \xd0\x9f\xd1\x80\xd0\xbe\xd0\xb2\xd0\xb5\xd1\x80\xd0\xba\xd0\xb0 \xd1\x87\xd1\x82\xd0\xbe \xd0\xb1\xd0\xbb\xd0\xb5\xd0\xbd\xd0\xb4 \xd0\xb4\xd0\xbe\xd0\xb1\xd0\xb0\xd0\xb2\xd0\xb8\xd0\xbb\xd1\x81\xd1\x8f
+        """
+        self.mixer.add_volume_blend(0.5, 'test_blend', blend_time=2.0, bus_ids=[MUSIC_BUS_ID])
+        self.assertTrue(('test_blend', MUSIC_BUS_ID) in self.mixer._target_blends)
+        self.assertEqual(self.mixer._target_blends['test_blend', MUSIC_BUS_ID]['modifier'], 0.5)
+
+    def test_instant_blend(self):
+        """
+        \xd0\x9f\xd1\x80\xd0\xbe\xd0\xb2\xd0\xb5\xd1\x80\xd0\xba\xd0\xb0 \xd0\xbc\xd0\xbe\xd0\xbc\xd0\xb5\xd0\xbd\xd1\x82\xd0\xb0\xd0\xbb\xd1\x8c\xd0\xbd\xd0\xbe\xd0\xb3\xd0\xbe \xd0\xb1\xd0\xbb\xd0\xb5\xd0\xbd\xd0\xb4\xd0\xb0
+        """
+        self.mixer.add_volume_blend(0.3, 'instant', blend_time=0.0, bus_ids=[UI_BUS_ID])
+        self.assertEqual(self.mixer._curr_mixer_bus_modifiers[UI_BUS_ID], 0.3)
+
+    def test_volume_update(self):
+        """
+        \xd0\x9f\xd1\x80\xd0\xbe\xd0\xb2\xd0\xb5\xd1\x80\xd0\xba\xd0\xb0 \xd0\xbf\xd0\xbb\xd0\xb0\xd0\xb2\xd0\xbd\xd0\xbe\xd0\xb3\xd0\xbe \xd0\xb1\xd0\xbb\xd0\xb5\xd0\xbd\xd0\xb4\xd0\xb0 \xd0\xb3\xd1\x80\xd0\xbe\xd0\xbc\xd0\xba\xd0\xbe\xd1\x81\xd1\x82\xd0\xb8 \xd1\x81 \xd1\x82\xd0\xb5\xd1\x87\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5\xd0\xbc \xd0\xb2\xd1\x80\xd0\xb5\xd0\xbc\xd0\xb5\xd0\xbd\xd0\xb8
+        """
+        BigWorld.getTimeDelta = lambda : 0.1
+        self.mixer._curr_mixer_bus_modifiers[VOICE_BUS_ID] = 1.0
+        self.mixer.add_volume_blend(0.6, 'test_blend', blend_time=2.0, bus_ids=[VOICE_BUS_ID])
+        self.mixer._update_volumes()
+        expected = 0.98
+        self.assertAlmostEqual(self.mixer._curr_mixer_bus_modifiers[VOICE_BUS_ID], expected, places=5)
+
+    def test_blending_auto_stop(self):
+        """
+        \xd0\x9f\xd1\x80\xd0\xbe\xd0\xb2\xd0\xb5\xd1\x80\xd0\xba\xd0\xb0 \xd0\xb0\xd0\xb2\xd1\x82\xd0\xbe\xd0\xbc\xd0\xb0\xd1\x82\xd0\xb8\xd1\x87\xd0\xb5\xd1\x81\xd0\xba\xd0\xbe\xd0\xb9 \xd0\xbe\xd1\x81\xd1\x82\xd0\xb0\xd0\xbd\xd0\xbe\xd0\xb2\xd0\xba\xd0\xb8 \xd0\xb1\xd0\xbb\xd0\xb5\xd0\xbd\xd0\xb4\xd0\xb0 \xd0\xbf\xd0\xbe\xd1\x81\xd0\xbb\xd0\xb5 \xd0\xb7\xd0\xb0\xd0\xb2\xd0\xb5\xd1\x80\xd1\x88\xd0\xb5\xd0\xbd\xd0\xb8\xd1\x8f
+        """
+        self.mixer.add_volume_blend(1.0, 'short_blend', blend_time=0.1, bus_ids=[ENVIRONMENT_BUS_ID])
+        self.assertTrue(self.mixer.is_blending_active())
+        BigWorld.getTimeDelta = lambda : 10.0
+        self.mixer.on_tick()
+        self.assertFalse(self.mixer.is_blending_active())
+
+    def test_multiple_blends(self):
+        """
+        \xd0\x9f\xd1\x80\xd0\xbe\xd0\xb2\xd0\xb5\xd1\x80\xd0\xba\xd0\xb0 \xd0\xb4\xd0\xbe\xd0\xb1\xd0\xb0\xd0\xb2\xd0\xbb\xd0\xb5\xd0\xbd\xd0\xb8\xd1\x8f \xd0\xb1\xd0\xbb\xd0\xb5\xd0\xbd\xd0\xb4\xd0\xbe\xd0\xb2 \xd1\x81 \xd1\x80\xd0\xb0\xd0\xb7\xd0\xbd\xd1\x8b\xd0\xbc\xd0\xb8 ID \xd0\xb4\xd0\xbb\xd1\x8f \xd0\xbe\xd0\xb4\xd0\xbd\xd0\xbe\xd0\xb9 \xd1\x88\xd0\xb8\xd0\xbd\xd1\x8b
+        """
+        self.mixer.add_volume_blend(0.4, 'blend1', blend_time=2.0, bus_ids=[MAIN_BUS_ID])
+        self.mixer.add_volume_blend(0.6, 'blend2', blend_time=1.0, bus_ids=[MAIN_BUS_ID])
+        self.assertEqual(len(self.mixer._target_blends), 2)
+        self.assertEqual(self.mixer._target_blends['blend1', MAIN_BUS_ID]['modifier'], 0.4)
+        self.assertEqual(self.mixer._target_blends['blend2', MAIN_BUS_ID]['modifier'], 0.6)
+
+    def test_multiple_blends2(self):
+        """
+        \xd0\x9f\xd1\x80\xd0\xbe\xd0\xb2\xd0\xb5\xd1\x80\xd0\xba\xd0\xb0 \xd0\xb4\xd0\xbe\xd0\xb1\xd0\xb0\xd0\xb2\xd0\xbb\xd0\xb5\xd0\xbd\xd0\xb8\xd1\x8f \xd0\xb1\xd0\xbb\xd0\xb5\xd0\xbd\xd0\xb4\xd0\xbe\xd0\xb2 \xd1\x81 \xd0\xbe\xd0\xb4\xd0\xbd\xd0\xb8\xd0\xbc ID \xd0\xb4\xd0\xbb\xd1\x8f \xd0\xbe\xd0\xb4\xd0\xbd\xd0\xbe\xd0\xb9 \xd1\x88\xd0\xb8\xd0\xbd\xd1\x8b
+        """
+        self.mixer.add_volume_blend(0.4, 'blend1', blend_time=2.0, bus_ids=[NO_UI_BUS_IDS])
+        self.mixer.add_volume_blend(0.6, 'blend1', blend_time=1.0, bus_ids=[NO_UI_BUS_IDS])
+        self.assertEqual(len(self.mixer._target_blends), 1)
+        self.assertEqual(self.mixer._target_blends['blend1', NO_UI_BUS_IDS]['modifier'], 0.6)
+
+    def test_multiple_blends3(self):
+        """
+        \xd0\x9f\xd1\x80\xd0\xbe\xd0\xb2\xd0\xb5\xd1\x80\xd0\xba\xd0\xb0 \xd0\xb4\xd0\xbe\xd0\xb1\xd0\xb0\xd0\xb2\xd0\xbb\xd0\xb5\xd0\xbd\xd0\xb8\xd1\x8f \xd0\xb1\xd0\xbb\xd0\xb5\xd0\xbd\xd0\xb4\xd0\xbe\xd0\xb2 \xd1\x81 \xd1\x80\xd0\xb0\xd0\xb7\xd0\xbd\xd1\x8b\xd0\xbc\xd0\xb8 ID \xd0\xb4\xd0\xbb\xd1\x8f \xd0\xbe\xd0\xb4\xd0\xbd\xd0\xbe\xd0\xb9 \xd1\x88\xd0\xb8\xd0\xbd\xd1\x8b
+        """
+        self.mixer.add_volume_blend(1.0, 'instant', blend_time=0.0, bus_ids=[VOICE_BUS_ID])
+        self.assertEqual(self.mixer._curr_mixer_bus_modifiers[VOICE_BUS_ID], 1.0)
+        self.mixer.add_volume_blend(0.5, 'blend1', blend_time=0.5, bus_ids=[VOICE_BUS_ID])
+        self.mixer.add_volume_blend(0.4, 'blend2', blend_time=1.0, bus_ids=[VOICE_BUS_ID])
+        self.mixer.add_volume_blend(0.7, 'blend3', blend_time=2.0, bus_ids=[VOICE_BUS_ID])
+        self.assertEqual(len(self.mixer._target_blends), 3)
+        self.assertEqual(self.mixer._curr_mixer_bus_modifiers[VOICE_BUS_ID], 1.0)
+        BigWorld.getTimeDelta = lambda : 0.1
+        self.mixer.on_tick()
+        expected = 0.97
+        self.assertAlmostEqual(self.mixer._curr_mixer_bus_modifiers[VOICE_BUS_ID], expected, places=5)
+        BigWorld.getTimeDelta = lambda : 1.9
+        self.mixer.on_tick()
+        self.assertFalse(self.mixer.is_blending_active())
+
+    def test_settings_changed_handlers(self):
+        """
+        \xd0\x9f\xd1\x80\xd0\xbe\xd0\xb2\xd0\xb5\xd1\x80\xd0\xba\xd0\xb0 \xd0\xbe\xd0\xb1\xd1\x80\xd0\xb0\xd0\xb1\xd0\xbe\xd1\x82\xd1\x87\xd0\xb8\xd0\xba\xd0\xbe\xd0\xb2 \xd0\xb8\xd0\xb7\xd0\xbc\xd0\xb5\xd0\xbd\xd0\xb5\xd0\xbd\xd0\xb8\xd1\x8f \xd0\xbd\xd0\xb0\xd1\x81\xd1\x82\xd1\x80\xd0\xbe\xd0\xb5\xd0\xba \xd0\xb3\xd1\x80\xd0\xbe\xd0\xbc\xd0\xba\xd0\xbe\xd1\x81\xd1\x82\xd0\xb8
+        """
+        global _set_fmod_bus_volumes
+        calls = []
+        original_set_vol = _set_fmod_bus_volumes
+        try:
+            _set_fmod_bus_volumes = lambda x: calls.append(x)
+            music_volume_settings_changed()
+            voice_volume_settings_changed()
+            self.assertEqual(calls, [MUSIC_BUS_ID, VOICE_BUS_ID])
+        finally:
+            _set_fmod_bus_volumes = original_set_vol
+
+
+if __name__ == '__main__':
+    unittest.main()

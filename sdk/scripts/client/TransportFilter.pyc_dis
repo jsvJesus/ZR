@@ -1,0 +1,97 @@
+# Embedded file name: ./client/TransportFilter.py
+import math
+import BigWorld
+from Math import Vector3
+from TransportUtils import Arrive, Align, Kinematic, map_to_range
+
+class Toss:
+
+    def __init__(self):
+        self.position = Vector3()
+        self.rotation = Vector3()
+        self._angle = 0.0
+        self._amplitude = 0.05
+        self._pitch_amplitude = 0.01
+        self._frequency = 3.0
+
+    def update(self, time_delta):
+        self._angle += time_delta * self._frequency
+        self.position[1] = self._amplitude * math.sin(self._angle)
+        self.rotation[1] = self._pitch_amplitude * math.sin(self._angle)
+
+
+class TransportFilter(object):
+
+    def __init__(self, entity):
+        self._filter = BigWorld.PythonFilter()
+        entity.filter = self._filter
+        self._filter.resetFilter = self._reset
+        self._filter.inputFilter = self._input
+        self._filter.outputFilter = self._output
+        self._filter.lastInputFilter = self._last_input
+        self._filter.disableEngineOutput = True
+        self._inited = False
+        self._toss = Toss()
+        position = Vector3(entity.position)
+        velocity = Vector3()
+        orientation = Vector3(entity.yaw, entity.pitch, entity.roll)
+        self._target = Kinematic(position, velocity, orientation, Vector3(0, 0, 0))
+        self._character = Kinematic(position, velocity, orientation, Vector3(entity.yaw, entity.pitch, entity.roll))
+        self._arrive = Arrive(self._character, self._target, 100, 10, 2, 0.1)
+        self._align = Align(self._character, self._target, 3, 1, 0.5, 0.1)
+
+    def _reset(self, time):
+        pass
+
+    def onEnterWorld(self):
+        if not self._inited:
+            owner = self._filter.owner
+            self._filter.inputFilter(BigWorld.time(), owner.spaceID, 0, owner.position, 0, Vector3(owner.yaw, owner.pitch, owner.roll))
+
+    def _input(self, time, space_id, vehicle_id, pos, pos_error, rotation):
+        self._inited = True
+        self._time = time
+        self._space_id = space_id
+        self._vehicle_id = vehicle_id
+        self._pos = pos
+        self._pos_error = pos_error
+        self._rotation = rotation
+        self._target.korientation = Vector3(rotation)
+        self._target.kposition = Vector3(pos)
+
+    def _apply_behaviours(self, arrive_steering, align_steering, time_delta):
+        self._character.update(arrive_steering, time_delta)
+        self._character.update(align_steering, time_delta)
+        self._toss.update(time_delta)
+
+    def _output(self, time):
+        if not self._inited:
+            return
+        arrive_steering = self._arrive.get_steering()
+        align_steering = self._align.get_steering()
+        time_delta = BigWorld.getTimeDelta()
+        if time_delta <= 0.1:
+            self._apply_behaviours(arrive_steering, align_steering, time_delta)
+        elif time_delta < 3.0:
+            while time_delta > 0.1:
+                self._apply_behaviours(arrive_steering, align_steering, 0.1)
+                time_delta -= 0.1
+
+            self._apply_behaviours(arrive_steering, align_steering, time_delta)
+        else:
+            self._character.kposition = Vector3(self._target.kposition)
+            self._character.kvelocity = Vector3(self._target.kvelocity)
+            self._character.korientation = Vector3(self._target.korientation)
+            self._character.krotation = Vector3(self._target.krotation)
+        position = self._character.kposition + self._toss.position
+        rotation = map_to_range(self._character.korientation) + self._toss.rotation
+        return (position, rotation, Vector3())
+
+    def _last_input(self, unused_time, unused_space_id, unused_vehicle_id, unused_pos, unused_pos_error, unused_rotation):
+        return (True,
+         self._time,
+         self._space_id,
+         self._vehicle_id,
+         self._pos,
+         self._pos_error,
+         self._rotation)

@@ -1,0 +1,172 @@
+# Embedded file name: ./client/soGUI/weight_win.py
+from Math import Vector3
+from Localization import lc
+import colorCodes as cc
+import BWPersonality
+from math_bw import smooth_damp
+import BigWorld
+import GUI
+from Helpers.PyGUI.PyGUIBase import DragWin
+from soGUI.GUIPositions import GUIPositions
+from equip_paint.eqp_button import EqpButton
+from utils import Tickable
+from Helpers.PyGUI import Utils
+from sounds_manager import playSound
+
+class Button(EqpButton):
+
+    def _create_content(self):
+        comp = GUI.Window('soGUI/frame/munitions/backpack.dds')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = comp.texture.width, comp.texture.height
+        self.component.addChild(comp, 'img')
+
+    def handleMouseButtonEvent(self, comp, event):
+        EqpButton.handleMouseButtonEvent(self, comp, event)
+        return False
+
+    def update_visual(self, hovered, pressed):
+        if pressed:
+            color = (255, 255, 255, 255)
+        elif hovered:
+            color = cc.active_rgba
+        else:
+            color = cc.inactive_rgba
+        self.component.img.colour = color
+
+    def on_drag(self):
+        self.pressed = False
+
+
+class WeightWin(DragWin, GUIPositions, Tickable):
+
+    def __init__(self):
+        Tickable.__init__(self)
+        comp = GUI.Window('soGUI/frame/paint/black.dds')
+        comp.materialFX = 'BLEND'
+        comp.hm, comp.wm = ('PIXEL', 'PIXEL')
+        comp.colour = (255, 255, 255, 75)
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.ha, comp.va = ('RIGHT', 'CENTER')
+        comp.width, comp.height = (26, 26)
+        comp.visible = False
+        comp.position = self._get_default_position()
+        DragWin.__init__(self, comp)
+        GUIPositions.__init__(self)
+        self.onDragging = self._on_drag
+        comp = GUI.Window()
+        comp.materialFX = 'BLEND'
+        comp.ha, comp.va = ('RIGHT', 'CENTER')
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.position = (1, 0, 0.5)
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = self.component.width, self.component.height
+        self._btn = Button(comp)
+        self.component.addChild(comp, 'btn')
+        self._btn.on_click = self._on_click
+        comp = GUI.Window()
+        comp.wm, comp.hm = ('PIXEL', 'CLIP')
+        comp.ha, comp.va = ('LEFT', 'CENTER')
+        comp.hpm, comp.vpm = ('PIXEL', 'CLIP')
+        comp.width, comp.height = (0, 2)
+        comp.position = (0, 0, 0.5)
+        self.component.addChild(comp, 'txtback')
+        comp = GUI.Text(u'', 'RobotoCondensedRegular_18.font')
+        comp.ha, comp.va = ('LEFT', 'CENTER')
+        comp.colour = cc.active_rgba
+        comp.hpm, comp.vpm = ('PIXEL', 'CLIP')
+        comp.position = (6, 0, 0.5)
+        self.component.txtback.addChild(comp)
+        self._txt = comp
+        self._min_width = self.component.width
+        self._max_width = self._min_width
+        self._reset()
+
+    def _reset(self):
+        self._desired_width = self._min_width
+        self.component.width = self._min_width
+        self.component.txtback.width = 0
+        self._velocity = 0.0
+        self._folded = False
+
+    def get_save_data(self):
+        return (tuple(self.component.position), self._folded)
+
+    def apply_save_data(self, data):
+        try:
+            position, folded = data
+        except:
+            position, folded = self._get_default_position(), True
+
+        self._folded = folded
+        self.component.position = Vector3(position[0], position[1], self.component.position[2])
+
+    def _on_drag(self):
+        self._btn.on_drag()
+
+    def _on_click(self):
+        if self._folded:
+            self._folded = False
+            self._desired_width = self._max_width
+            playSound('ui/weight_bar_open')
+        else:
+            self._folded = True
+            self._desired_width = self._min_width
+            playSound('ui/weight_bar_close')
+        self.start_tick()
+
+    def show(self):
+        self._max_width = self._min_width
+        self._reset()
+        self.component.visible = True
+        GUIPositions.show(self)
+        self.update_weight()
+
+    def update_weight(self):
+        data_section = BWPersonality.GUICore.inventoryDataSection
+        if data_section:
+            self._txt.visible = True
+            cur_weight, max_weight = data_section['weight'][:2]
+            text = u'{0:.2f}/{1:.2f} {2}'.format(cur_weight, max_weight, lc('GUI.MunitionsGUI.WEIGHT'))
+            self._txt.text = text
+            self._max_width = self._txt.stringWidth(text) + self._txt.position[0] + self._min_width + 6
+            if not self._folded:
+                self._desired_width = self._max_width
+                self.start_tick()
+        else:
+            self._txt.visible = False
+
+    def on_tick(self):
+        self.component.width, self._velocity = smooth_damp(self.component.width, self._desired_width, self._velocity, 0.05, 10000000000.0, BigWorld.getTimeDelta())
+        if abs(self._velocity) < 0.001:
+            self.component.width = self._desired_width
+        comp = self.component
+        prev_mode = comp.hpm
+        comp.hpm = 'PIXEL'
+        if comp.position[0] - comp.width < 0:
+            comp.position[0] = comp.width
+        comp.hpm = prev_mode
+        self.component.txtback.width = max(0, self.component.width - self._min_width)
+
+    def hide(self):
+        self.stop_tick()
+        self.component.visible = False
+
+    def can_tick(self):
+        if not Utils.is_visible_in_hierarchy(self.component):
+            return False
+        if self.component.width == self._desired_width:
+            return False
+        return True
+
+    def _get_default_position(self):
+        return (1, 0, 0.9)
+
+    def reset_position(self):
+        self._reset()
+        self.component.position = self._get_default_position()
+        self.update_weight()
+
+    def stopDragging(self):
+        DragWin.stopDragging(self)
+        GUIPositions.stopDragging(self)

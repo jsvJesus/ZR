@@ -1,0 +1,193 @@
+# Embedded file name: ./client/soGUI/PaintGUI/LoadEmblem.py
+from Helpers.PyGUI.PyGUIBase import PyGUIBase
+import GUI
+from Localization import lc
+from soGUI.soTextField import soTextField2
+from soGUI.soTextField import soTxtFieldPropsStructure
+from soGUI.UtilsGUI.PaintButton import PaintButton
+import DyeConstant
+from PaintBrowser import PaintBrowser
+import BigWorld
+import UCManager
+import ResMgr
+from soGUI.UtilsGUI.TextScaler import TextScaler
+from soGUI.StorehouseGUI.MessageWin import MessageWin
+from Items import ItemsCatalog
+from ShopConfirm import ShopConfirm
+
+class LoadEmblem(PyGUIBase):
+    EMPTY_MODE, ERROR_MODE, LOAD_MODE = xrange(3)
+
+    def __init__(self, screen_comp, component, file_browser_comp):
+        PyGUIBase.__init__(self, component)
+        self.on_emblem_loaded_callback = lambda : None
+        self.component.script = self
+        self._setup_content(screen_comp, file_browser_comp)
+        self.on_texture_changed = lambda texture: None
+        self.on_image_uploaded_callback = lambda image_id: None
+        self._default_pic = BigWorld.PyTextureProvider('soGUI/frame/paint/def_pic.png')
+        self.reset()
+
+    def _setup_content(self, screen_comp, file_browser_comp):
+        self._texts = []
+        comp = GUI.Window()
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.verticalPositionMode = 'CLIP'
+        comp.width, comp.height = (1.8, 2)
+        comp.verticalAnchor = 'TOP'
+        comp.position = (0, 0.4, 0.5)
+        self._disclaimer_text = soTextField2(comp, soTxtFieldPropsStructure(height=200, width=200, vScroll=False))
+        self._disclaimer_text.setText(lc('colourItemWindow.EULA_UPLOAD_EMBLEM_SHORT'))
+        self.component.addChild(self._disclaimer_text.component, 'disclaimer_text')
+        self._disclaimer_text.component.textRender.colour = (255, 255, 255, 170)
+        self._texts.append(TextScaler(self._disclaimer_text.component.textRender, 'RobotoCondensedRegular_12'))
+        comp = GUI.Window()
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.width, comp.height = (1.2, 0.22)
+        comp.position = (0, -0.5, 0.1)
+        self.component.addChild(comp, 'button_open')
+        open_button = PaintButton(comp, visual_state='soGUI/frame/paint/paintButton3.xml')
+        open_button.on_click = self._on_open_click
+        open_button.text = lc('PaintScreen.emblems.OPEN')
+        self._texts.append(open_button)
+        ticket_cost = DyeConstant.COST_UPLOAD_EMBLEM[ItemsCatalog.EVENT_TICKET['TypeID']]
+        comp = GUI.Text(lc('PaintScreen.emblems.NOTIFY').format(ticket_cost))
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.width, comp.height = (2, 0.22)
+        comp.position = (0, 0.5, 0.01)
+        comp.colour = (255, 0, 0, 255)
+        self.component.addChild(comp)
+        self._texts.append(TextScaler(comp, 'RobotoCondensedRegular_14'))
+        comp = GUI.Window()
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.width, comp.height = open_button.component.width, 0.22
+        comp.position = (0, -0.8, 0.1)
+        self.component.addChild(comp, 'load_button')
+        self._load_button = PaintButton(comp, visual_state='soGUI/frame/paint/paintButton3.xml')
+        self._load_button.text = lc('PaintScreen.emblems.BUY')
+        self._load_button.on_click = self._on_load_click
+        self._texts.append(self._load_button)
+        comp = GUI.Simple('soGUI/frame/paint/def_pic.png')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'CLIP')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.verticalAnchor = 'TOP'
+        comp.height = 0.3
+        comp.filterType = 'LINEAR'
+        comp.position = (0, 0.9, 0.5)
+        self.component.addChild(comp, 'chosen_image')
+        self._chosen_image = comp
+        self._shop_confirm = ShopConfirm()
+        screen_comp.addChild(self._shop_confirm.component, 'load_emblem_shop')
+        self._paint_browser = PaintBrowser(file_browser_comp)
+
+    def _on_open_click(self):
+        self._paint_browser.show(self._on_file_chose)
+
+    def _on_file_chose(self, path):
+        self._path = None
+        if not path:
+            self._mode = LoadEmblem.EMPTY_MODE
+            self._update_buttons()
+            return
+        else:
+            result, self._path, error = UCManager.ucmanager.converToDDS(path)
+            if not result:
+                self._show_error(lc('PaintScreen.emblems.BAD_FORMAT'))
+                self._mode = LoadEmblem.ERROR_MODE
+                self._update_buttons()
+                self._on_texture_chosen(None)
+                return
+            ResMgr.purge(self._path)
+            texture = BigWorld.PyTextureProvider(self._path, 3)
+            if texture.height > 128 or texture.width > 128:
+                strsize = '%sx%s' % (texture.width, texture.height)
+                self._show_error(lc('colourItemWindow.ERROR_SIZE').format(strsize))
+                self._mode = LoadEmblem.ERROR_MODE
+                self._update_buttons()
+                self._on_texture_chosen(None)
+                return
+            self._chosen_image.texture = texture
+            self._mode = LoadEmblem.LOAD_MODE
+            self._update_buttons()
+            self._on_texture_chosen(texture)
+            return
+
+    def reset(self):
+        self._texture = None
+        self._mode = LoadEmblem.EMPTY_MODE
+        self._update_buttons()
+        return
+
+    def _on_texture_chosen(self, texture):
+        prev_texture = self._texture
+        if prev_texture == texture:
+            return
+        self._texture = texture
+        self.on_texture_changed(texture)
+
+    def _show_error(self, text):
+        MessageWin.paint_instance.show_single_button(text, lc('PaintScreen.screen.OK'))
+
+    def _on_load_click(self):
+        needed_tickets = DyeConstant.COST_UPLOAD_EMBLEM[ItemsCatalog.EVENT_TICKET['TypeID']]
+        if needed_tickets > self._tickets:
+            self._shop_confirm.show({ItemsCatalog.EVENT_TICKET['TypeID']: needed_tickets - self._tickets})
+            return
+
+        def on_upload_image(image_id):
+            self.on_image_uploaded_callback(int(image_id))
+
+        def on_confirm():
+            self._mode = LoadEmblem.EMPTY_MODE
+            result, path, error = UCManager.ucmanager.converToDDS(self._path)
+            if result:
+                UCManager.ucmanager.uploadImage(path, callbackUnlock=lambda : None, onUploadImage=on_upload_image)
+            else:
+                raise RuntimeError
+            self._update_buttons()
+            MessageWin.paint_instance.show_single_button(lc('PaintScreen.emblems.LOAD_SUCESS'), lc('PaintScreen.screen.OK'))
+            self.on_emblem_loaded_callback()
+
+        text = lc('PaintScreen.emblems.CONFIRM').format(needed_tickets)
+        MessageWin.paint_instance.show_double_buttons(text, lc('PaintScreen.screen.OK'), lc('PaintScreen.screen.NO'), left_click_callback=on_confirm)
+
+    def set_tickets(self, tickets):
+        self._tickets = tickets
+
+    def show(self):
+        self.component.visible = True
+        self._update_buttons()
+
+    def hide(self):
+        self.component.visible = False
+        self._update_buttons()
+
+    def close_browser(self):
+        self._paint_browser.hide()
+
+    def _update_buttons(self):
+        if self._mode == LoadEmblem.EMPTY_MODE:
+            self._load_button.component.visible = False
+            self._chosen_image.texture = self._default_pic
+        elif self._mode == LoadEmblem.LOAD_MODE:
+            self._load_button.component.visible = True
+        elif self._mode == LoadEmblem.ERROR_MODE:
+            self._load_button.component.visible = False
+            self._chosen_image.texture = self._default_pic
+
+    def do_reposition(self):
+        for text in self._texts:
+            text.do_reposition()
+
+        prev_mode = self.component.widthMode
+        self.component.widthMode = 'PIXEL'
+        self._disclaimer_text.setWidth(self.component.width * 0.95)
+        self.component.widthMode = prev_mode
+        self._paint_browser.do_reposition()
+        self._chosen_image.heightMode = 'PIXEL'
+        self._chosen_image.width = self._chosen_image.height
+        self._chosen_image.heightMode = 'CLIP'
+        self._shop_confirm.do_reposition()

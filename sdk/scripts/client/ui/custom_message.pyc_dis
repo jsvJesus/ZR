@@ -1,0 +1,270 @@
+# Embedded file name: ./client/ui/custom_message.py
+import BWPersonality
+from gui_jokes import askUser
+from soGUI.soDialogueBox import soDialogueBox
+from Localization import lc
+import GUI
+from soGUI.soTextField import soTextField3
+import colorCodes as cc
+from collections import defaultdict, Iterable
+import ItemsUtils
+from utils import groupNumber
+from soGUI.textMoney import getColorMoney
+from functools import partial
+
+def assert_endline(text):
+    if text.endswith('\n'):
+        return text
+    return text + '\n'
+
+
+class NotifyDetailsStatistics(askUser):
+
+    def __init__(self, statistics, close_callback):
+        askUser.__init__(self, lc('GUI.convertstat.details.caption'), u'', callback=self._callback, btn_set=[soDialogueBox.BTN_ACCEPT, soDialogueBox.BTN_DECLINE], modal=False)
+        self._close_callback = close_callback
+        self.component = BWPersonality.GUICore.msgBoxMgr.msgBoxes[self.ID].component
+        self.component.script.need_cursor = True
+        self.component.width = 322
+        self.component.height = 388
+        self.component.closeBox.position[0] = self.component.width - 8
+        self.component.btn_12.visible = False
+        self.component.btn_13.visible = False
+        top, bottom, side = (38, 8, 8)
+        comp = GUI.Window()
+        comp.ha, comp.va = ('CENTER', 'TOP')
+        comp.hpm, comp.vpm = ('CLIP', 'PIXEL')
+        comp.position = (0, top, 0.5)
+        width, height = self.component.width - side * 2, self.component.height - top - bottom
+        self._text = soTextField3(comp, width=width, height=height, textWidth=width - 18, borderWidth=0, vOffset=0, hOffset=0, textureless=1, hScroll=False, vScroll=True)
+        self.component.addChild(self._text.component)
+        text = u''
+        painted_data, added_data, del_data, replace_data = statistics['data']
+        if painted_data:
+            text += assert_endline(self._prepare_painted_text(painted_data))
+        if replace_data:
+            text += assert_endline(self._prepare_replaced_text(replace_data))
+        if del_data:
+            text += assert_endline(self._prepare_del_text(del_data))
+        has_added_caption = False
+        if added_data:
+            text += assert_endline(self._prepare_added_text(added_data))
+            has_added_caption = True
+        if statistics['money']:
+            text += assert_endline(self._prepare_money_text(not has_added_caption, statistics['money']))
+        self._text.setText(text, immidiate=True)
+        if self._text.calc_real_pixel_height() < height:
+            self._text.recalc_auto_height()
+            self.component.height = comp.position[1] + comp.height + bottom
+
+    def _callback(self, btn_event):
+        if btn_event == askUser.CLOSED:
+            self._close_callback()
+
+    def _sort_item_types(self, item_types):
+
+        def price(item):
+            if isinstance(item, Iterable):
+                item = item[0]
+            return ItemsUtils.GetPureItemCost(item)
+
+        return sorted(item_types, key=lambda it: price, reverse=True)
+
+    def _prepare_standard_text(self, data, local_key):
+        text = cc.active_xml + lc(local_key) + '\n'
+        item_data = defaultdict(int)
+        for i in range(0, len(data), 2):
+            item_type, count = data[i:i + 2]
+            item_data[item_type] += count
+
+        sorted_types = self._sort_item_types(item_data.keys())
+        for item_type in sorted_types:
+            count = item_data[item_type]
+            item_name = ItemsUtils.GetItemName(item_type, fGetShortName=True)
+            text += u'<hlink={0};INFO:TYPE:{1};>'.format(item_name, item_type)
+            if count > 1:
+                text += u' {0} {1}'.format(cc.active_xml + unicode(count), cc.inactive_xml + lc('GUI.convertstat.p'))
+            text += '\n'
+
+        return text
+
+    def _prepare_added_text(self, data):
+        return self._prepare_standard_text(data, 'GUI.convertstat.added')
+
+    def _prepare_del_text(self, data):
+        return self._prepare_standard_text(data, lc('GUI.convertstat.details.del'))
+
+    def _prepare_replaced_text(self, data):
+        item_data = defaultdict(int)
+        for i in range(0, len(data), 3):
+            item_from, item_to, count = data[i:i + 3]
+            item_data[(item_from, item_to)] += count
+
+        text = cc.active_xml + lc('GUI.convertstat.replace') + '\n'
+        item_keys = self._sort_item_types(item_data.keys())
+        for item_from, item_to in item_keys:
+            count = item_data[item_from, item_to]
+            name_from = u'<hlink={0};INFO:TYPE:{1};>'.format(ItemsUtils.GetItemName(item_from, fGetShortName=True), item_from)
+            name_to = u'<hlink={0};INFO:TYPE:{1};>'.format(ItemsUtils.GetItemName(item_to, fGetShortName=True), item_to)
+            name_count = u''
+            if count > 1:
+                name_count = u' {0} {1}'.format(cc.active_xml + unicode(count), cc.inactive_xml + lc('GUI.convertstat.p'))
+            text += u'{0}{2} {3} {1}{2}\n'.format(name_from, name_to, name_count, cc.inactive_xml + lc('GUI.convertstat.with'))
+
+        return text
+
+    def _prepare_painted_text(self, data):
+        text = cc.active_xml + lc('GUI.convertstat.details.unpaint') + '\n'
+        cammo_data = defaultdict(int)
+        for i in range(0, len(data), 3):
+            item_type, count = data[i + 1:i + 3]
+            cammo_data[item_type] += count
+
+        cammo_keys = self._sort_item_types(cammo_data.keys())
+        for item_type in cammo_keys:
+            text += u'<hlink={0};INFO:TYPE:{1};>'.format(ItemsUtils.GetItemName(item_type, fGetShortName=True), item_type)
+            count = cammo_data[item_type]
+            if count > 1:
+                text += u' {0} {1}'.format(cc.active_xml + unicode(count) + cc.inactive_xml, lc('GUI.convertstat.p'))
+            text += '\n'
+
+        return text
+
+    def _prepare_money_text(self, show_caption, money):
+        text = u''
+        if show_caption:
+            text = cc.active_xml + lc('GUI.convertstat.added') + u'\n'
+        text += cc.rgba_to_xml(getColorMoney(money)) + groupNumber(money, sep="'") + u' ' + lc('GiftGui.return.rub') + '\n'
+        return text
+
+
+class NotifyConverterStatistics(askUser):
+
+    def __init__(self, statistics):
+        askUser.__init__(self, lc('GUI.convertstat.caption'), u'', callback=self._callback, btn_set=[soDialogueBox.BTN_ACCEPT, soDialogueBox.BTN_DECLINE], modal=False)
+        self._visible = True
+        self.component = BWPersonality.GUICore.msgBoxMgr.msgBoxes[self.ID].component
+        self.component.script.need_cursor = True
+        self.component.width = 600
+        self.component.closeBox.position[0] = self.component.width - 8
+        btn = self.component.btn_12
+        btn.ha = 'RIGHT'
+        btn.width = 150
+        btn.position[0] = self.component.width / 2 - 7.5
+        btn.label.text = lc('GUI.convertstat.btnlist')
+        btn.script.onClick = partial(self._show_details, statistics)
+        btn = self.component.btn_13
+        btn.ha = 'LEFT'
+        btn.width = 150
+        btn.position[0] = self.component.width / 2 + 7.5
+        btn.label.text = lc('GUI.convertstat.btnok')
+        text = u''
+        painted_data, added_data, del_data, replace_data = statistics['data']
+        if painted_data:
+            text += assert_endline(self._prepare_painted_text(painted_data))
+        if added_data:
+            text += assert_endline(self._prepare_added_text(added_data))
+        if del_data:
+            text += assert_endline(self._prepare_del_text(del_data))
+        if replace_data:
+            text += assert_endline(self._prepare_replaced_text(replace_data))
+        if statistics['money']:
+            text += assert_endline(self._prepare_money_text(statistics['money']))
+        width = self.component.width
+        comp = GUI.Window()
+        comp.ha, comp.va = ('CENTER', 'TOP')
+        comp.hpm, comp.vpm = ('CLIP', 'PIXEL')
+        comp.position = (0, 38, 0.5)
+        large_number = 4000
+        self._text = soTextField3(comp, width=width, height=large_number, textWidth=width, borderWidth=0, vOffset=0, hOffset=0, textureless=1, hScroll=False, vScroll=False)
+        self._text.DEFAULT_ALIGNMENT = 'center'
+        raise text.endswith('\n') or AssertionError
+        self._text.setText(text, immidiate=True)
+        self._text.recalc_auto_height()
+        self.component.addChild(comp)
+        self.component.height = comp.position[1] + comp.height + 44
+        self.component.btn_12.position[1] = self.component.height - 11
+        self.component.btn_13.position[1] = self.component.height - 11
+        BWPersonality.GUICore.setBestCursor()
+
+    def _show_details(self, statistics):
+        self.component.btn_12.script.setDisabledState(True)
+        NotifyDetailsStatistics(statistics, self._details_closed)
+
+    def _callback(self, btn_event):
+        if btn_event == askUser.CLOSED:
+            self._visible = False
+
+    def _details_closed(self):
+        if self._visible:
+            self.component.btn_12.script.setDisabledState(False)
+
+    def _prepare_painted_text(self, data):
+        cammo_data = defaultdict(lambda : [0, set()])
+        for i in range(0, len(data), 3):
+            camo_id, item_type, count = data[i:i + 3]
+            cammo_data[camo_id][0] += count
+            cammo_data[camo_id][1].add(item_type)
+
+        text = u''
+        for camo_id, (count, item_types) in cammo_data.items():
+            camo_name = lc('colourItemWindow.CAMMO_' + unicode(camo_id))
+            text += cc.inactive_xml + lc('GUI.convertstat.unpaint').format(cc.highlighted_xml + camo_name + cc.inactive_xml) + u' '
+            if len(item_types) == 1:
+                item_type = item_types.pop()
+                text += u'<hlink={0};INFO:TYPE:{1};>'.format(ItemsUtils.GetItemName(item_type, fGetShortName=True), item_type)
+                if count > 1:
+                    text += u' {0} {1}'.format(cc.active_xml + unicode(count) + cc.inactive_xml, lc('GUI.convertstat.p'))
+            else:
+                text += cc.active_xml + unicode(count) + cc.inactive_xml + u' ' + lc('GUI.convertstat.p')
+            text += u'\n'
+
+        return text
+
+    def _prepare_standard_text(self, data, local_key):
+        item_data = defaultdict(int)
+        for i in range(0, len(data), 2):
+            item_type, count = data[i:i + 2]
+            item_data[item_type] += count
+
+        text = u''
+        if len(item_data) == 1:
+            item_type, count = item_data.popitem()
+            item_name = ItemsUtils.GetItemName(item_type, fGetShortName=True)
+            link_text = u'<hlink={0};INFO:TYPE:{1};>'.format(item_name, item_type)
+            text += u'{0} {1}'.format(cc.active_xml + lc(local_key), link_text)
+            if count > 1:
+                text += u' {0} {1}'.format(cc.active_xml + unicode(count) + cc.inactive_xml, lc('GUI.convertstat.p'))
+        else:
+            count = sum(item_data.itervalues())
+            text += u'{0} {1} {2}'.format(cc.active_xml + lc(local_key), count, cc.inactive_xml + lc('GUI.convertstat.p'))
+        return text
+
+    def _prepare_added_text(self, data):
+        return self._prepare_standard_text(data, 'GUI.convertstat.added')
+
+    def _prepare_del_text(self, data):
+        return self._prepare_standard_text(data, 'GUI.convertstat.del')
+
+    def _prepare_replaced_text(self, data):
+        item_data = defaultdict(int)
+        for i in range(0, len(data), 3):
+            item_from, item_to, count = data[i:i + 3]
+            item_data[(item_from, item_to)] += count
+
+        text = u''
+        if len(item_data) == 1:
+            (item_from, item_to), count = item_data.popitem()
+            name_from = u'<hlink={0};INFO:TYPE:{1};>'.format(ItemsUtils.GetItemName(item_from, fGetShortName=True), item_from)
+            name_to = u'<hlink={0};INFO:TYPE:{1};>'.format(ItemsUtils.GetItemName(item_to, fGetShortName=True), item_to)
+            name_count = u''
+            if count > 1:
+                name_count = u' {0} {1}'.format(cc.active_xml + unicode(count), cc.inactive_xml + lc('GUI.convertstat.p'))
+            text += u'{0} {1}{3} {4} {2}{3}'.format(cc.active_xml + lc('GUI.convertstat.replace'), name_from, name_to, name_count, cc.inactive_xml + lc('GUI.convertstat.with'))
+        else:
+            count = sum(item_data.itervalues())
+            text += u'{0} {1} {2}'.format(cc.active_xml + lc('GUI.convertstat.replace'), count, cc.inactive_xml + lc('GUI.convertstat.p'))
+        return text
+
+    def _prepare_money_text(self, money):
+        return u'{0} {1} {2}\n'.format(cc.active_xml + lc('GUI.convertstat.added'), cc.rgba_to_xml(getColorMoney(money)) + groupNumber(money, sep="'"), lc('GiftGui.return.rub'))

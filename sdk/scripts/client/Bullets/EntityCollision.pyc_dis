@@ -1,0 +1,107 @@
+# Embedded file name: ./client/Bullets/EntityCollision.py
+import BigWorld
+import Constants
+from Items import ItemsCatalog
+from FiringDefs import DamageTypes
+from DrawPrimitivesUtils import DrawBBox, draw_line, draw_sphere
+import sounds_manager as sounds
+import traceback
+import random
+from Math import Vector3
+DEBUG = False
+
+def _armorHitSound(victim, point):
+    if not victim:
+        return
+    if not victim.model:
+        return
+    if BigWorld.camera().position.distTo(victim.position) > 25.0:
+        return
+    sounds.playSound('guns/hit/body_armor', victim.model)
+
+
+def _victim_interaction_sfx(victim, point, collider_name, bulletVel, ammoID, damager_id):
+    if not hasattr(victim, 'bleedFromShoot'):
+        return
+    orientation = Vector3(bulletVel)
+    orientation.normalise()
+    victim.bleedFromShoot(point, orientation, collider_name, ammoID, damager_id)
+
+
+_sfx_callback_id = 0
+_sfx_buff = {}
+
+def _sfx_callback():
+    _temp = _sfx_buff.values()
+    _sfx_buff.clear()
+    for victim, point, collider_box_name, bulletVel, ammoID, ownerID in _temp:
+        _victim_interaction_sfx(victim, point, collider_box_name, bulletVel, ammoID, ownerID)
+
+
+def onEntityCollision(skeletons, armors, collision_point_to, potential_pos, bulletPos, bulletVel, bulletSpeed, ammoID, weaponID, victimID, ownerID):
+    global _sfx_callback_id
+    victim = BigWorld.entity(victimID)
+    parent = BigWorld.entity(ownerID)
+    if not victim:
+        return
+    if not parent:
+        return
+    if victim.__class__.__name__ in Constants.CREATURE_CLASSES or victim.__class__.__name__ == 'Devil':
+        armors = []
+        if skeletons:
+            skeletons = [skeletons[0]]
+    for point, reflection, collider_box in armors:
+        item_type = collider_box.bodyIndex
+        item_param = ItemsCatalog.GetItemParam(item_type)
+        max_bullet_defence = 0
+        for body_zone, defence_data in item_param['Defence'].items():
+            if defence_data.get(DamageTypes.BULLET, 0) < max_bullet_defence:
+                continue
+            max_bullet_defence = defence_data.get(DamageTypes.BULLET, 0)
+
+        _armorHitSound(victim, point)
+
+    if not armors and skeletons:
+        point, reflection, collider_box = skeletons[0]
+        point = victim.skeletonCollider.impactPoint + reflection * 0.01
+        if _sfx_callback_id:
+            BigWorld.cancelCallback(_sfx_callback_id)
+        _sfx_buff[ownerID, victimID] = (victim,
+         point,
+         collider_box.name,
+         bulletVel,
+         ammoID,
+         ownerID)
+        _sfx_callback_id = BigWorld.callback(0, _sfx_callback)
+    body_zones = []
+    damage_centimeters = []
+    for i in skeletons:
+        in_point, reflection, collider_box = i
+        if parent is BigWorld.player():
+            color = (random.random(),
+             random.random(),
+             random.random(),
+             1)
+            if DEBUG:
+                DrawBBox(collider_box, in_point, potential_pos - in_point, color)
+            revert_direction = in_point - collision_point_to
+            if not collider_box.collide(potential_pos, revert_direction, revert_direction.length):
+                out_point = collision_point_to
+            out_point = collider_box.hitPoint
+            if DEBUG:
+                draw_line(out_point, in_point, color)
+                print 'in_point', in_point
+                print 'out_point', out_point
+            damage_length = Vector3(out_point - in_point).length
+            damage_centimeters.append(damage_length * 100)
+            if DEBUG:
+                draw_sphere(out_point, 0.02, color)
+            speed_factor = bulletVel.length / bulletSpeed
+            if not victim.colliderNames.has_key(collider_box.name):
+                continue
+            body_zone = victim.colliderNames[collider_box.name]
+            if body_zone not in body_zones:
+                body_zones.append(body_zone)
+
+    if parent is BigWorld.player() and body_zones:
+        parent.bullet_hit(victimID, ammoID, weaponID, body_zones, speed_factor)

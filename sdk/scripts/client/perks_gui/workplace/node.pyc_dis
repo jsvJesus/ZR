@@ -1,0 +1,447 @@
+# Embedded file name: ./client/perks_gui/workplace/node.py
+from visuals import visuals
+import BigWorld
+import GUI
+from Math import Vector2
+from ui.panel import Panel, EventType
+from ui.wrapped_text import WrappedText
+from math import atan2, cos, sin
+from perks_system.actions_utils import PerkVisual as PV
+from Localization import lc
+from Helpers.BWCoroutine import BWMemberCoroutine, BWWaitForPeriod
+from math_bw import move_towards
+import math
+import math_bw
+import sounds_manager as sm
+from ui.text import Align
+import colorCodes as cc
+
+class Condition():
+    Dev, Disabled, Enabled, Bought, Bad = xrange(5)
+
+
+class AnimType():
+    Buy, Enable = xrange(2)
+
+
+class Node(Panel):
+
+    def __init__(self, data, pos, parent_comp, name):
+        Panel.__init__(self, parent_comp, name)
+        self.component.isClip = False
+        self._animation_coroutine = None
+        self._twinkle_coroutine = None
+        self._data = data
+        min_size_in_pixels = 4
+        g = GUI.CircleComponent('textures/default/alpha.dds')
+        g.horizontalPositionMode, g.verticalPositionMode = ('CLIP', 'CLIP')
+        g.horizontalAnchor, g.verticalAnchor = ('CENTER', 'CENTER')
+        g.widthMode, g.heightMode = ('CLIP', 'CLIP')
+        g.materialFX = 'BLEND'
+        g.width, g.height = (2, 2)
+        g.position = (0, 0, 0.4)
+        g.fillColor = _condition_params[Condition.Bought]['base_color']
+        g.activeRadius = visuals['galo_size']
+        g.outlineColor = (1, 1, 1, 1)
+        g.outlineFillColor = (1, 1, 1, 1)
+        g.radius = 1.0
+        g.outlineWidth = 0.2
+        g.minOutlinePixelWidth = min_size_in_pixels
+        g.setShapes([((0, 0), (0, 0, 1, 1))])
+        g.setShapeActives([(0, 0)])
+        g.isClip = False
+        g.filterType = 'LINEAR'
+        self.component.addChild(g, 'circle')
+        if self.visual == PV.Original:
+            texture_name = 'textures/default/alpha.dds'
+        else:
+            texture_name = 'soGUI/frame/perks/Icons/Perk{0}.dds'.format(self.id)
+        comp = GUI.Simple(texture_name)
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.width, comp.height = 2 * visuals['image_size'], 2 * visuals['image_size']
+        comp.position = (0, 0, 0.5)
+        comp.materialFX = 'BLEND'
+        comp.filterType = 'LINEAR'
+        self.component.circle.addChild(comp, 'icon')
+        g = GUI.CircleComponent('textures/default/alpha.dds')
+        g.horizontalPositionMode, g.verticalPositionMode = ('CLIP', 'CLIP')
+        g.horizontalAnchor, g.verticalAnchor = ('CENTER', 'CENTER')
+        g.widthMode, g.heightMode = ('CLIP', 'CLIP')
+        g.materialFX = 'BLEND'
+        g.width, g.height = (2, 2)
+        g.position = (0, 0, 0.5)
+        g.baseColor = (0, 0, 0, 0)
+        g.outlineColor = (1, 1, 1, 1)
+        g.outlineFillColor = (1, 1, 1, 1)
+        g.radius = 1.35
+        g.outlineWidth = 0.1
+        g.minOutlinePixelWidth = min_size_in_pixels
+        g.setShapes([((0, 0), (0, 0, 1, 1))])
+        g.setShapeActives([(0, 0)])
+        g.filterType = 'LINEAR'
+        g.isClip = False
+        g.visible = False
+        self.component.addChild(g, 'selection')
+        self._node_changed_callbacks = []
+        self._node_start_change_callbacks = []
+        self.transform.set_pixel_perfect(False)
+        self._update_transform(pos)
+        self._update_pos()
+        self.mouse_button_interseptor = lambda node, event: False
+        self._hovered = False
+        self.set_condition(Condition.Dev)
+        return
+
+    def _update_transform(self, new_pos = None):
+        if not new_pos:
+            new_pos = self.pos
+        x = new_pos[0] * 0.5 + 0.5
+        y = new_pos[1] * 0.5 + 0.5
+        circle = self.component.circle
+        half_size = _sizes_params[self.visual] * 0.5
+        clip_anchors = (x - half_size,
+         y - half_size,
+         x + half_size,
+         y + half_size,
+         0.5)
+        circle.outlineWidth = 0.0005 / half_size
+        self.transform.set_clip_mode(clip_anchors)
+
+    def handleMouseButtonEvent(self, component, event):
+        if self.visual == PV.Original:
+            return False
+        return Panel.handleMouseButtonEvent(self, component, event)
+
+    def on_standard_click(self, event):
+        sm.playSound('ui/perks/click')
+        self.mouse_button_interseptor(self, event)
+
+    def add_node_changed_callback(self, callback):
+        """ \xd0\xbf\xd0\xbe\xd1\x81\xd0\xbb\xd0\xb5 \xd0\xba\xd0\xb0\xd0\xb6\xd0\xb4\xd0\xbe\xd0\xb3\xd0\xbe \xd1\x86\xd0\xb8\xd0\xba\xd0\xbb\xd0\xb0 \xd0\xb8\xd0\xb7\xd0\xbc\xd0\xb5\xd0\xbd\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb9
+                \xd1\x81\xd0\xb8\xd0\xb3\xd0\xbd\xd0\xb0\xd1\x82\xd1\x83\xd1\x80\xd0\xb0 callback()
+        """
+        self._node_changed_callbacks.append(callback)
+
+    def add_node_start_change_callback(self, callback):
+        """ \xd0\xbe\xd0\xb4\xd0\xb8\xd0\xbd \xd1\x80\xd0\xb0\xd0\xb7 \xd0\xbf\xd0\xb5\xd1\x80\xd0\xb5\xd0\xb4 \xd1\x86\xd0\xb8\xd0\xba\xd0\xbb\xd0\xbe\xd0\xbc \xd0\xb8\xd0\xb7\xd0\xbc\xd0\xb5\xd0\xbd\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb9
+                \xd1\x81\xd0\xb8\xd0\xb3\xd0\xbd\xd0\xb0\xd1\x82\xd1\x83\xd1\x80\xd0\xb0 callback(node)
+        """
+        self._node_start_change_callbacks.append(callback)
+
+    def on_event(self, event_type, data = None):
+        Panel.on_event(self, event_type, data)
+        if self.visual == PV.Original:
+            return
+        if event_type == EventType.StartDrag:
+            for c in self._node_start_change_callbacks:
+                c(self)
+
+        elif event_type == EventType.Drag:
+            self._update_pos()
+        elif event_type == EventType.MouseEnter:
+            sm.playSound('ui/perks/hover')
+            self._hovered = True
+            self._update_visual()
+        elif event_type == EventType.MouseLeave:
+            self._hovered = False
+            self._update_visual()
+
+    def _update_pos(self):
+        x = ((self.component.position[0] + self.component.width * 0.5) / self.component.parent.width - 0.5) * 2.0
+        y = ((self.component.position[1] + self.component.height * 0.5) / self.component.parent.height - 0.5) * 2.0
+        self.pos = Vector2(x, y)
+        for c in self._node_changed_callbacks:
+            c()
+
+    def get_radius(self, part):
+        return self.pos.length
+
+    def paste_radius(self, radius, part):
+        for c in self._node_start_change_callbacks:
+            c(self)
+
+        direction = Vector2(self.pos)
+        direction.normalise()
+        direction *= radius
+        self._update_transform(direction)
+        self._update_pos()
+
+    def get_angle(self, part):
+        return atan2(self.pos[1], self.pos[0])
+
+    def paste_angle(self, angle, part):
+        for c in self._node_start_change_callbacks:
+            c(self)
+
+        pos = Vector2(cos(angle), sin(angle)) * self.pos.length
+        self._update_transform(pos)
+        self._update_pos()
+
+    def set_condition(self, condition):
+        self.condition = condition
+        self._update_visual()
+
+    def _update_visual(self):
+        if self._animation_coroutine:
+            return
+        key = 'hover_color' if self._hovered else 'base_color'
+        params = _condition_params[self.condition]
+        self.component.circle.baseColor = params[key]
+        shape = (1, 0) if params['galo'] else (0, 0)
+        circle = self.component.circle
+        circle.setShapeActives([shape])
+        circle.outlineColor = params['border_color']
+        circle.outlineFillColor = params['border_color']
+        circle.icon.colour = params['icon_color']
+
+    def set_selected(self, selected, part = None):
+        self.component.selection.visible = selected
+
+    def get_state(self):
+        return Vector2(self.pos)
+
+    def restore_state(self, state):
+        for c in self._node_start_change_callbacks:
+            c(self)
+
+        self._update_transform(state)
+        self._update_pos()
+
+    def animate_buy(self, step1_time, callback):
+        self.twinkle(False)
+        if self._animation_coroutine:
+            self._animation_coroutine.stop()
+        self._animation_coroutine = self._animation_coroutine_runner(AnimType.Buy, callback, step1_time)
+        self._animation_coroutine.run()
+
+    def animate_enable(self, step1_time, step2_time, callback):
+        self.twinkle(False)
+        if self._animation_coroutine:
+            self._animation_coroutine.stop()
+        self._animation_coroutine = self._animation_coroutine_runner(AnimType.Enable, callback, step1_time, step2_time)
+        self._animation_coroutine.run()
+
+    def twinkle(self, twinkle):
+        if bool(twinkle) == bool(self._twinkle_coroutine):
+            return
+        else:
+            if self._twinkle_coroutine:
+                self._twinkle_coroutine.stop()
+                self._twinkle_coroutine = None
+            else:
+                self._twinkle_coroutine = self._twinkle_coroutine_runner()
+                self._twinkle_coroutine.run()
+            return
+
+    @BWMemberCoroutine
+    def _twinkle_coroutine_runner(self):
+        while True:
+            amplitude = abs(math.sin(math.pi * BigWorld.time()))
+            self.component.circle.setShapeActives([(amplitude, 0)])
+            yield BWWaitForPeriod(0)
+
+    @BWMemberCoroutine
+    def _animation_coroutine_runner(self, anim_type, callback, step1_time, step2_time = 0, step3_time = 1):
+        total_time = step1_time + step2_time + step3_time
+
+        def apply_buy_progress(progress):
+            sub_time = progress * total_time
+            if sub_time < step1_time:
+                sub_progress = sub_time / step1_time
+            else:
+                sub_progress = 1
+            amount = 1.5
+            start_fill = _condition_params[Condition.Enabled]['base_color']
+            stop_fill = _condition_params[Condition.Bought]['base_color']
+            start_border = _condition_params[Condition.Enabled]['border_color']
+            stop_border = _condition_params[Condition.Bought]['border_color']
+            fill_color = math_bw.lerp_rgb_colors(start_fill, stop_fill, sub_time)
+            border_color = math_bw.lerp_rgb_colors(start_border, stop_border, sub_time)
+            start_icon = _condition_params[Condition.Enabled]['icon_color']
+            stop_icon = _condition_params[Condition.Bought]['icon_color']
+            icon_color = math_bw.lerp_rgb_colors(start_icon, stop_icon, sub_time)
+            circle = self.component.circle
+            circle.baseColor = fill_color
+            circle.outlineColor = border_color
+            circle.outlineFillColor = border_color
+            circle.icon.colour = icon_color
+            amplitude = abs(math.sin(math.pi * amount * sub_progress))
+            circle.setShapeActives([(amplitude, 0)])
+            return sub_time >= 1
+
+        def apply_enable_progress(progress):
+            circle = self.component.circle
+            circle.fillColor = _condition_params[Condition.Enabled]['base_color']
+            sub_time = progress * total_time
+            if sub_time > step1_time + step2_time:
+                sub_progress = (sub_time - (step1_time + step2_time)) / step3_time
+            else:
+                sub_progress = 0
+            start_border = _condition_params[Condition.Disabled]['border_color']
+            stop_border = _condition_params[Condition.Enabled]['border_color']
+            start_icon = _condition_params[Condition.Disabled]['icon_color']
+            stop_icon = _condition_params[Condition.Enabled]['icon_color']
+            border_color = math_bw.lerp_rgb_colors(start_border, stop_border, progress)
+            icon_color = math_bw.lerp_rgb_colors(start_icon, stop_icon, progress)
+            circle.outlineColor = border_color
+            circle.outlineFillColor = border_color
+            circle.icon.colour = icon_color
+            circle.setShapeActives([(0, sub_progress)])
+            return False
+
+        if anim_type == AnimType.Buy:
+            apply_progress = apply_buy_progress
+        elif anim_type == AnimType.Enable:
+            apply_progress = apply_enable_progress
+        progress = 0.0
+        apply_progress(0)
+        while progress < 1.0:
+            yield BWWaitForPeriod(0)
+            progress = move_towards(progress, 1, BigWorld.getTimeDelta() / float(total_time))
+            if apply_progress(progress):
+                break
+
+        apply_progress(1)
+        self._animation_coroutine = None
+        self._update_visual()
+        callback()
+        return
+
+    def get_tooltip_panel(self):
+        category = lc('Perks.branch.b{0}'.format(self.branch)).upper()
+        if BigWorld.isKeyDown(BigWorld.stringToKey('F2')) and BigWorld.player().isAdminAccess():
+            text = u'{0}\n{1}\nnode id: {2}\npos: {3}'.format(category, self.name, self._data['id'], self.pos)
+        else:
+            text = u'{0}\n{1}'.format(category, self.name)
+        tp = get_tooltip_panel()
+        tp.set_text(text)
+        return tp
+
+    def has_tooltip(self):
+        return self.visual != PV.Original
+
+    @property
+    def and_dep(self):
+        return self._data['params'].get('and_dep', True)
+
+    @property
+    def id(self):
+        return self._data['id']
+
+    @property
+    def name(self):
+        return lc('PerksSystem.name.id{0}'.format(self.id))
+
+    @property
+    def branch(self):
+        return self._data['params']['main'].get('branch')
+
+    @property
+    def level(self):
+        return self._data['params']['main'].get('level')
+
+    @property
+    def cost(self):
+        return self._data['params']['main'].get('spoints')
+
+    @property
+    def description(self):
+        return lc('PerksSystem.desc.id{0}'.format(self.id))
+
+    @property
+    def actions(self):
+        return self._data['params'].get('actions', [])
+
+    @property
+    def alias(self):
+        return self._data['params']['main'].get('pID', '')
+
+    @property
+    def visual(self):
+        return self._data['params']['main'].get('visual', PV.Normal)
+
+    @property
+    def achivs(self):
+        return self._data['params'].get('achivs', [])
+
+    @property
+    def addnode_id(self):
+        return self._data['params']['main'].get('add_node')
+
+    @property
+    def quest(self):
+        quest = self._data['params']['main'].get('quest')
+        if quest is None:
+            return
+        else:
+            return (quest, self._data['params']['main'].get('qgroup'))
+
+
+class TooltipPanel(WrappedText):
+
+    def __init__(self):
+        WrappedText.__init__(self, None, None, 16, depth=0)
+        self.set_alignment(Align.Left)
+        self.set_unscalable()
+        self.set_color(cc.active_hex)
+        comp = GUI.Frame2('soGUI/frame/frame_tooltip.dds')
+        comp.materialFX = 'BLEND'
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.wm, comp.hm = ('CLIP', 'CLIP')
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.width, comp.height = (2, 2)
+        comp.position = (0, 0, 0.99)
+        self.component.addChild(comp)
+        self.set_margin(8, 8, 8, 8)
+        self.transform.set_base_resolution(None)
+        self.transform.set_pixel_mode((0.5, 0.5), (0.5, 0.5), (300, 400))
+        return
+
+
+_tootip_panel = None
+
+def get_tooltip_panel():
+    global _tooltip_panel
+    if not _tootip_panel:
+        _tooltip_panel = TooltipPanel()
+        _tooltip_panel.compress_width = True
+    return _tooltip_panel
+
+
+node_sizes = visuals['node_sizes']
+_sizes_params = {PV.Original: node_sizes['original'],
+ PV.Epic: node_sizes['epic'],
+ PV.Base: node_sizes['base'],
+ PV.Key: node_sizes['key'],
+ PV.Normal: node_sizes['normal'],
+ PV.Hidden: node_sizes['hidden']}
+node_colors = visuals['node_colors']
+border_colors = visuals['border_colors']
+icon_colors = visuals['icon_colors']
+_condition_params = {Condition.Dev: {'base_color': node_colors['dev'],
+                 'hover_color': node_colors['dev'],
+                 'border_color': border_colors['dev'],
+                 'icon_color': icon_colors['dev'],
+                 'galo': False},
+ Condition.Disabled: {'base_color': node_colors['disabled'],
+                      'hover_color': node_colors['disabled_hover'],
+                      'border_color': border_colors['disabled'],
+                      'icon_color': icon_colors['disabled'],
+                      'galo': False},
+ Condition.Enabled: {'base_color': node_colors['enabled'],
+                     'hover_color': node_colors['enabled_hover'],
+                     'border_color': border_colors['enabled'],
+                     'icon_color': icon_colors['enabled'],
+                     'galo': False},
+ Condition.Bought: {'base_color': node_colors['bought'],
+                    'hover_color': node_colors['bought_hover'],
+                    'border_color': border_colors['bought'],
+                    'icon_color': icon_colors['bought'],
+                    'galo': True},
+ Condition.Bad: {'base_color': node_colors['bad'],
+                 'hover_color': node_colors['bad'],
+                 'border_color': border_colors['bad'],
+                 'icon_color': icon_colors['bad'],
+                 'galo': False}}

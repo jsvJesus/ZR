@@ -1,0 +1,143 @@
+# Embedded file name: ./common/BirdflockCommon.py
+import BigWorld
+from Math import Vector3
+from time import time as ttime
+import BWPersonality
+import random
+import ResMgr
+import json
+import math_bw
+
+class GroupState:
+    INIT, ATTACK, RETREAT, DELETE = xrange(4)
+
+
+FLOCK_SPEED = 0.1
+FLOCK_INFLUENCE = 5.3
+NORMALIZE_AFTER = 10.0
+DISAPPEAR_AFTER = 15.0
+DESTROY_AFTER = 20.0
+
+def client_time():
+    return BWPersonality.gpd.server_time
+
+
+time = client_time if BigWorld.component == 'client' and BigWorld.server() else ttime
+_data_cache = {}
+
+def get_total_config(space_name, purge = False):
+    if not space_name:
+        print 'BirdFlock (Warning): was not inited'
+        return
+    else:
+        file_path = space_name + '/birdflocks.json'
+        if purge and space_name in _data_cache:
+            del _data_cache[space_name]
+            ResMgr.purge(file_path)
+        if space_name not in _data_cache:
+            _data_cache[space_name] = None
+            section = ResMgr.openSection(file_path)
+            if section is not None:
+                _data_cache[space_name] = []
+                birds_data = json.loads(section.asBinary)
+                for chunk_data in birds_data:
+                    for conf in chunk_data.values()[0]:
+                        _data_cache[space_name].append(conf)
+
+        return _data_cache[space_name]
+
+
+def get_config_by_index(space_name, conf_index, purge = False):
+    config = get_total_config(space_name, purge=purge)
+    return config and config[conf_index]
+
+
+class Navigator:
+
+    def __init__(self, conf):
+        points = map(Vector3, conf['flock']['points'])
+        self._random_points = []
+        random.seed(9001)
+        for i in xrange(12):
+            index = random.randint(0, len(points) - 1)
+            if self._random_points and self._random_points[-1] == points[index]:
+                continue
+            self._random_points.append(Vector3(points[index]))
+
+        if len(self._random_points) > 2 and self._random_points[0] == self._random_points[-1]:
+            del self._random_points[-1]
+
+    def get_position_and_time(self):
+        phase_time = 3600.0
+        step_time = phase_time / len(self._random_points)
+        phase = time() % phase_time / phase_time
+        if phase >= 1.0:
+            phase -= 1.0
+        float_index = len(self._random_points) * phase
+        index = int(float_index)
+        delay_time = (1.0 - (float_index - index)) * step_time + 0.5
+        return (Vector3(self._random_points[index]), delay_time)
+
+
+class TargetsData(object):
+    MIN_PERIOD = 3.0
+    UP_STEP = 4.0
+    DOWN_STEP = 3.0
+    MAX_PERIOD = 30.0
+
+    def __init__(self, targets, wave_data):
+        self._targets = targets
+        self._wave_data = wave_data
+        self._clamp_period()
+        if self._wave_data['lasttime'] == 0:
+            self._wave_data['lasttime'] = time()
+
+    def avatar_entered(self, avatar_id):
+        if avatar_id not in self._targets:
+            self._targets.append(avatar_id)
+            return True
+        return False
+
+    def avatar_left(self, avatar_id):
+        if avatar_id in self._targets:
+            self._targets.remove(avatar_id)
+            return True
+        return False
+
+    def calc_next_spawn_time(self):
+        if not self._targets:
+            return None
+        else:
+            cur_time = time()
+            for i in xrange(10):
+                next_time = self._wave_data['lasttime'] + self._wave_data['period']
+                if next_time >= cur_time:
+                    return next_time - cur_time
+                self._wave_data['lasttime'] = next_time
+                self._wave_data['period'] -= self.DOWN_STEP
+                self._clamp_period()
+
+            steps = (self._wave_data['period'] - self.MIN_PERIOD) / self.DOWN_STEP
+            time_elapsed = cur_time - self._wave_data['lasttime']
+            av_step_period = (self.MIN_PERIOD + self.MAX_PERIOD) * 0.5
+            time_needed = steps * av_step_period
+            if time_needed == 0:
+                self._wave_data['period'] = self.MIN_PERIOD
+            else:
+                self._wave_data['period'] = math_bw.lerp(self._wave_data['period'], self.MIN_PERIOD, math_bw.clamp(time_elapsed / time_needed))
+            self._clamp_period()
+            self._wave_data['lasttime'] = math_bw.lerp(cur_time - self._wave_data['period'], cur_time, random.random())
+            next_time = self._wave_data['lasttime'] + self._wave_data['period']
+            return next_time - cur_time
+
+    def on_wave_spawned(self):
+        self._wave_data['period'] += self.UP_STEP if self._targets else -self.DOWN_STEP
+        self._clamp_period()
+        self._wave_data['lasttime'] = time()
+
+    def _clamp_period(self):
+        self._wave_data['period'] = math_bw.clamp(self._wave_data['period'], self.MIN_PERIOD, self.MAX_PERIOD)
+
+    @property
+    def targets(self):
+        return self._targets

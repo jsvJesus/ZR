@@ -1,0 +1,118 @@
+# Embedded file name: ./client/soGUI/sales/filters/filters.py
+from copy import deepcopy
+import BigWorld
+from Helpers.PyGUI.PyGUIBase import PyGUIBase
+from baseblock import Baseblock
+from treeblock import Treeblock
+from sortblock import Sortblock
+from pageblock import Pageblock
+import GUI
+from Constants import BoardSort
+_delay_callback = 0.5
+
+class Filters(PyGUIBase):
+
+    def __init__(self, base_comp, sort_comp, page_comp, columns_widths):
+        PyGUIBase.__init__(self, base_comp)
+        base_comp.script = self
+        self._update_delay_callback = None
+        self.data_changed_callback_delayed = lambda : None
+        self.data_changed_callback_immidiate = lambda : None
+        self._restore_request_trigger = False
+        self._last_request_params = (0, BoardSort.Forward)
+        base_tree_line = 288
+        comp = GUI.Window()
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.position = (-1, 1, 0.5)
+        comp.widthMode, comp.heightMode = ('CLIP', 'PIXEL')
+        comp.width, comp.height = 2, base_tree_line
+        self.component.addChild(comp, 'baseblock')
+        self._baseblock = Baseblock(comp, data_changed_callback=self._base_data_changed, reset_click_callback=self._on_reset_click)
+        bottom_margin = 16
+        comp = GUI.Window()
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'BOTTOM')
+        comp.position = (-1, -1, 0.5)
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.width, comp.height = (2, 2)
+        self.component.addChild(comp, 'treeblock')
+        comp.heightMode = 'PIXEL'
+        comp.verticalPositionMode = 'PIXEL'
+        comp.position[1] -= bottom_margin
+        comp.height -= base_tree_line + bottom_margin
+        self._treeblock = Treeblock(comp, data_changed_callback=self._tree_data_changed)
+        self._sortblock = Sortblock(sort_comp, columns_widths)
+        self._sortblock.data_changed_callback = self._sort_data_changed
+        self._pageblock = Pageblock(page_comp)
+        self._pageblock.click_callback = self._on_page_request
+        self._filter_data = None
+        return
+
+    def invalidate(self):
+        self._filter_data = None
+        self._on_page_request(*self._last_request_params)
+        return
+
+    def _base_data_changed(self):
+        self._data_changed()
+
+    def _tree_data_changed(self):
+        self._data_changed()
+
+    def _sort_data_changed(self):
+        self._data_changed()
+
+    def _on_page_request(self, start_index, sort_dir):
+        self._last_request_params = (start_index, sort_dir)
+        self._restore_request_trigger = True
+        self._data_changed()
+
+    def _compile_filter_data(self):
+        if self._restore_request_trigger:
+            self._restore_request_trigger = False
+            start_index = self._last_request_params
+        else:
+            start_index = (0, BoardSort.Forward)
+        return {'base': self._baseblock.filter_data,
+         'cats': self._treeblock.filter_data,
+         'sort': self._sortblock.mode,
+         'index': start_index}
+
+    def _data_changed(self):
+        filter_data = self._compile_filter_data()
+        if filter_data != self._filter_data:
+            self._filter_data = filter_data
+            if self._update_delay_callback:
+                BigWorld.cancelCallback(self._update_delay_callback)
+            self._update_delay_callback = BigWorld.callback(_delay_callback, self._on_filter_data_updated)
+            self._pageblock.disable()
+            self.data_changed_callback_immidiate()
+
+    def _on_filter_data_updated(self):
+        self.data_changed_callback_delayed()
+
+    def set_data(self, *args):
+        self._pageblock.set_data(*args)
+
+    def _on_reset_click(self):
+        self._baseblock.reset()
+        self._treeblock.reset()
+
+    def on_show(self):
+        self._pageblock.disable()
+
+    def on_hide(self):
+        self._filter_data = None
+        self._restore_request_trigger = False
+        self._last_request_params = (0, BoardSort.Forward)
+        self._baseblock.on_hide()
+        if self._update_delay_callback:
+            BigWorld.cancelCallback(self._update_delay_callback)
+            self._update_delay_callback = None
+        return
+
+    def get_filter_data(self):
+        if self._filter_data is None:
+            self._filter_data = self._compile_filter_data()
+        return deepcopy(self._filter_data)

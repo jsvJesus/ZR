@@ -1,0 +1,213 @@
+# Embedded file name: ./client/soGUI/donat_shop/window/store_tab/store_tab.py
+import ItemsUtils
+from Localization import lc
+from Items import ItemsCatalog
+import BigWorld
+import GUI
+from soGUI.donat_shop.window.win_ui.tab import Tab
+from ui.panel import Panel, EventType as PanelET
+from soGUI.donat_shop.window.win_ui.scroll_content import ScrollContent
+from soGUI.donat_shop.window.win_ui.scroll_bar import ScrollBar
+from ui.transform import pixel_params, clip_params
+from soGUI.donat_shop.window.win_ui.items_block import EventType as ItemsET
+from soGUI.donat_shop.models.state_model import EventType as StateET
+from store_items_block import StoreItemsBlock
+from store_filt_ui import StoreFiltUi, FilterEventType as FET
+from store_item_view import EventType as ItemViewET
+from context_drop import ContextDrop, EventType as ContextET
+from soGUI.StorehouseGUI.ChooseCharWin import ChooseCharWin
+from soGUI.donat_shop.window.auxwins.auxwins import Auxwins
+from soGUI.donat_shop.models.filter_model import FilterModel
+from soGUI.donat_shop.donat_shop_utils import ItemActions
+
+class StoreTab(Tab):
+
+    def __init__(self, parent_comp, screen_component, store_model, state_model):
+        Tab.__init__(self, parent_comp, 'store', screen_component=screen_component)
+        self._store_model = store_model
+        self._filter_model = FilterModel(store_model, -1)
+        self._filter_model.add_listener(self._on_filtermodel_event)
+        self._state_model = state_model
+        self._state_model.add_listener(self._on_statemodel_event)
+        self.change_interseption(intercept_moving=True, intercept_buttons=True)
+        sorter_size = 100
+        scroll_size = 58
+        comp = GUI.MaskableWindow('soGUI/frame/donatshop/gradient.dds')
+        view = Panel(self.component, 'view', component=comp)
+        view.transform.set_clip_mode((0, 0, 1, 1), (sorter_size,
+         36,
+         -scroll_size,
+         -156))
+        bottom, top = (0.5, 2.5)
+        comp.mapping = ((0, top),
+         (0, bottom),
+         (1, bottom),
+         (1, top))
+        content = ScrollContent(view.component, 'content')
+        cpx = clip_params((0, 1))
+        cpy = pixel_params(0, 0, 0)
+        content.transform.set_mixed_mode(cpx, cpy)
+        content.add_callback(self._on_content_event)
+        self._scroll = ScrollBar(content, self.component, 'scroll')
+        cpx = pixel_params(0.5, 1, 14, -28)
+        cpy = clip_params((0, 1), (82, -74))
+        self._scroll.transform.set_mixed_mode(cpx, cpy)
+
+        def create_default_comp():
+            comp = GUI.Window()
+            comp.materialFX = 'BLEND'
+            comp.colour = (100, 100, 150, 255)
+            comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+            comp.ha, comp.va = ('LEFT', 'TOP')
+            comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+            content.component.addChild(comp)
+            return comp
+
+        self._items_block = StoreItemsBlock(create_default_comp(), self._filter_model)
+        self._items_block.add_listener(self._on_itemsblock_event)
+        comp = GUI.Window('soGUI/frame/paint/blue.dds')
+        comp.materialFX = 'SOLID'
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('LEFT', 'TOP')
+        comp.position = (0, 0, 0.1)
+        comp.visible = False
+        self.component.addChild(comp)
+        self._context_drop = ContextDrop(comp, self._filter_model)
+        self._context_drop.add_listener(self._on_context_event)
+        self._sort_ui = StoreFiltUi(self.component)
+        hm = pixel_params(0, 0, sorter_size)
+        vm = clip_params((0, 1))
+        self._sort_ui.transform.set_mixed_mode(hm, vm)
+        self._sort_ui.add_listener(self._on_sortui_event)
+
+    def _on_all_click(self):
+        self._btn_all.set_enabled(False)
+        self._state_model.take_all_request(self._filter_model.npc_name)
+
+    def handleMouseButtonEvent(self, comp, event):
+        result = Tab.handleMouseEvent(self, comp, event)
+        self._context_drop.hide()
+        return result
+
+    def _on_sortui_event(self, event_type, data):
+        if event_type == FET.OnFilterRequest:
+            tag_id = data['tag_id']
+            self._filter_model.change_filter(tag_id)
+
+    def _apply_action(self, action, item_view):
+        item_id = item_view._item_data['uid']
+        if action == ItemActions.TakeInventory:
+
+            def pick_char_click(db_id, char_name, lock_tutorial):
+                if lock_tutorial:
+                    Auxwins.show_ok_message(lc('StoreHouse.moveitem.LOCKTUTOR'))
+                else:
+                    item_view._btn.set_enabled(False)
+                    self._state_model.take_itemtoavatar_request(item_id, db_id)
+
+            ChooseCharWin.show(self._screen_component, pick_char_click)
+        elif action == ItemActions.TakeStore:
+            item_view._btn.set_enabled(False)
+            self._state_model.take_item_request(item_id, self._filter_model.npc_name)
+        elif action == ItemActions.Activate:
+
+            def accept():
+                item_view._btn.set_enabled(False)
+                self._state_model.use_item_request(item_id)
+
+            item_type = item_view._item_data['item_type']
+            item_param = ItemsCatalog.GetItemParam(item_type)
+            booster_id = item_param.get('Booster_id')
+            if booster_id and BigWorld.player().get_boost_id():
+                Auxwins.show_activate_boost_win(accept)
+            else:
+                accept()
+
+    def _on_context_event(self, event_type, data):
+        if event_type == ContextET.OnAction:
+            self._apply_action(data['action_type'], data['view'])
+
+    def _on_content_event(self, observable, event_type, data = None):
+        if event_type in (PanelET.OnModeApplied, PanelET.OnSizeChanged):
+            self._context_drop.hide()
+
+    def _on_itemsblock_event(self, event_type, data):
+        if event_type == ItemsET.OnItemsChanged:
+            self.align_content()
+        elif event_type == ItemsET.OnItemViewEvent:
+            if data['event_type'] == ItemViewET.OnClick:
+                item_view = data['data']['store_item_view']
+                if self._context_drop.component.visible and self._context_drop._item_view == item_view:
+                    self._context_drop.hide()
+                else:
+                    actions = self._items_block._decide_actions(item_view._item_data)
+                    if len(actions) > 1:
+                        self._context_drop.show(item_view, actions)
+                        self._scroll.stop()
+                    elif len(actions) == 1:
+                        if actions[0][1]:
+                            self._apply_action(actions[0][0], item_view)
+                        else:
+                            self._context_drop.show(item_view, actions)
+                            self._scroll.stop()
+
+    def align_content(self):
+        comp = self._items_block.component
+        view_comp = self.component.view
+        comp.width = view_comp.width
+        align_data = self._items_block.mark_align_content()
+        comp.position = (0, 0, 0.5)
+        content = self.component.view.content
+        content_height = align_data['height'] + 120 * self.transform.pixel_ratio
+        cpx, cpy = ScrollContent.calculate_mode(content, self.component.view, content_height)
+        content.script.transform.set_mixed_mode(cpx, cpy)
+        self._context_drop.hide()
+        existing_tags = set()
+        for item in self._store_model.items:
+            existing_tags.add(ItemsUtils.get_donat_tag(item['item_type']))
+
+        self._sort_ui.set_available_tags(existing_tags, self._filter_model.filter_tag)
+
+    def handleMouseEvent(self, component, event):
+        result = Tab.handleMouseEvent(self, component, event)
+        if event.dz:
+            self._scroll.move_abs(-event.dz)
+        return result
+
+    def on_show(self):
+        Tab.on_show(self)
+        self._items_block.on_show()
+        self._context_drop.hide()
+        self._sort_ui.on_show()
+        self.align_content()
+
+    def on_tick(self):
+        self._sort_ui.on_tick()
+
+    def _on_statemodel_event(self, event_type, data):
+        if event_type == StateET.OnUseItemCompleted:
+            for item_view in self._items_block._itemviews:
+                item_view.update_button_interactability()
+
+    def _on_filtermodel_event(self, event_type, data):
+        pass
+
+    def _update_btn_all(self):
+        self._btn_all.set_enabled(bool(self._filter_model.npc_name and self._filter_model.items))
+
+    def handle_esc(self):
+        if ChooseCharWin._instance and ChooseCharWin._instance.component.visible:
+            ChooseCharWin._instance.hide()
+            return True
+        return False
+
+    def on_hide(self):
+        Tab.on_hide(self)
+        self._items_block.on_hide()
+        ChooseCharWin.hide_all_instances()
+        self._sort_ui.on_hide()
+
+    def on_size_changed(self):
+        Tab.on_size_changed(self)
+        self.align_content()

@@ -1,0 +1,86 @@
+# Embedded file name: ./client/FakemobArea.py
+import BigWorld
+from Helpers.BWCoroutine import BWWaitForPeriod, BWMemberCoroutine
+from random import random, uniform
+import math
+from client_utils import readable_space_pos
+
+class FakemobArea(BigWorld.Entity):
+    DEBUG_MODE = False
+
+    def __init__(self):
+        BigWorld.Entity.__init__(self)
+        if FakemobArea.DEBUG_MODE:
+            print 'FakemobArea: created with id', self.id
+            import DrawPrimitivesUtils
+            DrawPrimitivesUtils.draw_sphere(self.position, self.radius_enter, color=(1, 1, 1, 1))
+            DrawPrimitivesUtils.draw_sphere(self.position, self.radius_spawn)
+        self.pot_handle = BigWorld.addPot(self.matrix, self.radius_enter, self.hit_pot)
+        self.spawn_corutine = None
+        self.spiders_amount = 0
+        return
+
+    def __repr__(self):
+        if self.isDestroyed:
+            return 'FakemobArea[%s]Destroyed' % self.id
+        return 'FakemobArea[%s] at %s' % (self.id, readable_space_pos(self))
+
+    def hit_pot(self, entered_trap, handle):
+        p = BigWorld.player()
+        if entered_trap:
+            self.spawn_corutine = self.continious_spawn()
+            if not hasattr(p, 'marked_by_spider_area'):
+                p.marked_by_spider_area = set()
+            p.marked_by_spider_area.add(self.id)
+            self.spawn_corutine.run()
+        else:
+            if self.spawn_corutine:
+                self.spawn_corutine.stop()
+            p.marked_by_spider_area.remove(self.id)
+            if not p.marked_by_spider_area:
+                del p.marked_by_spider_area
+
+    @BWMemberCoroutine
+    def continious_spawn(self):
+        while not self.isDestroyed:
+            if self.spiders_amount >= self.amount:
+                yield BWWaitForPeriod(1.0)
+                continue
+            for _ in xrange(4):
+                if self.spawn_spider():
+                    break
+
+            wait_period = float(self.spiders_amount) / self.amount * 1
+            yield BWWaitForPeriod(wait_period)
+
+    def spawn_spider(self):
+        p = BigWorld.player()
+        if not p:
+            return
+        random_angle = random() * math.pi * 2
+        random_unit_dist = random()
+        random_unit_dist = 1.0 - random_unit_dist * random_unit_dist
+        random_dist = random_unit_dist * self.radius_spawn
+        random_point = self.position + (math.cos(random_angle) * random_dist, 0, math.sin(random_angle) * random_dist) + (0, 0.01, 0)
+        collision_down = BigWorld.collide(self.spaceID, random_point, random_point - (0, self.radius_spawn, 0))
+        collision_up = BigWorld.collide(self.spaceID, random_point, random_point + (0, self.radius_spawn, 0))
+        if collision_up and collision_down:
+            up_distance = (collision_up[0] - random_point).length
+            down_distance = (collision_down[0] - random_point).length
+            collision = collision_down if down_distance <= up_distance else collision_up
+        else:
+            collision = collision_down or collision_up
+        if collision:
+            scale = uniform(self.scale_min, self.scale_max)
+            velocity = uniform(self.velocity_min, self.velocity_max)
+            step_size = p.S_STEP_TIME * velocity
+            p.add_mob_by_position(collision[0], step_size=step_size, scale=scale, model_index=self.model_path, tint=self.model_tint, event_listener=self)
+            self.spiders_amount += 1
+            return True
+        return False
+
+    def onLeaveWorld(self):
+        BigWorld.delPot(self.pot_handle)
+
+    def on_spider_dead(self):
+        self.spiders_amount -= 1

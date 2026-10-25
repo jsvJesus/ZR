@@ -1,0 +1,362 @@
+# Embedded file name: ./client/vivert_client/control_panel.py
+import soGUI
+import BigWorld
+from Math import Vector2, Vector3
+from collections import defaultdict
+from functools import partial
+import BWPersonality
+from utils import Listenable
+import GUI
+from Helpers.PyGUI.PyGUIBase import DragWin
+from soGUI.soButton import soButton
+import colorCodes as cc
+import cPickle
+from soGUI.soCheckBox import soCheckBox
+gi = BigWorld.getGeometricInstance()
+
+class EventType:
+    DebugSensorSpheresRequested, = ((r, 'controlpanel') for r in range(1))
+
+
+class Win(DragWin, Listenable):
+
+    def __init__(self, title = u'???', width = 150, height = 200):
+        self._wait_callback = False
+        self._vivert = None
+        comp = GUI.Window('soGUI/frame/paint/black.dds')
+        comp.materialFX = 'SOLID'
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = width, height
+        comp.position = (0, 0, 0.5)
+        comp.visible = False
+        DragWin.__init__(self, comp)
+        Listenable.__init__(self)
+        BWPersonality.GUICore.worldLayer.addChild(self.component)
+        comp = GUI.Text(title, 'RobotoCondensedRegular_16.font')
+        comp.colour = cc.active_rgba
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('LEFT', 'TOP')
+        comp.position = (4, 4, 0.5)
+        self.component.addChild(comp)
+        comp = GUI.Window()
+        btn = soButton(comp)
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('RIGHT', 'TOP')
+        comp.colour = (255, 255, 255, 255)
+        comp.materialFX = 'BLEND'
+        comp.width, comp.height = (15, 15)
+        comp.position = (self.component.width - 8, 8, 0.5)
+        self.component.addChild(comp)
+        btn.initVSC('soGUI/elements/closeBox.xml')
+        btn.onBound()
+        btn.setVisualState('normal')
+        btn.onClick = self.hide
+        self._create_pos = defaultdict(lambda : Vector3(4.0, 28.0, 0.5))
+        self._children = []
+        return
+
+    def add_child(self, child):
+        last_comp = self._children[-1].component if self._children else self.component
+        child.component.position[2] = last_comp.position[2] * 0.5
+        child.add_listener(self._on_child_event)
+        self._children.append(child)
+        self.component.reSort()
+
+    def _on_child_event(self, event_type, data):
+        self.notify_listeners(event_type, data)
+
+    def create_button(self, text, callback, pos_index = 0, width = 110):
+        comp = GUI.Window()
+        btn = soButton(comp)
+        btn.initVSC('soGUI/elements/button_1.xml')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.label.font = 'RobotoCondensedRegular_16.font'
+        comp.label.text = text
+        comp.width, comp.height = width, 25
+        comp.position = self._create_pos[pos_index]
+        comp.script.onClick = callback
+        self.component.addChild(comp)
+        btn.onBound()
+        self._create_pos[pos_index][1] += 27
+        return btn
+
+    def create_text(self, text = u'', pos_index = 0, height = 18):
+        comp = GUI.Text(text, 'RobotoCondensedRegular_14.font')
+        comp.colour = cc.inactive_rgba
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = self.component.width - 16, self.component.height - 16
+        comp.multiline = True
+        comp.position = self._create_pos[pos_index]
+        self.component.addChild(comp)
+        self._create_pos[pos_index][1] += height
+        return comp
+
+    def create_check(self, text, callback, pos_index = 0):
+        cb = soCheckBox(GUI.Window(), soGUI.CheckBoxPropsStructure())
+        comp = cb.component
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('LEFT', 'TOP')
+        comp.position = self._create_pos[pos_index]
+        self.component.addChild(comp)
+        cb.onStateChange = lambda : callback(cb.isChecked())
+        cb.onBound()
+        comp = GUI.Text(text, 'RobotoCondensedRegular_14.font')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.position = (32, cb.component.position[1] + 3, 0.5)
+        comp.colour = cc.inactive_rgba
+        self.component.addChild(comp)
+        self._create_pos[pos_index][1] += 18
+        return cb
+
+    def tick(self):
+        for child in self._children:
+            if child.visible:
+                child.tick()
+
+        self.on_tick()
+        if not self._wait_callback:
+            if self._on_wait_callback():
+                self._wait_callback = True
+
+    def _reset_wait(self):
+        self._wait_callback = False
+
+    def _on_wait_callback(self):
+        return False
+
+    def on_tick(self):
+        pass
+
+    def toggle_child(self, child):
+        if child.visible:
+            child.hide()
+        else:
+            child.show_and_connect(self._vivert)
+
+    def show_and_connect(self, vivert):
+        self._vivert = vivert
+        if not self.visible:
+            self.visible = True
+            self.on_show()
+
+    def hide(self):
+        for child in self._children:
+            child.hide()
+
+        if self.visible:
+            self.visible = False
+            self.on_hide()
+        self._vivert = None
+        return
+
+    def on_show(self):
+        pass
+
+    def on_hide(self):
+        pass
+
+    def on_release(self):
+        self.hide()
+        for child in self._children:
+            child.release()
+
+        BWPersonality.GUICore.worldLayer.delChild(self.component)
+
+    @property
+    def visible(self):
+        return self.component.visible
+
+    @visible.setter
+    def visible(self, value):
+        self.component.visible = value
+
+    def _run_debug_command(self, command, str_data):
+        for child in self._children:
+            child._run_debug_command(command, str_data)
+
+
+class StatesWin(Win):
+
+    def __init__(self):
+        Win.__init__(self, 'States')
+        self._text = self.create_text()
+
+    def _on_wait_callback(self):
+        self._vivert.cell.run_debug_command('states', '')
+        return True
+
+    def _apply_states(self, str_data):
+        data = cPickle.loads(str_data)
+        self._text.text = '\n'.join(data)
+
+    def _run_debug_command(self, command, str_data):
+        if command == 'states':
+            self._apply_states(str_data)
+            self._reset_wait()
+
+
+class AnimWin(Win):
+
+    def __init__(self):
+        Win.__init__(self, 'Animations', width=500)
+        self._actions = self.create_text()
+        self._anim_data = []
+        self._gi_handlers = []
+
+    def on_tick(self):
+        text = ''
+        frame_data = {}
+        for name, frame, weight in self._vivert._animator._last_actions:
+            text += '\n {0}: frame {1} weight {2}'.format(name, frame, weight)
+            frame_data[name] = weight
+
+        self._actions.text = text[1:]
+        self._anim_data.append((BigWorld.time(), frame_data))
+
+        def pos_from_time(time):
+            return (BigWorld.time() - time) * 0.2 - 0.9
+
+        def pos_from_weight(weight):
+            return weight * 0.5 - 0.25
+
+        while pos_from_time(self._anim_data[0][0]) > 0.9:
+            del self._anim_data[0]
+
+        for handler in self._gi_handlers:
+            gi.remove(handler)
+
+        self._gi_handlers[:] = []
+        lines = defaultdict(list)
+        for i in range(1, len(self._anim_data)):
+            time, frame_data = self._anim_data[i]
+            posx = pos_from_time(time)
+            prev_time, prev_frame_data = self._anim_data[i - 1]
+            prev_posx = pos_from_time(prev_time)
+            for name, weight in frame_data.items():
+                if name in prev_frame_data:
+                    posy = pos_from_weight(weight)
+                    prev_weight = prev_frame_data[name]
+                    prev_posy = pos_from_weight(prev_weight)
+                    lines[name].append(Vector2(prev_posx, prev_posy))
+                    lines[name].append(Vector2(posx, posy))
+
+        name_to_color = {'Vivert_Idle': (0, 1, 0, 1),
+         'Vivert_WalkForward': (0, 0, 1, 1),
+         'Vivert_WalkBackward': (1, 0, 1, 1),
+         'Vivert_AttackPaws1': (1, 0, 0, 1),
+         'Vivert_TurnLeft': (1, 1, 0, 1),
+         'Vivert_TurnRight': (1, 1, 0, 1)}
+        for name, points in lines.items():
+            color = name_to_color[name]
+            self._gi_handlers.append(gi.addMultiLineClip(points, color, False))
+
+    def on_hide(self):
+        for handler in self._gi_handlers:
+            gi.remove(handler)
+
+        self._gi_handlers[:] = []
+        self._anim_data[:] = []
+
+
+class BrainWin(Win):
+
+    def __init__(self):
+        Win.__init__(self, 'Brain', height=64)
+        self._wait_change = False
+        self._manual_check = self.create_check('manual mode', self._on_manual)
+
+    def on_show(self):
+        self._manual_check.disable()
+
+    def _on_wait_callback(self):
+        self._vivert.cell.run_debug_command('brain', '')
+        return True
+
+    def _apply_data(self, str_data):
+        data = cPickle.loads(str_data)
+        self._manual_check.set_active(data['manual'])
+        self._manual_check.enable()
+
+    def _run_debug_command(self, command, str_data):
+        if command == 'brain':
+            if self._wait_change:
+                self._wait_change = False
+            else:
+                self._apply_data(str_data)
+            self._reset_wait()
+
+    def _on_manual(self, check):
+        self._manual_check.disable()
+        str_data = cPickle.dumps(check)
+        self._wait_change = True
+        self._vivert.cell.run_debug_command('manual', str_data)
+
+
+class SensorWin(Win):
+
+    def __init__(self):
+        Win.__init__(self, 'Sensor')
+        self._lines_holder = None
+        self._targets_text = self.create_text()
+        return
+
+    def _on_wait_callback(self):
+        self._vivert.cell.run_debug_command('sensor', '')
+        return True
+
+    def _apply_data(self, data):
+        text = u'Targets:'
+        for target_id in data['targets']:
+            entity = BigWorld.entities.get(target_id)
+            text += u'\n' + entity.name if entity else unicode(target_id)
+
+        self._targets_text.text = text
+
+    def _run_debug_command(self, command, str_data):
+        if command == 'sensor':
+            data = cPickle.loads(str_data)
+            sensor_range = (data['in'], data['out'])
+            if self._vivert:
+                self._vivert._debugger.set_sensor(sensor_range)
+            self._apply_data(data)
+            self._reset_wait()
+
+    def on_hide(self):
+        self._vivert._debugger.set_sensor(None)
+        return
+
+
+class ControlPanel(Win):
+
+    def __init__(self):
+        Win.__init__(self, 'Control panel', height=160)
+        self.component.hpm, self.component.vpm = ('PIXEL', 'PIXEL')
+        self.component.position = (100, 150, self.component.position[2])
+        self._viv_info = self.create_text()
+        win = AnimWin()
+        self.add_child(win)
+        self.create_button(u'animations', partial(self.toggle_child, win))
+        win = StatesWin()
+        self.add_child(win)
+        self.create_button(u'states', partial(self.toggle_child, win))
+        win = BrainWin()
+        self.add_child(win)
+        self.create_button(u'brain', partial(self.toggle_child, win))
+        win = SensorWin()
+        self.add_child(win)
+        self.create_button(u'sensors', partial(self.toggle_child, win))
+
+    def show_and_connect(self, vivert):
+        Win.show_and_connect(self, vivert)
+        vivert.run_debug_command = self._run_debug_command
+        self._viv_info.text = u'vivert id: {0}'.format(vivert.id)
+
+    def tick(self):
+        if self.visible:
+            Win.tick(self)

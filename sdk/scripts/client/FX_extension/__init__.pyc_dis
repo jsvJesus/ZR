@@ -1,0 +1,160 @@
+# Embedded file name: ./client/FX_extension/__init__.py
+from functools import partial
+import BigWorld
+import FX
+import client_utils
+from math_bw import VECTOR3_ZERO, VECTOR3_UP
+from matrix_providers import ScaleProvider
+import traceback
+
+def get_sfx_model(entity):
+    """ Is used to create/retrieve special model to attach sfxes to it.
+        It's needed, because entities sometimes change their main models
+        (e.g. avatar equips armor) - and particles are destroyed.
+    
+        LARGE_INVISIBLE_BOX model is used to allow particles to be visible
+        even if main model is not - e.g. behind fence
+    
+        TODO: allow box size customization on the basis of entity
+    """
+    if not hasattr(entity, '__sfx_model__'):
+        model = BigWorld.Model('')
+        model.pushBoundingBox((-1.5, 0, -1.5), (1.5, 3.0, 1.5))
+        model.addMotor(BigWorld.Servo(entity.matrix))
+        entity.addModel(model)
+        entity.__sfx_model__ = model
+    return entity.__sfx_model__
+
+
+class SFXEffect:
+
+    def playOnce(self, target_nodes = None):
+        pass
+
+    def play(self, target_nodes = None):
+        pass
+
+    def stop(self):
+        pass
+
+    def destroy(self, hard_destroy = False):
+        pass
+
+
+class iSFXDisposer:
+
+    def __init__(self, sfx, owner_entity, preloaded_model, position, direction):
+        self.disposed_model = preloaded_model
+        sfx.set_node_name('Scene Root')
+        try:
+            sfx.attach(self.disposed_model)
+        except AttributeError:
+            pass
+
+        self.owner_entity = owner_entity
+        self.owner_entity.addModel(self.disposed_model)
+        self.set_position(position)
+        self.set_direction(direction)
+
+    def set_position(self, position):
+        """Place sfx to defined position."""
+        self.disposed_model.position = position
+
+    def set_direction(self, direction):
+        """Direct sfx to defined direction."""
+        client_utils.direct_model(self.disposed_model, direction)
+
+    def set_direction_to(self, object_to):
+        """Direct sfx to position defined by Vector3/Matrix/MatrixProvider."""
+        client_utils.direct_model_to(self.disposed_model, object_to)
+
+    def __del__(self):
+        try:
+            self.owner_entity.delModel(self.disposed_model)
+        except ValueError:
+            pass
+
+
+class PersistentSFXBase(SFXEffect):
+
+    def __init__(self, sfx_path, prereqs):
+        self.destroyed = False
+        self.path = sfx_path
+        self.sfx = FX.PersistentExt(self.path, prereqs)
+
+    def playOnce(self, TargetNodes = None):
+        self.sfx.stop()
+        self.sfx.go(TargetNodes=TargetNodes or [], callbackFn=self.stop)
+
+    def play(self, TargetNodes = None):
+        self.sfx.stop()
+        self.sfx.go(TargetNodes=TargetNodes or [])
+
+    def stop(self):
+        self.sfx.stop()
+
+    def destroy(self, hard_destroy = False, time_force_hard_destroy = 15.0):
+        if self.destroyed:
+            return
+        self.stop()
+        if hard_destroy:
+            self.sfx.detach()
+        else:
+            self.sfx.event_no_particles(self.sfx.detach, time_force_hard_destroy)
+        self.destroyed = True
+
+    def __del__(self):
+        self.destroy()
+
+
+class PersistentSFX(PersistentSFXBase):
+
+    def __init__(self, sfx_path, source, prereqs):
+        PersistentSFXBase.__init__(self, sfx_path, prereqs)
+        self.source = source
+        self.sfx.attach(self.source)
+
+
+class DisposedPersistentSFX(PersistentSFXBase, iSFXDisposer):
+
+    def __init__(self, sfx_path, prereqs, owner_entity, preloaded_model, position = VECTOR3_ZERO, direction = VECTOR3_UP):
+        PersistentSFXBase.__init__(self, sfx_path, prereqs)
+        iSFXDisposer.__init__(self, self.sfx, owner_entity, preloaded_model, position, direction)
+
+    def __del__(self):
+        PersistentSFXBase.__del__(self)
+        iSFXDisposer.__del__(self)
+
+
+class SFXGroup:
+
+    def __init__(self):
+        self.sfxes = set()
+
+    def addSFX(self, sfx):
+        self.sfxes.add(sfx)
+
+    def play(self):
+        for sfx in self.sfxes:
+            sfx.play()
+
+    def playOnce(self):
+        for sfx in self.sfxes:
+            sfx.playOnce()
+
+    def stop(self):
+        for sfx in self.sfxes:
+            sfx.stop()
+
+
+def preload_buffered_oneshot_sfx(sfx_path):
+    if not sfx_path:
+        return
+    prereqs = FX.prerequisites(sfx_path)
+    try:
+        BigWorld.loadResourceListBG(prereqs, partial(FX.getBufferedOneShotEffect, sfx_path))
+    except:
+        print
+        print 'FAILED LOAD SFX', repr(sfx_path)
+        print 'prereqs:', repr(prereqs)
+        traceback.print_exc()

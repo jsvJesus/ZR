@@ -1,0 +1,299 @@
+# Embedded file name: ./client/BaseFlagToCapture.py
+"""????"""
+import GUI
+import math
+import time
+import Math
+import BigWorld
+import Constants
+import functools
+import UCManager
+import ClanSettings
+import StalkerModel
+import Helpers.Caps
+import BWPersonality
+import ChatChannelConfig
+import player_base_to_capture
+import sounds_manager as sounds
+from Localization import lc
+from utils import ChoiceException
+from base_to_capture import flag_caption
+from soGUI.soFlagMarkers import soFlagIcon
+from soGUI.soInworldMarkers import soInworldMarker
+from base_to_capture_common.flags.constants import CHECK_INTERVAL, MSG_FREQUENCY, MAX_ANGLE, ANIMATION_DIST, TOP_HEIGHT
+CHANNEL_CONSTS = ChatChannelConfig.ChannelConsts()
+FLAG_NEW_PATH = 'models/misc/signs/flag/flag.model'
+FLAGPOLE_AND_FLAG_MODEL = 'models/misc/signs/flag_anim.model'
+
+class BaseFlagToCapture(BigWorld.Entity):
+
+    def __init__(self):
+        """\xd0\x9a\xd0\xbe\xd0\xbd\xd1\x81\xd1\x82\xd1\x80\xd1\x83\xd0\xba\xd1\x82\xd0\xbe\xd1\x80."""
+        BigWorld.Entity.__init__(self)
+        self._flag_sound = None
+        self.targetCaps = [Helpers.Caps.CAP_BASE_FLAG]
+        self.potID = None
+        self.callback_is_on = False
+        self.baseToCaptureGUI = None
+        self.warning_msg_time = 0
+        self.mark_trap_outrer = None
+        self._player_in_inside100 = True
+        self._always_visible_mark = False
+        x, y, z = self.position
+        self.flag_caption = None
+        self.new_flag_model = None
+        self.hoist_positon = Math.Vector4(x, y, z + ANIMATION_DIST, math.pi)
+        return
+
+    def prerequisites(self):
+        return [FLAG_NEW_PATH, FLAGPOLE_AND_FLAG_MODEL]
+
+    def onLoadNewFlagModel(self, model):
+        if self.isDestroyed:
+            return
+        else:
+            self.new_flag_model = model
+            self.model.node('newflag').attach(self.new_flag_model)
+            self.set_height(self.height)
+            self.set_clan_owner_name(None)
+            self.new_flag_model.Wave()
+            self.update_flag_color()
+            self._flag_sound = sounds.playSound('environment/flag_waves', self.new_flag_model)
+            return
+
+    def flag_statues(self):
+        player = BigWorld.player()
+        if not player:
+            return (False, False)
+        owner = player.clanName == self.clan_owner_name
+        if self.clan_invader:
+            invader = player.clanID == self.clan_invader
+        else:
+            invader = owner
+        ally = player.clanUnion == self.clan_owner_name
+        return (owner, invader, ally)
+
+    def flag_text(self):
+        """\xd0\x92\xd0\xbe\xd0\xb7\xd0\xb2\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xbf\xd0\xbe\xd0\xb4\xd0\xbf\xd0\xb8\xd1\x81\xd1\x8c \xd0\xba \xd1\x84\xd0\xbb\xd0\xb0\xd0\xb3\xd1\x83."""
+        name = self.name.decode('utf-8')
+        clan_owner_name = self.clan_owner_name.decode('utf-8')
+        if not clan_owner_name:
+            clan_owner_name = lc('BaseToCapture.NO_OWNER')
+        text = lc('BaseToCapture.FLAG_CAPTURE').format(name, clan_owner_name)
+        return text
+
+    def _change_flag_text(self):
+        """\xd0\x98\xd0\xb7\xd0\xbc\xd0\xb5\xd0\xbd\xd0\xb8\xd1\x82\xd1\x8c \xd1\x82\xd0\xb5\xd0\xba\xd1\x81\xd1\x82 \xd1\x81 \xd0\xb2\xd0\xbb\xd0\xb0\xd0\xb4\xd0\xb5\xd0\xbb\xd1\x8c\xd1\x86\xd0\xb5\xd0\xbc \xd1\x84\xd0\xbb\xd0\xb0\xd0\xb3\xd0\xb0."""
+        capture_inst = soFlagIcon(GUI.Window(), self.name, self.flag_statues())
+        self.flag_caption.change_caption(capture_inst.component)
+
+    def onEnterWorld(self, prereqs):
+        self.model = prereqs[FLAGPOLE_AND_FLAG_MODEL]
+        self.model.pasted__lambert43_skinned = 'disable'
+        self.baseToCaptureGUI = BWPersonality.GUICore.getBaseToCaptureGUI()
+        capture_inst = soFlagIcon(GUI.Window(), self.name, self.flag_statues())
+        self.flag_caption = flag_caption.FlagCaption(self.matrix, (self.name, self.base_name), capture_inst.component, [], 7.0)
+        player_base_to_capture.registerBaseflag(self.base_name, self)
+        self.onLoadNewFlagModel(prereqs[FLAG_NEW_PATH])
+
+    def onLeaveWorld(self):
+        self.flag_caption.fini()
+        if self._flag_sound:
+            self._flag_sound.stop()
+            self._flag_sound.releaseSound()
+            self._flag_sound = None
+        self.flag_caption = None
+        self.new_flag_model = None
+        self.model = None
+        self.baseToCaptureGUI = None
+        player_base_to_capture.unRegisterBaseflag(self.base_name, self)
+        return
+
+    def isUnderAttackMarkStyle(self):
+        return self._always_visible_mark and self._player_in_inside100
+
+    def _updateVisibleMark(self):
+        if self.isUnderAttackMarkStyle():
+            self.flag_caption.attach_inworld_caption()
+        else:
+            self.flag_caption.detach_inworld_caption()
+
+    def setMarkVisibleMode(self, under_attack_style):
+        self._always_visible_mark = under_attack_style
+        self._updateVisibleMark()
+
+    def _send_height_changing(self, avatar, last_interact_time = None):
+        """\xd0\x9f\xd0\xb5\xd1\x82\xd0\xbb\xd1\x8f; \xd1\x83\xd0\xb2\xd0\xb5\xd0\xb4\xd0\xbe\xd0\xbc\xd0\xbb\xd1\x8f\xd0\xb5\xd1\x82 \xd1\x81\xd0\xb5\xd1\x80\xd0\xb2\xd0\xb5\xd1\x80, \xd1\x87\xd1\x82\xd0\xbe \xd0\xb0\xd0\xb2\xd0\xb0\xd1\x82\xd0\xb0\xd1\x80 \xd0\xb2\xd0\xb7\xd0\xb0\xd0\xb8\xd0\xbc\xd0\xbe\xd0\xb4\xd0\xb5\xd0\xb9\xd1\x81\xd1\x82\xd0\xb2\xd1\x83\xd0\xb5\xd1\x82 \xd1\x81 \xd1\x84\xd0\xbb\xd0\xb0\xd0\xb3\xd0\xbe\xd0\xbc."""
+        interval = CHECK_INTERVAL * avatar.get_flag_capture_speed()
+
+        def callback(last_interact_time):
+            try:
+                pressed = BWPersonality.settings.keyBindings.isDownBrKeyByActionName('InteractObject')
+                if not pressed and time.time() > last_interact_time + interval:
+                    raise ChoiceException('F-button is not pressed.')
+                if not avatar.checkActiveWeapon():
+                    raise ChoiceException('Avatar is armed.')
+                if not self.is_enough_close(avatar):
+                    raise ChoiceException('Avatar is too far')
+                if not self.is_angle_ok(avatar):
+                    raise ChoiceException('Angle is too big')
+                if avatar.cellClanID == 0:
+                    if time.time() > self.warning_msg_time + MSG_FREQUENCY:
+                        msg = lc('Clans.Messages.YOU_ARE_NOT_IN_CLAN', user=avatar)
+                        avatar.putMessage(CHANNEL_CONSTS.SYSTEM, msg)
+                        self.warning_msg_time = time.time()
+                    raise ChoiceException("Avatar hasn't clan.")
+                if not ClanSettings.can_buy_base_entities(avatar.clan_level):
+                    if time.time() > self.warning_msg_time + MSG_FREQUENCY:
+                        msg = lc('Clans.Messages.NOT_CLAN_CLAN_LEVEL', user=avatar)
+                        avatar.putMessage(CHANNEL_CONSTS.SYSTEM, msg)
+                        self.warning_msg_time = time.time()
+                    raise ChoiceException('Clan low level')
+                if avatar.dead:
+                    raise ChoiceException('Avatar is dead.')
+                if not avatar.canDamage or not avatar.canTakeDamage:
+                    raise ChoiceException('Safe zone bag.')
+                if avatar.clanName == self.clan_owner_name and self.is_max_height:
+                    raise ChoiceException('Flag UP.')
+
+                def _callback():
+                    self.cell.change_height(avatar.id)
+                    self._send_height_changing(avatar, time.time())
+
+                avatar.useAnyHandAction(_callback, True)
+            except (ChoiceException, BigWorld.EntityIsDestroyedException):
+                try:
+                    self.callback_is_on = False
+                except BigWorld.EntityIsDestroyedException:
+                    pass
+                finally:
+                    avatar.hoisting_flag = None
+                    avatar.physics.userDirected = True
+                    avatar.moving_locked = False
+                    avatar.LookAround(False)
+                    if 'use_flag' in avatar.model.queue:
+                        avatar.model.use_flag.stop()
+
+            return
+
+        if last_interact_time is None:
+            last_interact_time = time.time()
+        BigWorld.callback(interval, functools.partial(callback, last_interact_time))
+        return
+
+    def change_height(self, avatar):
+        """\xd0\x90\xd0\xb2\xd0\xb0\xd1\x82\xd0\xb0\xd1\x80 \xd0\xb2\xd0\xb7\xd0\xb0\xd0\xb8\xd0\xbc\xd0\xbe\xd0\xb4\xd0\xb5\xd0\xb9\xd1\x81\xd1\x82\xd0\xb2\xd1\x83\xd0\xb5\xd1\x82 \xd1\x81 \xd1\x84\xd0\xbb\xd0\xb0\xd0\xb3\xd0\xbe\xd0\xbc."""
+        if self.callback_is_on:
+            return
+        self.callback_is_on = True
+        avatar.hoisting_flag = self
+        avatar.physics.userDirected = False
+        self._send_height_changing(avatar)
+
+    def is_avatar_armed(self, avatar):
+        result = avatar.ActiveItemID != 0
+        if result and time.time() > self.warning_msg_time + MSG_FREQUENCY:
+            msg = lc('BaseToCapture.AVATAR_IS_ARMED', user=avatar)
+            avatar.putMessage(CHANNEL_CONSTS.SYSTEM, msg)
+            self.warning_msg_time = time.time()
+        return result
+
+    def is_angle_ok(self, avatar):
+        """\xd0\x9f\xd1\x80\xd0\xbe\xd0\xb2\xd0\xb5\xd1\x80\xd1\x8f\xd0\xb5\xd1\x82, \xd1\x87\xd1\x82\xd0\xbe \xd0\xb0\xd0\xb2\xd0\xb0\xd1\x82\xd0\xb0\xd1\x80 \xd1\x81\xd1\x82\xd0\xbe\xd0\xb8\xd1\x82 \xd0\xbf\xd0\xbe\xd0\xb4 \xd0\xbf\xd0\xbe\xd0\xb4\xd1\x85\xd0\xbe\xd0\xb4\xd1\x8f\xd1\x89\xd0\xb8\xd0\xbc \xd1\x83\xd0\xb3\xd0\xbb\xd0\xbe\xd0\xbc."""
+        direction = self.position - avatar.position
+        direction.normalise()
+        m = Math.Matrix(avatar.model.matrix)
+        avatar_direction = m.applyToAxis(2)
+        avatar_direction.normalise()
+        angle = math.acos(avatar_direction.dot(direction)) / math.pi * 180
+        if angle < MAX_ANGLE:
+            return True
+        return False
+
+    def is_enough_close(self, avatar):
+        """\xd0\x90\xd0\xb2\xd0\xb0\xd1\x82\xd0\xb0\xd1\x80 \xd0\xb4\xd0\xbe\xd1\x81\xd1\x82\xd0\xb0\xd1\x82\xd0\xbe\xd1\x87\xd0\xbd\xd0\xbe \xd0\xb1\xd0\xbb\xd0\xb8\xd0\xb7\xd0\xba\xd0\xbe?"""
+        dist_to_ent = avatar.position.distTo(self.position)
+        result = dist_to_ent <= ANIMATION_DIST + 0.1
+        if not result and time.time() > self.warning_msg_time + MSG_FREQUENCY:
+            msg = lc('BaseToCapture.NOT_CLOSE_ENOUGH', user=avatar)
+            avatar.putMessage(CHANNEL_CONSTS.SYSTEM, msg)
+            self.warning_msg_time = time.time()
+        return result
+
+    def is_avatar_on_position(self, avatar):
+        """\xd0\x90\xd0\xb2\xd0\xb0\xd1\x82\xd0\xb0\xd1\x80 \xd0\xb7\xd0\xb0\xd0\xbd\xd1\x8f\xd0\xbb \xd0\xbf\xd0\xbe\xd0\xb7\xd0\xb8\xd1\x86\xd0\xb8\xd1\x8e \xd0\xb4\xd0\xbb\xd1\x8f \xd0\xbf\xd0\xbe\xd0\xb4\xd0\xbd\xd1\x8f\xd1\x82\xd0\xb8\xd1\x8f \xd1\x84\xd0\xbb\xd0\xb0\xd0\xb3\xd0\xb0?"""
+        return (avatar.position - self.hoist_positon[:3]).length <= 0.1
+
+    @property
+    def is_max_height(self):
+        """\xd0\xa4\xd0\xbb\xd0\xb0\xd0\xb3 \xd1\x83\xd0\xb6\xd0\xb5 \xd0\xbd\xd0\xb0 \xd0\xbc\xd0\xb0\xd0\xba\xd1\x81\xd0\xb8\xd0\xbc\xd0\xb0\xd0\xbb\xd1\x8c\xd0\xbd\xd0\xbe\xd0\xb9 \xd0\xb2\xd1\x8b\xd1\x81\xd0\xbe\xd1\x82\xd0\xb5?"""
+        return self.height == TOP_HEIGHT
+
+    def set_height(self, old_value):
+        max_value = 599
+        new_value = int(max_value * self.height / 100)
+        self.model.RaiseBC(0, None, 1, new_value, new_value, 1)
+        self.baseToCaptureGUI.flag_height(self.base_name, self.name, self.height)
+        return
+
+    def set_clan_owner_name(self, old_value):
+        self.baseToCaptureGUI.flag_clan_owner(self.base_name, self.name, old_value, self.clan_owner_name)
+        self._change_flag_text()
+        self.update_flag_color()
+
+    def set_clan_invader(self, old_value):
+        self.baseToCaptureGUI.flag_clan_owner(self.base_name, self.name, old_value, self.clan_owner_name)
+        self._change_flag_text()
+        self.update_flag_color()
+
+    def onClanChangeEmblemID(self, emblemID):
+        self.update_flag_color()
+
+    def update_flag_color(self):
+        if self.model and self.new_flag_model:
+            player = BigWorld.player()
+            if self.clan_owner_name == player.clanName and self.clan_invader == 0:
+                self.new_flag_model.flag_color = 'blue'
+            elif self.clan_invader == player.clanID:
+                self.new_flag_model.flag_color = 'blue'
+            else:
+                self.new_flag_model.flag_color = 'red'
+            self.load_clan_emblem()
+
+    def _drawIcon(self, imgID = 0, feedName = '', texture = None):
+        if self.isDestroyed:
+            return
+        elif imgID != self.clanEmblemID:
+            return
+        else:
+            if imgID and texture:
+                StalkerModel.setFeed(self.new_flag_model, None, 'flag_color', feedName, texture)
+            else:
+                StalkerModel.setFeed(self.new_flag_model, None, 'flag_color', 'feed_disabled', texture)
+            return
+
+    def set_clanEmblemID(self, old_value):
+        self.load_clan_emblem()
+
+    def load_clan_emblem(self):
+        if self.clanEmblemID:
+            UCManager.ucmanager.loadImg(self.clanEmblemID, self._drawIcon)
+        else:
+            self._drawIcon(self.clanEmblemID)
+
+    def update_clan_icon(self):
+        pass
+
+    def onDestroy(self):
+        pass
+
+    def fini(self):
+        self.onDestroy()
+
+    def get_target_mark(self, distance):
+        if distance > Constants.BASE_FLAG_BTTN_MARK_DIST:
+            return None
+        elif Helpers.Caps.CAP_BASE_FLAG not in self.targetCaps:
+            return None
+        else:
+            return soInworldMarker.MARKER_USE

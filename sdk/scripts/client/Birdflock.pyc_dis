@@ -1,0 +1,190 @@
+# Embedded file name: ./client/Birdflock.py
+from Math import Vector3
+import BigWorld
+import BWPersonality
+from functools import partial
+import BirdflockCommon
+import ResourceLoader
+import DrawPrimitivesUtils
+from draw_utils_extend import LinesHolder
+from Helpers.Caps import CAP_CAN_PICKUP
+from DeadBird import DeadBird
+import sys
+import random
+import ResMgr
+import json
+import sounds_manager as sounds
+gi = BigWorld.getGeometricInstance()
+DEBUG = False
+MODEL = 'characters/creatures/crow/crow_mob.model'
+_sounds_config = json.loads(ResMgr.openSection('sfx/Mob/Birds.json').asBinary)
+
+class Birdflock(BigWorld.Entity):
+    _flocks = []
+
+    @staticmethod
+    def reload_birds():
+        reload(BirdflockCommon)
+        for flock_id in Birdflock._flocks:
+            BigWorld.destroyEntity(flock_id)
+
+        Birdflock._flocks = []
+        space_id = BigWorld.player().spaceID
+        space_name = BWPersonality.GUICore.getSpaceName(space_id)[0]
+        data = BirdflockCommon.get_total_config(space_name) or []
+        for index, conf in enumerate(data):
+            Birdflock._spawn_flock(conf, space_id, index)
+
+    @staticmethod
+    def _on_player_entered_space(space_name, space_id):
+        for flock_id in Birdflock._flocks:
+            BigWorld.destroyEntity(flock_id)
+
+        Birdflock._flocks = []
+        data = BirdflockCommon.get_total_config(space_name) or []
+
+        def spawn_delayed():
+            for index, conf in enumerate(data):
+                Birdflock._spawn_flock(conf, space_id, index)
+
+        BigWorld.callback(0, spawn_delayed)
+
+    @staticmethod
+    def _on_player_account():
+        for flock_id in Birdflock._flocks:
+            BigWorld.destroyEntity(flock_id)
+
+        Birdflock._flocks = []
+
+    @staticmethod
+    def _onDisconnected():
+        for flock_id in Birdflock._flocks:
+            BigWorld.destroyEntity(flock_id)
+
+        Birdflock._flocks = []
+
+    @staticmethod
+    def _spawn_flock(conf, space_id, conf_index):
+        props = {'conf_index': conf_index}
+        navigator = BirdflockCommon.Navigator(conf)
+        position = navigator.get_position_and_time()[0]
+        flock_id = BigWorld.createEntity('Birdflock', space_id, 0, position, Vector3(0, 0, 0), props)
+        Birdflock._flocks.append(flock_id)
+
+    def __init__(self):
+        BigWorld.Entity.__init__(self)
+        self._tick_controller_id = None
+        self._lines = LinesHolder(max_lines=0) if DEBUG else None
+        self.filter = BigWorld.BoidsFilter()
+        self.filter.speed = BirdflockCommon.FLOCK_SPEED
+        self.filter.influenceRadius = BirdflockCommon.FLOCK_INFLUENCE
+        self._idle_sound = None
+        self.model = BigWorld.Model('')
+        self.targetCaps = [CAP_CAN_PICKUP]
+        self.skeletonCollider = BigWorld.SkeletonCollider()
+        box = BigWorld.BoxAttachment()
+        box.minBounds = (-5, -1, -5)
+        box.maxBounds = (5, 1, 5)
+        box.name = 'body'
+        self.bbRadius = 100.0
+        self.skeletonCollider.addCollider(box)
+        self.canBeHurtByBullets = True
+        self.canTakeDamage = True
+        self.model.root.attach(box)
+        self.colliderNames = {box.name: 0}
+        return
+
+    def onEnterWorld(self, prereqs):
+        self._navigator = BirdflockCommon.Navigator(self._conf)
+        amount = self._conf['flock']['count']
+        fly_animation = 'fly_1'
+
+        def on_load_ref(prereqs):
+            if self.isDestroyed:
+                return
+            else:
+                for i in xrange(amount):
+                    model = prereqs.produce(0)
+                    self.addModel(model)
+                    fly_action = getattr(model, fly_animation)
+                    fr = fly_action.frameRate
+                    rate = random.randrange(fr * 0.8, fr * 1.2)
+                    fly_action(random.random() * fly_action.duration, None, 0, -1, -1, rate)
+
+                return
+
+        ResourceLoader.asyncLoad([(ResourceLoader.MODEL, MODEL, amount)], on_load_ref)
+        sounds.playSound(_sounds_config['CLOUD_IDLE'], self.model)
+        self._idle_sound = sounds.playSound(_sounds_config['CLOUD_IDLE'], self.model)
+        self._tick()
+
+    def _tick(self):
+        position, timer = self._navigator.get_position_and_time()
+        self.filter.teleportTo(position)
+        self._tick_controller_id = BigWorld.callback(timer, self._tick)
+        if self._lines:
+            self._lines.clear()
+            DrawPrimitivesUtils.draw_cilinder(position - Vector3(0, 100, 0), self._conf['flock']['enter_radius'], 100, holder=self._lines, alwaysdraw=False)
+            DrawPrimitivesUtils.draw_cilinder(position - Vector3(0, 100, 0), self._conf['flock']['leave_radius'], 100, color=(0, 0, 1, 1), holder=self._lines, alwaysdraw=False)
+
+    def onLeaveWorld(self):
+        if self._tick_controller_id:
+            BigWorld.cancelCallback(self._tick_controller_id)
+        self.models = []
+        self.skeletonCollider.clearColliders()
+        self.skeletonCollider = None
+        self.model = None
+        if self._idle_sound:
+            self._idle_sound.stop()
+            self._idle_sound = None
+        return
+
+    def override_client_damage_calculation(self, victim_id, ammo_type, weapon_item_id, body_zones, speed_factor):
+        point = self.skeletonCollider.impactPoint
+        shortest_dist = sys.float_info.max
+        shortest_index = -1
+        total_hidden = 0
+        for i, model in enumerate(self.models):
+            if not model.visible:
+                total_hidden += 1
+                continue
+            dist = model.position.flatDistSqrTo(point)
+            if dist < shortest_dist:
+                shortest_dist = dist
+                shortest_index = i
+
+        killed_ratio = total_hidden / len(self.models)
+        if shortest_dist < 0.5 and random.random() > killed_ratio + 0.3:
+            pos, direction, _, speed, _ = self.filter.getBoidData(shortest_index)
+            DeadBird(pos, direction * speed, self.position, self.spaceID)
+            self.models[shortest_index].visible = False
+
+            def make_visible_again(model):
+                model.visible = True
+
+            BigWorld.callback(random.randrange(50.0, 80.0), partial(make_visible_again, self.models[shortest_index]))
+        elif DEBUG:
+            print '  Birdflock: shortest_dist', shortest_dist
+        return True
+
+    def bleedFromShoot(self, pos, blood_orientation, collider_name, ammo_type, damager_id):
+        pass
+
+    @property
+    def _conf(self):
+        space_name = BWPersonality.GUICore.getSpaceName(self.spaceID)[0]
+        return BirdflockCommon.get_config_by_index(space_name, self.conf_index)
+
+
+def add_listeners(attempts):
+    if not hasattr(BWPersonality, 'game'):
+        if attempts <= 0:
+            raise RuntimeError
+        BigWorld.callback(0.5, partial(add_listeners, attempts - 1))
+        return
+    BWPersonality.game.addListener('onPlayerAccount', Birdflock._on_player_account)
+    BWPersonality.game.addListener('onPlayerEnteredSpace', Birdflock._on_player_entered_space)
+    BWPersonality.game.addListener('onDisconnected', Birdflock._onDisconnected)
+
+
+add_listeners(100)

@@ -1,0 +1,216 @@
+# Embedded file name: ./client/perks_gui/reset_controller.py
+from client_utils import time_to_string3
+import BWPersonality
+import BigWorld
+from Helpers.BWCoroutine import BWMemberCoroutine, BWWaitForCondition
+from itertools import chain
+from gui_jokes import askUser
+from soGUI.soDialogueBox import soDialogueBox
+from Localization import lc
+import colorCodes as cc
+from perks_system.common_perk_user import CLEAR_PERKS_ITEM, FREE_RESETS, RELOAD_COOLDOWN, RESET_COOLDOWN, CLEAR_PERKS_COST
+from perks_system import perks_parser
+import math
+import ItemsUtils
+import sounds_manager as sm
+
+class ButtonsSet:
+    YesNo, Ok, ConfirmCancel, Payed, BuyCancel = xrange(5)
+
+
+class MessageWin(askUser):
+
+    def __init__(self, text, buttons_set):
+        if buttons_set == ButtonsSet.YesNo:
+            buttons_set = [soDialogueBox.BTN_YES, soDialogueBox.BTN_NO]
+        elif buttons_set == ButtonsSet.Ok:
+            buttons_set = [soDialogueBox.BTN_OK]
+        elif buttons_set == ButtonsSet.Payed:
+            buttons_set = [soDialogueBox.BTN_PAYEDRESET, soDialogueBox.BTN_OK]
+        elif buttons_set == ButtonsSet.ConfirmCancel:
+            buttons_set = [soDialogueBox.BTN_CONFIRM, soDialogueBox.BTN_CANCEL]
+        elif buttons_set == ButtonsSet.BuyCancel:
+            buttons_set = [soDialogueBox.BTN_BUY, soDialogueBox.BTN_CANCEL]
+        else:
+            raise RuntimeError
+        askUser.__init__(self, lc('Perks.ui.reset.title'), text, self._callback, buttons_set)
+        self.processed = False
+
+    def run_timer(self, text_provider):
+        self._text_provider = text_provider
+        BigWorld.callback(1, self._tick)
+
+    def _tick(self):
+        if self.processed:
+            self._text_provider = None
+            return
+        else:
+            BWPersonality.GUICore.setMsgBoxCtrlData(self.ID, 'default_txt_field', self._text_provider())
+            BigWorld.callback(1, self._tick)
+            return
+
+    def _callback(self, event):
+        self.processed = True
+        self.last_event = event
+
+
+class ResetController:
+    """ http://hz-dev.stalker.so:8090/issues/2447 """
+
+    def __init__(self, button):
+        self._coroutine = None
+        self._button = button
+        return
+
+    def start_reset(self):
+        self._stop_coroutine()
+        if self._perks_count == 0:
+            MessageWin(lc('Perks.ui.reset.noperks'), ButtonsSet.Ok)
+            return
+        self._coroutine = self._reset_coroutine()
+        self._coroutine.run()
+
+    def _stop_coroutine(self):
+        if self._coroutine:
+            self._coroutine.stop()
+        self._coroutine = None
+        self._button.set_enabled(True)
+        return
+
+    @BWMemberCoroutine
+    def _reset_coroutine(self):
+        self._button.set_enabled(False)
+        if not self._reset_data:
+            self._user.get_reset_data1 = self._update_reset_data
+            self._user.base.get_reset_data0()
+        yield BWWaitForCondition(lambda : self._reset_data, 5, 0)
+
+        def calc_reset_time_remain_hours():
+            reset_time_elapsed_hours = max(0, (self._cur_time - self._reset_data['reset_time']) / 60 / 60)
+            return RESET_COOLDOWN - reset_time_elapsed_hours
+
+        if calc_reset_time_remain_hours() > 0:
+
+            def win_text():
+                time_text = time_to_string3(max(0, calc_reset_time_remain_hours()))
+                time_text = cc.active_xml + time_text + cc.inactive_xml
+                return lc('Perks.ui.reset.m4') + '\n' + time_text
+
+            message_win = MessageWin(win_text(), ButtonsSet.Ok)
+            message_win.run_timer(win_text)
+            yield BWWaitForCondition(lambda : message_win.processed, checkFrequency=0)
+        else:
+            resets_count = self._calc_reset_counts()
+            if resets_count > 0:
+                message_win = MessageWin(lc('Perks.ui.reset.m1').format(cc.active_xml + unicode(resets_count) + cc.inactive_xml), ButtonsSet.YesNo)
+                yield BWWaitForCondition(lambda : message_win.processed, checkFrequency=0)
+                if message_win.last_event == soDialogueBox.BTN_YES:
+                    self._user.base.clear_perks_free()
+                    yield BWWaitForCondition(lambda : self._perks_count == 0)
+                    sm.playSound('ui/perks/reset')
+                    if self._reset_data['number'] == 0:
+                        self._reset_data['reload_time'] = self._cur_time
+                    self._reset_data['reset_time'] = self._cur_time
+                    self._reset_data['number'] += 1
+                    reset_counts = max(0, FREE_RESETS - self._reset_data['number'])
+                    if reset_counts > 0:
+                        message_win = MessageWin(lc('Perks.ui.reset.m7').format(cc.active_xml + unicode(RESET_COOLDOWN) + cc.inactive_xml), ButtonsSet.Ok)
+                        yield BWWaitForCondition(lambda : message_win.processed, checkFrequency=0)
+                    else:
+                        time_elapsed_sec = self._cur_time - self._reset_data['reload_time']
+                        reload_cooldown_sec = RELOAD_COOLDOWN * 24 * 60 * 60
+                        remain_days = int(math.ceil(max(0, (reload_cooldown_sec - time_elapsed_sec) / 60 / 60 / 24)))
+                        message_win = MessageWin(lc('Perks.ui.reset.m2').format(cc.active_xml + unicode(remain_days) + cc.inactive_xml), ButtonsSet.Ok)
+                        yield BWWaitForCondition(lambda : message_win.processed, checkFrequency=0)
+            else:
+
+                def win_text():
+                    time_text = time_to_string3(max(0, self._calc_hours_to_free_reload()))
+                    time_text = cc.active_xml + time_text + cc.inactive_xml
+                    return lc('Perks.ui.reset.m8').format(time_text)
+
+                message_win = MessageWin(win_text(), ButtonsSet.Payed)
+                message_win.run_timer(win_text)
+                yield BWWaitForCondition(lambda : message_win.processed, checkFrequency=0)
+                if message_win.last_event == soDialogueBox.BTN_PAYEDRESET:
+                    while True:
+                        item_name = ItemsUtils.GetItemName(CLEAR_PERKS_ITEM)
+                        message_win = MessageWin(lc('Perks.ui.reset.m5').format(cc.active_xml + item_name, unicode(CLEAR_PERKS_COST) + cc.inactive_xml), ButtonsSet.ConfirmCancel)
+                        yield BWWaitForCondition(lambda : message_win.processed, checkFrequency=0)
+                        if message_win.last_event == soDialogueBox.BTN_CONFIRM:
+                            if not self._consumables:
+                                self._user.getConsumables()
+                            yield BWWaitForCondition(lambda : self._consumables, 5, 0)
+                            if self._consumables_count >= CLEAR_PERKS_COST:
+                                self._user.cell.clearPerksDonat()
+                                yield BWWaitForCondition(lambda : self._perks_count == 0)
+                                sm.playSound('ui/perks/reset')
+                                message_win = MessageWin(lc('Perks.ui.reset.m7').format(cc.active_xml + unicode(RESET_COOLDOWN) + cc.inactive_xml), ButtonsSet.Ok)
+                                self._reset_data['reset_time'] = self._cur_time
+                                yield BWWaitForCondition(lambda : message_win.processed, checkFrequency=0)
+                            else:
+                                ratio_text = u'{0}/{1}'.format(self._consumables_count, CLEAR_PERKS_COST)
+                                message_win = MessageWin(lc('Perks.ui.reset.m6').format(cc.active_xml + item_name, ratio_text + cc.inactive_xml), ButtonsSet.BuyCancel)
+                                yield BWWaitForCondition(lambda : message_win.processed, checkFrequency=0)
+                                if message_win.last_event == soDialogueBox.BTN_BUY:
+                                    fill_data = {CLEAR_PERKS_ITEM: CLEAR_PERKS_COST - self._consumables_count}
+                                    BWPersonality.GUICore.storehouse_screen.show_bin(fill_data)
+                                    yield BWWaitForCondition(lambda : not BWPersonality.GUICore.storehouse_screen_visible)
+                                    continue
+                        break
+
+        self._coroutine = None
+        self._stop_coroutine()
+        return
+
+    def _calc_hours_to_free_reload(self):
+        time_elapsed_sec = self._cur_time - self._reset_data['reload_time']
+        reload_cooldown_sec = RELOAD_COOLDOWN * 24 * 60 * 60
+        return max(0.0, (reload_cooldown_sec - time_elapsed_sec) / 60.0 / 60)
+
+    def _calc_reset_counts(self):
+        reload_elapse_time_secs = self._cur_time - self._reset_data['reload_time']
+        cooldown_secs = RELOAD_COOLDOWN * 24 * 60 * 60
+        if reload_elapse_time_secs >= cooldown_secs:
+            self._reset_data['number'] = 0
+            self._reset_data['reload_time'] = 0
+        return max(0, FREE_RESETS - self._reset_data['number'])
+
+    def on_show(self):
+        self._stop_coroutine()
+        self._consumables = None
+        self._reset_data = None
+        return
+
+    def on_hide(self):
+        self._stop_coroutine()
+        self._consumables = None
+        self._reset_data = None
+        return
+
+    @property
+    def _perks_count(self):
+        return perks_parser.calc_perks_count(self._user.perks)
+
+    @property
+    def _consumables_count(self):
+        count = 0
+        for c in chain(*self._consumables):
+            if c['type_id'] == CLEAR_PERKS_ITEM:
+                count += c['count']
+
+        return count
+
+    @property
+    def _user(self):
+        return BigWorld.player()
+
+    @property
+    def _cur_time(self):
+        return BWPersonality.gpd.server_time
+
+    def update_consumables(self, consumables, inventory_consumables):
+        self._consumables = (consumables, inventory_consumables)
+
+    def _update_reset_data(self, reset_data):
+        self._reset_data = reset_data

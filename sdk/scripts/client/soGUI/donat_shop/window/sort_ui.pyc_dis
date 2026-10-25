@@ -1,0 +1,306 @@
+# Embedded file name: ./client/soGUI/donat_shop/window/sort_ui.py
+from math_bw import smooth_damp, lerp
+from utils import Listenable
+from math_bw import move_towards, lerp_rgb_colors
+import BigWorld
+import GUI
+from soGUI.donat_shop.window.win_ui.pager import EventType as PagerET
+from soGUI.donat_shop.window import element
+from ui.panel import Panel
+from Helpers.PyGUI import Utils
+from soGUI.donat_shop.window.win_ui.pager import Pager
+from donate_catalog_tags import TAGS_IDS, TAGS_PICS, TAGS_LC, universal_pic
+from ui.text import Text, Align
+import sounds_manager as sm
+from utils import Tickable
+
+class BarEventType:
+    OnClick, OnEnter, OnLeave = ((r, 'sortbar') for r in range(3))
+
+
+_bar_size = (100, 400)
+
+class Bar(Panel, Listenable, Tickable):
+    _color_base = (128, 128, 128, 255)
+    _color_light = (255, 255, 255, 255)
+    _color_hover = (200, 200, 200, 255)
+
+    def __init__(self, parent_comp, tag_id, name, override_txt_string = None):
+        Listenable.__init__(self)
+        Tickable.__init__(self)
+        Panel.__init__(self, parent_comp, name)
+        self._desired_colors = []
+        self._color = None
+        self.change_interseption(intercept_moving=True, intercept_buttons=True)
+        comp = GUI.Window(TAGS_PICS.get(tag_id, universal_pic))
+        image = Panel(self.component, 'image', component=comp)
+        size = 26
+        image.transform.set_pixel_mode((0, 0.5), (0, 0.5), (size, size))
+        comp.materialFX = 'BLEND'
+        comp.filterType = 'LINEAR'
+        txt_string = override_txt_string or TAGS_LC.get(tag_id, u'???').upper()
+        text = Text(self.component, 'text', size=24, text=txt_string)
+        text.set_alignment(Align.Left, Align.Center)
+        text.component.visible = False
+        text.transform.set_clip_mode((0, 0, 1, 1))
+        self._hovered = False
+        self.tag_id = tag_id
+        self.color = 0.0
+        return
+
+    def handleMouseEnterEvent(self, comp):
+        result = Panel.handleMouseEnterEvent(self, comp)
+        data = {'bar': self}
+        self.notify_listeners(BarEventType.OnEnter, data)
+        return result
+
+    def handleMouseLeaveEvent(self, comp):
+        result = Panel.handleMouseLeaveEvent(self, comp)
+        data = {'bar': self}
+        self.notify_listeners(BarEventType.OnLeave, data)
+        return result
+
+    def handleMouseButtonEvent(self, component, event):
+        result = Panel.handleMouseButtonEvent(self, component, event)
+        if event.isKeyDown():
+            sm.playSound('ui/menu_click')
+            data = {'tag_id': self.tag_id}
+            self.notify_listeners(BarEventType.OnClick, data)
+        return result
+
+    def set_hovered(self, hovered):
+        self._hovered = hovered
+        self._apply_color_to_component()
+
+    def set_marked(self, value, smooth):
+        if value:
+            self._desired_colors[:] = [1.0]
+        elif not self._desired_colors or self._desired_colors[-1] != 0.0:
+            self._desired_colors.append(0.0)
+        if smooth:
+            self.start_tick()
+        else:
+            self.color = self._desired_colors[-1]
+            self._desired_colors[:] = []
+
+    def set_text_mode(self, value):
+        self.component.text.visible = value
+        self.component.image.visible = not value
+
+    def on_show(self):
+        pass
+
+    def on_hide(self):
+        pass
+
+    @property
+    def color(self):
+        return self._color
+
+    @color.setter
+    def color(self, value):
+        if self._color == value:
+            return
+        self._color = value
+        self._apply_color_to_component()
+
+    def _apply_color_to_component(self):
+        start_color = Bar._color_hover if self._hovered else Bar._color_base
+        color = tuple(map(int, lerp_rgb_colors(start_color, Bar._color_light, self._color)))
+        self.component.image.colour = color
+        self.component.text.script.set_color(color)
+
+    def can_tick(self):
+        return bool(self._desired_colors)
+
+    def on_tick(self):
+        if not Utils.is_visible_in_hierarchy(self.component):
+            if self._desired_colors:
+                self.color = self._desired_colors[-1]
+                self._desired_colors[:] = []
+        if not self._desired_colors:
+            return
+        speed = 5.0
+        self.color = move_towards(self.color, self._desired_colors[0], BigWorld.getTimeDelta() * speed)
+        if self.color == self._desired_colors[0]:
+            del self._desired_colors[0]
+
+
+class SortUi(Panel, Listenable):
+
+    def __init__(self, component):
+        Listenable.__init__(self)
+        comp = GUI.Window('textures/default/white.dds')
+        Panel.__init__(self, component, 'sortui', component=comp)
+        self.change_interseption(intercept_moving=True, intercept_buttons=True)
+        self.component.colour = (0, 0, 0, 150)
+        self.component.materialFX = 'BLEND'
+        self._pager = Pager()
+        pager_items = list(TAGS_IDS)
+        pager_items.insert(0, -1)
+        self._pager.set_items(pager_items)
+        self._desired_position = 0.0
+        self._real_position = 0.0
+        self._velocity = 0.0
+        self._selected = None
+        self._hovered = None
+        self._back_hovered = False
+        self._pager.add_listener(self._on_pager_event)
+        self._bars = []
+        self._mark_update()
+        return
+
+    @property
+    def real_position(self):
+        return self._real_position
+
+    @real_position.setter
+    def real_position(self, value):
+        if value == self._real_position:
+            return
+        self._real_position = value
+        mode = self.transform._mode
+        hm, vm = mode[1], mode[2]
+        hm = list(hm)
+        hm[3] = lerp(_bar_size[0], _bar_size[1], value)
+        self.transform.set_mixed_mode(tuple(hm), vm)
+        for bar in self._bars:
+            bar.set_text_mode(value >= 0.5)
+
+    def on_show(self):
+        self._velocity = 0.0
+        self.real_position = 0.0
+
+    def on_hide(self):
+        self.real_position = 0.0
+
+    def on_tick(self):
+        if self.real_position == self._desired_position:
+            return
+        real_position, self._velocity = smooth_damp(self.real_position, self._desired_position, self._velocity, 0.05, 100, BigWorld.getTimeDelta())
+        if abs(real_position - self._desired_position) < 0.0001:
+            real_position = self._desired_position
+        self.real_position = real_position
+
+    def handleMouseEnterEvent(self, comp):
+        Panel.handleMouseEnterEvent(self, comp)
+        self._back_hovered = True
+        self._update_desired_position()
+        return True
+
+    def handleMouseLeaveEvent(self, comp):
+        Panel.handleMouseLeaveEvent(self, comp)
+        self._back_hovered = False
+        self._update_desired_position()
+        return True
+
+    def _update_desired_position(self):
+        self._desired_position = 1.0 if self._hovered or self._back_hovered else 0.0
+
+    def _on_pager_event(self, event_type, data):
+        if event_type == PagerET.OnIndexChanged:
+            self._mark_update()
+        elif event_type == PagerET.OnSizeChanged:
+            self._mark_update()
+
+    def _get_cur_tag(self):
+        return None
+
+    def _is_bar_valid(self, index):
+        return False
+
+    def _on_bar_click(self, tag_id):
+        pass
+
+    def main_line_text(self):
+        raise NotImplementedError
+
+    def _update_content(self):
+        if not self._bars and not self._pager.count:
+            return
+        else:
+            if not self._bars:
+                size = 36
+                for i in range(self._pager.count):
+                    tag_id = self._pager.get_item(i)
+                    override_txt_string = None
+                    if tag_id == -1:
+                        override_txt_string = self.main_line_text()
+                    bar = Bar(self.component, tag_id, 'pic' + str(i), override_txt_string)
+                    bar.transform.set_pixel_mode((0, 0.5), (0, 0), (_bar_size[1] - size * 2, size))
+                    bar.add_listener(self._on_bar_event)
+                    self._bars.append(bar)
+
+            self._pager.set_cur_item(self._get_cur_tag())
+            visible_index = 0
+            space = 36
+            for i, bar in enumerate(self._bars):
+                valid = self._is_bar_valid(i)
+                bar.component.visible = valid
+                if valid:
+                    mode = bar.transform._mode[1:]
+                    mode[3] = (36, 40 + visible_index * space)
+                    bar.transform.set_pixel_mode(*mode)
+                    visible_index += 1
+
+            self.selected = self._pager.index
+            return
+
+    def _on_bar_event(self, event_type, data):
+        if event_type == BarEventType.OnClick:
+            self._on_bar_click(data['tag_id'])
+        elif event_type == BarEventType.OnEnter:
+            self.hovered = data['bar']
+        elif event_type == BarEventType.OnLeave:
+            if data['bar'] == self.hovered:
+                self.hovered = None
+        return
+
+    @property
+    def hovered(self):
+        return self._hovered
+
+    @hovered.setter
+    def hovered(self, value):
+        if value == self._hovered:
+            return
+        if self._hovered:
+            self._hovered.set_hovered(False)
+        self._hovered = value
+        if self._hovered:
+            self._hovered.set_hovered(True)
+        self._update_desired_position()
+
+    @property
+    def selected(self):
+        return self._selected
+
+    @selected.setter
+    def selected(self, value):
+        if value == self._selected:
+            return
+        else:
+            prev_selected_index = self._selected
+            if prev_selected_index is not None:
+                prev_selected = self._bars[self._selected]
+                self._selected = value
+                if self._selected is not None:
+                    selected = self._bars[self._selected]
+                    if prev_selected:
+                        prev_selected.set_marked(False, True)
+                    if selected:
+                        smooth = bool(prev_selected)
+                        selected.set_marked(True, smooth)
+                    sign = selected and prev_selected and abs(self._selected - prev_selected_index) > 1 and abs(self._selected - prev_selected_index) / (self._selected - prev_selected_index)
+                    for index in range(prev_selected_index + sign, self._selected, sign):
+                        self._bars[index].set_marked(True, True)
+                        self._bars[index].set_marked(False, True)
+
+            return
+
+    def _mark_update(self):
+        element.add_pre_gui_callback(self._update_content)
+
+    def on_size_changed(self):
+        Panel.on_size_changed(self)
+        self._mark_update()

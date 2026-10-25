@@ -1,0 +1,241 @@
+# Embedded file name: ./client/soGUI/donat_shop/window/win_ui/item_view.py
+import Keys
+from Items import ItemsCatalog
+from utils import Listenable
+import GUI
+from ui.panel import Panel
+from ui.button import Button
+from functools import partial
+import ItemsUtils
+import BigWorld
+from ui.transform import pixel_params, clip_params
+from soGUI.StorehouseGUI.ShopUtils import MultilineText
+import colorCodes as cc
+from soGUI.donat_shop.window import element
+import BlackBox
+from soGUI.StorehouseGUI.InfoWin import InfoWin
+import sounds_manager as sm
+
+class ItemView(Panel, Listenable):
+    btn_height = 40
+    _texture_cache = {}
+    i_color = (255, 255, 255, 120)
+    i_color_h = (255, 255, 255, 255)
+
+    def __init__(self, component, name, depth = 0.5, multiline_config = 'Shop_18'):
+        Listenable.__init__(self)
+        comp = GUI.Window('soGUI/frame/donatshop/cell_background.dds')
+        Panel.__init__(self, component, name, depth=depth, component=comp)
+        self.change_interseption(intercept_buttons=True, intercept_moving=True, interscept_keys=False)
+        comp.materialFX = 'BLEND_MASKABLE'
+        self._item_data = None
+        self._image_hide_channels = set()
+        self._delayed_load_callback = None
+        self.delay_load_time = 0.5
+        self._btn_height = 0
+        comp = GUI.Window('soGUI/frame/donatshop/garant.dds')
+        comp.materialFX = 'BLEND_MASKABLE'
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.wm, comp.hm = ('CLIP', 'CLIP')
+        comp.filterType = 'LINEAR'
+        comp.width, comp.height = (2, 2)
+        comp.position = (0, 0, 0.95)
+        comp.visible = False
+        self.component.addChild(comp, 'garant')
+        comp = GUI.Window()
+        comp.materialFX = 'BLEND_MASKABLE'
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.filterType = 'LINEAR'
+        comp.position = (0, 0.3, 0.9)
+        self.component.addChild(comp, 'image')
+        comp = GUI.Window('soGUI/frame/donatshop/gradient.dds')
+        comp.materialFX = 'BLEND_MASKABLE'
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.wm, comp.hm = ('CLIP', 'CLIP')
+        comp.width, comp.height = (2, 2)
+        comp.position = (0, 0, 0.8)
+        self.component.addChild(comp, 'gradient')
+        self._btn = self._create_button(self.component, 'btn')
+        if self._btn:
+            self.set_button_height(ItemView.btn_height)
+            self._btn.set_visual('soGUI/frame/buttons/donatbutton.json')
+            self._btn.on_click = self._on_click
+        comp = GUI.Window()
+        comp.materialFX = 'BLEND'
+        comp.hpm, comp.vpm = ('CLIP', 'PIXEL')
+        comp.ha, comp.va = ('CENTER', 'BOTTOM')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = (0, 0)
+        comp.position = (0, 0, 0.5)
+        self.component.addChild(comp, 'txt')
+        text_panel = comp
+        self._txt = MultilineText(text_panel, u'', multiline_config)
+        self._txt.material_fx = 'BLEND_MASKABLE'
+        self._txt.set_color(cc.inactive_rgba)
+        comp = GUI.Window('soGUI/frame/storehouse/i.png')
+        info = Panel(self.component, 'info', component=comp)
+        info.transform.set_pixel_mode((1, 0), (1, 0), (22, 22), pixel_pos=(-8, 8))
+        comp.materialFX = 'BLEND_MASKABLE'
+        comp.colour = ItemView.i_color
+        comp.filterType = 'LINEAR'
+        comp = GUI.Simple('soGUI/frame/journal/load_anim/load_pips')
+        comp.materialFX = 'BLEND_MASKABLE'
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = comp.texture.width, comp.texture.height
+        comp.position = (0, 0, 0.1)
+        self.component.addChild(comp, 'load_circle')
+        self.component.visible = False
+        return
+
+    def set_button_height(self, height):
+        if height == self._btn_height:
+            return
+        self._btn_height = height
+        self._apply_button_height()
+
+    def _apply_button_height(self):
+        ppx = clip_params((0, 1))
+        ppy = pixel_params(1, 1, self._btn_height)
+        self._btn.transform.set_mixed_mode(ppx, ppy)
+
+    def handleMouseEnterEvent(self, comp):
+        Panel.handleMouseEnterEvent(self, comp)
+        self.component.info.colour = ItemView.i_color_h
+        return True
+
+    def handleMouseLeaveEvent(self, comp):
+        Panel.handleMouseLeaveEvent(self, comp)
+        self.component.info.colour = ItemView.i_color
+        return True
+
+    def show_info_win(self):
+        InfoWin.instance.show(self.item_type)
+
+    def handleMouseButtonEvent(self, component, event):
+        Panel.handleMouseButtonEvent(self, component, event)
+        if event.key == Keys.KEY_LEFTMOUSE and not event.isKeyDown():
+            sm.playSound('ui/big_click')
+            self.show_info_win()
+        return True
+
+    def _create_button(self, component, name):
+        return Button(component, name)
+
+    def _on_click(self):
+        pass
+
+    def _on_icon_load(self, item_type, icon):
+        texture = icon.values()[0]
+        ItemView._texture_cache[texture.name] = texture
+        if self.item_type == item_type:
+            self.component.image.texture = texture
+            self.component.load_circle.visible = False
+            self._align_image()
+        self._update_image_visibility()
+
+    def _align_image(self):
+        comp = self.component.image
+        if comp.texture:
+            width, height = comp.texture.width, comp.texture.height
+            ratio = float(width) / height
+            max_height = self.component.height * 0.6
+            max_width = self.component.width * 0.8
+            width = max_width
+            height = width / ratio
+            if height > max_height:
+                height = max_height
+                width = height * ratio
+            comp.width, comp.height = width, height
+
+    def on_size_changed(self):
+        Panel.on_size_changed(self)
+        self._align_content()
+
+    def _align_content(self):
+        self._align_image()
+        space = self.component.width * 0.04
+        comp = self.component.txt
+        if self._btn:
+            comp.position[1] = self._btn.component.position[1] - space
+        else:
+            comp.position[1] = self.component.width
+        comp.width, comp.height = self.component.width - space * 2, comp.position[1]
+        if self.component.width > 0:
+            self._txt.do_reposition()
+            comp.height = self._txt.height
+
+    def mark_update_content(self):
+        element.add_pre_gui_callback(self._update_content)
+
+    def _update_content(self):
+        self.component.garant.visible = False
+        if self._item_data:
+            item_param = ItemsCatalog.GetItemParam(self.item_type)
+            if item_param:
+                if item_param.get('isBlackBox'):
+                    bb_name = item_param['Name']
+                    self.component.garant.visible = bb_name and BlackBox.has_bb_garant(bb_name) and True
+        self.component.visible = True
+        icon_name = ItemsUtils.GetIconShopName(None, item_type=self.item_type)
+        if not ItemsUtils.get_shop_name(self.item_type):
+            item_name = ItemsUtils.GetItemName(self.item_type, fGetShortName=True)
+            self._txt.set_text(item_name)
+            if icon_name != self.component.image.textureName:
+                ready_icon = ItemView._texture_cache.get(icon_name)
+                if ready_icon and not self.delay_load_time:
+                    self.component.image.texture = ready_icon
+                    self.component.load_circle.visible = False
+                else:
+                    self.component.image.texture = None
+                    self.component.image.textureName = ''
+                    self.component.load_circle.visible = True
+                    foo = partial(BigWorld.loadResourceListBG, [icon_name], partial(self._on_icon_load, self.item_type))
+                    if self.delay_load_time > 0:
+                        self._delayed_load_callback = BigWorld.callback(self.delay_load_time, foo)
+                    else:
+                        foo()
+            self._align_content()
+        else:
+            self.component.visible = False
+            self.component.image.texture = None
+            self.component.image.textureName = ''
+            self.component.load_circle.visible = True
+        self._update_image_visibility()
+        return
+
+    def set_image_visible(self, visible, channel):
+        if visible:
+            if channel in self._image_hide_channels:
+                self._image_hide_channels.remove(channel)
+        else:
+            self._image_hide_channels.add(channel)
+        self._update_image_visibility()
+
+    def _update_image_visibility(self):
+        self.component.image.visible = bool(self.component.image.texture and not self._image_hide_channels)
+
+    @property
+    def item_type(self):
+        return self._item_data and self._item_data['item_type']
+
+    @property
+    def item_uid(self):
+        return self._item_data and self._item_data['uid']
+
+    def set_item_data(self, value):
+        if value == self._item_data:
+            return
+        else:
+            if self._delayed_load_callback:
+                BigWorld.cancelCallback(self._delayed_load_callback)
+                self._delayed_load_callback = None
+            self._image_hide_channels.clear()
+            self._item_data = value
+            self.mark_update_content()
+            return

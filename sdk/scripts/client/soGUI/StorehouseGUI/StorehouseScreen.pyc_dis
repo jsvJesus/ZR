@@ -1,0 +1,565 @@
+# Embedded file name: ./client/soGUI/StorehouseGUI/StorehouseScreen.py
+""" \xd0\xbc\xd0\xbe\xd0\xb4\xd1\x83\xd0\xbb\xd1\x8c \xd1\x81 \xd0\xb8\xd0\xbd\xd1\x82\xd0\xb5\xd1\x80\xd1\x84\xd0\xb5\xd0\xb9\xd1\x81\xd0\xbe\xd0\xbc \xd0\xb7\xd0\xbe\xd0\xbb\xd0\xbe\xd1\x82\xd0\xbe\xd0\xb3\xd0\xbe \xd0\xbc\xd0\xb0\xd0\xb3\xd0\xb0\xd0\xb7\xd0\xb8\xd0\xbd\xd0\xb0 \xd0\xb8 \xd0\xb0\xd0\xba\xd0\xba\xd0\xb0\xd1\x83\xd0\xbd\xd1\x82\xd0\xbe\xd0\xb3\xd0\xbe \xd1\x81\xd0\xba\xd0\xbb\xd0\xb0\xd0\xb4\xd0\xb0
+"""
+import BigWorld
+import BWPersonality
+import GUI
+import steam_client_api
+from soGUI.UtilsGUI.PaintButton import PaintButton
+from functools import partial
+from Tabletab import Tabletab
+import ShopUtils
+from Helpers.PyGUI.PyGUIBase import Interceptor
+from Bin import Bin
+from soGUI.UtilsGUI.TextScaler import TextScaler
+from InfoWin import InfoWin
+from MessageWin import MessageWin
+from Localization import lc
+from IconFlyer import IconFlyer
+from StoreHouseConst import CODES
+from Settings import Settings
+from cloth_paint_utils import isPaintConsumablesType
+from ChooseCharWin import ChooseCharWin
+from BalanceBtn import BalanceBtn
+
+class CircleNotificator:
+
+    def __init__(self, base_comp):
+        self.component = base_comp
+        comp = GUI.Text(u'')
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.width, comp.height = (2, 2)
+        comp.position = (0, -0.1, 0.5)
+        self._text = comp
+        self._count = 0
+        self._hidden = False
+        self._ts = TextScaler(comp, 'RobotoCondensedRegular_16')
+        base_comp.addChild(comp, 'number')
+        self._update_visibility()
+
+    def do_reposition(self):
+        self._ts.do_reposition()
+
+    def set_count(self, count):
+        self._count = count
+        self._text.text = str(count) if count <= 9 else u'9+'
+        self._update_visibility()
+
+    def hide(self, value):
+        self._hidden = value
+        self._update_visibility()
+
+    def _update_visibility(self):
+        self.component.visible = self._count > 0 and not self._hidden
+
+
+class StorehouseScreen(Interceptor):
+
+    def __init__(self):
+        comp = GUI.Window('soGUI/frame/storehouse/shop_bg.dds')
+        comp.horizontalPositionMode = comp.verticalPositionMode = 'CLIP'
+        comp.horizontalAnchor = comp.verticalAnchor = 'CENTER'
+        comp.widthMode = comp.heightMode = 'CLIP'
+        comp.height = comp.width = 2.0
+        comp.position = (0, 0, 0.05)
+        comp.script = self
+        comp.materialFX = 'SOLID'
+        comp.visible = False
+        Interceptor.__init__(self, comp, interscept_keys=True)
+        self._shop_pending_callback = None
+        self._use_item_pending = None
+        self._shop_items = None
+        self._repositioned = False
+        self._bin_hide = []
+        self._mode = None
+        self._currency = None
+        self._spec_mode = None
+        self._take_item_callback = None
+        self._take_items_cache = set()
+        BWPersonality.GUICore.generalLayer.addChild(self.component, 'storehouse_screen')
+        self._setup_content()
+        return
+
+    def _setup_content(self):
+        self._repositioners = []
+        comp = GUI.Window()
+        self.component.addChild(comp, 'shop_button')
+        self._shop_button = PaintButton(comp, visual_state='soGUI/frame/storehouse/largeTextButtonLeft.xml')
+        self._shop_button.on_click = partial(self._set_mode, ShopUtils.SHOP_MODE)
+        self._shop_button.text = lc('StoreHouse.mainscreen.SHOP')
+        self._repositioners.append(self._shop_button)
+        self._bin_hide.append(comp)
+        comp = GUI.Window()
+        self.component.addChild(comp, 'store_button')
+        self._store_button = PaintButton(comp, visual_state='soGUI/frame/storehouse/largeTextButtonLeft.xml')
+        self._store_button.on_click = partial(self._set_mode, ShopUtils.STORE_MODE)
+        self._store_button.text = lc('StoreHouse.mainscreen.STORE')
+        self._repositioners.append(self._store_button)
+        self._bin_hide.append(comp)
+        comp = GUI.Window('soGUI/frame/storehouse/red_circle.png')
+        comp.materialFX = 'BLEND'
+        comp.position[2] = 0.3
+        comp.filterType = 'LINEAR'
+        self._store_notificator = CircleNotificator(comp)
+        self.component.addChild(comp, 'store_notificator')
+        comp = GUI.Window()
+        comp.materialFX = 'SOLID'
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'BOTTOM')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.width, comp.height = (2, 1.85)
+        comp.position = (0, -1, 0.5)
+        self._shop_tab = Tabletab(comp, self.component, ShopUtils.SHOP_MODE)
+        self._shop_tab.bin_click_callback = self._item_to_bin_clicked
+        self._shop_tab.tab_error_callback = self.shop_tab_error
+        self.component.addChild(comp, 'shop_tab')
+        self._repositioners.append(self._shop_tab)
+        self._bin_hide.append(comp)
+        comp = GUI.Window()
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'BOTTOM')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.width, comp.height = 2, self.component.shop_tab.height
+        comp.position = (0, -1, 0.5)
+        self._store_tab = Tabletab(comp, self.component, ShopUtils.STORE_MODE)
+        self._store_tab.take_click_callback = self._on_take_click
+        self._store_tab.use_click_callback = self._on_use_click
+        self._store_tab.put_to_inventory_click_callback = self._on_pub_to_inventory_click
+        self.component.addChild(comp, 'store_tab')
+        self._repositioners.append(self._store_tab)
+        self._bin_hide.append(comp)
+        comp = GUI.Window()
+        comp.horizontalAnchor, comp.verticalAnchor = ('RIGHT', 'TOP')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.width, comp.height = (0.1, 0.1)
+        comp.position = (0.995, 0.965, 0.5)
+        button = PaintButton(comp, visual_state='soGUI/frame/storehouse/storeImageButton.xml')
+        button.image = 'soGUI/frame/storehouse/exit.png'
+        button.on_click = partial(self.hide, True)
+        self.component.addChild(comp, 'exit_button')
+        self._repositioners.append(button)
+        comp = GUI.Window()
+        button = PaintButton(comp, visual_state='soGUI/frame/storehouse/storeImageTextButton.xml')
+        button.image = 'soGUI/frame/storehouse/basket.png'
+        button.text = lc('StoreHouse.mainscreen.BIN')
+        button.on_click = self._change_bin_mode
+        self.component.addChild(comp, 'bin_button')
+        self._repositioners.append(button)
+        comp = GUI.Window('soGUI/frame/storehouse/red_circle.png')
+        comp.materialFX = 'BLEND'
+        comp.filterType = 'LINEAR'
+        comp.position[2] = 0.3
+        self._bin_notificator = CircleNotificator(comp)
+        self.component.addChild(comp, 'bin_notificator')
+        comp = GUI.Window()
+        self._balance_btn = BalanceBtn(comp)
+        self._balance_btn.on_switch_request_callback = self._switch_currency
+        self._repositioners.append(self._balance_btn)
+        self.component.addChild(comp, 'balance')
+        comp = GUI.Window()
+        refill_button = PaintButton(comp, visual_state='soGUI/frame/storehouse/storeButton.xml')
+        refill_button.text = lc('StoreHouse.store.REFILL')
+        refill_button.on_click = lambda : BigWorld.player().openWebPayment(0)
+        self._repositioners.append(refill_button)
+        self.component.addChild(comp, 'refill')
+        comp = GUI.Window()
+        pick_up_all_button = PaintButton(comp, visual_state='soGUI/frame/storehouse/storeButton.xml')
+        pick_up_all_button.text = lc('StoreHouse.bin.PICK_UP_ALL')
+        pick_up_all_button.on_click = self._pick_up_all
+        self._repositioners.append(pick_up_all_button)
+        comp.visible = False
+        self.component.addChild(comp, 'pick_up_all')
+        comp = GUI.Window()
+        params = {'notificator': self._bin_notificator,
+         'header': lc('StoreHouse.bin.HEADER'),
+         'button1': lc('StoreHouse.bin.RETURN'),
+         'button2': lc('StoreHouse.bin.BUY'),
+         'showdisclaimer': True}
+        self._bin = Bin(comp, params)
+        self._bin.on_bin_try_close_callback = self._change_bin_mode
+        self._bin.on_buy_click = self._on_buy_click
+        self._bin.hide()
+        self.component.addChild(comp, 'bin')
+        fade_color = (255, 255, 255, 150)
+        comp = GUI.Window('soGUI/frame/paint/black.dds')
+        comp.colour = fade_color
+        comp.materialFX = 'BLEND'
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.width, comp.height = (2, 2)
+        comp.position = (0, 0, 0.1)
+        self._repositioners.append(InfoWin(comp))
+        self.component.addChild(comp, 'infowin')
+        comp = GUI.Window('soGUI/frame/paint/black.dds')
+        comp.colour = fade_color
+        comp.materialFX = 'BLEND'
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.width, comp.height = (2, 2)
+        comp.position = (0, 0, 0.05)
+        self._repositioners.append(MessageWin(comp, MessageWin.SHOP))
+        self.component.addChild(comp, 'messagewin')
+        self._icon_flyier = IconFlyer(self.component)
+
+    def _switch_currency(self):
+        BigWorld.player().switchPlatinaDonateShopCatalog()
+        self._bin.clear_items()
+
+    def _on_use_click(self, item_id):
+        if self._use_item_pending:
+            return
+        BigWorld.player().useStoreHouseItem(item_id)
+        self._use_item_pending = item_id
+
+    def _on_pub_to_inventory_click(self, item_id, db_id):
+        if self._use_item_pending:
+            return
+        BigWorld.player().takeStoreHouseItemToAvatar(item_id, db_id)
+        self._use_item_pending = item_id
+
+    def _on_take_click(self, item_id):
+        if self._take_item_callback:
+            BigWorld.cancelCallback(self._take_item_callback)
+        self._take_items_cache.add(item_id)
+
+        def take_items():
+            for item_id in self._take_items_cache:
+                code = BigWorld.player().takeStoreHouseItem(item_id, self._npc_name)
+                if code != CODES.OK:
+                    BigWorld.player().onDonateShopNotify(code)
+                    break
+
+            self._take_items_cache.clear()
+
+        self._take_item_callback = BigWorld.callback(1.0, take_items)
+
+    def _item_to_bin_clicked(self, amount, item, screen_pos):
+        self._icon_flyier.fly(screen_pos, item['item_type'])
+        self._bin.add_item(amount, item)
+
+    def _on_buy_click(self, to_server, total_cost, callback):
+        code = BigWorld.player().buyDonate(to_server, total_cost)
+        if code != CODES.OK:
+            callback(code)
+            return
+        self._shop_pending_callback = callback
+
+    def set_premium_filter(self):
+        self._shop_tab.set_premium_filter()
+
+    def got_donate_notification(self, code):
+        if code == CODES.PREMIUM_ERROR:
+            self._store_tab.unlock_use_item(self._use_item_pending)
+            self._use_item_pending = None
+            MessageWin.shop_instance.show_single_button(lc('StoreHouse.store.NO_PREMIUM'), lc('StoreHouse.mainscreen.OK'))
+        elif code == CODES.PREMIUM_OK:
+            self._use_item_pending = None
+            MessageWin.shop_instance.show_single_button(lc('StoreHouse.store.OK_PREMIUM'), lc('StoreHouse.mainscreen.OK'))
+        elif code == CODES.BOOSTER_OK:
+            self._use_item_pending = None
+            MessageWin.shop_instance.show_single_button(lc('StoreHouse.store.OK_BOOSTER'), lc('StoreHouse.mainscreen.OK'))
+        elif code == CODES.TAKE_ITEM_TO_AVATAR_OK:
+            self._use_item_pending = None
+            MessageWin.shop_instance.show_single_button(lc('StoreHouse.store.OK_TAKEITEM'), lc('StoreHouse.mainscreen.OK'))
+        elif self._shop_pending_callback:
+            self._shop_pending_callback(code)
+            self._shop_pending_callback = None
+        elif CODES.getText(code):
+            MessageWin.shop_instance.show_single_button(CODES.getText(code), lc('StoreHouse.bin.OK'))
+            self._store_tab.unlock_use_item(self._use_item_pending)
+            self._use_item_pending = None
+        return
+
+    def _change_bin_mode(self):
+        if self._bin.visible:
+            self._bin.hide()
+            self._store_notificator.hide(False)
+            for comp in self._bin_hide:
+                comp.visible = True
+
+            self._set_mode(self._mode, block_npc_notification=True)
+        else:
+            self._bin.show(self._currency)
+            self._store_notificator.hide(True)
+            for comp in self._bin_hide:
+                comp.visible = False
+
+    def _set_mode(self, mode, block_npc_notification = False):
+        self._mode = mode
+        self.component.pick_up_all.visible = mode == ShopUtils.STORE_MODE
+        if mode == ShopUtils.SHOP_MODE:
+            self._balance_btn.lock_swap(False)
+            self._shop_button.enabled = False
+            self._store_button.enabled = True
+            self._shop_tab.show()
+            self._store_tab.hide()
+            BigWorld.player().getDonateShopCatalog()
+            if BigWorld.auth.isSteamAcc():
+                if not steam_client_api.api.isOverlayEnabled:
+                    MessageWin.shop_instance.show_single_button(lc('Codes.StoreHouse.ERROR_STEAM_OVERLAY_DISABLED'), lc('StoreHouse.mainscreen.OK'))
+        elif mode == ShopUtils.STORE_MODE:
+            self._balance_btn.lock_swap(True)
+            self._store_button.enabled = False
+            self._shop_button.enabled = True
+            self._store_tab.show(lock_take=not bool(self._npc_name))
+            self._update_pick_up_all()
+            self._shop_tab.hide()
+            BigWorld.player().getStoreHouseItems()
+            if not self._npc_name and not block_npc_notification:
+                MessageWin.shop_instance.show_single_button(lc('StoreHouse.store.NO_NPC'), lc('StoreHouse.mainscreen.OK'))
+        else:
+            raise RuntimeError
+
+    def _pick_up_all(self):
+        self.component.pick_up_all.script.enabled = False
+        BigWorld.callback(3, self._update_pick_up_all)
+        code = BigWorld.player().takeStoreHouseAllItems(self._npc_name)
+        if CODES.OK != code:
+            MessageWin.shop_instance.show_single_button(CODES.getText(code), lc('StoreHouse.mainscreen.OK'))
+
+    def _update_pick_up_all(self):
+        items = filter(lambda item: not isPaintConsumablesType(item['complexItemType']), self._store_tab._items)
+        store_house_items_count = getattr(BigWorld.player(), 'store_house_items_count', 0)
+        self.component.pick_up_all.script.enabled = bool(self._npc_name) and bool(store_house_items_count) and bool(items)
+
+    def hide(self, allow_confirm = False):
+        """ allow_confirm - \xd0\xb4\xd0\xbe\xd0\xbf\xd1\x83\xd1\x81\xd0\xba\xd0\xb0\xd0\xb5\xd1\x82\xd1\x81\xd1\x8f \xd0\xbe\xd1\x82\xd0\xbc\xd0\xb5\xd0\xbd\xd0\xb0 \xd0\xb7\xd0\xb0\xd0\xba\xd1\x80\xd1\x8b\xd1\x82\xd0\xb8\xd1\x8f, \xd0\xb5\xd1\x81\xd0\xbb\xd0\xb8 \xd0\xb8\xd0\xb3\xd1\x80\xd0\xbe\xd0\xba \xd1\x87\xd1\x82\xd0\xbe-\xd1\x82\xd0\xbe \xd0\xbd\xd0\xb5 \xd0\xb4\xd0\xbe\xd0\xb4\xd0\xb5\xd0\xbb\xd0\xb0\xd0\xbb
+        """
+        if not self.visible:
+            return
+        else:
+            self._bin.set_oneshot_bought_message(None)
+
+            def apply_hide():
+                try:
+                    self._store_tab.set_items([])
+                    self._shop_tab.set_items([], self._currency)
+                except:
+                    raise
+                finally:
+                    if self._bin.visible:
+                        self._change_bin_mode()
+                    if InfoWin.instance and InfoWin.instance.visible:
+                        InfoWin.instance.hide()
+                    if MessageWin.shop_instance and MessageWin.visible:
+                        MessageWin.shop_instance.hide()
+                    ChooseCharWin.hide_all_instances()
+                    BigWorld.worldDrawEnabled(True)
+                    self.component.visible = False
+                    BWPersonality.GUICore.setBestCursor()
+                    BWPersonality.GUICore.updateSoundVolumeIngameMenu()
+                    self._balance_btn.on_hide()
+
+            if allow_confirm and self._bin.items_count > 0:
+                MessageWin.shop_instance.show_double_buttons(lc('StoreHouse.bin.DIRTY_BIN'), lc('StoreHouse.mainscreen.REFUSE'), lc('StoreHouse.mainscreen.CONTINUE'), left_click_callback=apply_hide)
+            else:
+                apply_hide()
+            return
+
+    def show_error(self, text):
+        MessageWin.shop_instance.show_single_button(text, lc('StoreHouse.errors.OK'), callback=self.hide)
+
+    def show_shop(self, fill_data = None, spec_mode = None):
+        """ \xd0\xb2\xd0\xbe\xd0\xb7\xd0\xbc\xd0\xbe\xd0\xb6\xd0\xbd\xd1\x8b\xd0\xb5 \xd0\xb7\xd0\xbd\xd0\xb0\xd1\x87\xd0\xb5\xd0\xbd\xd0\xb8\xd1\x8f spec_mode:
+                        SHOP_MODE_FACEMODIFICATION - \xd0\xb2 \xd1\x8d\xd1\x82\xd0\xbe\xd0\xbc \xd1\x80\xd0\xb5\xd0\xb6\xd0\xb8\xd0\xbc\xd0\xb5 \xd0\xba\xd0\xbe\xd1\x80\xd0\xb7\xd0\xb8\xd0\xbd\xd0\xb0 \xd0\xb7\xd0\xb0\xd0\xba\xd1\x80\xd1\x8b\xd0\xb2\xd0\xb0\xd0\xb5\xd1\x82\xd1\x81\xd1\x8f \xd1\x81 \xd0\xbf\xd0\xb5\xd1\x80\xd0\xb5\xd0\xbe\xd0\xbf\xd1\x80\xd0\xb5\xd0\xb4\xd0\xb5\xd0\xbb\xd1\x91\xd0\xbd\xd0\xbd\xd1\x8b\xd0\xbc \xd1\x81\xd0\xbe\xd0\xbe\xd0\xb1\xd1\x89\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5\xd0\xbc \xd0\xb8 \xd0\xb7\xd0\xb0\xd0\xba\xd1\x80\xd1\x8b\xd0\xb2\xd0\xb0\xd1\x8f \xd0\xba\xd0\xbe\xd1\x80\xd0\xb7\xd0\xb8\xd0\xbd\xd1\x83 \xd0\xb7\xd0\xb0\xd0\xba\xd1\x80\xd1\x8b\xd0\xb2\xd0\xb0\xd0\xb5\xd1\x82\xd1\x81\xd1\x8f \xd0\xbe\xd0\xba\xd0\xbd\xd0\xbe
+                        SHOP_MODE_PAINTMODIFICATION - \xd0\xb2 \xd1\x8d\xd1\x82\xd0\xbe\xd0\xbc \xd1\x80\xd0\xb5\xd0\xb6\xd0\xb8\xd0\xbc\xd0\xb5 \xd0\xba\xd0\xbe\xd1\x80\xd0\xb7\xd0\xb8\xd0\xbd\xd0\xb0 \xd0\xb7\xd0\xb0\xd0\xba\xd1\x80\xd1\x8b\xd0\xb2\xd0\xb0\xd0\xb5\xd1\x82\xd1\x81\xd1\x8f \xd1\x81 \xd0\xbf\xd0\xb5\xd1\x80\xd0\xb5\xd0\xbe\xd0\xbf\xd1\x80\xd0\xb5\xd0\xb4\xd0\xb5\xd0\xbb\xd1\x91\xd0\xbd\xd0\xbd\xd1\x8b\xd0\xbc \xd1\x81\xd0\xbe\xd0\xbe\xd0\xb1\xd1\x89\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5\xd0\xbc \xd0\xb8 \xd0\xb7\xd0\xb0\xd0\xba\xd1\x80\xd1\x8b\xd0\xb2\xd0\xb0\xd1\x8f \xd0\xba\xd0\xbe\xd1\x80\xd0\xb7\xd0\xb8\xd0\xbd\xd1\x83 \xd0\xb7\xd0\xb0\xd0\xba\xd1\x80\xd1\x8b\xd0\xb2\xd0\xb0\xd0\xb5\xd1\x82\xd1\x81\xd1\x8f \xd0\xbe\xd0\xba\xd0\xbd\xd0\xbe
+        """
+        self._npc_name = None
+        self._spec_mode = spec_mode
+        self._show(ShopUtils.SHOP_MODE, fill_data)
+        return
+
+    def show_store(self, npc_name = None):
+        self._npc_name = npc_name
+        self._show(ShopUtils.STORE_MODE)
+
+    def _show(self, mode, fill_data = None):
+        if self.visible:
+            return
+        self.component.refill.visible = BigWorld.auth.isGoldAcc()
+        if self._spec_mode == ShopUtils.SHOP_MODE_FACEMODIFICATION:
+            self._bin.set_oneshot_bought_message(lc('StoreHouse.mainscreen.FACE_MODIFY_END'), callback=self.hide)
+        elif self._spec_mode == ShopUtils.SHOP_MODE_PAINTMODIFICATION:
+            self._bin.set_oneshot_bought_message(lc('StoreHouse.mainscreen.PAINT_MODIFY_END'), callback=self.hide)
+        self.set_store_item_count(BigWorld.player().store_house_items_count)
+        self.update_money()
+        BWPersonality.game.disable_world_drawing()
+        self.component.visible = True
+        BWPersonality.GUICore.setBestCursor()
+        self._set_mode(mode)
+        if not self._repositioned:
+            self.do_reposition()
+        BWPersonality.GUICore.onShowStoragehouse()
+        if fill_data:
+            self._fill_bin_with_data(fill_data)
+        BWPersonality.GUICore.updateSoundVolumeIngameMenu()
+
+    def _fill_bin_with_data(self, fill_data, timeout = 10):
+        if timeout <= 0:
+            raise RuntimeError
+        if self._shop_items is None:
+            BigWorld.callback(0, partial(self._fill_bin_with_data, fill_data, timeout=timeout - BigWorld.getTimeDelta()))
+            return
+        else:
+            for item_type, count in fill_data.items():
+                item = next((item for item in self._shop_items if item['item_type'] == item_type), None)
+                if not item:
+                    print 'StorehouseScreen (ERROR): cant find donat item', item_type
+                    continue
+                self._bin.add_item(count, item)
+
+            self._bin.show(self._currency)
+            self._store_notificator.hide(True)
+            for comp in self._bin_hide:
+                comp.visible = False
+
+            return
+
+    def shop_tab_error(self, error_code):
+        if self._shop_tab.visible:
+            if error_code == ShopUtils.SHOPTAB_ERROR_TIMEOUT:
+                text = lc('StoreHouse.errors.TIMEOUT')
+            else:
+                text = unicode(error_code)
+            MessageWin.shop_instance.show_single_button(text, lc('StoreHouse.errors.OK'), callback=self.hide)
+
+    def update_reccomendations(self, *args, **kargs):
+        pass
+
+    def update_money(self):
+        self._balance_btn.update(self._currency)
+
+    def set_shop_items(self, items, version, currency = None):
+        if version > Settings().getSetting('donat_catalog_version', 0):
+            Settings().setSetting('donat_catalog_version', version, flush=True)
+            BWPersonality.GUICore.loginFlash.account_actions.set_shop_notification_count(0)
+        if currency is not None:
+            self._currency = currency
+        self._shop_items = items
+        self._shop_tab.set_items(items, self._currency)
+        self._balance_btn.update(self._currency)
+        if not items:
+            MessageWin.shop_instance.show_single_button(lc('StoreHouse.errors.NoItems'), lc('StoreHouse.errors.OK'), callback=self.hide)
+        return
+
+    def set_store_items(self, items):
+        self._store_tab.set_items(items)
+        self._update_pick_up_all()
+
+    def set_store_item_count(self, count):
+        self._store_notificator.set_count(count)
+
+    @property
+    def visible(self):
+        return self.component.visible
+
+    def doReposition(self):
+        self.do_reposition()
+
+    def do_reposition(self):
+        button_y_pages = 0.95
+        button_y = 0.965
+        comp = self.component.shop_button
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.position = (-0.95, button_y_pages, 0.5)
+        comp.widthMode, comp.heightMode = ('PIXEL', 'CLIP')
+        comp.height = 0.08
+        comp.heightMode = 'PIXEL'
+        comp.horizontalPositionMode = 'PIXEL'
+        comp.width = comp.height * 4.5
+        shop_comp = comp
+        comp = self.component.store_button
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'CLIP')
+        comp.position = (shop_comp.position[0] + shop_comp.width, button_y_pages, 0.5)
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = shop_comp.width * 1.2, shop_comp.height
+        comp = self.component.bin_button
+        bin_space = 0.02
+        comp.horizontalAnchor, comp.verticalAnchor = ('RIGHT', 'TOP')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'CLIP')
+        comp.height = 0.1
+        comp.heightMode = 'PIXEL'
+        comp.width = comp.height * 5
+        exit_comp = self.component.exit_button
+        comp.position = (exit_comp.position[0] - exit_comp.width - bin_space, button_y, 0.5)
+        comp.widthMode = 'CLIP'
+        bin_comp = comp
+        comp = self.component.pick_up_all
+        comp.horizontalAnchor, comp.verticalAnchor = ('RIGHT', 'TOP')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'CLIP')
+        comp.height = 0.1
+        comp.heightMode = 'PIXEL'
+        comp.width = comp.height * 5
+        exit_comp = self.component.exit_button
+        comp.position = (exit_comp.position[0] - exit_comp.width - bin_space, button_y - 0.11, 0.5)
+        comp.widthMode = 'CLIP'
+        comp = self.component.refill
+        comp.horizontalAnchor, comp.verticalAnchor = bin_comp.horizontalAnchor, bin_comp.verticalAnchor
+        comp.horizontalPositionMode, comp.verticalPositionMode = bin_comp.horizontalPositionMode, bin_comp.verticalPositionMode
+        comp.widthMode, comp.heightMode = bin_comp.widthMode, bin_comp.heightMode
+        comp.width, comp.height = bin_comp.width, bin_comp.height
+        comp.position = (bin_comp.position[0] - bin_comp.width - bin_space, button_y, 0.5)
+        refill_comp = comp
+        comp = self.component.balance
+        comp.horizontalAnchor, comp.verticalAnchor = bin_comp.horizontalAnchor, bin_comp.verticalAnchor
+        comp.horizontalPositionMode, comp.verticalPositionMode = bin_comp.horizontalPositionMode, bin_comp.verticalPositionMode
+        comp.widthMode, comp.heightMode = bin_comp.widthMode, bin_comp.heightMode
+        comp.width, comp.height = bin_comp.width, bin_comp.height
+        if not BigWorld.auth.isGoldAcc():
+            comp.position = (refill_comp.position[0], button_y, 0.5)
+        else:
+            comp.position = (refill_comp.position[0] - refill_comp.width - bin_space, button_y, 0.5)
+        comp = self._bin.component
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.heightMode = 'CLIP'
+        comp.height = 1.48
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width = comp.height * 0.75
+        comp.position = (0, 0.1, 0.2)
+        self._bin.do_reposition()
+        comp = self.component.bin_notificator
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.position[0] = self.component.bin_button.position[0]
+        comp.position[1] = self.component.bin_button.position[1]
+        comp.widthMode, comp.heightMode = ('PIXEL', 'CLIP')
+        comp.height = 0.05
+        comp.heightMode = 'PIXEL'
+        comp.width = comp.height
+        self._bin_notificator.do_reposition()
+        comp = self.component.store_notificator
+        store_comp = self.component.store_button
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+        comp.horizontalPositionMode, comp.verticalPositionMode = store_comp.horizontalPositionMode, store_comp.verticalPositionMode
+        comp.position[1] = store_comp.position[1]
+        comp.widthMode, comp.heightMode = ('PIXEL', 'CLIP')
+        comp.height = 0.05
+        comp.heightMode = 'PIXEL'
+        comp.width = comp.height
+        self._store_notificator.do_reposition()
+        if hasattr(self.component, 'debug_background'):
+            comp = self.component.debug_background
+            comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+            comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'TOP')
+            comp.widthMode, comp.heightMode = ('CLIP', 'PIXEL')
+            comp.width = 2.0
+            comp.widthMode = 'PIXEL'
+            comp.height = 1150.0 / 1920.0 * comp.width
+            comp.position = (0, 1, 0)
+        for r in self._repositioners:
+            r.do_reposition()
+
+        self._icon_flyier.set_destination(self.component.bin_button.localToScreen((0, 0)))
+        self._repositioned = True
+        store_comp_text_width = store_comp.label.stringDimensions(store_comp.label.text)
+        comp = self.component.store_notificator
+        comp.position[0] = store_comp.position[0] + store_comp_text_width[0]

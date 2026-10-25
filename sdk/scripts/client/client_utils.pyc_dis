@@ -1,0 +1,488 @@
+# Embedded file name: ./client/client_utils.py
+__author__ = 'mon'
+import BigWorld
+import traceback
+if BigWorld.component != 'editor':
+    import BWPersonality
+from Math import Vector3, Matrix
+MatrixProvider = Matrix.__bases__[0]
+import Constants
+import ResMgr
+import os
+from utils_bw import isinstance_ext
+import math
+import Math
+import re
+from Localization import lc
+PARTICLES_HELPER_MODEL = 'models/misc/particles/helper_attach.model'
+TEST_BALL_MODEL = 'helpers/models/unit_sphere.model'
+TEST_BALL_MODEL_2 = 'models/bolvan/sfera.model'
+BLYAK_MODEL = 'characters/creatures/blyak/blyak_lod1.model'
+LARGE_INVISIBLE_BOX = 'models/bolvan/box_micro.model'
+
+def RGB2html(color):
+    if len(color) not in (3, 4):
+        raise TypeError('RGB2html Wrong color format')
+    result = '#'
+    for i in color:
+        if i > 255 or i < 0:
+            raise TypeError('RGB2html Wrong color value')
+        result += '%02X' % i
+
+    return result
+
+
+def colored_chat_msg(msg, color):
+    if not isinstance(color, str):
+        color = RGB2html(color)
+    if isinstance(msg, str):
+        return "<font color='{0}'>{1}</font>".format(color, msg)
+    else:
+        return u"<font color='{0}'>{1}</font>".format(color, msg)
+
+
+def time_to_full_string(time_sec, days = True, hours = True, minutes = True, seconds = True):
+    m, s = divmod(time_sec, 60)
+    h, m = divmod(m, 60)
+    d, h = divmod(h, 24)
+    result = ''
+    if d and days:
+        result += u'{0} {1} '.format(int(d), lc('Quester.DAYS'))
+    if h and hours:
+        result += u'{0} {1} '.format(int(h), lc('Quester.HOURS'))
+    if m and minutes:
+        result += u'{0} {1} '.format(int(m), lc('Quester.MINUTES'))
+    if s and seconds:
+        result += u'{0} {1} '.format(int(s), lc('Quester.SECS'))
+    if not result:
+        if seconds:
+            lc_key = 'Quester.SECS'
+        elif minutes:
+            lc_key = 'Quester.MINUTES'
+        elif hours:
+            lc_key = 'Quester.HOURS'
+        elif days:
+            lc_key = 'Quester.HOURS'
+        else:
+            raise RuntimeError
+        return u'{0} {1} '.format(0, lc(lc_key))
+    return result.strip()
+
+
+def time_to_string3(hours):
+    minutes = hours * 60.0
+    show_days = int(minutes / 1440)
+    minutes -= show_days * 60 * 24
+    show_hours = int(minutes / 60)
+    minutes -= show_hours * 60
+    show_minutes = int(minutes)
+    if show_days:
+        return u'{0} {1} {2} {3}'.format(show_days, lc('Perks.ui.reset.days'), show_hours, lc('Perks.ui.reset.hours'))
+    if show_hours:
+        return u'{0} {1} {2} {3}'.format(show_hours, lc('Perks.ui.reset.hours'), show_minutes, lc('Perks.ui.reset.mins'))
+    return u'{0} {1}'.format(show_minutes, lc('Perks.ui.reset.mins'))
+
+
+def time_to_string(time_sec):
+    m, s = divmod(time_sec, 60)
+    h, m = divmod(m, 60)
+    d, h = divmod(h, 24)
+    if d:
+        return u'{0} {1}'.format(int(d), lc('Quester.DAYS'))
+    if h:
+        return u'{0} {1}'.format(int(h), lc('Quester.HOURS'))
+    if m:
+        return u'{0} {1}'.format(int(m), lc('Quester.MINUTES'))
+    if s:
+        return u'{0} {1}'.format(int(s), lc('Quester.SECS'))
+    return '0'
+
+
+def set_pos_dir_model(model, position, direction):
+    rotation_matrix = Matrix()
+    rotation_matrix.setRotateYPR(direction)
+    translation_matrix = Matrix()
+    translation_matrix.setTranslate(position)
+    rotation_matrix.postMultiply(translation_matrix)
+    model.setWorldTransform(rotation_matrix)
+
+
+def direct_model(model, direction):
+    """Direct model x-axis to defined direction."""
+    direction = Vector3(direction)
+    direction.normalise()
+    model.alignToVector(direction, model.position, False)
+
+
+def direct_model_to(model, object_to):
+    """Direct model x-axis to position defined by Vector3/Matrix/MatrixProvider."""
+    if isinstance(object_to, MatrixProvider):
+        object_pos = Matrix(object_to).translation
+    elif isinstance(object_to, Matrix):
+        object_pos = object_to.translation
+    else:
+        object_pos = object_to
+    direct_model(model, object_pos - model.position)
+
+
+def entitiesOfClass(className):
+    return [ e for e in BigWorld.entities.values() if isinstance_ext(e, className) ]
+
+
+ents = entitiesOfClass
+
+def execute_model_action(model, action_name, duration, callback):
+    callback_delay = 0
+    action = getattr(model, action_name, None)
+    if action:
+        if duration is None:
+            duration = action.duration
+        if duration <= 0.0:
+            action()
+        else:
+            framerate = action.frameRate * action.duration / duration
+            if framerate < 1:
+                framerate = 1
+            action(0, None, 0, -1, -1, framerate)
+            callback_delay = duration - 3 / framerate
+    else:
+        print 'bad action (ERROR):', action_name
+    if callback:
+        if callback_delay > 0:
+            callback_id = BigWorld.callback(callback_delay, callback)
+            return (callback_id, None)
+        callback()
+    return (None, None)
+
+
+def execute_multiple_model_action(model, action_name_list, duration, callback):
+    callback_delay = 0
+    total_actions_duration = 0
+    track = None
+    for action_name in action_name_list:
+        action = getattr(model, action_name, None)
+        if not action:
+            print 'multiple action (ERROR) no actoin:', action_name
+            break
+        if track is None:
+            track = action.track
+        if action.track != track:
+            print 'multiple action (ERROR) different tracks:', action_name
+            break
+        total_actions_duration += action.duration
+    else:
+        if duration:
+            speed = total_actions_duration / duration
+            callback_delay = duration
+        else:
+            speed = 1.0
+            callback_delay = total_actions_duration
+        base_invoker = model
+        for action_name in action_name_list:
+            action_queue = getattr(base_invoker, action_name)
+            framerate = action_queue.frameRate * speed
+            base_invoker = action_queue(0, None, 0, -1, -1, framerate)
+
+    callback_delay -= 0.01
+    if callback:
+        if callback_delay > 0:
+            return (BigWorld.callback(callback_delay, callback), None)
+        callback()
+    return (None, None)
+
+
+def get_entity_name(entity, utf8 = False):
+    if isinstance_ext(entity, Constants.CREATURE_CLASSES):
+        name = entity.get_name()
+    elif hasattr(entity, 'name'):
+        name = entity.name
+    else:
+        name = ''
+    if hasattr(entity, 'active_transform'):
+        if entity.active_transform and entity.active_transform.funName():
+            name = entity.active_transform.funName()
+    if utf8:
+        if isinstance(name, unicode):
+            return name
+        return name.decode('utf-8')
+    elif isinstance(name, str):
+        return name
+    else:
+        return name.encode('utf-8')
+
+
+def is_position_under_water(position):
+    return BigWorld.waterCollide(position + Vector3(0, 0.2, 0), position + Vector3(0, 5, 0))
+
+
+def get_coner_in_pixels(component):
+    """
+    \xd0\x92\xd0\xbe\xd0\xb7\xd0\xb2\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xbf\xd0\xbe\xd0\xb7\xd0\xb8\xd1\x86\xd0\xb8\xd1\x8e \xd0\xba\xd0\xbe\xd0\xbc\xd0\xbf\xd0\xbe\xd0\xbd\xd0\xb5\xd0\xbd\xd1\x82\xd0\xb0 \xd0\xbe\xd1\x82\xd0\xbd\xd0\xbe\xd1\x81\xd0\xb8\xd1\x82\xd0\xb5\xd0\xbb\xd1\x8c\xd0\xbd\xd0\xbe \xd0\xb2\xd0\xb5\xd1\x80\xd1\x85\xd0\xbd\xd0\xb5\xd0\xb3\xd0\xbe \xd0\xbb\xd0\xb5\xd0\xb2\xd0\xbe\xd0\xb3\xd0\xbe 
+    \xd1\x83\xd0\xb3\xd0\xbb\xd0\xb0 \xd1\x8d\xd0\xba\xd1\x80\xd0\xb0\xd0\xbd\xd0\xb0.
+    
+    \xd0\x92\xd0\xbe\xd0\xb7\xd0\xb2\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd1\x81\xd0\xbb\xd0\xbe\xd0\xb2\xd0\xb0\xd1\x80\xd1\x8c, \xd1\x81\xd0\xbe \xd1\x81\xd0\xbb\xd0\xb5\xd0\xb4\xd1\x83\xd1\x8e\xd1\x89\xd0\xb8\xd0\xbc\xd0\xb8 \xd0\xba\xd0\xbb\xd1\x8e\xd1\x87\xd0\xb0\xd0\xbc\xd0\xb8: 
+            'corner' - \xd0\xbb\xd0\xb5\xd0\xb2\xd1\x8b\xd0\xb9 \xd0\xbf\xd1\x80\xd0\xb0\xd0\xb2\xd1\x8b\xd0\xb9 \xd1\x83\xd0\xb3\xd0\xbe\xd0\xbb \xd0\xbf\xd0\xbe\xd0\xbb\xd1\x83\xd1\x87\xd0\xb5\xd0\xbd\xd0\xbd\xd0\xbe\xd0\xb3\xd0\xbe \xd0\xba\xd0\xbe\xd0\xbc\xd0\xbf\xd0\xbe\xd0\xbd\xd0\xb5\xd0\xbd\xd1\x82\xd0\xb0
+            'width' - \xd1\x88\xd0\xb8\xd1\x80\xd0\xb8\xd0\xbd\xd0\xb0 \xd0\xba\xd0\xbe\xd0\xbc\xd0\xbf\xd0\xbe\xd0\xbd\xd0\xb5\xd0\xbd\xd1\x82\xd0\xb0,
+            'height' - \xd0\xb2\xd1\x8b\xd1\x81\xd0\xbe\xd1\x82\xd0\xb0 \xd0\xba\xd0\xbe\xd0\xbc\xd0\xbf\xd0\xbe\xd0\xbd\xd0\xb5\xd0\xbd\xd1\x82\xd0\xb0.
+    """
+    v_anchors = {'TOP': lambda height: 0,
+     'CENTER': lambda height: height / 2,
+     'BOTTOM': lambda height: height}
+    h_anchors = {'LEFT': lambda width: 0,
+     'CENTER': lambda width: width / 2,
+     'RIGHT': lambda width: width}
+    X, Y = (0, 1)
+    horizontalPositionMode = component.horizontalPositionMode
+    verticalPositionMode = component.verticalPositionMode
+    component.horizontalPositionMode = component.verticalPositionMode = 'PIXEL'
+    position = [component.position.x, component.position.y]
+    component.horizontalPositionMode = horizontalPositionMode
+    component.verticalPositionMode = verticalPositionMode
+    v_anchor = component.verticalAnchor
+    h_anchor = component.horizontalAnchor
+    additonal_v_pixels = v_anchors[v_anchor](component.height)
+    additonal_h_pixels = h_anchors[h_anchor](component.width)
+    return {'corner': [position[X] - additonal_h_pixels, position[Y] - additonal_v_pixels],
+     'width': component.width,
+     'height': component.height}
+
+
+def coords_to_pixels(positon):
+    """\xd0\x9a\xd0\xbe\xd0\xbd\xd0\xb2\xd0\xb5\xd1\x80\xd1\x82\xd0\xb8\xd1\x80\xd1\x83\xd0\xb5\xd1\x82 \xd0\xba\xd0\xbe\xd0\xbe\xd1\x80\xd0\xb4\xd0\xb8\xd0\xbd\xd0\xb0\xd1\x82\xd1\x8b [-1, 1] \xd0\xb2 \xd0\xbf\xd0\xb8\xd0\xba\xd1\x81\xd0\xb5\xd0\xbb\xd0\xb8 \xd0\xbe\xd1\x82 \xd0\xbb\xd0\xb5\xd0\xb2\xd0\xbe\xd0\xb3\xd0\xbe \xd0\xb2\xd0\xb5\xd1\x80\xd1\x85\xd0\xbd\xd0\xb5\xd0\xb3\xd0\xbe \xd1\x83\xd0\xb3\xd0\xbb\xd0\xb0."""
+    x, y = positon
+    y *= -1
+    sW, sH = BigWorld.screenSize()
+    x_part = sW / 2
+    y_part = sH / 2
+
+    def coord_to_pixels(coord, part):
+        pixels = part * (1 + coord)
+        return pixels
+
+    return [ coord_to_pixels(coord, part) for coord, part in zip((x, y), (x_part, y_part)) ]
+
+
+def clip_text(text, label, max_width):
+    """ \xd0\xbe\xd1\x87\xd0\xb5\xd0\xbd\xd1\x8c \xd0\xb3\xd1\x80\xd1\x83\xd0\xb1\xd0\xbe \xd0\xb8 \xd0\xbf\xd1\x80\xd0\xb8\xd0\xbc\xd0\xb8\xd1\x82\xd0\xb8\xd0\xb2\xd0\xbd\xd0\xbe \xd0\xbf\xd0\xbe\xd0\xb4\xd1\x80\xd0\xb5\xd0\xb7\xd0\xb0\xd0\xb5\xd1\x82 \xd1\x81\xd1\x82\xd1\x80\xd0\xbe\xd0\xba\xd0\xb8, \xd0\xb2\xd1\x81\xd1\x82\xd0\xb0\xd0\xb2\xd0\xbb\xd1\x8f\xd1\x8f \xd0\xb2 \xd0\xbd\xd0\xb8\xd1\x85 \xd0\xbc\xd0\xbd\xd0\xbe\xd0\xb3\xd0\xbe\xd1\x82\xd0\xbe\xd1\x87\xd0\xb8\xd0\xb5
+    """
+    clipped = False
+    dots_width = label.stringDimensions(u'...')[0]
+    while True:
+        tail = label.stringDimensions(text)[0] - max_width
+        if clipped:
+            tail += dots_width
+        if tail <= 0:
+            break
+        tail_letters = int(max(1, tail / 16))
+        text = text[:-tail_letters]
+        clipped = True
+
+    if clipped:
+        text += u'...'
+    return text
+
+
+def clips_to_pixels(positon):
+    """\xd0\x9a\xd0\xbe\xd0\xbd\xd0\xb2\xd0\xb5\xd1\x80\xd1\x82\xd0\xb8\xd1\x80\xd1\x83\xd0\xb5\xd1\x82 \xd0\xba\xd0\xbe\xd0\xbe\xd1\x80\xd0\xb4\xd0\xb8\xd0\xbd\xd0\xb0\xd1\x82\xd1\x8b [-2, 2] \xd0\xb2 \xd0\xbf\xd0\xb8\xd0\xba\xd1\x81\xd0\xb5\xd0\xbb\xd0\xb8 \xd0\xbe\xd1\x82 \xd0\xbb\xd0\xb5\xd0\xb2\xd0\xbe\xd0\xb3\xd0\xbe \xd0\xb2\xd0\xb5\xd1\x80\xd1\x85\xd0\xbd\xd0\xb5\xd0\xb3\xd0\xbe \xd1\x83\xd0\xb3\xd0\xbb\xd0\xb0."""
+    x, y = positon
+    sW, sH = BigWorld.screenSize()
+    x_part = sW / 4
+    y_part = sH / 4
+
+    def clip_to_pixels(coord, part):
+        pixels = part * (2 + coord)
+        return pixels
+
+    return [ clip_to_pixels(coord, part) for coord, part in zip((x, y), (x_part, y_part)) ]
+
+
+def pixels_to_clip(positon):
+    """\xd0\x9a\xd0\xbe\xd0\xbd\xd0\xb2\xd0\xb5\xd1\x80\xd1\x82\xd0\xb8\xd1\x80\xd1\x83\xd0\xb5\xd1\x82 \xd0\xba\xd0\xbe\xd0\xbe\xd1\x80\xd0\xb4\xd0\xb8\xd0\xbd\xd0\xb0\xd1\x82\xd1\x8b [-2, 2] \xd0\xb2 clips \xd0\xbe\xd1\x82 \xd0\xbb\xd0\xb5\xd0\xb2\xd0\xbe\xd0\xb3\xd0\xbe \xd0\xb2\xd0\xb5\xd1\x80\xd1\x85\xd0\xbd\xd0\xb5\xd0\xb3\xd0\xbe \xd1\x83\xd0\xb3\xd0\xbb\xd0\xb0."""
+    x, y = positon
+    x_clip = float(x) / BigWorld.screenWidth() * 2 - 1
+    y_clip = float(y) / BigWorld.screenHeight() * -2 + 1
+    return (x_clip, y_clip)
+
+
+def colorise_text(text):
+    """ \xd0\xbf\xd0\xb0\xd1\x80\xd1\x81\xd0\xb8\xd1\x82 \xd1\x86\xd0\xb2\xd0\xb5\xd1\x82\xd0\xbd\xd0\xbe\xd0\xb9 \xd1\x82\xd0\xb5\xd0\xba\xd1\x81\xd1\x82 text field3 """
+    m = re.search('<color=.{12}>', text)
+    if not m:
+        return text
+    base_color = m.group()
+    return text.replace('<basecolor>', base_color)
+
+
+def colorise_text2(text):
+    """ \xd0\xbf\xd0\xb0\xd1\x80\xd1\x81\xd0\xb8\xd1\x82 \xd1\x86\xd0\xb2\xd0\xb5\xd1\x82\xd0\xbd\xd0\xbe\xd0\xb9 \xd1\x82\xd0\xb5\xd0\xba\xd1\x81\xd1\x82 text field2 """
+    m = re.search('\\\\c.{8};', text)
+    base_color = m.group()
+    return text.replace('\\basecolor;', base_color)
+
+
+def reload_SFX_and_Particles():
+    SFX_PATH = '../res/sfx'
+    PARTICLES_PATH = '../res/particles'
+
+    def reload_files(path):
+        listOfFiles = os.listdir(path)
+        countOfFiles = len(listOfFiles)
+        for i in xrange(0, countOfFiles):
+            if os.path.isfile(path + '/' + listOfFiles[i]):
+                ind = listOfFiles[i].rfind('.')
+                l = len(listOfFiles[i])
+                if listOfFiles[i][ind:l] == '.xml':
+                    ResMgr.purge(path + '/' + listOfFiles[i], True)
+                elif os.path.isdir(path + '/' + listOfFiles[i]):
+                    reload_files(path + '/' + listOfFiles[i])
+
+    reload_files(SFX_PATH)
+    reload_files(PARTICLES_PATH)
+
+
+def getMousePosDir(mpos = None, fov = None, cam_matrix = None, near_plane = 0.1):
+    import BWPersonality
+    if not mpos:
+        mpos = BWPersonality.game.mcursor.position
+    if not fov:
+        fov = BigWorld.projection().fov
+    if not cam_matrix:
+        cam_matrix = BigWorld.camera().matrix
+    yLength = near_plane * math.tan(fov * 0.5)
+    W, H = BigWorld.screenSize()
+    aspectRatio_ = W / float(H)
+    xLength = yLength * aspectRatio_
+    cameraSpace = Math.Vector3(xLength * mpos.x, yLength * mpos.y, near_plane)
+    inv = Math.Matrix(cam_matrix)
+    inv.invert()
+    ray = inv.applyVector(cameraSpace)
+    ray.normalise()
+    src = inv.applyPoint(cameraSpace)
+    return (src, ray)
+
+
+def check_player_inside_entity(entity):
+    if not entity.model or not entity.model.sources:
+        return
+    matrix = Matrix(entity.matrix)
+    matrix.invert()
+    player = BigWorld.player()
+    player_local_pos = matrix.applyPoint(player.position)
+    bound1, bound2 = entity.model.getMinMaxbounds
+    bound_min = Vector3(min(bound1[0], bound2[0]), min(bound1[1], bound2[1]), min(bound1[2], bound2[2]))
+    bound_max = Vector3(max(bound1[0], bound2[0]), max(bound1[1], bound2[1]), max(bound1[2], bound2[2]))
+    for i in xrange(3):
+        bound_min[i] -= 0.5
+        bound_max[i] += 0.5
+
+    def is_point_inside(p):
+        for i in xrange(3):
+            if not bound_min[i] <= p[i] <= bound_max[i]:
+                return False
+
+        return True
+
+    needed_player_local_pos = Vector3(player_local_pos)
+    cur_dist = needed_player_local_pos.length
+    normal_direction = Vector3(player_local_pos)
+    normal_direction.normalise()
+    while is_point_inside(needed_player_local_pos):
+        cur_dist += 1.0
+        needed_player_local_pos = normal_direction * cur_dist
+
+    if (needed_player_local_pos - player_local_pos).length < 0.1:
+        return
+    return Matrix(entity.matrix).applyPoint(needed_player_local_pos)
+
+
+space_name_cached_short = {}
+
+def get_space_name_cached_short(spaceID):
+    space_name = space_name_cached_short.get(spaceID)
+    if space_name:
+        return space_name
+    space_name = BWPersonality.spaceName(spaceID)
+    if space_name:
+        space_name_cached_short[spaceID] = space_name.replace('spaces/', '')
+        return space_name
+    return 'notfound'
+
+
+def readable_space_pos(entity):
+    space_name = get_space_name_cached_short(entity.spaceID)
+    pos = map(int, entity.position)
+    return '%s[%s,%s,%s]' % (space_name,
+     pos[0],
+     pos[1],
+     pos[2])
+
+
+class DogWatch(object):
+    _dw = None
+
+    def __init__(self, name):
+        if not name:
+            raise ValueError('empty name')
+        if not self._dw:
+            self._dw = BigWorld.DogWatchProfiler(name)
+
+    def __enter__(self):
+        self._dw.start()
+
+    def __exit__(self, type, value, traceback):
+        self._dw.stop()
+
+    def start(self):
+        self._dw.start()
+
+    def stop(self):
+        self._dw.stop()
+
+
+class GetDogWatch(DogWatch):
+    dwdict = {}
+
+    def __new__(cls, name):
+        if name not in GetDogWatch.dwdict:
+            GetDogWatch.dwdict[name] = object.__new__(cls, name)
+        return GetDogWatch.dwdict[name]
+
+
+_end_frame_update_callbacks = []
+_end_frame_update_handler = None
+
+def end_frame_update(callback):
+    global _end_frame_update_handler
+    if callback not in _end_frame_update_callbacks:
+        _end_frame_update_callbacks.append(callback)
+    if not _end_frame_update_handler:
+        _end_frame_update_handler = BigWorld.callback(0, _on_end_frame_update)
+        BWPersonality.register_after_input_callback(_on_end_frame_update)
+
+
+def _on_end_frame_update():
+    global _end_frame_update_handler
+    while _end_frame_update_callbacks:
+        try:
+            _end_frame_update_callbacks.pop(0)()
+        except:
+            traceback.print_exc()
+            traceback.print_stack()
+
+    _end_frame_update_callbacks[:] = []
+    if _end_frame_update_handler:
+        BigWorld.cancelCallback(_end_frame_update_handler)
+        _end_frame_update_handler = None
+    BWPersonality.unregister_after_input_callback(_on_end_frame_update)
+    return
+
+
+def cancel_end_frame_update(callback):
+    global _end_frame_update_handler
+    if callback in _end_frame_update_callbacks:
+        _end_frame_update_callbacks.remove(callback)
+        if not _end_frame_update_callbacks and _end_frame_update_handler:
+            BigWorld.cancelCallback(_end_frame_update_handler)
+            _end_frame_update_handler = None
+            BWPersonality.unregister_after_input_callback(_on_end_frame_update)
+    return

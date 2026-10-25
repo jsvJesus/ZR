@@ -1,0 +1,218 @@
+# Embedded file name: ./common/autoquest_parser.py
+import BigWorld
+import traceback
+import random
+import json
+import ResMgr
+import os
+import AdditionalNPCParameters as AP
+from utils import ReadOnlyDict
+import Quest
+from Config import Creatures as Cfg
+from Localization import lc
+import ItemsUtils
+import rep_utils
+import space_utils
+QUEST_JSON_PATH = 'scripts/common/data/Quests/QuestsAutogenerator'
+DIALOGS_DATA_JSON_PATH = 'scripts/common/data/DialogsAutogenerator.json'
+DIALOGS_LOCAL_PATH = '/DialogTexts/AutogenDialogs/AutogenDialogs.xml'
+_npcid_to_quests = {}
+_npcid_to_configid = {}
+_configid_to_npcid = {}
+_npcid_to_version = {}
+_reserved_quest_range = (15378, 17426)
+_questtypeid_to_questtype = {1: Quest.TYPE_KILLMOBS_WITH_ONTEST,
+ 2: Quest.TYPE_FARM}
+_show_progress = Quest.SHOW_MESSAGE_TAKE | Quest.SHOW_MESSAGE_CLOSE | Quest.SHOW_MESSAGE_PROGRESS | Quest.SHOW_JOURNAL | Quest.SHOW_ONWIN | Quest.SHOW_ONFAILED
+
+def is_auto(quest_id):
+    return _reserved_quest_range[0] <= quest_id <= _reserved_quest_range[1]
+
+
+def is_valid(quest_id):
+    npc_id = parse(quest_id)[0]
+    return bool(npc_id in _npcid_to_quests)
+
+
+def parse(quest_id):
+    """ \xd0\xb2\xd0\xbe\xd0\xb7\xd0\xb2\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 npc_id \xd0\xb8 seed """
+    if not is_auto(quest_id):
+        return (None, None)
+    else:
+        mask = quest_id - _reserved_quest_range[0]
+        seed = mask & 31
+        mask >>= 5
+        npc_id = _configid_to_npcid[mask]
+        return (npc_id, seed)
+
+
+def compile_random(npc_id):
+    config_id = _npcid_to_configid[npc_id]
+    return _reserved_quest_range[0] + (config_id << 5) | random.randint(0, 31)
+
+
+def generate_quest(quest_id):
+    import QuestDispatcher as qd
+    if not is_auto(quest_id):
+        return
+    else:
+        npc_id, seed = parse(quest_id)
+        npc_name = AP.get_npc_name_by_id(npc_id)
+        npc_space = AP.get_npc_space_from_data(npc_id)
+        if npc_space == 'testers':
+            npc_space = 'unknown_npc_1x1'
+        space_id = space_utils.get_space_id_by_name(npc_space)
+        spaces_mask = rep_utils.pack_int_set([space_id])
+        quest = ReadOnlyDict()
+        quest['QuestID'] = quest_id
+        quest['Additional'] = {'ShowProgress': _show_progress,
+         'IsSubQuest': False,
+         'ListOfSubQuest': [],
+         'CantCancel': False,
+         'Holder': npc_name}
+        quest['Precondition'] = {'Repeat': False}
+        quest['QuestRules'] = {'Items': [],
+         'Scenarios': [],
+         'spaces_mask': spaces_mask}
+        quest['Target'] = {'ObjectAttr': 0,
+         'ObjectName': '',
+         'AObjectAttrs': [],
+         'AreaName': ''}
+        quest['Reward'] = {'Items': [],
+         'blackBoxes': [],
+         'Reputation': {},
+         'Credits': 0,
+         'Expirience': 0,
+         'KarmaPK': 0,
+         'Effects': []}
+        quest['Penalty'] = {'Credits': 0,
+         'Expirience': 0,
+         'KarmaPK': 0,
+         'Reputation': {}}
+        quest['Information'] = {}
+
+        def compile_killmob_quest(target_data, quest_type_id, target_index):
+            mob_type = target_data['int_param']
+            amount = random.randint(*target_data['counts'])
+            quest['Target'].update({'onFin': 1,
+             'QuestType': Quest.TYPE_KILLMOBS_WITH_ONTEST,
+             'ObjectType': mob_type,
+             'str_param': target_data['str_param'],
+             'NumOfObjects': amount})
+            mob_subtype = Cfg.get_subtype_index(mob_type, target_data['str_param'])
+            mob_name = Cfg.get_mob_name(mob_type, mob_subtype)
+            local_index = target_data['id'] - 1
+            quest['Information'].update({'Title': qd.get_autoquests_localizeddata(npc_name, quest_type_id, local_index),
+             'Description': lc('Quests.AutoQuest.KillText').format(mob_name, amount)})
+            return amount
+
+        def compile_farm_quest(target_data, quest_type_id, target_index):
+            item_type = target_data['int_param']
+            amount = random.randint(*target_data['counts'])
+            quest['Target'].update({'onFin': 1,
+             'QuestType': Quest.TYPE_FARM,
+             'ObjectType': item_type,
+             'NumOfObjects': amount})
+            item_name = ItemsUtils.GetItemName(item_type)
+            local_index = target_data['id'] - 1
+            quest['Information'].update({'Title': qd.get_autoquests_localizeddata(npc_name, quest_type_id, local_index),
+             'Description': lc('Quests.AutoQuest.FarmText').format(item_name, amount),
+             'Items': []})
+            return amount
+
+        def compile_reward(reward_data, amount):
+            quest['Reward']['Credits'] = reward_data['money'] * amount
+            quest['Reward']['Expirience'] = reward_data['exp'] * amount
+            rep_group = reward_data.get('repGroup')
+            if rep_group:
+                rep_value = reward_data.get('repValue')
+                if rep_value:
+                    quest['Reward']['Reputation2'] = {rep_group: rep_value * amount}
+                point_value = reward_data.get('repOT')
+                if point_value:
+                    quest['Reward']['tradingPoints'] = {rep_group: point_value * amount}
+
+        quest_data = _npcid_to_quests[npc_id]
+        random.seed(2222 + seed * 22)
+        quest_data = random.choice(quest_data)
+        quest_type_id = quest_data['id']
+        quest_type = _questtypeid_to_questtype[quest_type_id]
+        target_index = random.randrange(len(quest_data['targets']))
+        target_data = quest_data['targets'][target_index]
+        if quest_type == Quest.TYPE_KILLMOBS_WITH_ONTEST:
+            amount = compile_killmob_quest(target_data, quest_type_id, target_index)
+        elif quest_type == Quest.TYPE_FARM:
+            amount = compile_farm_quest(target_data, quest_type_id, target_index)
+        else:
+            raise RuntimeError()
+        compile_reward(random.choice(target_data['rewards']), amount)
+        random.seed()
+        quest.readonly()
+        return quest
+
+
+def has_npc_autoquests(npc_id):
+    return npc_id in _npcid_to_quests
+
+
+def get_version(quest_id):
+    return _npcid_to_version[parse(quest_id)[0]]
+
+
+def get_random_player_replica_id(key):
+    return random.choice(dialogs_data['netral'][key])
+
+
+def get_random_nature_replica_id(nature, key, sub_key):
+    dialog_data = next((d for d in dialogs_data['nature'] if d['id'] == nature))
+    return random.choice(dialog_data[key][sub_key])
+
+
+section = ResMgr.openSection(os.path.join(QUEST_JSON_PATH, '_meta.json'))
+for npc_name, (config_id, version) in json.loads(section.asBinary).items():
+    raise 0 <= config_id < 64 or AssertionError
+    npc_id = AP.get_npc_id_by_name(npc_name)
+    _npcid_to_configid[npc_id] = config_id
+    _configid_to_npcid[config_id] = npc_id
+    _npcid_to_version[npc_id] = version
+
+for file_name, data in ResMgr.openSection(QUEST_JSON_PATH).items():
+    fn, ext = os.path.splitext(file_name)
+    if ext != '.json' or fn == '_meta':
+        continue
+    npc_name = fn
+    npc_id = AP.get_npc_id_by_name(npc_name)
+    try:
+        quests_list = json.loads(data.asBinary)['data']
+    except:
+        quests_list = None
+        print 'autoquest_parser (ERROR):', file_name
+        traceback.print_stack()
+        traceback.print_exc()
+
+    if quests_list:
+        _npcid_to_quests[npc_id] = quests_list
+
+dialogs_data = json.loads(ResMgr.openSection(DIALOGS_DATA_JSON_PATH).asBinary)
+if BigWorld.component == 'base':
+    from Config import Creatures
+    import AdditionalNPCParameters as AP
+
+    def _validateAll():
+        result = True
+        for npc_id, quests_list in _npcid_to_quests.items():
+            for quest_data in quests_list:
+                if _questtypeid_to_questtype[quest_data['id']] == Quest.TYPE_KILLMOBS_WITH_ONTEST:
+                    for target in quest_data['targets']:
+                        mob_type, mob_subtype = target['int_param'], target['str_param']
+                        if not Creatures.has_subtype(mob_type, mob_subtype):
+                            npc_name = AP.get_npc_name_by_id(npc_id)
+                            print '  autoquest_parser (CRITICAL ERROR): bad mob in random quest for npc {0}, mob_type {1}, mob_subtype {2}'.format(npc_name, mob_type, mob_subtype)
+                            result = False
+
+        return result
+
+
+    if True:
+        if not _validateAll():
+            raise RuntimeError

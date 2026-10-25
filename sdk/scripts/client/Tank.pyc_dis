@@ -1,0 +1,468 @@
+# Embedded file name: ./client/Tank.py
+import BWPersonality
+from WayFollower import WayFollower
+import BigWorld
+from Localization import lc
+import SFXer
+from Math import Vector3, Matrix
+from Helpers.capsule_collider import Capsule
+from sounds_manager import playSound
+from particles import Pix
+from tank_parts.tank_track_pix import TrackParticles
+from tank_parts.tank_spash_pix import SplashParticle
+from tank_parts.tank_dust_pix import DustParticle
+from tank_parts.wheel import WheelAction
+from tank_parts.tank_mark import TankMarker
+import tank_parts.tank_config
+from PathFollower import const
+import Helpers.Caps
+from soGUI.soInworldMarkers import soInworldMarker
+from ChatChannelConfig import CHANNEL_CONSTS
+from Constants import MESSAGE_TYPES as MT
+
+def reloadConfigPix():
+    reload(tank_parts.tank_config)
+    for e in BigWorld.entities.values():
+        if e.__class__.__name__ == 'Tank':
+            e.loadPix(purge=True)
+
+
+def show_server_collider(show):
+    for e in BigWorld.entities.values():
+        if e.__class__.__name__ == 'Tank':
+            e._debug_show_server_collider(False)
+            e._debug_show_server_collider(show)
+
+
+IGNORE_MATERIAL = [139,
+ 140,
+ 255,
+ 200,
+ 201,
+ 202,
+ 203,
+ 204]
+IGNORE_FLAGS = 0
+scale_model = (1.2, 1.2, 1.2)
+
+class Tank(BigWorld.Entity, WayFollower):
+    DISABLE_MARK = True
+
+    def __init__(self):
+        BigWorld.Entity.__init__(self)
+        self._sound_mov = None
+        self._sound_fix = None
+        self._sound_dead = None
+        self._ui_marker = None
+        self.filter = BigWorld.AvatarDropFilter()
+        self.filter.collideStartDist = 0.0
+        self.filter.collideDist = 25.0
+        self.filter.alignToGround = True
+        self.filter.blendRatio = 0.05
+        self.filter.smart_filter = 1
+        self.filter.checkRadius = 3
+        self.filter.debugNormalCallback = self._debugNormalCallback
+        self.targetCaps = [Helpers.Caps.CAP_CAN_USE]
+        self._phy = Capsule(Matrix(self.matrix), Vector3(-2.64, -3.0, -2.4), Vector3(2.2, 2.5, 2.2))
+        self._update_controller = 0
+        self._mat_tid = 0
+        self._track_pix = {}
+        self._water_splash = None
+        self._dust = None
+        self._injury = None
+        self._dead_pix = None
+        self._smokes = []
+        self._smokes_idle = []
+        self._dtid = 0
+        self._cyl_model = None
+        return
+
+    def conf(self, key):
+        return tank_parts.tank_config.CONF[self.config_id][key]
+
+    def playTankSound(self, soundname):
+        return playSound(self.conf('SOUNDGROUP') + soundname, model=self.model)
+
+    def _debug_show_server_collider(self, show):
+        if show and not self._cyl_model:
+            self._cyl_model = BigWorld.Model('helpers/models/unit_cylinder.model')
+            r, h = const.CYL_COLLIDER_RADIUS, const.CYL_COLLIDER_HEIGHT
+            self._cyl_model.scale = (r, h, r)
+            self._cyl_model.newScaleTest = (r, h, r)
+            self._cyl_model.position = self.position
+            self.addModel(self._cyl_model)
+        if not show and self._cyl_model:
+            self.delModel(self._cyl_model)
+            self._cyl_model = None
+        return
+
+    def _debugNormalCallback(self, position, filteredPosition, direction, collideStartDist_, collideDist_, alignToGroundRadius_):
+        if self._cyl_model:
+            deb_pos = position
+            self._cyl_model.position = deb_pos
+        normal = Vector3(0, 1, 0)
+        normal.normalise()
+        m = Matrix()
+        m.setRotateYPR((direction[0], 0, 0))
+        m.translation = filteredPosition
+        dist_Mean = [0.0]
+
+        def collide(pos, key):
+            up = pos + (0, 3.5, 0)
+            down = pos + (0, -4, 0)
+            res = BigWorld.collideIgnoreFlags(self.spaceID, up, down, IGNORE_MATERIAL, IGNORE_FLAGS)
+            mat_id = 0
+            if res and res[0]:
+                mat_id = res[-3]
+                dist_Mean[0] += res[0].y - pos.y
+                pos = res[0]
+            wres = BigWorld.waterCollide(up, down)
+            water_depth = 0
+            if wres:
+                if wres[0].y > pos.y:
+                    water_depth = wres[0].y - pos.y
+            eff = self._track_pix.get(key)
+            if eff:
+                eff.updateMater(water_depth, mat_id)
+            if key == 'LF':
+                self._water_splash.updateMater(water_depth, mat_id)
+                self._dust.updateMater(water_depth, mat_id)
+            return pos
+
+        a = collide(m.applyPoint((-1.7, 0, -3)), 'LB')
+        b = collide(m.applyPoint((-1.7, 0, 2)), 'LF')
+        c = collide(m.applyPoint((1.7, 0, -3)), 'RB')
+        d = collide(m.applyPoint((1.7, 0, 2)), 'RF')
+        collide(m.applyPoint((-1.7, 0, -0.5)), 'LC')
+        collide(m.applyPoint((1.7, 0, -0.5)), 'RC')
+        normal1 = (c - a).crossProduct(c - d)
+        normal1.normalise()
+        normal2 = (b - d).crossProduct(b - a)
+        normal2.normalise()
+        normal = (normal1 + normal2) / 2
+        normal.normalise()
+        add_dsit = dist_Mean[0] / 6 + 0.05
+        position = position + (0, add_dsit, 0)
+        filteredPosition = filteredPosition + (0, add_dsit, 0)
+        return (position, filteredPosition, normal)
+
+    def _update_physics(self):
+        self._phy.updateMatrix(Matrix(self.model.matrix))
+        player = BigWorld.player()
+        if self._phy.isInstersectPoint(player.position):
+            nuge = self._phy.getDirNuge(player.position)
+            if nuge:
+                player.physics.nudge_force = nuge
+        self._update_controller = BigWorld.callback(0, self._update_physics)
+        self._track_tick()
+
+    _track_uv = 0.0
+
+    def _track_tick(self):
+        speed = self.speed * 0.7
+        if speed < 0.5 and not self.is_paused:
+            speed = 0.5
+        self._track_uv += BigWorld.getTimeDelta() * speed
+        self._track_uv = self._track_uv % 1.0
+        self.model.solid_right.uTransform = (1,
+         0,
+         0,
+         self._track_uv)
+        self.model.solid_right.uTransform_diffuse = (1,
+         0,
+         0,
+         self._track_uv)
+        self.model.solid_left.uTransform = (1,
+         0,
+         0,
+         self._track_uv)
+        self.model.solid_left.uTransform_diffuse = (1,
+         0.0,
+         0,
+         self._track_uv)
+        if speed > 0:
+            self._left_wheel.play(speed * 50)
+            self._right_wheel.play(speed * 50)
+        else:
+            self._left_wheel.pause()
+            self._right_wheel.pause()
+
+    def updateTrackSpeed(self, old_val = None):
+
+        def play_fix():
+            if self._sound_fix:
+                return
+            if not self.is_paused_in_channel(const.PAUSE_HEAL):
+                return
+            if self.is_paused_in_channel(const.PAUSE_DEAD):
+                return
+            self._sound_fix = self.playTankSound('fixing')
+
+        if self.is_paused_in_channel(const.PAUSE_HEAL):
+            if not self.is_paused_in_channel(const.PAUSE_HEAL, old_val):
+                SFXer.playSFX(self.conf('BREAK_SFX'), self.model.position)
+            BigWorld.callback(2.5, play_fix)
+        elif self._sound_fix:
+            self._sound_fix.stop()
+            self._sound_fix = None
+        if self._injury:
+            self._injury.setPaused(not self.is_paused_in_channel(const.PAUSE_HEAL))
+        if self._dead_pix:
+            self._dead_pix.setPaused(not self.is_paused_in_channel(const.PAUSE_DEAD))
+        if self.is_paused_in_channel(const.PAUSE_DEAD):
+            if not self._sound_dead:
+                self._sound_dead = self.playTankSound('engine_burning')
+        elif self._sound_dead:
+            self._sound_dead.stop()
+            self._sound_dead = None
+        if self.is_paused_in_channel(const.PAUSE_DEAD):
+            if self._sound_mov:
+                self._sound_mov.stop()
+                self._sound_mov = None
+            if self._sound_fix:
+                self._sound_fix.stop()
+                self._sound_fix = None
+            if not self.is_paused_in_channel(const.PAUSE_DEAD, old_val):
+                SFXer.playSFX(self.conf('DEATH_SFX'), self.model.position)
+            self.model.visible = False
+            self.model.visibleAttachments = True
+            self._dead_model.visible = True
+            if not self._dead_model.inWorld:
+                self.model.root.attach(self._dead_model)
+            return
+        else:
+            self._dead_model.visible = False
+            self.model.visible = True
+            if self.is_paused:
+                if self.isInjury:
+                    if self._sound_mov:
+                        self._sound_mov.stop()
+                        self._sound_mov = None
+                if self._sound_mov:
+                    self._sound_mov.set_param('drive', 0.0)
+            else:
+                if not self._sound_mov:
+                    self._sound_mov = self.playTankSound('movement')
+                    self.playTankSound('ignition')
+                self._sound_mov.set_param('drive', 1.0)
+            if not self._sound_mov and self.isIdle:
+                self._sound_mov = self.playTankSound('movement')
+                self._sound_mov.set_param('drive', 0.0)
+                self.playTankSound('ignition')
+            return
+
+    def _material_footstep_loop(self):
+        if self._sound_mov:
+            mater_name = None
+            if self._track_pix.get('LF'):
+                mater_name = self._track_pix['LF'].mater_name
+            param = 0.0
+            if mater_name == 'mud':
+                param = 0.6
+            if mater_name == 'water ':
+                param = 1.0
+            self._sound_mov.set_param('material', param)
+        self._mat_tid = BigWorld.callback(0.2, self._material_footstep_loop)
+        return
+
+    def set_pause(self, old_val = None):
+        self.updateTrackSpeed(old_val=old_val)
+        for pix in self._track_pix.values():
+            pix.setPaused(self.is_paused)
+
+        for s in self._smokes:
+            s.setPaused(self.is_paused)
+
+        for s in self._smokes_idle:
+            s.setPaused(not self.isIdle)
+
+        self._dust.setPaused(self.is_paused)
+        self._water_splash.setPaused(self.is_paused)
+        client_bit = 1 << const.PAUSE_CLIENT
+        has_client_pause = self.pause & client_bit
+        if has_client_pause != old_val & client_bit:
+            if has_client_pause:
+                text = lc('PlayerAvatar.client.TANK_PAUSE_NOTIFY')
+            else:
+                text = lc('PlayerAvatar.client.TANK_UNPAUSE_NOTIFY')
+            BWPersonality.gpd.sendHightMessage(text, MT.DUNGEON)
+            BigWorld.player().putMessage(CHANNEL_CONSTS.SYSTEM, text)
+
+    def prerequisites(self):
+        return [self.conf('MODEL'), self.conf('DEAD_MODEL')]
+
+    def onEnterWorld(self, prereqs):
+        self.model = prereqs[self.conf('MODEL')]
+        self._dead_model = prereqs[self.conf('DEAD_MODEL')]
+        self.model.isObstacle = True
+        self.model.newScaleTest = scale_model
+        self.model.scale = scale_model
+        self.model.solid_right = 'right'
+        self.model.solid_left = 'left'
+        self._left_wheel = WheelAction(self.model, 'left_forward')
+        self._right_wheel = WheelAction(self.model, 'right_forward')
+        self._update_physics()
+        self.updateTrackSpeed()
+        if self.conf('USE_MATERIAL_FOOTSTEP_SOUND'):
+            self._material_footstep_loop()
+        self.loadPix()
+
+    def onLeaveWorld(self):
+        WayFollower.onLeaveWorld(self)
+        BigWorld.cancelCallback(self._update_controller)
+        BigWorld.cancelCallback(self._mat_tid)
+        if self._sound_mov:
+            self._sound_mov.stop()
+            self._sound_mov = None
+        if self._sound_fix:
+            self._sound_fix.stop()
+            self._sound_fix = None
+        if self._sound_dead:
+            self._sound_dead.stop()
+            self._sound_dead = None
+        for pix in self._track_pix.values():
+            pix.destroy()
+
+        if self._water_splash:
+            self._water_splash.destroy()
+        if self._injury:
+            self._injury.destroy()
+        if self._dead_pix:
+            self._dead_pix.destroy()
+        if self._dust:
+            self._dust.destroy()
+        for s in self._smokes:
+            s.destroy()
+
+        for s in self._smokes_idle:
+            s.destroy()
+
+        self._track_pix = {}
+        self._water_splash = None
+        self._dust = None
+        self._injury = None
+        self._dead_pix = None
+        self._smokes = []
+        self._smokes_idle = []
+        self.model = None
+        self._dead_model = None
+        self._phy = None
+        self.filter.debugNormalCallback = None
+        return
+
+    def get_height(self):
+        return 1.5
+
+    def loadPix(self, purge = False):
+        for pix in self._track_pix.values():
+            pix.destroy()
+
+        if self._water_splash:
+            self._water_splash.destroy()
+        if self._dust:
+            self._dust.destroy()
+        if self._injury:
+            self._injury.destroy()
+        if self._dead_pix:
+            self._dead_pix.destroy()
+        for s in self._smokes:
+            s.destroy()
+
+        for s in self._smokes_idle:
+            s.destroy()
+
+        self._track_pix = {}
+        self._water_splash = None
+        self._dust = None
+        self._injury = None
+        self._dead_pix = None
+        self._smokes = []
+        self._smokes_idle = []
+        if not self.model:
+            return
+        else:
+            for tr, track_node in self.conf('TRAKS_NODE').items():
+                self._track_pix[tr] = TrackParticles(self, self.model, side=tr, purge=purge)
+                self._track_pix[tr].setPaused(self.is_paused)
+
+            self._water_splash = SplashParticle(self, self.model, purge=purge)
+            self._dust = DustParticle(self, self.model, purge=purge)
+            for name in self.conf('EXHAUST_NODES'):
+                smoke_node = self.model.node(name)
+                self._smokes.append(Pix(smoke_node, self.conf('EXHAUST_PATH')))
+                self._smokes_idle.append(Pix(smoke_node, self.conf('EXHAUST_IDLE_PATH')))
+
+            self._water_splash.setPaused(self.is_paused)
+            self._dust.setPaused(self.is_paused)
+            for s in self._smokes:
+                s.setPaused(self.is_paused)
+
+            for s in self._smokes_idle:
+                s.setPaused(not self.isIdle)
+
+            inj_node = self.model.node(self.conf('INJURY_NODE'))
+            self._injury = Pix(inj_node, self.conf('INJURY_PATH'))
+            self._injury.setPaused(not self.is_paused_in_channel(const.PAUSE_HEAL))
+            node = self.model.node(self.conf('DEAD_NODE'))
+            self._dead_pix = Pix(node, self.conf('DEAD_PATH'))
+            self._dead_pix.setPaused(not self.is_paused_in_channel(const.PAUSE_DEAD))
+            return
+
+    def get_target_mark(self, distance):
+        if distance <= self.get_interaction_dist():
+            return soInworldMarker.MARKER_USE
+
+    def get_interaction_dist(self):
+        return 10.0
+
+    def can_put_box_from_this_point(self, position):
+        distance = (self.position - position).length
+        return distance <= self.get_interaction_dist()
+
+    def get_next_available_box_position(self):
+        return None
+
+    def get_custom_mark(self, distance):
+        if distance > 70.0:
+            return
+        else:
+            if self._ui_marker is None:
+                self._ui_marker = TankMarker(self)
+                self._ui_marker.set_ratio(self.health_ratio)
+            return self._ui_marker
+
+    def get_context_menu_title_and_actions(self):
+
+        def tank_pause_active():
+            if (BigWorld.player().position - self.position).length > self.get_interaction_dist():
+                return False
+            if self.is_paused:
+                return False
+            return True
+
+        def tank_unpause_active():
+            if (BigWorld.player().position - self.position).length > self.get_interaction_dist():
+                return False
+            if self.pause != 1 << const.PAUSE_CLIENT:
+                return False
+            return True
+
+        def tank_pause():
+            self.cell.request_pause(True)
+
+        def tank_unpause():
+            self.cell.request_pause(False)
+
+        actions = [{'label': lc('PlayerAvatar.client.TANK_PAUSE'),
+          'callback': tank_pause,
+          'foo_active': tank_pause_active}, {'label': lc('PlayerAvatar.client.TANK_UNPAUSE'),
+          'callback': tank_unpause,
+          'foo_active': tank_unpause_active}]
+        return (lc('PlayerAvatar.client.TANK_NAME'), actions)
+
+    def set_health_ratio(self, old_value):
+        if self._ui_marker:
+            self._ui_marker.set_ratio(self.health_ratio)
+
+    def onBoarHit(self, damager):
+        pass

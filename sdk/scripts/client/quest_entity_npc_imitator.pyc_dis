@@ -1,0 +1,131 @@
+# Embedded file name: ./client/quest_entity_npc_imitator.py
+from Items import ItemsCatalog
+import Helpers
+from functools import partial
+from utils import Listenable
+from Math import Vector3
+import BigWorld
+from EquipSlotsConfigs import EquipSlotTypes as EST
+
+class EventType:
+    OnJustInited, = ((r, 'qe_npc_imitator') for r in range(1))
+
+
+class NpcImitator(Listenable):
+
+    def __init__(self, position, ypr, npc_equipped_armor, npc_animation, npc_equipped_modes, tracker_type):
+        Listenable.__init__(self)
+        self._position = Vector3(position)
+        self._ypr = ypr
+        self._npc_animation = npc_animation
+        self._npc_equipped_armor = npc_equipped_armor
+        self._npc_equipped_modes = npc_equipped_modes
+        self._npc_track_type = tracker_type
+        self._npc_name = None
+        self._npc_id = None
+        return
+
+    def imitate(self, npc_name):
+        self.npc_name = npc_name
+
+    def _on_npc_just_spawned(self, npc):
+        npc.targetCaps = [Helpers.Caps.CAP_INTERACT]
+        data = {'npc': npc}
+        if self._npc_animation:
+            self._wait_for_npc_to_get_model(600.0)
+        self.notify_listeners(EventType.OnJustInited, data)
+
+    def _on_npc_got_model(self, model):
+        getattr(model, self._npc_animation)()
+
+    def _wait_for_npc_to_get_model(self, wait_time):
+        if wait_time <= 0.0:
+            raise RuntimeError(self.npc_name)
+        if self.destroyed or not self._npc_id:
+            return
+        entity = BigWorld.entities.get(self._npc_id)
+        if not entity:
+            return
+        model = entity.model
+        if not model:
+            foo = partial(self._wait_for_npc_to_get_model, wait_time - BigWorld.getTimeDelta())
+            BigWorld.callback(0, foo)
+            return
+        self._on_npc_got_model(model)
+
+    def _wait_for_npc_to_spawn(self, wait_time):
+        if wait_time <= 0.0:
+            raise RuntimeError(self.npc_name)
+        if self.destroyed or not self._npc_id:
+            return
+        entity = BigWorld.entities.get(self._npc_id)
+        if not entity:
+            foo = partial(self._wait_for_npc_to_spawn, wait_time - BigWorld.getTimeDelta())
+            BigWorld.callback(0, foo)
+            return
+        self._on_npc_just_spawned(entity)
+
+    def _create_npc(self):
+        colorise_list = []
+        slot_to_item = {}
+
+        class AvatarImitator:
+            pass
+
+        avatar_imitator = AvatarImitator()
+        avatar_imitator.EquipModes = self._npc_equipped_modes
+        avatar_imitator.EquippedArmor = EST.get_default_equipped_armor()
+        item_id = -1
+        for item in self._npc_equipped_armor:
+            item_type = item['itemType']
+            if not item_type:
+                continue
+            slot_types = ItemsCatalog.GetItemParam(item_type).get('SlotType', [])
+            for slot_type in slot_types:
+                item_data = {'itemID': item_id,
+                 'itemType': item_type}
+                slot_to_item[slot_type] = item_data
+                avatar_imitator.EquippedArmor[EST._slot_type_to_attr[slot_type]] = item_data
+
+            colorise_list.append({'ItemID': item_id,
+             'COLORISE_A': item['colorA'],
+             'COLORISE_B': item['colorB']})
+            item_id -= 1
+
+        for slot_type, item in slot_to_item.items():
+            EST.set_slot_data(avatar_imitator, slot_type, item, reset_tuck_on_new_boots=False)
+
+        raise not self._npc_id or AssertionError
+        params = {'npcName': self.npc_name,
+         'coloriseEmblems': colorise_list,
+         'EquippedArmor': avatar_imitator.EquippedArmor,
+         'EquipModes': avatar_imitator.EquipModes,
+         'headTrackerEnable': self._npc_track_type}
+        rpy = (self._ypr[2], self._ypr[1], self._ypr[0])
+        self._npc_id = BigWorld.createEntity('NPC', BigWorld.player().spaceID, 0, self._position, rpy, params)
+        self._wait_for_npc_to_spawn(600.0)
+
+    def on_release(self):
+        Listenable.on_release(self)
+        self.npc_name = None
+        return
+
+    def _destroy_npc(self):
+        raise self._npc_id or AssertionError
+        BigWorld.destroyEntity(self._npc_id)
+        self._npc_id = None
+        return
+
+    @property
+    def npc_name(self):
+        return self._npc_name
+
+    @npc_name.setter
+    def npc_name(self, value):
+        if self._npc_name == value:
+            return
+        if self._npc_name:
+            self._destroy_npc()
+        self._npc_name = value
+        if self._npc_name:
+            self._create_npc()

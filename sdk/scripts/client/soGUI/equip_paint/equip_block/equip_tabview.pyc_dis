@@ -1,0 +1,253 @@
+# Embedded file name: ./client/soGUI/equip_paint/equip_block/equip_tabview.py
+from Items import ItemsCatalog
+import ItemsUtils
+import BigWorld
+import GUI
+from Localization import lc
+from ..tabview.tabview import TabView, View, Button
+from equip_tablegrid import EquipTableGrid, EquipModel, ModelET as EquipModelET
+from EquipSlotsConfigs import EquipSlotTypes as EST
+from sounds_manager import playSound
+
+class EquipButton(Button):
+
+    def __init__(self, component, header_text):
+        component.isClip = False
+        Button.__init__(self, component, header_text)
+
+    def _setup(self):
+        comp = GUI.Window('soGUI/frame/donatshop/headlight.dds')
+        comp.materialFX = 'BLEND'
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('CENTER', 'TOP')
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.position = (0, 1, 0.9)
+        comp.visible = False
+        self.component.addChild(comp, 'highlight')
+
+    def _update_visual(self):
+        Button._update_visual(self)
+        self.component.highlight.visible = self.active
+
+    def do_reposition(self, font):
+        result = Button.do_reposition(self, font)
+        comp = self.component.highlight
+        height = BigWorld.screenHeight() * 0.1
+        comp.width, comp.height = height * 2.6, height
+        return result
+
+
+class EquipView(View):
+
+    def __init__(self, component):
+        View.__init__(self, component)
+        self._tm = EquipModel()
+        comp = GUI.Window()
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('LEFT', 'TOP')
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        self._table_grid = EquipTableGrid(comp, self._tm)
+        self.component.addChild(comp)
+
+    def on_show(self, equipped_items, inventory_items, entity):
+        sorted_slots = {}
+        for index, slot in enumerate((EST.HELMET,
+         EST.HELMET,
+         EST.HAT,
+         EST.HAT,
+         EST.C_HAT,
+         EST.HEAD,
+         EST.EYES,
+         EST.EARS,
+         EST.MOUTH,
+         EST.HAIR,
+         EST.EYES,
+         EST.MOUTH,
+         EST.MOUSTACHE,
+         EST.BEARD,
+         EST.VEST_MED,
+         EST.VEST_MED,
+         EST.ARMOR,
+         EST.BELT,
+         EST.BELT,
+         EST.JACKET,
+         EST.BODY,
+         EST.C_BODY,
+         EST.UW_BODY,
+         EST.M_SHIRT,
+         EST.U_SHIRT,
+         EST.BACKPACK_MED,
+         EST.HANDS,
+         EST.ARMS,
+         EST.GLOVES,
+         EST.C_GLOVES,
+         EST.C_PANTS,
+         EST.PANTS,
+         EST.U_PANTS,
+         EST.UW_LEGS,
+         EST.LEGS,
+         EST.SHOES,
+         EST.C_SHOES,
+         EST.FEET,
+         EST.UW_FOOT)):
+            sorted_slots[slot] = index
+
+        def sorter(item):
+            item_type = item['complexItemType']
+            can_be_painted = ItemsUtils.can_be_painted(item_type)
+            item_params = ItemsCatalog.GetItemParam(item_type)
+            min_index = len(sorted_slots)
+            for slot_type in item_params.get('SlotType', []):
+                slot_index = sorted_slots.get(slot_type)
+                if slot_index is None:
+                    continue
+                if slot_index >= min_index:
+                    continue
+                min_index = slot_index
+
+            return (not can_be_painted, min_index)
+
+        equipped_items.sort(key=sorter)
+        inventory_items.sort(key=sorter)
+
+        def insert_subs(items):
+            items = list(items)
+            for i in range(len(items) - 1, -1, -1):
+                item = items[i]
+                subs = item.get('itemList')
+                if subs:
+                    items[i + 1:i + 1] = subs
+
+            return items
+
+        self._table_grid.on_show(entity)
+        self._tm.set_items(insert_subs(equipped_items), insert_subs(inventory_items))
+
+    def do_reposition(self, reposition_data):
+        View.do_reposition(self, reposition_data)
+        cols, rows = reposition_data['equip_cols'], reposition_data['equip_rows']
+        cell_size = reposition_data['cell_size']
+        scroll_width = reposition_data['scroll_width']
+        equip_table_height = cell_size * rows
+        equip_table_width = cell_size * cols + scroll_width
+        comp = self._table_grid.component
+        comp.width, comp.height = equip_table_width, equip_table_height
+        comp.position = (0, 0, 0.5)
+        self._table_grid.do_reposition(cols, rows, cell_size, cell_size, scroll_width)
+        self.height = reposition_data['equip_height']
+
+
+class TabViewET:
+    OnSelectionChanged, OnTabChanged = (r for r in range(2))
+
+
+class EquipTabView(TabView):
+
+    def __init__(self, component):
+        component.isClip = False
+        TabView.__init__(self, component)
+        self._eqp_tm.add_listener(self._on_tablemodel_event)
+        self._wpn_tm.add_listener(self._on_tablemodel_event)
+
+    def _on_tablemodel_event(self, event_type, data):
+        if event_type == EquipModelET.OnSelectionChanged:
+            if data['model'] == self._eqp_tm:
+                if self._eqp_tm.selected:
+                    self._wpn_tm.remove_listener(self._on_tablemodel_event)
+                    self._wpn_tm.selected = None
+                    self._wpn_tm.add_listener(self._on_tablemodel_event)
+            elif data['model'] == self._wpn_tm:
+                if self._wpn_tm.selected:
+                    self._eqp_tm.remove_listener(self._on_tablemodel_event)
+                    self._eqp_tm.selected = None
+                    self._eqp_tm.add_listener(self._on_tablemodel_event)
+            self.notify_listeners(TabViewET.OnSelectionChanged)
+        return
+
+    def _create_button(self, component, header):
+        return EquipButton(component, header)
+
+    def reset_items(self):
+        self._wpn_tm.reset_items()
+        self._eqp_tm.reset_items()
+
+    def get_items(self, item_ids):
+        return self._wpn_tm.get_items(item_ids) + self._eqp_tm.get_items(item_ids)
+
+    def deselect(self):
+        self._wpn_tm.selected = None
+        self._eqp_tm.selected = None
+        return
+
+    @property
+    def selected(self):
+        return self._wpn_tm.selected or self._eqp_tm.selected or None
+
+    def _do_btn_reposition(self, btns, button_text_widths, width, height):
+        pos_x = self.component.width
+        margin = height * 0.5
+        for btn, btn_width in reversed(zip(btns, button_text_widths)):
+            comp = btn.component
+            comp.width = btn_width
+            comp.height = height * 0.7
+            pos_x -= btn_width
+            comp.position = (pos_x, 0, 0.5)
+            pos_x -= margin
+
+    def _create_pages(self):
+        eqp_page = {'header': lc('EquipPaint.equiptab.btnequip'),
+         'view': EquipView(self._create_view_comp())}
+        wpn_page = {'header': lc('EquipPaint.equiptab.btnweapon'),
+         'view': EquipView(self._create_view_comp())}
+        return [eqp_page, wpn_page]
+
+    def do_reposition(self, reposition_data):
+        reposition_data['header_height'] = reposition_data['equip_header_height']
+        reposition_data['font_size'] = 36
+        reposition_data['equip_height'] = self.component.height - reposition_data['header_height']
+        TabView.do_reposition(self, reposition_data)
+
+    def update_equipped(self, on_items, off_items):
+        on_ids = set([ item['itemID'] for item in on_items if not item.get('complexItemID') ])
+        off_ids = set([ item['itemID'] for item in off_items if not item.get('complexItemID') ])
+        self._eqp_tm.update_equipped(on_ids, off_ids)
+        self._wpn_tm.update_equipped(on_ids, off_ids)
+
+    def find_parent(self, item_id):
+        return self._wpn_tm.find_parent(item_id) or self._eqp_tm.find_parent(item_id)
+
+    def _on_active_changed(self, active, prev_active):
+        self.notify_listeners(TabViewET.OnTabChanged)
+        if active and prev_active:
+            playSound('ui/journal/tab_click')
+
+    def is_weapon_tab_active(self):
+        return self.get_active_view() == self._wpn_view
+
+    def on_show(self, equipped_cloth, equipped_weapons, inventory_cloth, inventory_weapons, equipped_cond):
+
+        class EntityImitator:
+            pass
+
+        entity = EntityImitator()
+        entity.ActiveItemID = 0
+        entity.ActiveWeaponSet2 = {}
+        entity.EquippedCond2 = equipped_cond
+        self._eqp_view.on_show(equipped_cloth, inventory_cloth, entity)
+        self._wpn_view.on_show([], equipped_weapons + inventory_weapons, entity)
+
+    @property
+    def _eqp_view(self):
+        return self._views[0]
+
+    @property
+    def _wpn_view(self):
+        return self._views[1]
+
+    @property
+    def _eqp_tm(self):
+        return self._eqp_view._tm
+
+    @property
+    def _wpn_tm(self):
+        return self._wpn_view._tm

@@ -1,0 +1,257 @@
+# Embedded file name: ./client/soGUI/weapon_modification/attachment_panel_right.py
+import BigWorld
+import BWPersonality
+import GUI
+import Keys
+from Items import ItemsCatalog
+import ItemsUtils
+import traceback
+from Localization import lc
+from Helpers.PyGUI.PyGUIBase import PyGUIBase
+from soGUI.soItemView import soItemView
+from gui_const import ITSLOT
+import soGUI
+from sounds_manager import playSound
+
+class AttachmentPanelRight(PyGUIBase):
+
+    def __init__(self, component, dummy, parent):
+        PyGUIBase.__init__(self, component)
+        component.script = self
+        self.tmp_detached = []
+        self.dummy = dummy
+        self.parent = parent
+        self.setupRoot()
+        self.setupContent()
+        self.component.reSort()
+
+    def setupRoot(self):
+        cmp = self.component
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'CLIP'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.horizontalAnchor = 'RIGHT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.colour = (255, 255, 255, 210)
+        cmp.materialFX = 'BLEND'
+        sW, sH = BigWorld.screenSize()
+        self.width = cmp.width = 350
+        self.height = cmp.height = sH - 2
+        cmp = GUI.Simple('textures/default/white.dds')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'CLIP'
+        cmp.widthMode = cmp.heightMode = 'CLIP'
+        cmp.horizontalAnchor = cmp.verticalAnchor = 'CENTER'
+        cmp.colour = (10, 10, 10, 100)
+        cmp.materialFX = 'BLEND'
+        cmp.width = cmp.height = 2.0
+        cmp.position = (0.0, 0.0, 0.9)
+        self.component.addChild(cmp, 'fon')
+        cmp = GUI.Text(lc('weapon_mod.gui.parts'))
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.position = (20, 15, 0.5)
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.font = 'RobotoCondensedRegular_20.font'
+        cmp.colour = (175, 166, 112, 255)
+        self.component.addChild(cmp, 'title')
+
+    def setupContent(self):
+        sW, sH = BigWorld.screenSize()
+        rows = int((sH - 100) / 60)
+        itemView = soItemView(GUI.Window(), attachItemSlot, slot_eventsHandler=self.slotHandler, eventsHandler=self.itemViewHandler, rowWidth=5, cols=5, hScroll=0, borderWidth=0, rows=rows, vScroll=1, scroll_auto_hide=True)
+        cmp = itemView.component
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.position = (10, 50, 0.5)
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        self.component.addChild(cmp, 'attach_view')
+        itemView.onBound()
+        itemView.setRestrictingComponent(None)
+        itemView.setItems(None)
+        self.attach_view = itemView
+        return
+
+    def doReposition(self):
+        sW, sH = BigWorld.screenSize()
+        rows = int((sH - 100) / 60)
+        self.attach_view.change_size(5, rows)
+        self.height = self.component.height = sH - 2
+
+    def onWeaponChange(self):
+        self.updateAttachView()
+
+    def onWeaponDetach(self, items):
+        item_types = [ i['complexItemType'] for i in items ]
+        sound_path = ItemsUtils.GetItemInventorySound(item_types, 'take')
+        if sound_path:
+            playSound(sound_path)
+        real_itemsid = [ item['complexItemID'] for item in BigWorld.player().CarryingItems ]
+        items = filter(lambda item: item['complexItemID'] not in real_itemsid, items)
+        for x in items:
+            x['selected'] = True
+
+        self.tmp_detached.extend(items)
+        self.updateAttachView()
+
+    def updateAttachView(self):
+        p = BigWorld.player()
+        self.attach_view.setRestrictingComponent(None)
+        tmp_attached = self._weapon.getTmpAttachedItemsID()
+
+        def filter_(item):
+            if item['complexItemID'] in tmp_attached:
+                return False
+            if ItemsCatalog.GetItemClass(item['complexItemType']) != ItemsCatalog.PART:
+                return False
+            param = ItemsCatalog[item['complexItemType']]
+            if param.get('ParentNodeIDs'):
+                return True
+            if param.get('ChildrenNodes'):
+                return True
+            if param.get('MagazineClass'):
+                return True
+            return False
+
+        items = filter(filter_, p.CarryingItems)
+        self.tmp_detached = filter(lambda item: item['complexItemID'] not in tmp_attached, self.tmp_detached)
+        self.attach_view.setItems(self.tmp_detached + items)
+        return
+
+    def show(self, weapon):
+        self._weapon = weapon
+        self.tmp_detached = []
+        self.updateAttachView()
+
+    def apply(self):
+        print 'apply'
+
+    def slotHandler(self, eventID, slot):
+        if eventID == ITSLOT.SLOTEVENT_MOUSEBUTTON:
+            slotcls, event = slot
+            if event.key == Keys.KEY_LEFTMOUSE and event.isKeyUp():
+                self._weapon.handleMouseButtonEvent(slotcls, event)
+            return False
+        if eventID == ITSLOT.SLOTEVENT_RCLICK:
+            if slot.haveItem():
+                self.createContextMenu(slot.itemData)
+        if eventID == ITSLOT.SLOTEVENT_DRAGSTART:
+            if slot.haveItem():
+                self._weapon.eventDragStart(slot.itemData)
+        elif eventID == ITSLOT.SLOTEVENT_DRAGSTOP:
+            if slot.haveItem():
+                self._weapon.eventDragStop(slot.itemData)
+        elif eventID == ITSLOT.SLOTEVENT_MOUSEMOVE:
+            if slot and slot[0].haveItem():
+                item = slot[0].itemData
+                event_pos = slot[1]
+                delta_pos = slot[2]
+                self._weapon.eventDragMove(item, event_pos, delta_pos)
+        return False
+
+    def itemViewHandler(self, *e):
+        return False
+
+    context_menu_item = None
+    context_menu_item_debug_attach = 99999
+    context_menu_id = 778
+
+    def createContextMenu(self, item, attach = None):
+        self.context_menu_item = item
+        actions = {ItemsCatalog.CAN_INFO: lc('Inventory.client.INFO')}
+        if BigWorld.player().offline_mode:
+            actions[self.context_menu_item_debug_attach] = 'debug attach'
+        if BigWorld.isKeyDown(BigWorld.stringToKey('F2')) and BigWorld.player().isAdminAccess():
+            actions['copy_id'] = u'\u043a\u043e\u043f\u0438\u0440\u043e\u0432\u0430\u0442\u044c ItemID %s' % item['complexItemID']
+            actions['copy_type'] = u'\u043a\u043e\u043f\u0438\u0440\u043e\u0432\u0430\u0442\u044c ItemType %s' % item['complexItemType']
+            actions['copy_itemNameLC'] = u'\u043a\u043e\u043f\u0438\u0440\u043e\u0432\u0430\u0442\u044c \u0438\u043c\u044f'
+            if attach:
+                self._last_attachPosY = attach._attachPosY
+                actions['copy_attachPosY'] = u'attachPosY %.3f' % attach._attachPosY
+            var_name = ItemsCatalog.GetItemVarName(item['complexItemType'])
+            if var_name:
+                actions['copy_itemName'] = u'\u043a\u043e\u043f\u0438\u0440\u043e\u0432\u0430\u0442\u044c %s' % var_name
+        BWPersonality.GUICore.addListener('contextMenuEvent', self.contextMenuEvent)
+        BWPersonality.GUICore.showContextMenu(self.context_menu_id, actions)
+
+    def contextMenuEvent(self, interface_id, id, caption, event, data):
+        if interface_id not in [self.context_menu_id]:
+            return
+        else:
+            if event == soGUI.soContextMenuComponent.EVENT_SELECT:
+                item = self.context_menu_item
+                if id == self.context_menu_item_debug_attach:
+                    self._weapon._debugAttachItem(self.context_menu_item)
+                elif id == ItemsCatalog.CAN_INFO:
+                    BWPersonality.GUICore.showItemInfo(self.context_menu_item)
+                elif id == 'copy_id':
+                    BigWorld.clipboardSetPlainText(str(item['complexItemID']))
+                elif id == 'copy_type':
+                    BigWorld.clipboardSetPlainText(str(item['complexItemType']))
+                elif id == 'copy_itemName':
+                    BigWorld.clipboardSetPlainText(ItemsCatalog.GetItemVarName(item['complexItemType']))
+                elif id == 'copy_itemNameLC':
+                    BigWorld.clipboardSetPlainText(ItemsUtils.GetItemName(item['complexItemType']))
+                elif id == 'copy_attachPosY':
+                    BigWorld.clipboardSetPlainText('%.3f' % self._last_attachPosY)
+                self.context_menu_item = None
+                BWPersonality.GUICore.removeListener('contextMenuEvent', self.contextMenuEvent)
+            elif event == soGUI.soContextMenuComponent.EVENT_CANCEL:
+                self.context_menu_item = None
+                try:
+                    BWPersonality.GUICore.removeListener('contextMenuEvent', self.contextMenuEvent)
+                except:
+                    traceback.print_exc()
+
+            return
+
+
+class attachItemSlot(soGUI.InvSlot):
+    factoryString = 'soGUI.EquipedItemSlot'
+
+    def take(self):
+        pass
+
+    def wannaDrop(self):
+        pass
+
+    def equipItem(self):
+        pass
+
+    def setupContent(self):
+        soGUI.InvSlot.setupContent(self)
+        cmp = GUI.Simple('soGUI/white.dds')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.materialFX = 'BLEND'
+        cmp.colour = (100, 255, 80, 20)
+        cmp.width = self.SLOTWIDTH
+        cmp.height = self.SLOTHEIGHT
+        cmp.position = (0, 0, 0.9)
+        cmp.visible = False
+        self.component.addChild(cmp, 'selected')
+
+    def _applyItemData(self):
+        soGUI.InvSlot._applyItemData(self)
+        self.component.itemIcon.visible = True
+        if not self.haveItem():
+            self.component.selected.visible = False
+            return
+        self.component.selected.visible = self.itemData.get('selected', False)
+
+    def checkTransferItem(self):
+        pass
+
+    def onDragStart(self):
+        if self.haveItem():
+            self.dragProxy.visible = True
+            self.component.itemIcon.visible = False
+            return True
+        return False
+
+    def onDragStop(self):
+        self.dragProxy.visible = False
+        self.component.itemIcon.visible = True
+        return True

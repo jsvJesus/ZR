@@ -1,0 +1,338 @@
+# Embedded file name: ./client/journal/quests_tab2/view_comp.py
+import BigWorld
+import GUI
+from soGUI.soButton import soButton
+import QuestDispatcher as qd
+from data_provider import IdET
+from Quest import ReadStatus
+from functools import partial
+
+class EventType():
+    OnDownClick, OnUpClick, OnClick, OnSubClick, HeightChanged, EmptyVisible, EmptySubsVisible = xrange(7)
+
+
+class ViewComp():
+    line_height = 20
+    empty_height = 5
+    bar_width = 17
+
+    def __init__(self, component):
+        self.component = component
+        self._inited = False
+        self._last_click_time = 0
+        comp = GUI.Window()
+        btn = soButton(comp)
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.label.font = 'RobotoCondensedRegular_16.font'
+        comp.label.horizontalPositionMode = 'PIXEL'
+        comp.label.horizontalAnchor = 'LEFT'
+        comp.label.position[0] = 14
+        comp.width, comp.height = self.component.width - ViewComp.bar_width, ViewComp.line_height
+        comp.position = (0, 0, 0.6)
+        btn.onClick = self._on_click
+        self.component.addChild(comp, 'btn')
+        comp = GUI.Frame2('soGUI/frame/journal/view_comp_frame.dds')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+        comp.width, comp.height = (2, 2)
+        comp.position = (0, 0, 0.1)
+        comp.visible = False
+        self.component.btn.addChild(comp, 'frame')
+        comp = GUI.Window()
+        btn = soButton(comp)
+        btn.initVSC('soGUI/elements/quest_view_arrow_down.xml')
+        btn.setVisualState('normal')
+        btn.soundControlName = 'ArrowBtn'
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('RIGHT', 'TOP')
+        comp.materialFX = 'BLEND'
+        comp.width, comp.height = (18, 18)
+        comp.position = (self.component.width - 24, 0, 0.1)
+        self.component.addChild(comp, 'btn_down')
+        btn.onClick = self._on_down_click
+        btn.onBound()
+        comp = GUI.Window()
+        btn = soButton(comp)
+        btn.initVSC('soGUI/elements/quest_view_arrow_up.xml')
+        btn.setVisualState('normal')
+        btn.soundControlName = 'ArrowBtn'
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('RIGHT', 'TOP')
+        comp.materialFX = 'BLEND'
+        comp.width, comp.height = (18, 18)
+        comp.position = (self.component.width - 24, 0, 0.1)
+        self.component.addChild(comp, 'btn_up')
+        btn.onClick = self._on_up_click
+        btn.onBound()
+        comp = GUI.Window()
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.widthMode, comp.heightMode = ('CLIP', 'PIXEL')
+        comp.width, comp.height = (2, 0)
+        comp.position = (-1, ViewComp.line_height, 0.5)
+        self.component.addChild(comp, 'subs')
+        comp = GUI.Window()
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+        comp.width, comp.height = (8, 8)
+        comp.position = (7, 8, 0.2)
+        self.component.addChild(comp, 'priority')
+        comp = GUI.Simple('soGUI/GUIs/unscalable/event_circle.dds')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = comp.texture.width, comp.texture.height
+        comp.position = (0, 0, 0.1)
+        comp.materialFX = 'BLEND'
+        self.component.addChild(comp, 'pip')
+        comp = GUI.Simple('soGUI/GUIs/unscalable/update.dds')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = comp.texture.width, comp.texture.height
+        comp.position = (0, 0, 0.1)
+        comp.materialFX = 'BLEND'
+        self.component.addChild(comp, 'pip_changed')
+        comp = GUI.Simple('soGUI/frame/journal/load_anim/load_pips')
+        comp.materialFX = 'BLEND'
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = (35, 10)
+        comp.position = (0, 0, 0)
+        comp.visible = False
+        self.component.addChild(comp, 'load_pips')
+
+    def initialize(self, item_data, callback_listener):
+        self._callback_listener = callback_listener
+        self._item_data = item_data
+        self._item_data.set_callback_listener(self._on_item_data_event)
+        self._update_visual()
+        self._inited = True
+        if self._item_data._q_id is None:
+            self._callback_listener(EventType.EmptyVisible, self)
+        return
+
+    def _on_item_data_event(self, event_type, data):
+        if event_type in (IdET.OnExpandedChanged,
+         IdET.OnSubsChanged,
+         IdET.OnSelectedChanged,
+         IdET.OnReadChanged):
+            self._update_visual()
+
+    def _check_dbl_click(self):
+        prev_last_click_time = self._last_click_time
+        self._last_click_time = BigWorld.time()
+        if self._last_click_time - prev_last_click_time < 0.5:
+            return True
+        return False
+
+    def _on_click(self):
+        if self._check_dbl_click():
+            quest_id = self._item_data._q_id
+            if quest_id:
+                has_chapters = bool(qd.get_chapters(quest_id))
+                if has_chapters:
+                    if self._item_data.expanded:
+                        self._on_up_click()
+                    else:
+                        self._on_down_click()
+        else:
+            self._callback_listener(EventType.OnClick, self)
+
+    def _on_sub_click(self, sub_id):
+        if self._check_dbl_click():
+            return
+        data = {'comp': self,
+         'sub_id': sub_id}
+        self._callback_listener(EventType.OnSubClick, data)
+
+    def _on_up_click(self):
+        self._callback_listener(EventType.OnUpClick, self)
+
+    def _on_down_click(self):
+        self._callback_listener(EventType.OnDownClick, self)
+
+    def _update_visual(self):
+        self.component.load_pips.visible = False
+        self.component.btn_up.visible = False
+        self.component.btn_down.visible = False
+        self.component.subs.visible = False
+        self.component.btn.frame.visible = False
+        self.component.pip.visible = False
+        self.component.pip_changed.visible = False
+        height = ViewComp.line_height
+        for _, child in self.component.subs.children:
+            child.btn.script.onClick = lambda : None
+            _sub_comps_pool.append(child)
+            self.component.subs.delChild(child)
+
+        quest_id = self._item_data._q_id
+        if quest_id:
+            priority = qd.get_priority(quest_id)
+            self.component.priority.visible = True
+            self.component.priority.textureName = 'soGUI/frame/journal/priorities_pics/cast{0}.dds'.format(priority)
+            self.component.btn.label.elideText(qd.getQuestTitleByID(quest_id), 220)
+            self.component.btn.visible = True
+            btn = self.component.btn.script
+            if ViewComp.is_fav(quest_id):
+                btn.initVSC('soGUI/elements/questTitleListFav.xml')
+            else:
+                btn.initVSC('soGUI/elements/questTitleListElement.xml')
+            btn.setVisualState('normal')
+            btn.onBound()
+            if self._item_data.selection:
+                toggled = self._item_data.selection == quest_id
+                self.component.btn.script.buttonActive = toggled
+                self.component.btn.script.setToggleState(toggled)
+                has_chapters = bool(qd.get_chapters(quest_id))
+                if has_chapters:
+                    self.component.btn.frame.visible = True
+                    if self._item_data.expanded:
+                        self.component.btn_up.visible = True
+                        if self._item_data._subs is None:
+                            height += ViewComp.empty_height
+                            self._callback_listener(EventType.EmptySubsVisible, self)
+                        elif not self._item_data._subs:
+                            height += ViewComp.empty_height
+                        else:
+                            pos_y = 0
+                            for sub_id in self._item_data._subs:
+                                comp = self._create_sub_comp()
+                                comp.position = (-1, pos_y, 0.5)
+                                comp.btn.label.elideText(qd.getQuestTitleByID(sub_id), 206)
+                                comp.btn.script.onClick = partial(self._on_sub_click, sub_id)
+                                if self._item_data.selection:
+                                    toggled = self._item_data.selection == sub_id
+                                    comp.btn.script.buttonActive = toggled
+                                    comp.btn.script.setToggleState(toggled)
+                                    btn = comp.btn.script
+                                    if ViewComp.is_fav(sub_id):
+                                        btn.initVSC('soGUI/elements/questListFav.xml')
+                                    else:
+                                        btn.initVSC('soGUI/elements/questListElement.xml')
+                                    read_status = self._item_data.get_read_status(sub_id)
+                                    comp.pip.visible = False
+                                    comp.pip_changed.visible = False
+                                    if read_status == ReadStatus.New:
+                                        comp.pip.visible = True
+                                    comp.pip_changed.visible = read_status == ReadStatus.Changed and True
+                                btn.setVisualState('normal')
+                                btn.onBound()
+                                self.component.subs.addChild(comp)
+                                pos_y += ViewComp.line_height
+
+                            self.component.subs.visible = True
+                            self.component.subs.height = pos_y
+                            height += self.component.subs.height
+                    else:
+                        self.component.btn_down.visible = True
+                        if self._item_data._subs is None:
+                            BigWorld.callback(0, self._on_down_click)
+                read_status = self._item_data.get_read_status()
+                if read_status == ReadStatus.New:
+                    self.component.pip.visible = True
+                elif read_status == ReadStatus.Changed:
+                    self.component.pip_changed.visible = True
+            else:
+                self.component.btn.visible = False
+                self.component.load_pips.visible = True
+                self.component.priority.visible = False
+            if self.component.height != height:
+                self.component.height = height
+                self._inited and self._callback_listener(EventType.HeightChanged, self)
+        return
+
+    def _create_sub_comp(self):
+        if _sub_comps_pool:
+            component = _sub_comps_pool.pop()
+        else:
+            comp = GUI.Window()
+            comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+            comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'PIXEL')
+            comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+            comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+            comp.width, comp.height = self.component.width - ViewComp.bar_width, ViewComp.line_height
+            component = comp
+            comp = GUI.Window()
+            soButton(comp)
+            comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+            comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+            comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+            comp.label.font = 'RobotoCondensedRegular_16.font'
+            comp.label.horizontalPositionMode = 'PIXEL'
+            comp.label.horizontalAnchor = 'LEFT'
+            comp.label.position[0] = 32
+            comp.width, comp.height = component.width, ViewComp.line_height
+            comp.position = (0, 0, 0.6)
+            component.addChild(comp, 'btn')
+            comp = GUI.Simple('soGUI/GUIs/unscalable/event_circle.dds')
+            comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+            comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+            comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+            comp.width, comp.height = comp.texture.width, comp.texture.height
+            comp.position = (18, 0, 0.1)
+            comp.materialFX = 'BLEND'
+            component.addChild(comp, 'pip')
+            component.isClip = False
+            comp = GUI.Simple('soGUI/GUIs/unscalable/update.dds')
+            comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+            comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+            comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+            comp.width, comp.height = comp.texture.width, comp.texture.height
+            comp.position = (0, 0, 0.1)
+            comp.materialFX = 'BLEND'
+            component.addChild(comp, 'pip_changed')
+            component.isClip = False
+        return component
+
+    def on_destroy(self):
+        for _, child in self.component.subs.children:
+            child.btn.script.onClick = lambda : None
+            _sub_comps_pool.append(child)
+            self.component.subs.delChild(child)
+
+        self._inited = False
+        self._callback_listener = None
+        self._item_data.set_callback_listener(None)
+        self._item_data = None
+        _comps_pool.append(self)
+        return
+
+    @staticmethod
+    def evaluate_height(item_data):
+        height = ViewComp.line_height
+        if item_data._expanded:
+            if not item_data._subs:
+                height += ViewComp.empty_height
+            else:
+                height += len(item_data._subs) * ViewComp.line_height
+        return height
+
+    @staticmethod
+    def get_component(width, item_data, event_handler):
+        if _comps_pool:
+            view_comp = _comps_pool.pop()
+        else:
+            comp = GUI.Window()
+            comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'PIXEL')
+            comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+            comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+            comp.width, comp.height = width, 0
+            view_comp = ViewComp(comp)
+        view_comp.initialize(item_data, event_handler)
+        return view_comp
+
+    @staticmethod
+    def is_fav(quest_id):
+        return BigWorld.player()._quests_tracker.is_tracking(quest_id)
+
+
+_comps_pool = []
+_sub_comps_pool = []

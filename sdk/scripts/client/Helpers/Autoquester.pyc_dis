@@ -1,0 +1,542 @@
+# Embedded file name: ./client/Helpers/Autoquester.py
+import ChatChannelConfig
+import QuesterConsts
+import BigWorld
+import ResMgr
+import json
+import utils
+import os
+import BWPersonality
+import time
+from Math import Vector3
+CHANNEL_CONSTS = ChatChannelConfig.ChannelConsts()
+from Helpers.BWCoroutine import BWCoroutine, BWMemberCoroutine, BWWaitForCoroutine, BWWaitForCondition, BWCoroutineTimeoutException, BWWaitForPeriod
+import ItemsUtils
+import Quest
+import Helpers.Caps
+
+class Autoquester:
+    instance = None
+    internal_file_name = 'scripts/client/data/questtest.json'
+
+    @staticmethod
+    def start_debug(config_name):
+        if Autoquester.instance:
+            Autoquester.show_error(u'\u041f\u0440\u0435\u0434\u044b\u0434\u0443\u0449\u0430\u044f \u043e\u0442\u043b\u0430\u0434\u043a\u0430 \u0435\u0449\u0451 \u043d\u0435 \u0437\u0430\u043a\u043e\u043d\u0447\u0435\u043d\u0430')
+            return
+        Autoquester(config_name)
+
+    @staticmethod
+    def show_message(text):
+        BigWorld.player().putMessage(CHANNEL_CONSTS.SYSTEM, text)
+
+    @staticmethod
+    def show_error(text, stop_execution = True):
+        if Autoquester.instance and stop_execution:
+            Autoquester.instance.stop_execution = stop_execution
+        if Autoquester.instance:
+            Autoquester.instance.error_list.append(text)
+        text = u"<font color='#ff0000'>{0}</font>".format(text)
+        Autoquester.show_message(text)
+
+    @staticmethod
+    def show_warning(text):
+        text = u"<font color='#ffff00'>[Warning] {0}</font>".format(text)
+        Autoquester.show_message(text)
+
+    @staticmethod
+    def show_report(text):
+        text = u"<font color='#03a5cb'>{0}</font>".format(text)
+        Autoquester.show_message(text)
+
+    def __init__(self, config_name):
+        dir_path = os.path.join(utils.stalker_path(), 'usercontent/debug')
+        file_name = 'questtest.json'
+        dst_path = os.path.join(dir_path, file_name)
+        if os.path.exists(dst_path):
+            f = open(dst_path)
+            try:
+                json_text = json.load(f)
+            except:
+                Autoquester.show_error(u'\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043f\u0440\u0435\u043e\u0431\u0440\u0430\u0437\u043e\u0432\u0430\u0442\u044c \u0444\u0430\u0439\u043b \u0432 json')
+                return
+
+            f.close()
+        else:
+            ResMgr.purge(Autoquester.internal_file_name)
+            source = ResMgr.openSection(Autoquester.internal_file_name)
+            try:
+                json_text = json.loads(source.asBinary)
+            except:
+                Autoquester.show_error(u'\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043f\u0440\u0435\u043e\u0431\u0440\u0430\u0437\u043e\u0432\u0430\u0442\u044c \u0444\u0430\u0439\u043b \u0432 json')
+                return
+
+        if not json_text.has_key(config_name):
+            Autoquester.show_error(u'\u041d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u0430 \u043a\u043e\u043d\u0444\u0438\u0433\u0443\u0440\u0430\u0446\u0438\u044f ' + config_name)
+            return
+        Autoquester.instance = self
+        self.stop_execution = False
+        self.error_list = []
+        Autoquester.start(self, json_text[config_name]).run()
+
+    @BWCoroutine
+    def start(self, events_list):
+        """ \xd0\xb7\xd0\xb0\xd0\xbf\xd1\x83\xd1\x81\xd0\xba \xd1\x82\xd0\xb5\xd1\x81\xd1\x82\xd0\xb8\xd1\x80\xd0\xbe\xd0\xb2\xd0\xb0\xd0\xbd\xd0\xb8\xd1\x8f """
+        start_time = time.time()
+        Autoquester.show_message(u'\u041e\u0442\u043b\u0430\u0434\u043a\u0430 \u0437\u0430\u043f\u0443\u0449\u0435\u043d\u0430')
+        for event in events_list:
+            yield BWWaitForCoroutine(self.start_event(self, event))
+            if self.stop_execution:
+                break
+
+        Autoquester.show_report(u'\u041e\u0442\u043b\u0430\u0434\u043a\u0430 \u0437\u0430\u0432\u0435\u0440\u0448\u0435\u043d\u0430, \u0432\u0440\u0435\u043c\u044f \u043e\u0442\u043b\u0430\u0434\u043a\u0438 {0} \u0441\u0435\u043a'.format(int(time.time() - start_time)))
+        if self.error_list:
+            Autoquester.show_report(u'\u0411\u044b\u043b\u0438 \u043e\u0448\u0438\u0431\u043a\u0438:')
+            errors = list(self.error_list)
+            for error in errors:
+                Autoquester.show_error(error, False)
+
+        else:
+            Autoquester.show_report(u'\u041e\u0448\u0438\u0431\u043e\u043a \u043d\u0435 \u0431\u044b\u043b\u043e')
+        Autoquester.instance = None
+        return
+
+    @BWCoroutine
+    def start_event(self, event):
+        """ \xd0\xb7\xd0\xb0\xd0\xbf\xd1\x83\xd1\x81\xd0\xba \xd0\xbe\xd1\x82\xd0\xb4\xd0\xb5\xd0\xbb\xd1\x8c\xd0\xbd\xd0\xbe\xd0\xb3\xd0\xbe \xd1\x81\xd0\xbe\xd0\xb1\xd1\x8b\xd1\x82\xd0\xb8\xd1\x8f """
+        processed = True
+        if isinstance(event, dict):
+            if 'start_dialog' in event:
+                yield BWWaitForCoroutine(self.start_dialog(event['start_dialog']))
+            elif 'start_dialog_trigger' in event:
+                yield BWWaitForCoroutine(self.start_dialog_trigger(event['start_dialog_trigger']))
+            elif 'wait_for_period' in event:
+                yield BWWaitForPeriod(event['wait_for_period'])
+            elif 'teleport' in event:
+                yield BWWaitForCoroutine(self.teleport(self, event['teleport']))
+            elif 'reputation' in event:
+                yield BWWaitForCoroutine(self.reputation(self, event['reputation']))
+            elif 'ef' in event:
+                yield BWWaitForCoroutine(self.effect(self, event['ef']))
+            elif 'karma' in event:
+                yield BWWaitForCoroutine(self.karma(self, event['karma']))
+            elif 'item' in event:
+                yield BWWaitForCoroutine(self.get_item(self, event['item']))
+            elif 'check_quest_status' in event:
+                yield BWWaitForCoroutine(self.check_quest_status(self, event['check_quest_status']))
+            elif 'questget' in event:
+                yield BWWaitForCoroutine(self.questget(self, event['questget']))
+            elif 'questcancel' in event:
+                yield BWWaitForCoroutine(self.questcancel(self, event['questcancel']))
+            elif 'questfail' in event:
+                yield BWWaitForCoroutine(self.questfail(self, event['questfail']))
+            elif 'questcomplete' in event:
+                yield BWWaitForCoroutine(self.questcomplete(self, event['questcomplete']))
+            elif 'hungry' in event:
+                yield BWWaitForCoroutine(self.hungry(self, event['hungry']))
+            elif 'thirst' in event:
+                yield BWWaitForCoroutine(self.thirst(self, event['thirst']))
+            elif 'cycle' in event:
+                yield BWWaitForCoroutine(self.cycle(self, event['cycle'], event['count']))
+            elif 'activate_trigger' in event:
+                yield BWWaitForCoroutine(self.activate_trigger(self, event['activate_trigger']))
+            elif 'run_console_command' in event:
+                BWPersonality.GUICore.chatConsole.run_command(event['run_console_command'])
+                yield BWWaitForPeriod(0.1)
+            else:
+                processed = False
+        elif type(event) in [str, unicode]:
+            yield BWWaitForCoroutine(self.click_replica(event))
+        elif isinstance(event, list):
+            if len(event) == 1 and event[0] == 'close_dialog':
+                yield BWWaitForCoroutine(self.close_dialog(self))
+            if len(event) == 1 and event[0] == 'wipeplayer':
+                yield BWWaitForCoroutine(self.wipeplayer(self))
+            else:
+                processed = False
+        else:
+            processed = False
+        if not processed:
+            Autoquester.show_error(u'unsupported command: ' + unicode(event), False)
+
+    @BWCoroutine
+    def activate_trigger(self, trigger_name):
+        trigger_name = unicode(trigger_name)
+        from TriggerObject import TriggerObject
+        trigger = [None]
+
+        def filter_trigger():
+            trigger[0] = filter(lambda t: isinstance(t, TriggerObject) and t.name == trigger_name, BigWorld.entities.values())
+            return bool(trigger[0])
+
+        try:
+            yield BWWaitForCondition(filter_trigger, 3.0, 0.5)
+        except BWCoroutineTimeoutException:
+            Autoquester.show_error(u'\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043e\u0431\u043d\u0430\u0440\u0443\u0436\u0438\u0442\u044c \u0442\u0440\u0438\u0433\u0433\u0435\u0440')
+            return
+
+        trigger = trigger[0][0]
+        if Helpers.Caps.CAP_CAN_USE not in trigger.targetCaps:
+            Autoquester.show_error(u'\u041d\u0435\u043b\u044c\u0437\u044f \u0430\u043a\u0442\u0438\u0432\u0438\u0440\u043e\u0432\u0430\u0442\u044c \u043d\u0435\u0430\u043a\u0442\u0438\u0432\u043d\u044b\u0439 \u0442\u0440\u0438\u0433\u0433\u0435\u0440')
+            return
+        else:
+            trigger.cell.activate()
+            return
+
+    @BWCoroutine
+    def cycle(self, commands, repeat_count):
+        for _ in xrange(repeat_count):
+            for command in commands:
+                yield BWWaitForCoroutine(self.start_event(self, command))
+
+    @BWCoroutine
+    def thirst(self, value):
+        BWPersonality.GUICore.chatConsole.run_command('thirst ' + str(value))
+        try:
+            yield BWWaitForCondition(lambda : abs(BigWorld.player().thirst - value) < 0.05, 3.0, 0.5)
+        except BWCoroutineTimeoutException:
+            Autoquester.show_error(u'\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u0443\u0441\u0442\u0430\u043d\u043e\u0432\u0438\u0442\u044c \u0436\u0430\u0436\u0434\u0443')
+            return
+
+    @BWCoroutine
+    def hungry(self, value):
+        BWPersonality.GUICore.chatConsole.run_command('hungry ' + str(value))
+        try:
+            yield BWWaitForCondition(lambda : abs(BigWorld.player().hungry - value) < 0.05, 3.0, 0.5)
+        except BWCoroutineTimeoutException:
+            Autoquester.show_error(u'\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u0443\u0441\u0442\u0430\u043d\u043e\u0432\u0438\u0442\u044c \u0433\u043e\u043b\u043e\u0434')
+            return
+
+    @BWCoroutine
+    def wipeplayer(self):
+        BWPersonality.GUICore.chatConsole.run_command('wipemeplease')
+
+        def player_wiped():
+            p = BigWorld.player()
+            if p.CarryingItems:
+                return False
+            if list(p.client_quests.get_all()):
+                return False
+            if BWPersonality.GUICore.inventoryDataSection['money'][0]:
+                return False
+            return True
+
+        try:
+            yield BWWaitForCondition(player_wiped, 3.0, 0.5)
+        except BWCoroutineTimeoutException:
+            Autoquester.show_error(u'\u0412\u0430\u0439\u043f \u0438\u0433\u0440\u043e\u043a\u0430 \u043d\u0435 \u043f\u043e\u043b\u0443\u0447\u0438\u043b\u0441\u044f')
+            return
+
+    @BWCoroutine
+    def questcomplete(self, value):
+        BWPersonality.GUICore.chatConsole.run_command('questcomplete ' + str(value))
+        try:
+            yield BWWaitForCondition(lambda : int(value) in self.p.client_quests.get_closed(), 3.0, 0.5)
+        except BWCoroutineTimeoutException:
+            Autoquester.show_warning(u'\u041e\u0431\u0440\u0430\u0442\u043d\u043e\u0439 \u0441\u0432\u044f\u0437\u0438 \u043e\u0442 \u0437\u0430\u043a\u0440\u044b\u0442\u0438\u044f \u043a\u0432\u0435\u0441\u0442\u0430 \u043d\u0435 \u0431\u044b\u043b\u043e. \u0412\u043e\u0437\u043c\u043e\u0436\u043d\u043e \u043e\u0448\u0438\u0431\u043a\u0430.')
+            return
+
+    @BWCoroutine
+    def questfail(self, value):
+        BWPersonality.GUICore.chatConsole.run_command('questfail ' + str(value))
+        try:
+            yield BWWaitForCondition(lambda : int(value) in self.p.client_quests.get_failed(), 3.0, 0.5)
+        except BWCoroutineTimeoutException:
+            Autoquester.show_warning(u'\u041e\u0431\u0440\u0430\u0442\u043d\u043e\u0439 \u0441\u0432\u044f\u0437\u0438 \u043e\u0442 \u043f\u0440\u043e\u0432\u0430\u043b\u0430 \u043a\u0432\u0435\u0441\u0442\u0430 \u043d\u0435 \u0431\u044b\u043b\u043e. \u0412\u043e\u0437\u043c\u043e\u0436\u043d\u043e \u043e\u0448\u0438\u0431\u043a\u0430.')
+            return
+
+    @BWCoroutine
+    def questcancel(self, value):
+        BWPersonality.GUICore.chatConsole.run_command('questcancel ' + str(value))
+        was_in_journal = int(value) in self.p.client_quests.get_opened()
+        error = False
+        if was_in_journal:
+            try:
+                yield BWWaitForCondition(lambda : int(value) not in self.p.client_quests.get_opened(), 3.0, 0.5)
+            except BWCoroutineTimeoutException:
+                error = True
+
+        else:
+            yield BWWaitForPeriod(3.0)
+            error = True
+        if error:
+            Autoquester.show_warning(u'\u041e\u0431\u0440\u0430\u0442\u043d\u043e\u0439 \u0441\u0432\u044f\u0437\u0438 \u043e\u0442 \u043e\u0442\u043c\u0435\u043d\u044b \u043a\u0432\u0435\u0441\u0442\u0430 \u043d\u0435 \u0431\u044b\u043b\u043e. \u0412\u043e\u0437\u043c\u043e\u0436\u043d\u043e \u043e\u0448\u0438\u0431\u043a\u0430.')
+
+    @BWCoroutine
+    def questget(self, value):
+        BWPersonality.GUICore.chatConsole.run_command('questget ' + str(value))
+        try:
+            yield BWWaitForCondition(lambda : int(value) in self.p.client_quests.get_opened(), 3.0, 0.5)
+        except BWCoroutineTimeoutException:
+            Autoquester.show_warning(u'\u041e\u0431\u0440\u0430\u0442\u043d\u043e\u0439 \u0441\u0432\u044f\u0437\u0438 \u043e\u0442 \u043f\u043e\u043b\u0443\u0447\u0435\u043d\u0438\u044f \u043a\u0432\u0435\u0441\u0442\u0430 \u043d\u0435 \u0431\u044b\u043b\u043e. \u0412\u043e\u0437\u043c\u043e\u0436\u043d\u043e \u043e\u0448\u0438\u0431\u043a\u0430.')
+            return
+
+    @BWCoroutine
+    def karma(self, value):
+        BWPersonality.GUICore.chatConsole.run_command('karmaSet ' + str(value))
+        try:
+            yield BWWaitForCondition(lambda : int(value) == self.p.karma, 3.0, 0.5)
+        except BWCoroutineTimeoutException:
+            Autoquester.show_warning(u'\u041e\u0431\u0440\u0430\u0442\u043d\u043e\u0439 \u0441\u0432\u044f\u0437\u0438 \u043e\u0442 \u043f\u0440\u0438\u043c\u0435\u043d\u0435\u043d\u0438\u044f \u043a\u0430\u0440\u043c\u044b \u043d\u0435 \u0431\u044b\u043b\u043e. \u0412\u043e\u0437\u043c\u043e\u0436\u043d\u043e \u043e\u0448\u0438\u0431\u043a\u0430.')
+            return
+
+    @BWCoroutine
+    def effect(self, effect_data):
+        try:
+            effect_id, stack = effect_data[0], effect_data[1]
+        except:
+            Autoquester.show_error(u'wrong effect data', True)
+            return
+
+        def get_effect_stack():
+            effect = BWPersonality.GUICore.effectsFrame.effects.get(effect_id)
+            if effect:
+                return effect[3]
+            return 0
+
+        start_stack = get_effect_stack()
+        BWPersonality.GUICore.chatConsole.run_command('ef {0} {1}'.format(effect_id, stack))
+
+        def effect_ready():
+            return max(0, start_stack + stack) == get_effect_stack()
+
+        try:
+            yield BWWaitForCondition(effect_ready, 3.0, 0.5)
+        except BWCoroutineTimeoutException:
+            Autoquester.show_warning(u'\u041e\u0431\u0440\u0430\u0442\u043d\u043e\u0439 \u0441\u0432\u044f\u0437\u0438 \u043e\u0442 \u043f\u0440\u0438\u043c\u0435\u043d\u0435\u043d\u0438\u044f \u044d\u0444\u0444\u0435\u043a\u0442\u0430 \u043d\u0435 \u0431\u044b\u043b\u043e. \u0412\u043e\u0437\u043c\u043e\u0436\u043d\u043e \u043e\u0448\u0438\u0431\u043a\u0430.')
+            return
+
+    @BWCoroutine
+    def check_quest_status(self, check_data):
+        try:
+            quest_id, value = check_data
+        except:
+            Autoquester.show_error(u'wrong check quest data', True)
+            return
+
+        self.quest_status_answer = None
+        BigWorld.player().base.get_quest_status(quest_id)
+
+        def got_answer():
+            if BigWorld.player().is_pending():
+                return False
+            elif self.quest_status_answer is None:
+                return False
+            else:
+                return True
+
+        try:
+            yield BWWaitForCondition(got_answer, 3.0, 0.5)
+        except BWCoroutineTimeoutException:
+            Autoquester.show_error(u'\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043f\u043e\u043b\u0443\u0447\u0438\u0442\u044c \u043e\u0431\u0440\u0430\u0442\u043d\u0443\u044e \u0441\u0432\u044f\u0437\u044c \u043f\u0440\u0438 \u043e\u043f\u0440\u0435\u0434\u0435\u043b\u0435\u043d\u0438\u0438 \u0441\u0442\u0430\u0442\u0443\u0441\u0430 \u043a\u0432\u0435\u0441\u0442\u0430')
+
+        string_values = ['opened',
+         'closed',
+         'ontest',
+         'freezed',
+         'failed',
+         'absent']
+        int_values = [Quest.STATE_OPENED,
+         Quest.STATE_CLOSED,
+         Quest.STATE_ONTEST,
+         Quest.STATE_FREEZ,
+         Quest.STATE_FAILED,
+         Quest.STATE_ABSENT]
+        if value not in string_values:
+            Autoquester.show_error(u'unknown quest status: ' + value)
+            return
+        else:
+            value = int_values[string_values.index(value)]
+            if value != self.quest_status_answer:
+                value = string_values[int_values.index(value)]
+                answer = string_values[int_values.index(self.quest_status_answer)]
+                Autoquester.show_error(u'\u043f\u0440\u043e\u0432\u0435\u0440\u043a\u0430 \u0441\u043e\u043e\u0442\u0432\u0435\u0442\u0441\u0442\u0432\u0438\u044f \u043a\u0432\u0435\u0441\u0442\u0430 {0} \u043f\u0440\u043e\u0432\u0430\u043b\u0435\u043d\u0430: \u043e\u0436\u0438\u0434\u0430\u043d\u0438\u0435 {1}, \u0440\u0435\u0430\u043b\u044c\u043d\u043e\u0441\u0442\u044c {2}'.format(quest_id, value, answer), False)
+            self.quest_status_answer = None
+            return
+
+    @BWCoroutine
+    def get_item(self, item_data):
+        try:
+            item_type, item_amount = item_data
+        except:
+            Autoquester.show_error(u'wring item data', True)
+            return
+
+        start_item_amount = ItemsUtils.GetItemQuanity(BigWorld.player().CarryingItems, item_type)
+        BWPersonality.GUICore.chatConsole.run_command('item {0} {1}'.format(item_type, item_amount))
+
+        def got_item():
+            cur_item_amount = ItemsUtils.GetItemQuanity(BigWorld.player().CarryingItems, item_type)
+            return start_item_amount + item_amount == cur_item_amount
+
+        try:
+            yield BWWaitForCondition(got_item, 5.0, 0.5)
+        except BWCoroutineTimeoutException:
+            Autoquester.show_error(u'\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043f\u043e\u043b\u0443\u0447\u0438\u0442\u044c \u043e\u0431\u0440\u0430\u0442\u043d\u0443\u044e \u0441\u0432\u044f\u0437\u044c \u043f\u0440\u0438 \u0441\u043e\u0437\u0434\u0430\u043d\u0438\u0438 \u043f\u0440\u0435\u0434\u043c\u0435\u0442\u0430 \u0442\u0438\u043f\u0430 ' + str(item_type), True)
+
+    @BWCoroutine
+    def reputation(self, reputation_data):
+        try:
+            fraction_id = reputation_data[0]
+            needed_reputation = reputation_data[1]
+        except:
+            Autoquester.show_error(u'wrong reputation data', True)
+            return
+
+        start_reputation = BigWorld.player().getFractionRelationship(fraction_id)
+        if start_reputation == needed_reputation:
+            return
+        BWPersonality.GUICore.chatConsole.run_command('reputation {0} {1}'.format(fraction_id, needed_reputation))
+
+        def reputation_changed():
+            reputation = BigWorld.player().getFractionRelationship(fraction_id)
+            return reputation == needed_reputation
+
+        try:
+            yield BWWaitForCondition(reputation_changed, 3.0, 0.5)
+        except BWCoroutineTimeoutException:
+            Autoquester.show_warning(u'\u041e\u0431\u0440\u0430\u0442\u043d\u043e\u0439 \u0441\u0432\u044f\u0437\u0438 \u043e\u0442 \u043f\u0440\u0438\u043c\u0435\u043d\u0435\u043d\u0438\u044f \u0440\u0435\u043f\u0443\u0442\u0430\u0446\u0438\u0438 \u043d\u0435 \u0431\u044b\u043b\u043e. \u0412\u043e\u0437\u043c\u043e\u0436\u043d\u043e \u043e\u0448\u0438\u0431\u043a\u0430.')
+            return
+
+    @BWCoroutine
+    def teleport(self, position):
+        position = Vector3(position)
+        BWPersonality.GUICore.chatConsole.run_command('tp ' + str(position)[1:-1])
+
+        def at_place():
+            return (BigWorld.player().position - position).length <= 1.0
+
+        try:
+            yield BWWaitForCondition(at_place, 5.0, 0.5)
+        except BWCoroutineTimeoutException:
+            Autoquester.show_error(u"couldn't teleport to: " + str(position))
+
+    @BWMemberCoroutine
+    def _teleport_to_npc(self, entity_name):
+
+        def condition():
+            for entity in BigWorld.entities.values():
+                if getattr(entity, 'npcName', None) == entity_name:
+                    return (entity.position - BigWorld.player().position).length < QuesterConsts.MAX_DIALOG_DISTANCE
+
+            return False
+
+        if condition():
+            return
+        BWPersonality.GUICore.chatConsole.run_command('tpnpc ' + entity_name)
+        try:
+            yield BWWaitForCondition(condition, 10, 0.5)
+            return
+        except BWCoroutineTimeoutException:
+            pass
+
+        if BigWorld.spaceLoadStatus() != 1.0:
+            try:
+                yield BWWaitForCondition(lambda : BigWorld.spaceLoadStatus() >= 1.0, 60, 0.5)
+            except BWCoroutineTimeoutException:
+                pass
+
+            try:
+                yield BWWaitForCondition(condition, 15, 0.5)
+                return
+            except BWCoroutineTimeoutException:
+                pass
+
+        else:
+            try:
+                yield BWWaitForCondition(condition, 10, 0.5)
+                return
+            except BWCoroutineTimeoutException:
+                pass
+
+        Autoquester.show_error(u"can't teleport to entity: " + entity_name)
+
+    @BWMemberCoroutine
+    def start_dialog_trigger(self, trigger_name):
+        trigger_found = [None]
+
+        def find_trigger():
+            for entity in BigWorld.entities.values():
+                if entity.__class__.__name__ == 'TriggerObject' and entity.name == trigger_name:
+                    trigger_found[0] = entity
+                    return True
+
+            return False
+
+        try:
+            yield BWWaitForCondition(find_trigger, 5.0, 0.5)
+            BigWorld.player().start_talk(trigger_found[0])
+            try:
+                yield BWWaitForCondition(lambda : self._dialog_screen.visible and not self._dialog_screen.pending, 5.0, 0.5)
+            except BWCoroutineTimeoutException:
+                Autoquester.show_error(u"can't open dialog with trigger: " + trigger_name)
+
+            return
+        except BWCoroutineTimeoutException:
+            Autoquester.show_error(u"can't find trigger: " + trigger_name)
+            return
+
+        return
+
+    @BWMemberCoroutine
+    def start_dialog(self, entity_name):
+        """ \xd0\xb7\xd0\xb0\xd0\xbf\xd1\x83\xd1\x81\xd0\xba \xd0\xb4\xd0\xb8\xd0\xb0\xd0\xbb\xd0\xbe\xd0\xb3\xd0\xb0 """
+        yield BWWaitForCoroutine(self._teleport_to_npc(entity_name))
+        for entity in BigWorld.entities.values():
+            if getattr(entity, 'npcName', None) == entity_name:
+                try:
+                    yield BWWaitForCondition(lambda : not self._dialog_screen.visible, 5.0, 0.5)
+                except BWCoroutineTimeoutException:
+                    Autoquester.show_error(u"can't close dialog with entity: " + entity_name)
+                    return
+
+                BigWorld.player().start_talk(entity)
+                try:
+                    yield BWWaitForCondition(lambda : self._dialog_screen.visible and not self._dialog_screen.pending, 5.0, 0.5)
+                except BWCoroutineTimeoutException:
+                    Autoquester.show_error(u"can't open dialog with entity: " + entity_name)
+
+                return
+
+        Autoquester.show_error(u"can't find entity named: " + entity_name)
+        return
+
+    @BWMemberCoroutine
+    def click_replica(self, text):
+        """ \xd0\xba\xd0\xbb\xd0\xb8\xd0\xba \xd0\xb2 \xd0\xba\xd0\xbd\xd0\xbe\xd0\xbf\xd0\xba\xd1\x83 """
+
+        def find_and_click():
+            for _, btn_comp in self._dialog_screen._buttons_block.component.buttonsblock.children:
+                if btn_comp.label.text == text and not btn_comp.script.buttonDisabled:
+                    btn_comp.script.onClick()
+                    return True
+
+            return False
+
+        try:
+            yield BWWaitForCondition(find_and_click, 5.0, 0.5)
+        except BWCoroutineTimeoutException:
+            Autoquester.show_error(u"can't find replica: " + text)
+
+    @BWCoroutine
+    def close_dialog(self):
+        """ \xd0\xb7\xd0\xb0\xd0\xba\xd1\x80\xd1\x8b\xd1\x82\xd0\xb8\xd0\xb5 \xd0\xb4\xd0\xb8\xd0\xb0\xd0\xbb\xd0\xbe\xd0\xb3\xd0\xb0 """
+        yield BWWaitForPeriod(0.5)
+        BWPersonality.GUICore.dialogueGUI.component.closeBox.script.onClick()
+        try:
+            yield BWWaitForCondition(lambda : not BWPersonality.GUICore.dialog_visible(), 3.0, 0.5)
+        except BWCoroutineTimeoutException:
+            Autoquester.show_error(u"can't close dialog")
+
+    @staticmethod
+    def get_quest_status_callback(status):
+        if Autoquester.instance:
+            Autoquester.instance.quest_status_answer = status
+
+    @property
+    def p(self):
+        return BigWorld.player()
+
+    @property
+    def _dialog_screen(self):
+        return BWPersonality.GUICore.dialog_screen

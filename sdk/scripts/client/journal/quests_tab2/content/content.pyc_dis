@@ -1,0 +1,350 @@
+# Embedded file name: ./client/journal/quests_tab2/content/content.py
+import Quest
+from Localization import lc
+import BWPersonality
+import BigWorld
+import QuestDispatcher as qd
+import GUI
+from journal.scroll_view.scroll_bar import ScrollBar
+from Helpers.PyGUI.PyGUIBase import Interceptor
+import colorCodes as CC
+from NPCs import NPCs
+from soGUI.soTextField import soTextField3
+from soGUI.soHyperLinkComponent import soHyperLinkComponent as HyperLink
+from functools import partial
+from quest_tf import QuestTF, TF
+from sub_content import SubContent
+from reward import Reward
+from soGUI.soButton import soButton
+import AdditionalNPCParameters as AP
+import colorCodes
+
+class EventType:
+    OnNameClick, OnMapClick, IgnoreState, OnQuestDataChanged = xrange(4)
+
+
+class CollapseMode:
+    Ignore, Collapsed, Elapsed = (0, 1, -1)
+
+
+class Content(Interceptor):
+    """ \xd1\x81\xd0\xbe\xd0\xb4\xd0\xb5\xd1\x80\xd0\xb6\xd0\xb8\xd0\xbc\xd0\xbe\xd0\xb5 \xd0\xb2\xd0\xba\xd0\xbb\xd0\xb0\xd0\xb4\xd0\xba\xd0\xb8 \xd0\xbe\xd0\xbf\xd0\xb8\xd1\x81\xd0\xb0\xd0\xbd\xd0\xb8\xd1\x8f \xd0\xba\xd0\xb2\xd0\xb5\xd1\x81\xd1\x82\xd0\xb0 """
+
+    def __init__(self, component, callback_listener, filter_state_checker):
+        Interceptor.__init__(self, component)
+        self.component.isClip = False
+        self._bar = None
+        self._filter_state_checker = filter_state_checker
+        self._collapse_interface_id = 'Journal.Content.Collapse'
+        self._name_interface_id = 'Journal.Content.Name'
+        self._map_interface_id = 'Journal.Content.Map'
+        self._set_quest_callback = None
+        self._callback_listener = callback_listener
+        self._quest = None
+        self._last_cancel_request_time = 0.0
+        self._known_groups = None
+        comp = GUI.Window()
+        comp.widthMode, comp.heightMode = self.component.widthMode, self.component.heightMode
+        comp.width, comp.height = self.component.width, self.component.height
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.position = (0, 0, 0.5)
+        self.component.addChild(comp, 'content_holder')
+        comp = GUI.Frame2('soGUI/frame/con_frame_rounded.dds')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.position = (0, 0, 0.9)
+        comp.materialFX = 'SOLID'
+        comp.width, comp.height = self.component.width, self.component.height
+        self.component.content_holder.addChild(comp, 'frame')
+        left_space = 16
+        comp = GUI.Window()
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = self.component.width - ScrollBar.default_width - left_space, 500
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.position = (left_space, 0, 0.5)
+        self.component.content_holder.addChild(comp, 'content')
+        comp = GUI.Window()
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = ScrollBar.default_width, self.component.height
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('RIGHT', 'TOP')
+        comp.position = (self.component.width, 0, 0.5)
+        self.component.content_holder.addChild(comp, 'bar')
+        self._bar = ScrollBar(comp, self)
+        y_pos = 8
+        tf = soTextField3(GUI.Window(), self.component.width - ScrollBar.default_width, 36, textWidth=-1, hScroll=False, vScroll=False, hideScroll=True, borderWidth=0, vOffset=0, hOffset=0, textureless=1)
+        tf.INTERFACE_ID = self._name_interface_id
+        comp = tf.component
+        comp.colour = CC.link_rbga
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.position = (0, y_pos, 0.5)
+        comp.width, comp.height = self.component.width - ScrollBar.default_width, 32
+        self.component.content_holder.content.addChild(comp, 'holder')
+        y_pos += comp.height
+        comp = GUI.Text()
+        comp.colour = CC.inactive_rgba
+        comp.font = 'RobotoCondensedRegular_16.font'
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.position = (0, y_pos, 0.5)
+        comp.width, comp.height = self.component.width - ScrollBar.default_width, 26
+        self.component.content_holder.content.addChild(comp, 'title')
+        y_pos += comp.height
+        comp = GUI.Text()
+        comp.colour = CC.inactive_rgba
+        comp.font = 'RobotoCondensedRegular_16.font'
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.position = (0, y_pos, 0.5)
+        comp.width, comp.height = self.component.width - ScrollBar.default_width, 36
+        self.component.content_holder.content.addChild(comp, 'main')
+        y_pos += comp.height
+        comp = GUI.Window()
+        tf = QuestTF(self.component.width - ScrollBar.default_width - left_space)
+        tf.INTERFACE_ID = self._map_interface_id
+        comp = tf.component
+        comp.position = (0, y_pos, 0.5)
+        self.component.content_holder.content.addChild(comp, 'description')
+        comp = GUI.Window()
+        tf = TF(comp, self.component.width - ScrollBar.default_width - left_space, 36, textWidth=-1, hScroll=False, vScroll=False, hideScroll=True, borderWidth=0, vOffset=0, hOffset=0, textureless=1)
+        tf.INTERFACE_ID = self._collapse_interface_id
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.position = (0, y_pos, 0.5)
+        self.component.content_holder.content.addChild(comp, 'collapse')
+        comp = GUI.Window()
+        self._sub_content = SubContent(comp, self._map_interface_id)
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = self.component.width - ScrollBar.default_width - left_space, 100
+        comp.position = (0, y_pos, 0.5)
+        self.component.content_holder.content.addChild(comp, 'subcontent')
+        self._sub_content.on_size_changed_callback = self._on_sub_size_changed
+        comp = GUI.Window()
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = self.component.width - ScrollBar.default_width - left_space, 0
+        comp.position = (0, y_pos, 0.5)
+        self.component.content_holder.content.addChild(comp, 'reward')
+        self._reward = Reward(comp)
+        comp = GUI.Window()
+        btn = soButton(comp)
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.label.font = 'RobotoCondensedRegular_16.font'
+        comp.label.text = lc('GUI.QuestLog.CANCEL')
+        comp.materialFX = 'BLEND'
+        comp.width, comp.height = (96, 28)
+        comp.position = (122, self.component.height + 9, 0.1)
+        btn.initVSC('soGUI/elements/button_1.xml')
+        btn.onBound()
+        btn.onClick = self._on_cancel_click
+        self.component.addChild(comp, 'btn_cancel')
+        self._update_content_position()
+        return
+
+    def on_quest_state_event(self, quest_id, prev_state, state):
+        if not self._quest:
+            return
+        parent_id = qd.get_parent_by_id(quest_id)
+        if self._quest['id'] == parent_id:
+            self.set_quest_id(parent_id, next_tick=True)
+
+    def on_quest_internal_event(self, quest_id, int_data):
+        if self._quest:
+            quest_data = {'id': quest_id,
+             'int': int_data}
+            if self._quest['id'] == quest_id:
+                self.component.content_holder.content.description.script.update_quest(quest_data)
+            else:
+                self._sub_content.update_quests(quest_data)
+
+    def _on_collapse_click(self):
+        self._collapsed *= -1
+        self._update_content()
+
+    def _on_sub_size_changed(self):
+        self.component.content_holder.content.height = self._sub_content.component.position[1] + self._sub_content.component.height
+        self._bar.content_size_changed()
+
+    def _update_content(self):
+        if not self._quest:
+            self.component.visible = False
+            return
+        else:
+            self.component.visible = True
+            quest_id = self._quest['id']
+            holder_name = qd.get_holder(quest_id)
+            content = self.component.content_holder.content
+            link_npc_name = True
+            if qd.is_marked_as_chapter(quest_id) or not AP.get_npc_acquaint_by_name(holder_name):
+                link_npc_name = False
+            npc_name = NPCs.getName(holder_name)
+            if link_npc_name:
+                text = u'<font=RobotoCondensedRegular_16.font><hlink={0};>'.format(npc_name)
+            else:
+                text = u'<font=RobotoCondensedRegular_16.font>{0}{1}'.format(colorCodes.inactive_xml, npc_name)
+            content.holder.script.setText(text, immidiate=True)
+            content.title.text = qd.getQuestTitleByID(quest_id)
+            main_id = qd.get_main(quest_id)
+            if main_id:
+                content.main.visible = True
+                content.main.text = qd.getQuestTitleByID(main_id)
+                pos_y = 102
+            else:
+                content.main.visible = False
+                pos_y = 78
+            if self._collapsed == CollapseMode.Ignore:
+                content.description.script.set_quest(self._quest)
+                collapse_text = None
+            elif self._collapsed == CollapseMode.Collapsed:
+                content.description.script.set_quest(self._quest, True)
+                if content.description.script._cut:
+                    collapse_text = lc('GUI.QuestLog.DETAILS')
+                else:
+                    collapse_text = None
+            elif self._collapsed == CollapseMode.Elapsed:
+                collapse_text = lc('GUI.QuestLog.UNDETAILS')
+                content.description.script.set_quest(self._quest)
+            if collapse_text:
+                content.collapse.script.setText(u'<alignment=right><hlink={0};>'.format(collapse_text))
+                content.collapse.visible = True
+            else:
+                content.collapse.visible = False
+            content.description.position[1] = pos_y
+            pos_y += content.description.height + 16
+            if content.collapse.visible:
+                content.collapse.position[1] = pos_y
+                pos_y += content.collapse.height
+            self._sub_content.component.position[1] = pos_y
+            pos_y += self._sub_content.component.height
+            self._reward.set_quest(self._quest, self._known_groups)
+            self._reward.component.position[1] = pos_y
+            content.height = pos_y + self._reward.component.height
+            self._bar.content_size_changed()
+            self.component.btn_cancel.script.setDisabledState(self._quest['state'] not in [Quest.STATE_OPENED, Quest.STATE_ONTEST])
+            return
+
+    def _on_cancel_click(self):
+        if BigWorld.time() - self._last_cancel_request_time < 0.7:
+            return
+        self._last_cancel_request_time = BigWorld.time()
+        self._user.request_cancel_quest(self._quest['id'])
+
+    def set_quest_id(self, quest_id, next_tick = True, ignore_state = True):
+        """ \xd0\xbf\xd0\xbe\xd0\xbb\xd0\xbd\xd0\xbe\xd1\x81\xd1\x82\xd1\x8c\xd1\x8e \xd0\xbe\xd0\xb1\xd0\xbd\xd0\xbe\xd0\xb2\xd0\xb8\xd1\x82 \xd1\x81\xd1\x82\xd1\x80\xd0\xb0\xd0\xbd\xd0\xb8\xd1\x86\xd1\x83 """
+        if self._set_quest_callback:
+            BigWorld.cancelCallback(self._set_quest_callback)
+            self._set_quest_callback = None
+        if next_tick:
+            self._set_quest_callback = BigWorld.callback(0, partial(self.set_quest_id, quest_id, False, ignore_state))
+            return
+        else:
+            self._change_quest_data(None)
+            self._known_groups = None
+            self._bar.factor = 0
+            self._sub_content.set_quests(None)
+
+            def got_subs(base_state, sub_states, data_ints, known_groups):
+                if not ignore_state and not self._filter_state_checker(base_state['state']):
+                    self._callback_listener(EventType.IgnoreState, None)
+                    return
+                else:
+                    self._known_groups = known_groups
+                    self._collapsed = CollapseMode.Collapsed
+                    quest_data = {}
+                    for quest_state in sub_states + [base_state]:
+                        quest_data[quest_state['id']] = {'id': quest_state['id'],
+                         'state': quest_state['state']}
+
+                    for q_id, d_int in data_ints:
+                        if 'int' in quest_data[q_id]:
+                            if isinstance(quest_data[q_id]['int'], int):
+                                quest_data[q_id]['int'] = [quest_data[q_id]['int']]
+                            quest_data[q_id]['int'].append(d_int)
+                        else:
+                            quest_data[q_id]['int'] = d_int
+
+                    self._change_quest_data(quest_data[base_state['id']])
+                    quest_datas = []
+                    for ss in sub_states:
+                        quest_datas.append(quest_data[ss['id']])
+
+                    self._sub_content.set_quests(quest_datas)
+                    self._update_content()
+                    return
+
+            if quest_id:
+                self._user.get_active_subs_and_params0(quest_id, got_subs)
+            self._update_content()
+            return
+
+    def handleMouseEvent(self, component, event):
+        if event.dz:
+            delta = -event.dz / 10.0 / self.get_scroll_content_height()
+            self._bar.change_factor(delta)
+        return Interceptor.handleMouseEvent(self, component, event)
+
+    def get_scroll_content_height(self):
+        return self.component.content_holder.content.height
+
+    def _update_content_position(self):
+        delta = self.get_scroll_content_height() - self.get_scroll_visual_height()
+        pos = max(0, delta * self._bar.factor)
+        self.component.content_holder.content.position[1] = -pos
+
+    def on_scroll_factor_changed(self):
+        if self._bar:
+            self._update_content_position()
+
+    def on_bottom_overflow(self):
+        pass
+
+    def get_scroll_visual_height(self):
+        return self.component.content_holder.height
+
+    def _change_quest_data(self, quest_data):
+        self._quest = quest_data
+        self._callback_listener(EventType.OnQuestDataChanged, None)
+        return
+
+    def _hlink_event(self, event, data):
+        if event != HyperLink.EVENT_CLICK:
+            return
+        data, interface_id = data
+        if interface_id == self._collapse_interface_id:
+            self._on_collapse_click()
+        elif interface_id == self._name_interface_id:
+            self._callback_listener(EventType.OnNameClick, qd.get_holder(self._quest['id']))
+        elif interface_id == self._map_interface_id:
+            space_name = data
+            self._callback_listener(EventType.OnMapClick, space_name)
+
+    @property
+    def selected_quest_id(self):
+        return self._quest and self._quest['id']
+
+    def get_quest_data(self):
+        return self._quest
+
+    def on_show(self):
+        BWPersonality.GUICore.addListener('hlinkEvent', self._hlink_event)
+
+    def on_hide(self):
+        self._sub_content.on_hide()
+        BWPersonality.GUICore.removeListener('hlinkEvent', self._hlink_event)
+
+    @property
+    def _user(self):
+        return BigWorld.player()

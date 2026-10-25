@@ -1,0 +1,308 @@
+# Embedded file name: ./client/soGUI/UtilsGUI/PaintButton.py
+import BigWorld
+from Helpers.PyGUI.PyGUIBase import PyGUIBase
+import GUI
+from soGUI.soVisualStateComponent import soVisualStateComponent
+from Helpers.PyGUI.VisualStateComponent import VisualState
+import Keys
+from TextScaler import TextScaler
+from soGUI.data.SoundFeed import soundFeed
+_cache_textures = {}
+
+class PaintButtonVisualState(VisualState):
+
+    def onLoad(self, data_section):
+        VisualState.onLoad(self, data_section)
+        self._background = None
+        self._font = None
+        self._image = None
+        if data_section.has_key('background'):
+            self._background = {'texture': data_section['background']['texture'].asString,
+             'color': data_section['background'].readVector4('color', (0, 0, 0, 255)),
+             'type': data_section['background'].readString('type', 'SIMPLE')}
+        if data_section.has_key('font'):
+            section = data_section['font']
+            self._font = {'color': section.readVector4('color', (0, 0, 0, 255)),
+             'margin': section.readFloat('margin', 0)}
+            if section.has_key('config'):
+                self._font['config'] = section['config'].asString
+            else:
+                self._font['name'] = section['name'].asString
+        if data_section.has_key('image'):
+            self._image = {'color': data_section['image'].readVector4('color', (0, 0, 0, 255)),
+             'scale': data_section['image'].readFloat('scale', 0),
+             'margin': data_section['image'].readFloat('margin', 0)}
+            if data_section['image'].has_key('mapping'):
+                self._image['mapping'] = (data_section['image']['mapping'].readVector2('m1'),
+                 data_section['image']['mapping'].readVector2('m2'),
+                 data_section['image']['mapping'].readVector2('m3'),
+                 data_section['image']['mapping'].readVector2('m4'))
+        self._align = data_section.readString('align', 'CENTER')
+        if self._align not in ('CENTER', 'RIGHT', 'CENTER_RIGHT', 'LEFT', 'IGNORE'):
+            print 'PaintButton (ERROR): bad align', self._align
+            raise RuntimeError
+        return
+
+    def apply(self, script):
+        VisualState.apply(self, script)
+        if self._background:
+            texture_name = self._background['texture']
+            texture = _cache_textures.get(texture_name)
+            if not texture:
+                texture = BigWorld.PyTextureProvider(texture_name)
+                _cache_textures[texture_name] = texture
+            if self._background['type'] == 'SIMPLE':
+                if not hasattr(script.component, 'background'):
+                    comp = GUI.Simple('')
+                    comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+                    comp.width, comp.height = (2, 2)
+                    comp.position = (0, 0, 0.95)
+                    comp.materialFX = 'BLEND'
+                    script.component.addChild(comp, 'background')
+                comp = script.component.background
+                comp.visible = True
+                comp.colour = self._background['color']
+                comp.texture = texture
+                if hasattr(script.component, 'frame_background'):
+                    script.component.frame_background.visible = False
+            elif self._background['type'] == 'FRAME':
+                if not hasattr(script.component, 'frame_background'):
+                    comp = GUI.Frame2('')
+                    comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+                    comp.width, comp.height = (2, 2)
+                    comp.position = (0, 0, 0.95)
+                    comp.materialFX = 'BLEND'
+                    script.component.addChild(comp, 'frame_background')
+                comp = script.component.frame_background
+                comp.visible = True
+                comp.colour = self._background['color']
+                comp.texture = texture
+                if hasattr(script.component, 'background'):
+                    script.component.background.visible = False
+        else:
+            if hasattr(script.component, 'background'):
+                script.component.background.visible = False
+            if hasattr(script.component, 'frame_background'):
+                script.component.frame_background.visible = False
+        if self._font:
+            if not hasattr(script.component, 'label'):
+                comp = GUI.Text()
+                comp.colour = (255, 255, 255, 255)
+                comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+                comp.position = (0, 0, 0.5)
+                comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+                comp.width, comp.height = (2, 2)
+                script.component.addChild(comp, 'label')
+            if 'config' in self._font:
+                script.text_scaler = TextScaler(script.component.label, self._font['config'])
+            else:
+                script.text_scaler = None
+                script.component.label.font = self._font['name']
+            script.component.label.colour = self._font['color']
+        if self._image:
+            if not hasattr(script.component, 'image'):
+                comp = GUI.Simple('')
+                comp.materialFX = 'BLEND'
+                comp.filterType = 'LINEAR'
+                script.component.addChild(comp, 'image')
+            comp = script.component.image
+            comp.colour = self._image['color']
+            if 'mapping' in self._image:
+                comp.mapping = self._image['mapping']
+        self.do_reposition(script)
+        return
+
+    def do_reposition(self, script):
+        image_width = 0
+        parent_height_mode = script.component.heightMode
+        script.component.heightMode = 'PIXEL'
+        button_height = script.component.height
+        script.component.heightMode = parent_height_mode
+        if self._image and hasattr(script.component, 'image'):
+            comp = script.component.image
+            scale = self._image['scale']
+            if scale:
+                comp.heightMode = 'CLIP'
+                comp.height = scale * 2
+            else:
+                comp.heightMode = 'PIXEL'
+                comp.height = comp.texture.height if comp.texture else 0
+            comp.verticalAnchor = 'CENTER'
+            comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+            comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+            image_ratio = float(comp.texture.width) / comp.texture.height if comp.texture else 1.0
+            comp.width = comp.height * image_ratio
+            image_width = comp.width
+            margin = self._image['margin'] * button_height
+            if self._align == 'CENTER':
+                comp.horizontalAnchor = 'CENTER'
+                comp.position = (0, 0, 0.5)
+            elif self._align == 'LEFT':
+                comp.horizontalAnchor = 'LEFT'
+                comp.position = (-1, 0, 0.5)
+                if margin:
+                    comp.horizontalPositionMode = 'PIXEL'
+                    comp.position[0] += margin
+                    image_width += margin
+            elif self._align in ('RIGHT', 'CENTER_RIGHT'):
+                comp.horizontalAnchor = 'RIGHT'
+                comp.position = (1, 0, 0.5)
+                if margin:
+                    comp.horizontalPositionMode = 'PIXEL'
+                    comp.position[0] -= margin
+                    image_width += margin
+        if hasattr(script.component, 'label') and script.component.label.text:
+            comp = script.component.label
+            comp.verticalAnchor = 'CENTER'
+            comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+            margin = self._font['margin'] * button_height
+            image_width += margin
+            if self._align == 'CENTER':
+                comp.horizontalAnchor = 'CENTER'
+                comp.position = (0, 0, 0.5)
+            elif self._align == 'LEFT':
+                comp.horizontalAnchor = 'LEFT'
+                comp.position = (-1, 0, 0.5)
+                if image_width:
+                    comp.horizontalPositionMode = 'PIXEL'
+                    comp.position[0] += image_width
+            elif self._align == 'RIGHT':
+                comp.horizontalAnchor = 'RIGHT'
+                comp.position = (1, 0, 0.5)
+                if image_width:
+                    comp.horizontalPositionMode = 'PIXEL'
+                    comp.position[0] -= image_width
+            elif self._align == 'CENTER_RIGHT':
+                comp.horizontalAnchor = 'CENTER'
+                comp.position = (0, 0, 0.5)
+                image_comp = script.component.image
+                comp.horizontalPositionMode = 'PIXEL'
+                comp.position[0] -= image_comp.width * 0.5
+                comp.horizontalPositionMode = 'CLIP'
+
+
+class PaintButton(PyGUIBase, soVisualStateComponent):
+
+    def __init__(self, comp, visual_state = 'soGUI/frame/paint/paintButton.xml', soundControlName = 'PaintButton'):
+        PyGUIBase.__init__(self, comp)
+        soVisualStateComponent.__init__(self, comp, 'soGUI.UtilsGUI.PaintButton.PaintButton')
+        self.soundControlName = soundControlName
+        self.on_click = lambda : None
+        self.on_down = lambda : None
+        self._image = None
+        self._hover = False
+        self._pressed = False
+        self._enabled = True
+        self.text_scaler = None
+        self._cur_state = None
+        self._visual_state = None
+        self._visual_state_config = visual_state
+        self.component.crossFocus = True
+        self.component.mouseButtonFocus = True
+        self.component.script = self
+        self.initVSC(self._visual_state_config)
+        self._update_visual_state()
+        return
+
+    def change_visual_state_config(self, visual_state_config):
+        if self._visual_state_config != visual_state_config:
+            self._visual_state_config = visual_state_config
+            self.initVSC(visual_state_config)
+            self._update_visual_state()
+
+    @property
+    def text(self):
+        return self.component.label.text
+
+    @text.setter
+    def text(self, value):
+        self.component.label.text = value
+
+    @property
+    def image(self):
+        return self._image
+
+    @image.setter
+    def image(self, value):
+        self._image = value
+        texture = _cache_textures.get(value)
+        if not texture:
+            texture = BigWorld.PyTextureProvider(value)
+            _cache_textures[value] = texture
+        comp = self.component.image
+        comp.texture = texture
+        self.do_reposition()
+
+    @property
+    def enabled(self):
+        return self._enabled
+
+    @enabled.setter
+    def enabled(self, value):
+        self._enabled = value
+        self.component.crossFocus = value
+        self.component.mouseButtonFocus = value
+        self._update_visual_state()
+
+    def handleMouseClickEvent(self, comp):
+        self.on_click()
+        return True
+
+    def handleMouseButtonEvent(self, comp, event):
+        if event.key == Keys.KEY_LEFTMOUSE:
+            if event.isKeyDown():
+                soundFeed.playSoundControl(self.soundControlName, 'Press')
+                self.on_down()
+            else:
+                soundFeed.playSoundControl(self.soundControlName, 'ReleaseUp')
+        self._pressed = event.key == Keys.KEY_LEFTMOUSE and event.isKeyDown()
+        self._update_visual_state()
+        return True
+
+    def handleMouseEnterEvent(self, comp):
+        self._hover = True
+        self._update_visual_state()
+        soundFeed.playSoundControl(self.soundControlName, 'Hover')
+        return True
+
+    def handleMouseLeaveEvent(self, comp):
+        self._hover = False
+        self._pressed = False
+        self._update_visual_state()
+        return True
+
+    @property
+    def pressed(self):
+        return self._pressed
+
+    def setVisualState(self, stateName):
+        self._cur_state = stateName
+        soVisualStateComponent.setVisualState(self, stateName)
+
+    def do_reposition(self):
+        if self.text_scaler:
+            self.text_scaler.do_reposition()
+        if self._cur_state:
+            state = self.get_state(self._cur_state)
+            state and state.do_reposition(self)
+
+    def _update_visual_state(self):
+        if not self._enabled:
+            visual_state = 'disabled'
+        elif self._pressed:
+            visual_state = 'pressed'
+        elif self._hover:
+            visual_state = 'hover'
+        else:
+            visual_state = 'normal'
+        if self._visual_state != visual_state:
+            self._visual_state = visual_state
+            self.setVisualState(visual_state)
+
+    @property
+    def visible(self):
+        return self.component.visible
+
+    @visible.setter
+    def visible(self, value):
+        self.component.visible = value

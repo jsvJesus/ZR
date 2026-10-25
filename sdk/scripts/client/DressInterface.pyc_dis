@@ -1,0 +1,889 @@
+# Embedded file name: ./client/DressInterface.py
+import BigWorld
+import traceback
+import ItemsUtils
+from Items import ItemsCatalog
+from EquipSlotsConfigs import EquipSlotTypes as EST
+import BWPersonality
+import RestrictionsUtils
+from Localization import lc
+from tmp_demo_recorder import rec_foo_demo
+from Helpers.BWCoroutine import BWMemberCoroutine, BWWaitForPeriod, BWWaitForCoroutine, BWWaitForCondition
+import Constants
+from utils import PY
+from functools import partial
+VISOR_OPEN_ACTION = 'visor_open'
+VISOR_OPEN_LOOP_ACTION = 'visor_open_loop'
+VISOR_CLOSE_ACTION = 'visor_close'
+GASMASK_FILTER_OFF_LOOP_ACTION = 'filter_off'
+ALLOW_MOVE_SLOT_TYPES = set((EST.EYES,
+ EST.HELMET,
+ EST.HAT,
+ EST.EARS,
+ EST.MOUTH,
+ EST.C_HAT,
+ EST.GLOVES,
+ EST.C_GLOVES))
+
+def check_block_move(animate_slot_types):
+    for slot_type in animate_slot_types:
+        if slot_type not in ALLOW_MOVE_SLOT_TYPES:
+            return True
+
+    return False
+
+
+class QueueActions:
+    VisorOn, VisorOff, Action, ItemOff, ItemOn, HoodOn = range(6)
+
+
+class DressInterface:
+    _hidden_item_dress_types = set()
+    _fake_item_dress_types = {}
+    _fake_color_delegates = []
+    _equipped_armor_dirty = False
+    _visual_armor_cache = None
+    _colorise_emblems_cache = None
+    _equipped_modes_cache = None
+    _start_put_on_item_coroutine = None
+    _start_put_off_item_coroutine = None
+    _start_put_replace_items_coroutine = None
+    _visualise_put_off_item_coroutine = None
+    _using_mode = None
+    _uncancelable_action_time = 0
+    _uncancelable_action = None
+    _uncancelable_handler = None
+
+    def __init__(self):
+        pass
+
+    def onEnterWorld(self):
+        self._equipped_armor_dirty = False
+        self._hidden_item_dress_types = set()
+        self._fake_item_dress_types = {}
+        self._fake_color_delegates = []
+        self._visual_callback = None
+        self._tuck_coroutine = None
+        self._putting_item_on = None
+        self._putting_item_off = None
+        self._putting_item_replace = None
+        self._tucking_item = None
+        self._restore_bellyweapon_delay = -0.2
+        self._restore_bellyweapon_callback = None
+        self._visual_armor_cache = None
+        self._colorise_emblems_cache = None
+        self._equipped_modes_cache = None
+        self._using_mode = None
+        return
+
+    def isArmed(self):
+        return bool(self.active_weapon and not self.active_weapon.isPistol())
+
+    def _weapon_hand_and_left_hand_anim(self, restore_time):
+        self.setLeftHandUseAnimation(True, 0.5)
+        self.pushTrackerLockByName('DressInterface', None, lock_track_torso=True, lock_track_head=True)
+        self._restore_bellyweapon_callback = BigWorld.callback(restore_time - 0.3, self._restore_bellyweapon)
+        self.cancelCandle()
+        return
+
+    def _weapon_to_belly_and_back(self, restore_time):
+        self.pushTrackerLockByName('DressInterface', 'Belly-Belly2', lock_track_torso=True, lock_track_head=True)
+        self._restore_bellyweapon_callback = BigWorld.callback(restore_time, self._restore_bellyweapon)
+
+    def _restore_bellyweapon(self):
+        if self.isDestroyed:
+            return
+        self.setLeftHandUseAnimation(False)
+        if self._restore_bellyweapon_callback:
+            BigWorld.cancelCallback(self._restore_bellyweapon_callback)
+        self.popTrackerLock('DressInterface')
+
+    @BWMemberCoroutine
+    def prepare(self, duration, block_move = True):
+        if block_move:
+            need_stop = self.physics.velocity.length > 0
+            self.setControlLock(Constants.ControlLockTypes.USE_ITEM)
+            if need_stop:
+                self.stopPlayerMoving()
+                yield BWWaitForPeriod(0.5)
+        yield BWWaitForCondition(lambda : True, 5.0, 0.1)
+
+    def unprepare(self):
+        self.setControlLock(Constants.ControlLockTypes.USE_ITEM, False)
+        self.cancel_action_clear()
+        self.onUseAnyHandActionEnd()
+
+    def is_clothing(self):
+        return self.is_put_replacing() or self.is_putting_item_off() or self.is_putting_item_on()
+
+    def getVisualArmor(self):
+        if not self._hidden_item_dress_types and not self._fake_item_dress_types:
+            return self.EquippedArmor
+        if self._visual_armor_cache:
+            return self._visual_armor_cache
+        result = PY(self.EquippedArmor)
+        for slot, item_data in result.items():
+            if item_data['itemType'] in self._hidden_item_dress_types:
+                result[slot] = {'itemID': 0,
+                 'itemType': 0}
+
+        for item_type in self._fake_item_dress_types:
+            item_params = ItemsCatalog.GetItemParam(item_type)
+            for slot_type in item_params.get('SlotType', []):
+                result[EST._slot_type_to_attr[slot_type]] = {'itemID': -item_type,
+                 'itemType': item_type}
+
+        self._visual_armor_cache = result
+        return result
+
+    def getVisualColorDelegates(self):
+        result = getattr(self, 'colorDelegates', [])
+        if not self._fake_color_delegates and not self._hidden_item_dress_types and not self._fake_item_dress_types:
+            return result
+        result = PY(result)
+        for i in xrange(len(result)):
+            r = result[i]
+            item_param = ItemsCatalog.GetItemParam(r)
+            if self._hidden_item_dress_types.intersection(item_param.get('ParentItemTypes', [])):
+                del result[i]
+
+        result.extend(self._fake_color_delegates)
+        return result
+
+    def set_EquippedArmor(self, old_value):
+        self._visual_armor_cache = None
+        self._colorise_emblems_cache = None
+        self._equipped_modes_cache = None
+        self._uncancelable_action_time = 0
+        if self._uncancelable_handler:
+            BigWorld.cancelCallback(self._uncancelable_handler)
+            self._uncancelable_handler = None
+            if self._uncancelable_action:
+                self._uncancelable_handler = BigWorld.callback(0, self._uncancelable_action)
+        return
+
+    def getVisualColoriseEmblems(self):
+        if not self._fake_item_dress_types:
+            return self.coloriseEmblems
+        if self._colorise_emblems_cache:
+            return self._colorise_emblems_cache
+        result = PY(self.coloriseEmblems)
+        for item_type, fake_item_data in self._fake_item_dress_types.items():
+            colors = fake_item_data['colors']
+            result.append({'ItemID': -item_type,
+             'COLORISE_A': colors[0],
+             'COLORISE_B': colors[1]})
+
+        self._colorise_emblems_cache = result
+        return result
+
+    def get_visual_tuck_animation(self):
+        if self.transformationID:
+            return None
+        else:
+            for fake_item_type in self._fake_item_dress_types:
+                fake_item_params = ItemsCatalog.GetItemParam(fake_item_type)
+                for slot_type in fake_item_params.get('SlotType', []):
+                    if slot_type == EST.SHOES:
+                        tuck_animation = fake_item_params.get('TuckAnimation')
+                        if tuck_animation:
+                            return tuck_animation
+
+            item_type = EST.get_slot_data(self, EST.SHOES)['itemType']
+            if not item_type:
+                return None
+            item_params = ItemsCatalog.GetItemParam(item_type)
+            return item_params.get('TuckAnimation')
+
+    def get_visual_tuck_force(self):
+        for fake_item_type in self._fake_item_dress_types:
+            fake_item_params = ItemsCatalog.GetItemParam(fake_item_type)
+            if fake_item_params.get('TuckForce', False):
+                for slot_type in fake_item_params.get('SlotType', []):
+                    if slot_type == EST.SHOES:
+                        return True
+
+        item_type = EST.get_slot_data(self, EST.SHOES)['itemType']
+        if not item_type:
+            return False
+        if item_type in self._hidden_item_dress_types:
+            return False
+        item_params = ItemsCatalog.GetItemParam(item_type)
+        return item_params.get('TuckForce', False)
+
+    def getVisualEquipModes(self):
+        if not self._hidden_item_dress_types and not self._fake_item_dress_types:
+            return self.EquipModes
+        if self._equipped_modes_cache:
+            return self._equipped_modes_cache
+        result = PY(self.EquipModes)
+        if self.EquipModes & 1 << EST.MODE_TUCK:
+            for item_type in self._hidden_item_dress_types:
+                item_params = ItemsCatalog.GetItemParam(item_type)
+                for slot_type in item_params.get('SlotType', []):
+                    if slot_type == EST.SHOES:
+                        result &= ~(1 << EST.MODE_TUCK)
+                        break
+
+        if self.EquipModes & 1 << EST.MODE_HOOD:
+            hood_replace = False
+            hood_block = False
+            for item_type in self._fake_item_dress_types:
+                if ItemsUtils.has_item_hood(item_type):
+                    hood_replace = True
+                    break
+                item_params = ItemsCatalog.GetItemParam(item_type)
+                for slot_type in item_params.get('SlotType', []):
+                    if slot_type in EST._hood_slots:
+                        hood_block = True
+                        break
+
+            if hood_replace:
+                pass
+            elif hood_block:
+                result &= ~(1 << EST.MODE_HOOD)
+            else:
+                for item_type in self._hidden_item_dress_types:
+                    if ItemsUtils.has_item_hood(item_type):
+                        result &= ~(1 << EST.MODE_HOOD)
+                        break
+
+        if self.EquipModes & 1 << EST.MODE_HEADLIGHT:
+            for item_type in self._hidden_item_dress_types:
+                if ItemsUtils.has_item_headlight(item_type):
+                    result &= ~(1 << EST.MODE_HEADLIGHT)
+                    break
+
+        if not self.EquipModes & 1 << EST.MODE_GASMASK_FILTER_OFF:
+            for item_type, fake_item_data in self._fake_item_dress_types.items():
+                if ItemsUtils.has_item_filtermask(item_type):
+                    if not fake_item_data['has_filtermask']:
+                        result |= 1 << EST.MODE_GASMASK_FILTER_OFF
+                    break
+
+        else:
+            for item_type, fake_item_data in self._fake_item_dress_types.items():
+                if ItemsUtils.has_item_filtermask(item_type):
+                    if fake_item_data['has_filtermask']:
+                        result &= ~(1 << EST.MODE_GASMASK_FILTER_OFF)
+                    break
+
+        self._equipped_modes_cache = result
+        return result
+
+    def _fake_items_add(self, item_type, colors, color_delegate_type = None, has_filtermask = False):
+        self._fake_item_dress_types[item_type] = {'colors': colors,
+         'has_filtermask': has_filtermask}
+        if color_delegate_type:
+            self._fake_color_delegates.append(color_delegate_type)
+        self._visual_armor_cache = None
+        self._colorise_emblems_cache = None
+        return
+
+    def _fake_items_clear(self):
+        self._fake_item_dress_types.clear()
+        self._visual_armor_cache = None
+        self._colorise_emblems_cache = None
+        self._equipped_modes_cache = None
+        self._fake_color_delegates = []
+        return
+
+    def _hidden_items_set(self, items):
+        self._hidden_item_dress_types = items
+        self._visual_armor_cache = None
+        self._colorise_emblems_cache = None
+        self._equipped_modes_cache = None
+        return
+
+    def _hidden_items_add(self, item):
+        self._hidden_item_dress_types.add(item)
+        self._visual_armor_cache = None
+        self._colorise_emblems_cache = None
+        self._equipped_modes_cache = None
+        return
+
+    def _hidden_items_clear(self):
+        self._hidden_item_dress_types.clear()
+        self._visual_armor_cache = None
+        self._colorise_emblems_cache = None
+        self._equipped_modes_cache = None
+        return
+
+    def can_put_on_item(self, item):
+        if self._is_using_mode():
+            return
+        for equipped_item in self.EquippedArmor.values():
+            if item['complexItemID'] == equipped_item['itemID']:
+                return False
+
+        return True
+
+    def put_on_item(self, item):
+        if self._uncancelable_handler:
+            BigWorld.cancelCallback(self._uncancelable_handler)
+        self._uncancelable_handler = None
+        if BigWorld.time() - self._uncancelable_action_time < 0.4:
+            self._uncancelable_action = partial(self.put_on_item, item)
+            self._uncancelable_handler = BigWorld.callback(0.5, self._uncancelable_action)
+            return
+        else:
+            self.cancel_action_release()
+            if not self.can_put_on_item(item):
+                return
+            slot_types = ItemsCatalog.GetItemParam(item['complexItemType']).get('SlotType')
+            if not slot_types:
+                print dict(item)
+                print 'DressInterface: \xd1\x87\xd1\x82\xd0\xbe\xd0\xb1\xd1\x8b \xd0\xbd\xd0\xb0\xd1\x82\xd1\x8f\xd0\xbd\xd1\x83\xd1\x82\xd1\x8c \xd0\xbf\xd1\x80\xd0\xb5\xd0\xb4\xd0\xbc\xd0\xb5\xd1\x82, \xd0\xbd\xd0\xb0\xd0\xb4\xd0\xbe \xd1\x83\xd0\xba\xd0\xb0\xd0\xb7\xd0\xb0\xd1\x82\xd1\x8c, \xd0\xb2 \xd0\xba\xd0\xb0\xd0\xba\xd0\xbe\xd0\xb9 \xd1\x81\xd0\xbb\xd0\xbe\xd1\x82 \xd0\xbe\xd0\xbd \xd0\xb4\xd0\xbe\xd0\xbb\xd0\xb6\xd0\xb5\xd0\xbd \xd0\xb2\xd1\x81\xd1\x82\xd0\xb0\xd0\xb2\xd0\xbb\xd1\x8f\xd1\x82\xd1\x8c\xd1\x81\xd1\x8f'
+                return
+            self.cancel_action_start(self.cancel_any_dress_action)
+            try:
+                self.setModelNamesTEMP(None)
+            except:
+                traceback.print_exc()
+
+            undress_items = self.get_items_slots(slot_types)
+            if not undress_items:
+                if self._start_put_on_item_coroutine:
+                    self._start_put_on_item_coroutine.stop()
+                self._start_put_on_item_coroutine = self._start_put_on_item(item)
+                self._start_put_on_item_coroutine.run()
+            elif ItemsUtils.can_items_be_replaced((it['complexItemType'] for it in undress_items), item['complexItemType']):
+                if self._start_put_replace_items_coroutine:
+                    self._start_put_replace_items_coroutine.stop()
+                self._start_put_replace_items_coroutine = self._start_put_replace_items(undress_items, item)
+                self._start_put_replace_items_coroutine.run()
+            return
+
+    def get_item_types_from_slot_types(self, slot_types):
+        result = set()
+        for slot_type in slot_types:
+            slot_data = EST.get_slot_data(self, slot_type)
+            if slot_data['itemType']:
+                result.add(slot_data['itemType'])
+
+        return result
+
+    def get_items_slots(self, slot_types):
+        result = []
+        for slot_type in slot_types:
+            slot_data = EST.get_slot_data(self, slot_type)
+            if slot_data['itemType']:
+                item = ItemsUtils.GetComplexItemByID(self, slot_data['itemID'])
+                if item not in result:
+                    result.append(item)
+
+        return result
+
+    def _get_item_on_duration_and_animations(self, item_type):
+        item_param = ItemsCatalog.GetItemParam(item_type)
+        animate_slot_types = item_param.get('OverridePutAnimation') or item_param['SlotType']
+        total_put_on_duration = 0
+        for slot_type in animate_slot_types:
+            action_string = EST.get_slot_action_on(slot_type)
+            if action_string:
+                action = getattr(self.model, action_string)
+                total_put_on_duration += action.duration
+
+        return (total_put_on_duration, animate_slot_types)
+
+    @BWMemberCoroutine
+    def _start_put_on_item(self, item):
+        self._putting_item_on = item['complexItemID']
+        item_type = item['complexItemType']
+        total_put_on_duration, animate_slot_types = self._get_item_on_duration_and_animations(item_type)
+        item_param = ItemsCatalog.GetItemParam(item_type)
+        action_string = lc(item_param.get('SlotEquipCast', 'Items.GUIStrings.EQUIP'))
+        yield BWWaitForCoroutine(self.prepare(total_put_on_duration, check_block_move(animate_slot_types)))
+        self.visualise_put_on_item(item)
+        self.DoAction(RestrictionsUtils.CHANNEL_ITEMS, total_put_on_duration, action_string)
+        self.locked_items[self._putting_item_on] = 0
+        self.UpdateInventory(0)
+        self.cell.start_put_on_item(item['complexItemID'], total_put_on_duration)
+        yield BWWaitForPeriod(total_put_on_duration)
+        self._uncancelable_action_time = BigWorld.time()
+        self.cell.end_put_on_item(self._putting_item_on)
+        if self.offline_mode:
+            item_id = item['complexItemID']
+            slot_types = ItemsCatalog.GetItemParam(item_type)['SlotType']
+            EST.set_multiple_slots_data(self, slot_types, [{'itemID': item_id,
+              'itemType': item_type}] * len(slot_types))
+            self.UpdateInventory(0)
+            self.set_EquippedArmor(None)
+            try:
+                import __debug.offline_loader
+                __debug.offline_loader.saveAvatarEquip(self)
+            except:
+                traceback.print_exc()
+
+        if self._putting_item_on in self.locked_items:
+            del self.locked_items[self._putting_item_on]
+        BWPersonality.GUICore.inventoryGUI.delTempBlockItem(self._putting_item_on)
+        self._putting_item_on = None
+        self.UpdateInventory(0)
+        self.unprepare()
+        self._start_put_on_item_coroutine = None
+        return
+
+    def cancel_put_on_item(self):
+        if not self.is_putting_item_on():
+            return
+        else:
+            self.cell.cancel_put_on_item()
+            if self._putting_item_on in self.locked_items:
+                del self.locked_items[self._putting_item_on]
+            BWPersonality.GUICore.inventoryGUI.delTempBlockItem(self._putting_item_on)
+            self.unprepare()
+            self.UpdateInventory(0)
+            if self._start_put_on_item_coroutine:
+                self._start_put_on_item_coroutine.stop()
+                self._start_put_on_item_coroutine = None
+            self._start_put_on_item_coroutine = None
+            self.cancel_put_on_visualisation()
+            self._putting_item_on = None
+            self.CancelAction(RestrictionsUtils.CHANNEL_ITEMS)
+            return
+
+    def is_putting_item_on(self):
+        return bool(getattr(self, '_putting_item_on', False))
+
+    def visualise_put_on_item(self, complex_item):
+        self._visualise_put_on_item_coroutine = self._visualise_put_on_item(complex_item)
+        self._visualise_put_on_item_coroutine.run()
+
+    @BWMemberCoroutine
+    def _visualise_put_on_item(self, complex_item):
+        item_type = complex_item['complexItemType']
+        total_put_on_duration, animate_slot_types = self._get_item_on_duration_and_animations(item_type)
+        self._put_on_actions = []
+        for slot_type in animate_slot_types:
+            action_string = EST.get_slot_action_on(slot_type)
+            if action_string:
+                self._put_on_actions.append(action_string)
+
+        duration = self._queue_animations(self._put_on_actions)
+        self._weapon_to_belly_and_back(duration + self._restore_bellyweapon_delay)
+        yield BWWaitForPeriod(total_put_on_duration * 0.5)
+        has_filtermask = False
+        if ItemsUtils.has_item_filtermask(item_type):
+            if ItemsUtils.GetSingleInconstantParam(complex_item, ItemsCatalog.INC_GASMASK_FILTER_TYPE):
+                has_filtermask = True
+        for sub_item in complex_item['itemList']:
+            sub_item_type = sub_item['itemType']
+            sub_item_params = ItemsCatalog.GetItemParam(sub_item_type)
+            if complex_item['complexItemType'] in sub_item_params.get('ParentItemTypes', []):
+                item_colors = ItemsUtils.packToColoriseClient(sub_item)
+                item_colors = (item_colors['COLORISE_A'], item_colors['COLORISE_B']) if item_colors else (0, 0)
+                self._fake_items_add(item_type, item_colors, sub_item_type, has_filtermask=has_filtermask)
+                break
+        else:
+            item_colors = ItemsUtils.packToColoriseClient(complex_item)
+            item_colors = (item_colors['COLORISE_A'], item_colors['COLORISE_B']) if item_colors else (0, 0)
+            self._fake_items_add(item_type, item_colors, has_filtermask=has_filtermask)
+
+        self.UpdateAvatarModelAsync()
+        yield BWWaitForPeriod(total_put_on_duration * 0.5)
+        if not self.isDestroyed:
+            self._fake_items_clear()
+
+    def cancel_put_on_visualisation(self):
+        for action_string in self._put_on_actions:
+            getattr(self.model, action_string).stop()
+
+        self._restore_bellyweapon()
+        self._visualise_put_on_item_coroutine.stop()
+        if self._fake_item_dress_types:
+            self._fake_items_clear()
+            self.UpdateAvatarModelAsync()
+
+    def can_put_off_items(self, items):
+        equipped_set = ItemsUtils.GetEquipSetIDs(self)
+        for item in items:
+            if item['complexItemID'] not in equipped_set:
+                return False
+            slot_types = ItemsCatalog.GetItemParam(item['complexItemType'])['SlotType']
+            for slot_type in slot_types:
+                if not EST.can_be_empty(slot_type):
+                    return False
+
+        return True
+
+    def put_off_item(self, item):
+        self.cancel_action_release()
+        if not self.can_put_off_items((item,)):
+            return
+        else:
+            try:
+                self.setModelNamesTEMP(None)
+            except:
+                traceback.print_exc()
+
+            self.cancel_action_start(self.cancel_any_dress_action)
+            if self._start_put_off_item_coroutine:
+                self._start_put_off_item_coroutine.stop()
+            self._start_put_off_item_coroutine = self._start_put_off_item(item)
+            self._start_put_off_item_coroutine.run()
+            return
+
+    def _get_item_off_duration_and_animations(self, item_type):
+        total_put_off_duration = 0
+        item_param = ItemsCatalog.GetItemParam(item_type)
+        animate_slot_types = item_param.get('OverridePutAnimation') or item_param['SlotType']
+        for slot_type in animate_slot_types:
+            action_string = EST.get_slot_action_off(slot_type)
+            if action_string:
+                action = getattr(self.model, action_string)
+                total_put_off_duration += action.duration
+
+        return (total_put_off_duration, animate_slot_types)
+
+    @BWMemberCoroutine
+    def _start_put_off_item(self, item):
+        item_type = item['complexItemType']
+        self._putting_item_off = item['complexItemID']
+        total_put_off_duration, animate_slot_types = self._get_item_off_duration_and_animations(item_type)
+        item_param = ItemsCatalog.GetItemParam(item_type)
+        action_string = lc(item_param.get('SlotUnequipCast', 'Items.GUIStrings.EQUIP'))
+        yield BWWaitForCoroutine(self.prepare(total_put_off_duration, check_block_move(animate_slot_types)))
+        self.visualise_put_off_item(item_type)
+        self.DoAction(RestrictionsUtils.CHANNEL_ITEMS, total_put_off_duration, action_string)
+        self.cell.start_put_off_item(item_type, self._putting_item_off, total_put_off_duration)
+        end_wait = BigWorld.time() + total_put_off_duration
+        while BigWorld.time() <= end_wait:
+            yield BWWaitForPeriod(0)
+            for item_data in self.EquippedArmor.values():
+                if item_data['itemID'] == self._putting_item_off:
+                    break
+            else:
+                self.cancel_action_release()
+                return
+
+        self.cell.end_put_off_item(self._putting_item_off)
+        if self.offline_mode:
+            slot_types = ItemsCatalog.GetItemParam(item_type)['SlotType']
+            EST.clear_multiple_slots(self, slot_types)
+            self.set_EquippedArmor(None)
+            self.UpdateInventory(0)
+            try:
+                import __debug.offline_loader
+                __debug.offline_loader.saveAvatarEquip(self)
+            except:
+                traceback.print_exc()
+
+        self._putting_item_off = None
+        self.unprepare()
+        self._start_put_off_item_coroutine = None
+        return
+
+    def cancel_put_off_item(self):
+        if not self.is_putting_item_off():
+            return
+        else:
+            self.cell.cancel_put_off_item()
+            self._start_put_off_item_coroutine.stop()
+            self._start_put_off_item_coroutine = None
+            self.cancel_put_off_visualisation()
+            self._putting_item_off = None
+            self.unprepare()
+            self.CancelAction(RestrictionsUtils.CHANNEL_ITEMS)
+            return
+
+    def is_putting_item_off(self):
+        return bool(getattr(self, '_putting_item_off', False))
+
+    def visualise_put_off_item(self, item_type):
+        self._visualise_put_off_item_coroutine = self._visualise_put_off_item(item_type)
+        self._visualise_put_off_item_coroutine.run()
+
+    @BWMemberCoroutine
+    def _visualise_put_off_item(self, item_type):
+        total_put_off_duration, animate_slot_types = self._get_item_off_duration_and_animations(item_type)
+        self._put_off_actions = []
+        for slot_type in animate_slot_types:
+            action_string = EST.get_slot_action_off(slot_type)
+            if action_string:
+                self._put_off_actions.append(action_string)
+
+        duration = self._queue_animations(self._put_off_actions)
+        self._weapon_to_belly_and_back(duration + self._restore_bellyweapon_delay)
+        yield BWWaitForPeriod(total_put_off_duration * 0.5)
+        self._hidden_items_add(item_type)
+        self.UpdateAvatarModelAsync()
+        yield BWWaitForPeriod(total_put_off_duration * 0.5)
+        self._hidden_items_clear()
+
+    def cancel_put_off_visualisation(self):
+        for action in getattr(self, '_put_off_actions', []):
+            getattr(self.model, action).stop()
+
+        self._restore_bellyweapon()
+        if self._visualise_put_off_item_coroutine:
+            self._visualise_put_off_item_coroutine.stop()
+        if self._hidden_item_dress_types:
+            self._hidden_items_clear()
+            self.UpdateAvatarModel()
+
+    def _get_item_replace_durations_and_animations(self, off_item_types, on_item_type):
+        durations = []
+        off_animate_slot_types = []
+        for off_item_type in off_item_types:
+            total_put_off_duration, animate_slot_types = self._get_item_off_duration_and_animations(off_item_type)
+            durations.append(total_put_off_duration)
+            off_animate_slot_types.extend(animate_slot_types)
+
+        total_put_on_duration, on_animate_slot_types = self._get_item_on_duration_and_animations(on_item_type)
+        durations.append(total_put_on_duration)
+        return (durations, off_animate_slot_types, on_animate_slot_types)
+
+    @BWMemberCoroutine
+    def _start_put_replace_items(self, off_items, on_item):
+        on_item_type = on_item['complexItemType']
+        off_item_types = [ off_item['complexItemType'] for off_item in off_items ]
+        off_item_ids = [ off_item['complexItemID'] for off_item in off_items ]
+        self._putting_item_replace = (off_item_ids, on_item['complexItemID'])
+        on_item_param = ItemsCatalog.GetItemParam(on_item_type)
+        action_string = lc(on_item_param.get('SlotEquipCast', 'Items.GUIStrings.EQUIP'))
+        durations, off_slot_types, on_slot_types = self._get_item_replace_durations_and_animations(off_item_types, on_item_type)
+        total_put_replace_duration = sum(durations)
+        for item_id in self._putting_item_replace[0]:
+            self.locked_items[item_id] = 0
+
+        self.locked_items[self._putting_item_replace[1]] = 0
+        self.UpdateInventory(0)
+        yield BWWaitForCoroutine(self.prepare(total_put_replace_duration, check_block_move(off_slot_types + on_slot_types)))
+        self.visualise_put_replace_items(off_item_types, on_item)
+        self.DoAction(RestrictionsUtils.CHANNEL_ITEMS, total_put_replace_duration, action_string)
+        self.cell.start_put_replace_items(off_item_types, on_item['complexItemID'], total_put_replace_duration)
+        yield BWWaitForPeriod(total_put_replace_duration)
+        self._uncancelable_action_time = BigWorld.time()
+        self.cell.end_replace_items(*self._putting_item_replace)
+        self.unprepare()
+        for item_id in self._putting_item_replace[0]:
+            self.locked_items.pop(item_id, None)
+            BWPersonality.GUICore.inventoryGUI.delTempBlockItem(item_id)
+
+        self.locked_items.pop(self._putting_item_replace[1], None)
+        BWPersonality.GUICore.inventoryGUI.delTempBlockItem(self._putting_item_replace[1])
+        self._putting_item_replace = None
+        self.UpdateInventory(0)
+        self._start_put_replace_items_coroutine = None
+        return
+
+    def is_put_replacing(self):
+        return bool(getattr(self, '_putting_item_replace', False))
+
+    def cancel_put_replace_item(self):
+        if not self.is_put_replacing():
+            return
+        else:
+            self.cell.cancel_put_replace_item()
+            for item_id in self._putting_item_replace[0]:
+                self.locked_items.pop(item_id, None)
+                BWPersonality.GUICore.inventoryGUI.delTempBlockItem(item_id)
+
+            self.locked_items.pop(self._putting_item_replace[1], None)
+            BWPersonality.GUICore.inventoryGUI.delTempBlockItem(self._putting_item_replace[1])
+            self.UpdateInventory(0)
+            if self._start_put_replace_items_coroutine:
+                self._start_put_replace_items_coroutine.stop()
+                self._start_put_replace_items_coroutine = None
+            self.cancel_put_replace_visualization()
+            self._putting_item_replace = None
+            self.unprepare()
+            return
+
+    def visualise_put_replace_items(self, off_item_types, complex_item):
+        self._visualise_put_replace_item_coroutine = self._visualise_put_replace_item(off_item_types, complex_item)
+        self._visualise_put_replace_item_coroutine.run()
+
+    @BWMemberCoroutine
+    def _visualise_put_replace_item(self, off_item_types, complex_item):
+        on_item_type = complex_item['complexItemType']
+        durations, off_animate_slot_types, on_animate_slot_types = self._get_item_replace_durations_and_animations(off_item_types, on_item_type)
+        self._put_replace_actions = []
+        for slot_type in off_animate_slot_types:
+            action_string = EST.get_slot_action_off(slot_type)
+            if action_string:
+                self._put_replace_actions.append(action_string)
+
+        for slot_type in on_animate_slot_types:
+            action_string = EST.get_slot_action_on(slot_type)
+            if action_string:
+                self._put_replace_actions.append(action_string)
+
+        duration = self._queue_animations(self._put_replace_actions)
+        self._weapon_to_belly_and_back(duration + self._restore_bellyweapon_delay)
+        self._hidden_items_clear()
+        for i in xrange(len(durations) - 1):
+            yield BWWaitForPeriod(durations[i] * 0.5)
+            off_item_type = off_item_types[i]
+            item_param = ItemsCatalog.GetItemParam(off_item_type)
+            if all(map(EST.can_be_empty, item_param['SlotType'])):
+                self._hidden_items_add(off_item_type)
+                self.UpdateAvatarModelAsync()
+            yield BWWaitForPeriod(durations[i] * 0.5)
+
+        yield BWWaitForPeriod(durations[-1] * 0.5)
+        self._hidden_items_set(set(off_item_types))
+        has_filtermask = False
+        if ItemsUtils.has_item_filtermask(on_item_type):
+            if ItemsUtils.GetSingleInconstantParam(complex_item, ItemsCatalog.INC_GASMASK_FILTER_TYPE):
+                has_filtermask = True
+        for sub_item in complex_item['itemList']:
+            sub_item_type = sub_item['itemType']
+            sub_item_params = ItemsCatalog.GetItemParam(sub_item_type)
+            if complex_item['complexItemType'] in sub_item_params.get('ParentItemTypes', []):
+                item_colors = ItemsUtils.packToColoriseClient(sub_item)
+                item_colors = (item_colors['COLORISE_A'], item_colors['COLORISE_B']) if item_colors else (0, 0)
+                self._fake_items_add(on_item_type, item_colors, sub_item_type, has_filtermask=has_filtermask)
+                break
+        else:
+            item_colors = ItemsUtils.packToColoriseClient(complex_item)
+            item_colors = (item_colors['COLORISE_A'], item_colors['COLORISE_B']) if item_colors else (0, 0)
+            self._fake_items_add(on_item_type, item_colors, has_filtermask=has_filtermask)
+
+        self.UpdateAvatarModelAsync()
+        yield BWWaitForPeriod(durations[-1] * 0.5)
+        if not self.isDestroyed:
+            self._hidden_items_clear()
+            self._fake_items_clear()
+
+    def cancel_put_replace_visualization(self):
+        for action in self._put_replace_actions:
+            getattr(self.model, action).stop()
+
+        self._restore_bellyweapon()
+        self._visualise_put_replace_item_coroutine.stop()
+        if not bool(self._hidden_item_dress_types):
+            need_update = bool(self._fake_item_dress_types)
+            self._hidden_items_clear()
+            self._fake_items_clear()
+            need_update and self.UpdateAvatarModelAsync()
+
+    def switch_headlight_on(self, item):
+        """ \xd0\xb2\xd0\xba\xd0\xbb\xd1\x8e\xd1\x87\xd0\xb8\xd1\x82\xd1\x8c \xd1\x84\xd0\xbe\xd0\xbd\xd0\xb0\xd1\x80\xd1\x8c \xd0\xb2\xd0\xbe \xd0\xbb\xd0\xb1\xd1\x83 """
+        if self.can_use_cloth_mode(item, EST.MODE_HEADLIGHT, True):
+            self._start_use_mode(item, EST.MODE_HEADLIGHT, True).run()
+
+    def switch_headlight_off(self, item):
+        """ \xd0\xb2\xd1\x8b\xd0\xba\xd0\xbb\xd1\x8e\xd1\x87\xd0\xb8\xd1\x82\xd1\x8c \xd1\x84\xd0\xbe\xd0\xbd\xd0\xb0\xd1\x80\xd1\x8c \xd0\xb2\xd0\xbe \xd0\xbb\xd0\xb1\xd1\x83 """
+        if self.can_use_cloth_mode(item, EST.MODE_HEADLIGHT, False):
+            self._start_use_mode(item, EST.MODE_HEADLIGHT, False).run()
+
+    def open_visor(self, item):
+        """ \xd0\xbe\xd1\x82\xd0\xba\xd1\x80\xd1\x8b\xd1\x82\xd1\x8c \xd0\xb7\xd0\xb0\xd0\xb1\xd1\x80\xd0\xb0\xd0\xbb\xd0\xbe """
+        if self.can_use_cloth_mode(item, EST.MODE_VISOR, True):
+            self._start_use_mode(item, EST.MODE_VISOR, True).run()
+
+    def close_visor(self, item):
+        """ \xd0\xb7\xd0\xb0\xd0\xba\xd1\x80\xd1\x8b\xd1\x82\xd1\x8c \xd0\xb7\xd0\xb0\xd0\xb1\xd1\x80\xd0\xb0\xd0\xbb\xd0\xbe """
+        if self.can_use_cloth_mode(item, EST.MODE_VISOR, False):
+            self._start_use_mode(item, EST.MODE_VISOR, False).run()
+
+    def put_hood_on(self, item):
+        """ \xd0\xbd\xd0\xb0\xd0\xb4\xd0\xb5\xd1\x82\xd1\x8c \xd0\xba\xd0\xb0\xd0\xbf\xd1\x8e\xd1\x88\xd0\xbe\xd0\xbd """
+        if self.can_use_cloth_mode(item, EST.MODE_HOOD, True):
+            self._start_use_mode(item, EST.MODE_HOOD, True).run()
+
+    def take_hood_off(self, item):
+        """ \xd1\x81\xd0\xbd\xd1\x8f\xd1\x82\xd1\x8c \xd0\xba\xd0\xb0\xd0\xbf\xd1\x8e\xd1\x88\xd0\xbe\xd0\xbd """
+        if self.can_use_cloth_mode(item, EST.MODE_HOOD, False):
+            self._start_use_mode(item, EST.MODE_HOOD, False).run()
+
+    def is_tucking_item(self):
+        return bool(self._tuck_coroutine)
+
+    def cancel_tuck_item(self):
+        self.cell.cancel_tuck_item()
+        self._tuck_coroutine.stop()
+        self._tuck_coroutine = None
+        self.unprepare()
+        self.cancel_tuck_visualisation()
+        return
+
+    def cancel_tuck_visualisation(self):
+        action = EST.get_cloth_mode_action(self, *self._last_mode)
+        if action:
+            action.stop()
+        self._restore_bellyweapon()
+
+    def tuck_pants_on(self, item):
+        """ \xd0\xb7\xd0\xb0\xd0\xb3\xd0\xbd\xd1\x83\xd1\x82\xd1\x8c \xd1\x88\xd1\x82\xd0\xb0\xd0\xbd\xd1\x8b \xd0\xb2 \xd0\xb1\xd0\xbe\xd1\x82\xd0\xb8\xd0\xbd\xd0\xba\xd0\xb8 """
+        if self.can_use_cloth_mode(item, EST.MODE_TUCK, True):
+            self._tuck_coroutine = self._start_use_mode(item, EST.MODE_TUCK, True)
+            self._tuck_coroutine.run()
+
+    def tuck_pans_off(self, item):
+        """ \xd0\xb2\xd1\x8b\xd1\x82\xd0\xb0\xd1\x89\xd0\xb8\xd1\x82\xd1\x8c \xd1\x88\xd1\x82\xd0\xb0\xd0\xbd\xd1\x8b \xd0\xb8\xd0\xb7 \xd0\xb1\xd0\xbe\xd1\x82\xd0\xb8\xd0\xbd\xd0\xbe\xd0\xba """
+        if self.can_use_cloth_mode(item, EST.MODE_TUCK, False):
+            self._tuck_coroutine = self._start_use_mode(item, EST.MODE_TUCK, False)
+            self._tuck_coroutine.run()
+
+    def can_use_mode(self, item, mode, on):
+        if self._is_using_mode():
+            return False
+        if mode == EST.MODE_TUCK:
+            if self.in_transport or self.is_sitting_in_car():
+                return False
+            item_param = ItemsCatalog.GetItemParam(item['complexItemType'])
+            if EST.PANTS not in item_param['SlotType'] and EST.U_PANTS not in item_param['SlotType']:
+                return False
+        return EST.can_use_mode(self, mode, on)
+
+    def cancel_any_dress_action(self):
+        self.cancel_put_on_item()
+        self.cancel_put_off_item()
+        self.cancel_put_replace_item()
+
+    def _is_using_mode(self):
+        if self._using_mode and BigWorld.time() - self._using_mode > 5:
+            self._using_mode = None
+        return bool(self._using_mode)
+
+    @BWMemberCoroutine
+    def _start_use_mode(self, item, mode, on):
+        action = EST.get_cloth_mode_action(self, mode, on, use=True)
+        duration = action.duration
+        self._using_mode = BigWorld.time()
+        if mode == EST.MODE_TUCK:
+            duration += 0.5
+            yield BWWaitForCoroutine(self.prepare(duration))
+        elif mode == EST.MODE_VISOR:
+            if on:
+                duration_visor = getattr(self.model, VISOR_OPEN_ACTION).duration
+            else:
+                duration_visor = getattr(self.model, VISOR_CLOSE_ACTION).duration
+            duration = max(duration, duration_visor) + 0.1
+        self.DoAction(RestrictionsUtils.CHANNEL_ITEMS, duration, lc('Items.GUIStrings.EXECUTING_ACTION'))
+        self.visualise_use_cloth_mode(mode, on)
+        self.cell.start_use_cloth_mode(duration, mode, item['complexItemID'], on)
+        duration_mul = EST.get_cloth_mode_action_duration_mul(mode, on)
+        yield BWWaitForPeriod(duration * duration_mul)
+        if mode == EST.MODE_TUCK:
+            self.unprepare()
+            self._tuck_coroutine = None
+        self.cell.end_use_cloth_mode(mode, item['complexItemID'], on)
+        self._using_mode = None
+        return
+
+    def visualise_use_cloth_mode(self, mode, on):
+        if self == BigWorld.player():
+            rec_foo_demo('visualise_use_cloth_mode', mode, on)
+        self._last_mode = (mode, on)
+        action = EST.get_cloth_mode_action(self, mode, on, use=True)
+        self._weapon_hand_and_left_hand_anim(action.duration + self._restore_bellyweapon_delay)
+        action()
+        if mode == EST.MODE_VISOR:
+            if on:
+                open_action = getattr(self.model, VISOR_OPEN_ACTION)(0.6)
+                getattr(open_action, VISOR_OPEN_LOOP_ACTION)()
+            else:
+                getattr(self.model, VISOR_CLOSE_ACTION)(0.45)
+
+    def _queue_animations(self, aminations):
+        duration = 0
+        for animation in aminations:
+            action = self.model.action(animation)
+            action(duration)
+            duration += action.duration - action.blendInTime
+
+        return duration

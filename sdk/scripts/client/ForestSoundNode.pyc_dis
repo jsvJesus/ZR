@@ -1,0 +1,106 @@
+# Embedded file name: ./client/ForestSoundNode.py
+"""
+        http://hz-dev.stalker.so:8090/issues/11608
+
+"""
+import BigWorld
+import Weather
+import traceback
+import sounds_manager as sounds
+import Settings
+from ClientFiguredTrapInterface import ClientFiguredTrapInterface
+DEBUG = False
+
+def switchDebugMode():
+    global DEBUG
+    DEBUG = not DEBUG
+    for e in BigWorld.entities.values():
+        if isinstance(e, ForestSoundNode):
+            e.updateDebugMode()
+
+    return DEBUG
+
+
+class ForestSoundNode(BigWorld.Entity, ClientFiguredTrapInterface):
+
+    def __init__(self):
+        BigWorld.Entity.__init__(self)
+        ClientFiguredTrapInterface.__init__(self)
+        self.weather_soundname = None
+        self._sound = None
+        self.model_debug = None
+        return
+
+    def onEnterWorld(self, prereq):
+        self.model = BigWorld.Model('')
+        Settings.Settings().addSfxChangeObserver(self)
+
+    def onLeaveWorld(self):
+        ClientFiguredTrapInterface.onLeaveWorld(self)
+        Weather.weather().deregisterForestSoundNode(self)
+        Settings.Settings().removeSfxChangeObserver(self)
+        self._stopSound()
+        self._clear_debug_attaches()
+
+    def sfxVolumeChanged(self, volume):
+        self._update_volume()
+
+    def onPlayerInside(self):
+        Weather.weather().registerForestSoundNode(self)
+
+    def onPlayerOutside(self):
+        Weather.weather().deregisterForestSoundNode(self)
+
+    def onWeatherSoundChanged(self, weather_soundname):
+        self.weather_soundname = weather_soundname
+        self._updateSound()
+
+    def updateDebugMode(self):
+        if DEBUG and not self.model_debug:
+            self.model_debug = BigWorld.Model(Weather.FOREST_SOUND.getEditorModel(self.sound_type))
+            self.addModel(self.model_debug)
+            self.model_debug.setWorldTransform(self.matrix)
+        elif self.model_debug and not DEBUG:
+            self._clear_debug_attaches()
+
+    def _updateSound(self):
+        current_sound = self._sound.sound_path if self._sound else None
+        need_sound = None
+        if self.weather_soundname:
+            forest_type = Weather.FOREST_SOUND.getSoundName(self.sound_type)
+            need_sound = 'weather/%s/%s' % (forest_type, self.weather_soundname)
+        if current_sound == need_sound:
+            return
+        else:
+            self._stopSound()
+            if not need_sound:
+                return
+            try:
+                self._sound = sounds.getSound(need_sound, model=self.model)
+                self._sound.play()
+            except:
+                traceback.print_exc()
+
+            self._update_volume()
+            return
+
+    def _update_volume(self):
+        if not self._sound:
+            return
+        volume = Settings.Settings().getEnvironmentVolume()
+        self._sound.set_volume(volume)
+
+    def _stopSound(self):
+        if self._sound:
+            self._sound.stop()
+            self._sound.releaseSound()
+            self._sound = None
+        return
+
+    def _clear_debug_attaches(self):
+        if not self.model_debug:
+            return
+        else:
+            self.delModel(self.model_debug)
+            self.model_debug = None
+            return

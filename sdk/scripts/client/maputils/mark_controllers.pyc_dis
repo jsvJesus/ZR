@@ -1,0 +1,668 @@
+# Embedded file name: ./client/maputils/mark_controllers.py
+from utils import Destructable
+import BigWorld
+import GUI
+from Math import Matrix, TranslationRotationProvider, Vector4
+from MarksData import LoadStatus
+from MapNotes import MapNotes, get_npcmarks_config
+import AdditionalNPCParameters as AP
+from soGUI.WorldMapGUI.marks_filter import FilterMode as FM
+import QuestDispatcher as qd
+from collections import defaultdict
+
+class EntryMask:
+    NONE = 0
+    CLAMP_RANGE = 1
+    ROTATE = 2
+    IGNORE_BLEND = 4
+    WORLD_SIZE = 8
+
+
+class MarkController(object):
+
+    def __init__(self, parent, filter_mode):
+        self._filter_mode = filter_mode
+        self._parent = parent
+        self._space_name = None
+        return
+
+    def _get_filter_value(self):
+        if not self._parent._filterset:
+            return False
+        return self._parent._filterset.get_value(self._filter_mode)
+
+    def _are_data_ready(self):
+        return bool(self._marks_data)
+
+    def set_space(self, space_name):
+        if self._space_name == space_name:
+            return
+        self._space_name = space_name
+        self._on_space_changed()
+
+    @property
+    def _marks_data(self):
+        return self._parent._marks_data
+
+    def on_marks_data_changed(self):
+        self._something_changed()
+
+    def on_filter_data_changed(self):
+        self._something_changed()
+
+    def _on_space_changed(self):
+        self._something_changed()
+
+    def on_data_changed(self):
+        self._something_changed()
+
+    def on_filter_changed(self):
+        self._something_changed()
+
+    def _something_changed(self):
+        pass
+
+
+class PlayerMarkController(MarkController):
+
+    def __init__(self, parent):
+        MarkController.__init__(self, parent, None)
+        comp = GUI.Simple('soGUI/frame/minimap/avatar_icon.dds')
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.wm, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.width, comp.height = (34, 34)
+        comp.filterType = 'LINEAR'
+        comp.position = (0.0, 0.0, 0.1)
+        comp.materialFX = 'BLEND'
+        self.component = comp
+        self._icon_id = None
+        return
+
+    def _something_changed(self):
+        if self._space_name:
+            if not self._icon_id:
+                provider = TranslationRotationProvider(BigWorld.player().matrix, BigWorld.camera().invViewMatrix)
+                self._icon_id = self._parent.component.add(provider, self.component)
+        elif self._icon_id is not None:
+            self._parent.component.remove(self._icon_id)
+            self._icon_id = None
+        return
+
+
+class ListMarksController(MarkController):
+
+    def __init__(self, parent, filter_mode):
+        MarkController.__init__(self, parent, filter_mode)
+        self._marks = {}
+        self._marks_visible = True
+
+    def _need_show(self):
+        return bool(self._space_name and self._marks_data)
+
+    def _get_marks(self):
+        raise NotImplementedError
+
+    def on_marks_data_changed(self):
+        MarkController.on_marks_data_changed(self)
+        self._full_update()
+
+    def _on_space_changed(self):
+        MarkController._on_space_changed(self)
+        self._full_update()
+
+    def on_loaded(self):
+        self._full_update()
+
+    def _full_update(self):
+        for icon_id, _ in self._marks.itervalues():
+            self._parent.component.remove(icon_id)
+
+        self._marks.clear()
+        if self._need_show():
+            for md in self._get_marks():
+                self.create_mark(md)
+
+    def _create(self, position, path, uid):
+        raise uid not in self._marks or AssertionError
+        m = Matrix()
+        m.setTranslate(position)
+        self._create_with_provider(m, path, uid)
+
+    def _create_with_provider(self, matrix, path, uid):
+        raise uid not in self._marks or AssertionError
+        comp = GUI.Simple(path)
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = comp.texture.width, comp.texture.height
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.materialFX = 'BLEND'
+        comp.visible = self.marks_visible
+        self._marks[uid] = (self._parent.component.add(matrix, comp), comp)
+
+    def _remove(self, uid):
+        mark = self._marks.get(uid)
+        if mark is None:
+            return
+        else:
+            self._parent.component.remove(mark[0])
+            del self._marks[uid]
+            return
+
+    @property
+    def marks_visible(self):
+        return self._marks_visible
+
+    @marks_visible.setter
+    def marks_visible(self, value):
+        if self._marks_visible == value:
+            return
+        self._marks_visible = value
+        for _, comp in self._marks.itervalues():
+            comp.visible = value
+
+    def on_filter_changed(self):
+        MarkController.on_filter_changed(self)
+        self.marks_visible = not self._get_filter_value()
+
+    def on_filter_data_changed(self):
+        MarkController.on_filter_changed(self)
+        self.marks_visible = not self._get_filter_value()
+
+
+class NpcMarksController(ListMarksController):
+
+    def __init__(self, parent):
+        ListMarksController.__init__(self, parent, FM.Npc)
+
+    def _get_marks(self):
+        if self._space_name and self._marks_data:
+            return self._marks_data.npcs_marks.get(self._space_name, [])
+        return []
+
+    def _need_show(self):
+        if ListMarksController._need_show(self):
+            load_status_personal = self._marks_data.has_loaded_common_data(self._space_name)
+            return load_status_personal == LoadStatus.Ready
+        return False
+
+    def create_mark(self, mark):
+        npc_id = mark
+        config = get_npcmarks_config(self._space_name)
+        npc_name = AP.get_npc_name_by_id(npc_id)
+        npc_pos = config['npcs_data'].get(npc_name)
+        if not npc_pos:
+            return
+        ListMarksController._create(self, npc_pos, 'soGUI/frame/map/mark_questNPC.dds', npc_id)
+
+    def remove_mark(self, mark):
+        npc_id = mark
+        self._remove(npc_id)
+
+
+class DeathMarksController(ListMarksController):
+
+    def __init__(self, parent):
+        ListMarksController.__init__(self, parent, None)
+        return
+
+    def _get_marks(self):
+        if self._space_name and self._marks_data:
+            return self._marks_data.death_marks.get(self._space_name, [])
+        return []
+
+    def _get_filter_value(self):
+        return False
+
+    def create_mark(self, mark):
+        pos = tuple(mark[0])
+        path = 'soGUI/frame/map/mark_player_death.dds'
+        ListMarksController._create(self, pos, path, pos)
+
+    def remove_mark(self, position_id):
+        self._remove(tuple(position_id))
+
+
+class PersonalMarksController(ListMarksController):
+
+    def __init__(self, parent):
+        ListMarksController.__init__(self, parent, FM.Personal)
+
+    def _need_show(self):
+        if ListMarksController._need_show(self):
+            load_status_personal = self._marks_data.has_loaded_personal_data(self._space_name)
+            return load_status_personal == LoadStatus.Ready
+        return False
+
+    def _get_marks(self):
+        if self._space_name and self._marks_data:
+            return self._marks_data.personal_marks.get(self._space_name, [])
+        return []
+
+    def create_mark(self, mark):
+        path = MapNotes.get_path(mark['flags'])
+        ListMarksController._create(self, mark['position'], path, mark['uid'])
+        self._marks[mark['uid']][1].colour = MapNotes.colors[mark['color']]
+
+    def remove_mark(self, mark):
+        self._remove(mark['uid'])
+
+
+class CorpseMarksController(ListMarksController):
+
+    def __init__(self, parent):
+        ListMarksController.__init__(self, parent, FM.Corpses)
+
+    def _get_marks(self):
+        if self._space_name and self._marks_data:
+            corpse_marks = self._marks_data.corpses_marks.get(self._space_name, {})
+            return corpse_marks.items()
+        return []
+
+    def create_mark(self, mark):
+        name_uid, data = mark
+        ListMarksController._create(self, data['pos'], 'soGUI/frame/map/dead_clanmate.dds', name_uid)
+
+    def remove_mark(self, name):
+        self._remove(name)
+
+
+class PartyMarksController(ListMarksController):
+
+    def __init__(self, parent):
+        ListMarksController.__init__(self, parent, FM.Party)
+
+    def _get_marks(self):
+        return []
+
+    def create_mark(self, member_id):
+        member = BigWorld.entities.get(member_id)
+        if member:
+            ListMarksController._create_with_provider(self, member.matrix, 'soGUI/frame/map/mark_partner_mini.dds', member_id)
+            self._check_color(member_id)
+
+    def _check_color(self, member_id):
+        member_comp = self._marks.get(member_id)
+        member = BigWorld.entities.get(member_id)
+        if not member_comp or not member:
+            return
+        member_comp[1].colour = (255, 0, 0, 255) if member.is_dead() else (0, 255, 0, 255)
+
+    def check_dead(self):
+        for member_id in self._marks.iterkeys():
+            self._check_color(member_id)
+
+    def remove_mark(self, member_id):
+        self._remove(member_id)
+
+
+class QuestMark(Destructable):
+
+    def __init__(self, quest_id, mark_data, cmap):
+        Destructable.__init__(self)
+        self._circle_mark_id = None
+        self._visible = True
+        self._cmap = cmap
+        self._pos = mark_data['pos']
+        self._radius = mark_data['radius']
+        matrix = Matrix()
+        matrix.setTranslate(self._pos)
+        if self._radius:
+            path = 'soGUI/frame/map/task_area.dds'
+            flags = EntryMask.CLAMP_RANGE | EntryMask.ROTATE | EntryMask.IGNORE_BLEND
+        else:
+            path = 'soGUI/frame/minimap/mark.dds'
+            flags = EntryMask.CLAMP_RANGE | EntryMask.IGNORE_BLEND
+        color = qd.get_priority_color(quest_id)
+        comp = GUI.Simple(path)
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = comp.texture.width, comp.texture.height
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.materialFX = 'BLEND'
+        comp.colour = color
+        comp.filterType = 'LINEAR'
+        self._note_comp = comp
+        self._note_mark_id = self._cmap.add(matrix, comp, flags)
+        color = Vector4(tuple((c / 255.0 for c in color)))
+        if self._radius:
+            g = GUI.CircleComponent('textures/default/alpha.dds')
+            g.ha, g.va = ('CENTER', 'CENTER')
+            g.wm, g.hm = ('PIXEL', 'PIXEL')
+            g.materialFX = 'BLEND'
+            g.width = g.height = self._radius * 2
+            g.outlineColor = color
+            color[3] = 0.3
+            g.baseColor = color
+            g.radius = 1.0
+            g.outlineWidth = 0.03
+            g.minOutlinePixelWidth = 5
+            g.setShapes([((0, 0), (0, 0, 1, 1))])
+            g.setShapeActives([(0, 0)])
+            g.filterType = 'LINEAR'
+            flags = EntryMask.NONE | EntryMask.WORLD_SIZE | EntryMask.IGNORE_BLEND
+            self._circle_mark_id = self._cmap.add(matrix, g, flags)
+            self._circle_comp = g
+            self._update_content(self._cmap.isInRange(self._pos, self._radius))
+        return
+
+    def set_visible(self, visible):
+        if self._visible == visible:
+            return
+        self._visible = visible
+        if self._radius:
+            self._circle_comp.visible = self._visible
+            self._update_content(self._cmap.isInRange(self._pos, self._radius))
+        else:
+            self._note_comp.visible = self._visible
+
+    def _update_content(self, is_in_range):
+        if is_in_range or not self._visible:
+            self._note_comp.visible = False
+        else:
+            self._note_comp.visible = True
+
+    def on_enter_range(self, mark_id):
+        if self._circle_mark_id != mark_id:
+            return
+        self._update_content(True)
+
+    def on_leave_range(self, mark_id):
+        if self._circle_mark_id != mark_id:
+            return
+        self._update_content(False)
+
+    def on_release(self):
+        self._cmap.remove(self._note_mark_id)
+        if self._circle_mark_id:
+            self._cmap.remove(self._circle_mark_id)
+
+
+class QuestMarksController(MarkController, Destructable):
+
+    def __init__(self, parent):
+        Destructable.__init__(self)
+        MarkController.__init__(self, parent, FM.Quests)
+        self._marks = defaultdict(list)
+
+    def _on_space_changed(self):
+        MarkController._on_space_changed(self)
+        self._full_update()
+
+    def on_loaded(self):
+        self._full_update()
+
+    def on_marks_data_changed(self):
+        MarkController.on_marks_data_changed(self)
+        self._full_update()
+
+    def on_filter_changed(self):
+        MarkController.on_filter_changed(self)
+        visible = not self._get_filter_value()
+        for marks in self._marks.itervalues():
+            for mark in marks:
+                mark.set_visible(visible)
+
+    def _full_update(self):
+        for marks in self._marks.itervalues():
+            for mark in marks:
+                mark.release()
+
+        self._marks.clear()
+        if self._space_name and self._marks_data:
+            quest_ids = self._marks_data.quest_marks.get(self._space_name, [])
+            for q_id in quest_ids:
+                for mark_data in qd.get_marks(q_id):
+                    if mark_data['space_name'] != self._space_name:
+                        continue
+                    self._marks[q_id].append(QuestMark(q_id, mark_data, self._parent.component))
+
+    def on_data_changed(self, is_active, quest_id):
+        if is_active:
+            if quest_id in self._marks:
+                return
+        elif quest_id not in self._marks:
+            return
+        for mark_data in qd.get_marks(quest_id):
+            if mark_data['space_name'] != self._space_name:
+                continue
+            if is_active:
+                self._marks[quest_id].append(QuestMark(quest_id, mark_data, self._parent.component))
+            else:
+                for mark in self._marks[quest_id]:
+                    mark.release()
+
+                del self._marks[quest_id]
+
+    def on_enter_range(self, mark_id):
+        for marks in self._marks.itervalues():
+            for mark in marks:
+                mark.on_enter_range(mark_id)
+
+    def on_leave_range(self, mark_id):
+        for marks in self._marks.itervalues():
+            for mark in marks:
+                mark.on_leave_range(mark_id)
+
+    def on_release(self):
+        for marks in self._marks.itervalues():
+            for mark in marks:
+                mark.release()
+
+
+class CompoundMarkController(ListMarksController):
+    Radius = 80.0
+
+    def __init__(self, parent):
+        ListMarksController.__init__(self, parent, None)
+        return
+
+    def _get_filter_value(self):
+        return False
+
+    def _create(self, uid, pos):
+        raise uid not in self._marks or AssertionError
+        m = Matrix()
+        m.setTranslate(pos)
+        self._create_with_provider(m, uid)
+
+    def _create_with_provider(self, matrix, uid):
+        raise uid not in self._marks or AssertionError
+        g = GUI.CircleComponent('textures/default/alpha.dds')
+        g.ha, g.va = ('CENTER', 'CENTER')
+        g.wm, g.hm = ('PIXEL', 'PIXEL')
+        g.materialFX = 'BLEND'
+        g.width = g.height = CompoundMarkController.Radius * 2
+        g.baseColor = (0.639, 0.996, 0.831, 0.3)
+        g.outlineColor = (0.639, 0.996, 0.831, 1)
+        g.radius = 1.0
+        g.outlineWidth = 0.03
+        g.minOutlinePixelWidth = 5
+        g.setShapes([((0, 0), (0, 0, 1, 1))])
+        g.setShapeActives([(0, 0)])
+        g.filterType = 'LINEAR'
+        g.visible = self.marks_visible
+        flags = EntryMask.NONE | EntryMask.WORLD_SIZE | EntryMask.IGNORE_BLEND
+        self._marks[uid] = (self._parent.component.add(matrix, g, flags), g)
+
+    def _get_marks(self):
+        if self._space_name and self._marks_data:
+            compound_marks = self._marks_data.compound_marks.get(self._space_name, {})
+            return compound_marks.values()
+        return []
+
+    def create_mark(self, mark):
+        mark_id, pos = mark
+        self._create(mark_id, pos)
+
+    def remove_mark(self, mark_id):
+        self._remove(mark_id)
+
+
+class WorldMarkController(ListMarksController):
+
+    def __init__(self, parent):
+        ListMarksController.__init__(self, parent, None)
+        return
+
+    def _get_filter_value(self):
+        return False
+
+    def _get_marks(self):
+        if self._space_name and self._marks_data:
+            world_marks = self._marks_data.worldplace_marks.get(self._space_name, {})
+            return world_marks.values()
+        return []
+
+    def _create(self, position, radius, uid):
+        raise uid not in self._marks or AssertionError
+        m = Matrix()
+        m.setTranslate(position)
+        self._create_with_provider(m, radius, uid)
+
+    def _create_with_provider(self, matrix, radius, uid):
+        raise uid not in self._marks or AssertionError
+        g = GUI.CircleComponent('textures/default/alpha.dds')
+        g.ha, g.va = ('CENTER', 'CENTER')
+        g.wm, g.hm = ('PIXEL', 'PIXEL')
+        g.materialFX = 'BLEND'
+        g.width = g.height = radius * 2
+        g.outlineColor = (0.255, 0.412, 0.882, 1)
+        g.baseColor = (0.529, 0.809, 0.922, 0.3)
+        g.radius = 1.0
+        g.outlineWidth = 0.03
+        g.minOutlinePixelWidth = 5
+        g.setShapes([((0, 0), (0, 0, 1, 1))])
+        g.setShapeActives([(0, 0)])
+        g.filterType = 'LINEAR'
+        g.visible = self.marks_visible
+        flags = EntryMask.NONE | EntryMask.WORLD_SIZE | EntryMask.IGNORE_BLEND
+        self._marks[uid] = (self._parent.component.add(matrix, g, flags), g)
+
+    def create_mark(self, mark):
+        place_id, position, radius = mark
+        self._create(position, radius, place_id)
+
+    def remove_mark(self, place_id):
+        self._remove(place_id)
+
+
+class WantedMarkController(MarkController):
+
+    def __init__(self, parent):
+        MarkController.__init__(self, parent, None)
+        comp = GUI.Simple('soGUI/frame/map/hunted_anim/hunt_mark')
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.wm, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.width, comp.height = comp.texture.width, comp.texture.height
+        comp.filterType = 'LINEAR'
+        comp.position = (0.0, 0.0, 0.2)
+        comp.materialFX = 'BLEND'
+        self.component = comp
+        self._icon_id = None
+        self._matrix = Matrix()
+        return
+
+    def _something_changed(self):
+        if self._are_data_ready():
+            need_show = self._space_name
+            if need_show:
+                mark = self._parent._marks_data._wanted_mark
+                if mark:
+                    space_name, position = mark
+                    if space_name != self._space_name:
+                        need_show = False
+                else:
+                    need_show = False
+            if need_show:
+                self._matrix.setTranslate(position)
+                self._icon_id = self._icon_id or self._parent.component.add(self._matrix, self.component)
+        elif self._icon_id is not None:
+            self._parent.component.remove(self._icon_id)
+            self._icon_id = None
+        return
+
+
+class PvpMarksController(MarkController):
+
+    def __init__(self, parent):
+        MarkController.__init__(self, parent, None)
+        comp = GUI.Simple('soGUI/maps/Icons/pvp/flag_blue.dds')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = comp.texture.width, comp.texture.height
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'BOTTOM')
+        comp.materialFX = 'BLEND'
+        comp.position = (0, 0, 0.4)
+        self._blue_comp = comp
+        self._blue_icon_id = None
+        self._blue_matrix = Matrix()
+        comp = GUI.Simple('soGUI/maps/Icons/pvp/flag_red.dds')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = comp.texture.width, comp.texture.height
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'BOTTOM')
+        comp.materialFX = 'BLEND'
+        comp.position = (0, 0, 0.4)
+        self._red_comp = comp
+        self._red_icon_id = None
+        self._red_matrix = Matrix()
+        return
+
+    def on_data_changed(self, blue_pos, red_pos):
+        MarkController.on_data_changed(self)
+        if self._are_data_ready():
+            need_show = self._space_name
+            if need_show:
+                self._blue_matrix.setTranslate(blue_pos)
+                self._red_matrix.setTranslate(red_pos)
+                self._blue_icon_id = self._blue_icon_id or self._parent.component.add(self._blue_matrix, self._blue_comp)
+                self._red_icon_id = self._parent.component.add(self._red_matrix, self._red_comp)
+        else:
+            self._clear_marks()
+
+    def _clear_marks(self):
+        if self._blue_icon_id is not None:
+            self._parent.component.remove(self._blue_icon_id)
+            self._blue_icon_id = None
+        if self._red_icon_id is not None:
+            self._parent.component.remove(self._red_icon_id)
+            self._red_icon_id = None
+        return
+
+    def _on_space_changed(self):
+        self._clear_marks()
+
+
+class TargetMarkController(MarkController):
+
+    def __init__(self, parent):
+        MarkController.__init__(self, parent, FM.Target)
+        comp = GUI.Simple('soGUI/frame/map/mark_target.dds')
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.wm, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.width, comp.height = comp.texture.width, comp.texture.height
+        comp.filterType = 'LINEAR'
+        comp.position = (0.0, 0.0, 0.3)
+        comp.materialFX = 'BLEND'
+        self.component = comp
+        self._icon_id = None
+        self._matrix = Matrix()
+        return
+
+    def _something_changed(self):
+        if self._are_data_ready() and self._space_name:
+            need_show = not self._get_filter_value()
+            if need_show:
+                mark = self._parent._marks_data.get_target_mark()
+                if mark:
+                    space_name, position = mark
+                    if space_name != self._space_name:
+                        need_show = False
+                else:
+                    need_show = False
+            if need_show:
+                self._matrix.setTranslate(position)
+                self._icon_id = self._icon_id or self._parent.component.add(self._matrix, self.component, EntryMask.CLAMP_RANGE | EntryMask.IGNORE_BLEND)
+        elif self._icon_id is not None:
+            self._parent.component.remove(self._icon_id)
+            self._icon_id = None
+        return

@@ -1,0 +1,253 @@
+# Embedded file name: ./client/Devil.py
+from Localization import lc
+from math import pi
+from Math import Matrix
+import BigWorld
+from devil_utils.devil_filter import DevilFilter
+from devil_utils.debugger import Debugger
+from devil_utils.monitor import Monitor
+from devil_utils.animation_controller import AnimationController
+from devil_utils.grenade_controller import GrenadeController
+from devil_utils.sounds_controller import SoundsController
+from devil_utils.tremble_controller import TrembleController
+from devil_utils.mushrooms_controller import MushroomsController
+from Config import Damage
+import cPickle
+from creature_footsteps import CreatureFootsteps
+from devil_utils import sounds_config
+from Throwable import Throwable
+import ResMgr
+import pyson
+from cdevil_utils.dutils import mushroom_damage_zones, bullet_damage_zones, Stage
+import SFXer
+from Config.Damage import DamageTypes
+MODEL_NAME = 'characters/creatures/brutor_musroom/brutor_musroom_boss.model'
+HITBOXES_PATH = 'characters/creatures/brutor_musroom/hitbox_general.xml'
+section = ResMgr.openSection('characters/creatures/brutor_musroom/devil_hb_disp.pyson')
+hp_disp = pyson.loads(section.asBinary)
+
+class Devil(BigWorld.Entity, CreatureFootsteps):
+
+    def __init__(self):
+        BigWorld.Entity.__init__(self)
+        CreatureFootsteps.__init__(self)
+        self._debugger = None
+        self._monitor = None
+        self._grenade_controller = GrenadeController(self)
+        self._sounds_controller = SoundsController(self)
+        self._animation_controller = AnimationController(self)
+        self._tremble_controller = TrembleController()
+        self._mushrooms_controller = MushroomsController(self)
+        self.skeletonCollider = BigWorld.SkeletonCollider()
+        self.name = lc('TriggerNames.devil')
+        self.model = None
+        self.canBeHurtByBullets = True
+        self.canTakeDamage = True
+        self.respawned_recently = False
+        self.bbRadius = 10.0
+        self.override_client_damage_calculation = lambda *args: False
+        return
+
+    def on_cloud_contact(self, collider_name, hit_pos, direction):
+        if self.invincible:
+            return
+        blood_sfx_id = 'sfx/hits/hit_eggs_yellow.xml'
+        SFXer.BloodBodyHit(self, hit_pos, direction, blood_sfx_id)
+
+    def bleedFromShoot(self, pos, blood_orientation, collider_name, ammo_type, damager_id):
+        if self.invincible:
+            return
+        blood_sfx_id = 'sfx/hits/hit_mushroom.xml'
+        body_zone = self.colliderNames.get(collider_name, 0)
+        if body_zone == Damage.BODY_ZONES.BELLY and self.belly_open or body_zone == Damage.BODY_ZONES.HEART and self.heart_open or body_zone in mushroom_damage_zones and self.mushroom_damage_type == DamageTypes.BULLET:
+            SFXer.BloodBodyHit(self, pos, blood_orientation, blood_sfx_id)
+
+    def prerequisites(self):
+        return [MODEL_NAME, HITBOXES_PATH]
+
+    def update_config(self, config):
+        self._grenade_controller.update_config(config)
+        self._tremble_controller.update_config(config)
+
+    def _adapt_broken_matrix(self, box_name, matrix):
+        """ 3DS max \xd0\xba\xd1\x80\xd0\xb8\xd0\xb2\xd0\xbe \xd1\x8d\xd0\xba\xd1\x81\xd0\xbf\xd0\xbe\xd1\x80\xd1\x82\xd0\xb8\xd1\x80\xd1\x83\xd0\xb5\xd1\x82, \xd0\xbd\xd0\xb0\xd0\xb4\xd0\xbe \xd1\x80\xd1\x83\xd0\xba\xd0\xb0\xd0\xbc\xd0\xb8 \xd0\xbf\xd0\xbe\xd0\xb4\xd0\xba\xd1\x80\xd1\x83\xd1\x87\xd0\xb8\xd0\xb2\xd0\xb0\xd1\x82\xd1\x8c \xd0\xba\xd0\xb0\xd0\xba \xd0\xbf\xd0\xbe\xd0\xbf\xd0\xb0\xd0\xbb\xd0\xbe
+                \xd0\xba\xd0\xbe\xd1\x81\xd1\x82\xd1\x8b\xd0\xbb\xd1\x8f\xd1\x82\xd0\xb8\xd0\xbd\xd0\xb0
+        """
+        scale = matrix.scale
+        s = Matrix()
+        s.setScale(scale)
+        inv_s = Matrix(s)
+        inv_s.invert()
+        r2 = Matrix()
+        r2.setRotateYPR((0, pi, 0))
+        matrix.preMultiply(r2)
+        matrix.postMultiply(inv_s)
+        disp = hp_disp.get(box_name)
+        if disp:
+            t2 = Matrix()
+            t2.setTranslate(tuple(disp))
+            matrix.postMultiply(t2)
+        return matrix
+
+    def onEnterWorld(self, prereqs):
+        print '  ZIM devil inited', self.id
+        self.model = prereqs[MODEL_NAME]
+        self.model.motors[0].footTwistSpeed = 0.1
+        CreatureFootsteps.createCueFootSteps(self, sounds_config.foot_sound, sounds_config.fall_sound)
+        self._grenade_controller.subscribe_to_model(self.model)
+        self._animation_controller.subscribe_to_model(self.model)
+        self._tremble_controller.susubscribe_to_model(self.model)
+        section = prereqs[HITBOXES_PATH]
+        self.colliderNames = {}
+        for key, hitbox in section.items():
+            if key != 'BoxAttachment':
+                continue
+            box = BigWorld.BoxAttachment()
+            box.name = hitbox['boxName'].asString
+            box.minBounds = hitbox['minBounds'].asVector3
+            box.maxBounds = hitbox['maxBounds'].asVector3
+            body_zone_name = hitbox['bodyZone'].asString
+            body_zone = Damage.BZ[body_zone_name]
+            box.localTransform = self._adapt_broken_matrix(box.name, hitbox['transform'].asMatrix)
+            node_name = hitbox['nodeName'].asString
+            self.model.node(node_name).attach(box)
+            self.skeletonCollider.addCollider(box)
+            self.colliderNames[box.name] = body_zone
+            self._mushrooms_controller.on_box_created(box, node_name, body_zone)
+
+        self._filter = DevilFilter(self)
+        self._on_stage_started(None)
+        self._animation_controller.on_enter_world()
+        self._sounds_controller.on_enter_world(self._filter)
+        self._mushrooms_controller.on_enter_world()
+        return
+
+    def on_server_event(self, event_type, ints):
+        if self.isDestroyed:
+            return
+        if self.model:
+            self._animation_controller.on_server_event(event_type, ints)
+            self._sounds_controller.on_server_event(event_type, ints)
+
+    def _on_stage_started(self, prev_stage):
+        self._animation_controller.on_stage_started(self.state_index, prev_stage)
+        if self.state_index == Stage.Dead:
+            self._on_die()
+
+    def _on_die(self):
+        self._sounds_controller.on_die()
+
+    def grenade_exploded(self, original_id, victims, collision_data):
+        grenade = Throwable.get_by_origin(original_id, self.id)
+        if grenade:
+            grenade.explode(victims, collision_data)
+
+    def debug_animation(self, animation):
+        self._animation_controller.debug_animation(animation)
+
+    def set_belly_open(self, old_value):
+        if self.isDestroyed:
+            return
+        self._animation_controller.belly_mode_changed()
+
+    def set_protection_mode(self, old_value):
+        if self.isDestroyed:
+            return
+        self._animation_controller.protection_mode_changed()
+
+    def set_fartstate(self, old_value):
+        if self.isDestroyed:
+            return
+        self._animation_controller.fartstate_changed()
+
+    def set_state_index(self, old_value):
+        if self.isDestroyed:
+            return
+        self._on_stage_started(old_value)
+
+    def set_win_counter(self, old_value):
+        if self.isDestroyed:
+            return
+        self._mushrooms_controller.on_wincounter_changed()
+        self._animation_controller.on_wincounter_changed()
+
+    def set_mushroom_health(self, old_value):
+        self._mushrooms_controller.on_mushroomhealth_updated()
+
+    def set_stone_back(self, old_value):
+        self._mushrooms_controller.on_stones_back_updated()
+
+    def onLeaveWorld(self):
+        CreatureFootsteps.clearCueFootSteps(self)
+        self.skeletonCollider.clearColliders()
+        self.skeletonCollider = None
+        if self._monitor:
+            self._monitor.destroy()
+        if self._debugger:
+            self._debugger.destroy()
+        self._grenade_controller.release()
+        self._sounds_controller.release()
+        self._tremble_controller.release()
+        self._animation_controller.release()
+        self._filter.release()
+        if self.model:
+            self.model.cue('onThrowItem', None)
+            self.model = None
+        return
+
+    def can_take_cloud_damage(self, collider_name):
+        body_zone = self.colliderNames.get(collider_name, 0)
+        if body_zone not in mushroom_damage_zones:
+            return False
+        return self.mushroom_damage_type == DamageTypes.CHEMICAL
+
+    def can_take_bullet_damage(self, body_zones):
+        for bd in body_zones:
+            if bd in bullet_damage_zones:
+                return True
+            if bd in mushroom_damage_zones and self.mushroom_damage_type == DamageTypes.BULLET:
+                return True
+
+        return False
+
+    @property
+    def debugger(self):
+        if not self._debugger:
+            self._debugger = Debugger(self)
+        return self._debugger
+
+    @property
+    def monitor(self):
+        if not self._monitor:
+            self._monitor = Monitor(self)
+        return self._monitor
+
+    def run_debug(self, command, string_data):
+        data = cPickle.loads(string_data)
+        if command == 'debug_trapper':
+            self.debugger._trapper_ranges = (data['range1'], data['range2'])
+        elif command == 'debug_data':
+            if self._monitor:
+                self.monitor.set_data(data)
+        elif command == 'debug_strike':
+            self.debugger.draw_strike(*data)
+        elif command == 'log':
+            if self._monitor:
+                self.monitor.log(data)
+        else:
+            raise NotImplementedError(command)
+
+    def get_height_idle_scaled(self):
+        return 2.0
+
+    def get_sfx_volume(self):
+        return 1.0
+
+    def get_pitch(self):
+        return 1.0
+
+    def prepare_grenade(self, *args, **kargs):
+        raise NotImplementedError
+
+    def spawn_grenade(self, *args, **kargs):
+        raise NotImplementedError

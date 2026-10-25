@@ -1,0 +1,200 @@
+# Embedded file name: ./client/Birdgroup.py
+import BigWorld
+import ResourceLoader
+import BWPersonality
+import BirdflockCommon
+from BirdflockCommon import GroupState as GS
+from draw_utils_extend import LinesHolder, Cylinder
+from Helpers.Caps import CAP_CAN_PICKUP
+from Victim import Victim
+from random import random, randrange, uniform
+from Math import Vector3
+from DeadBird import DeadBird
+import json
+import ResMgr
+import sounds_manager as sounds
+from functools import partial
+from PostProcessing.creature_fadeout import creature_fader
+gi = BigWorld.getGeometricInstance()
+DEBUG = False
+MODEL = 'characters/creatures/crow/crow_mob.model'
+_sounds_config = json.loads(ResMgr.openSection('sfx/Mob/Birds.json').asBinary)
+
+class Birdgroup(BigWorld.Entity, Victim):
+    DISABLE_MARK = True
+
+    @staticmethod
+    def reload_birds():
+        reload(BirdflockCommon)
+
+    def __init__(self):
+        BigWorld.Entity.__init__(self)
+        if DEBUG:
+            print '  Birdgroup: flockgroup inited', self.id
+        self.filter = BigWorld.BoidsFilter()
+        self.filter.speed = BirdflockCommon.FLOCK_SPEED
+        self.filter.influenceRadius = BirdflockCommon.FLOCK_INFLUENCE
+        self._idle_sound = None
+        self.skeletonCollider = BigWorld.SkeletonCollider()
+        self.canBeHurtByBullets = True
+        self.targetCaps = [CAP_CAN_PICKUP]
+        self.colliderNames = {}
+        self.canTakeDamage = True
+        self._models = []
+        self._pot_id = None
+        self.model = BigWorld.Model('')
+        return
+
+    def _apply_params(self):
+        if self.isDestroyed or self.state == GS.DELETE:
+            return
+        conf = self._conf['group']
+        self.filter.speed = uniform(*conf['speed'])
+        self.filter.influenceRadius = uniform(*conf['influenceRadius'])
+        self.filter.entityPosOffset = (0, uniform(*conf['height']), 0)
+        self.filter.attackSpeed = conf.get('attack_speed') or 0.3
+        self.filter.areaRadius = conf.get('area_radius') or 10.0
+        self.filter.highPlaneY = conf.get('high_plane_y') or 1.5
+        self.filter.lowPlaneY = conf.get('low_plane_y') or -1.0
+        self._pot_id = BigWorld.addPot(self.matrix, 1, self._on_player_trap)
+
+    def _on_player_trap(self, entered, pot_id):
+        self.filter.attackMode = bool(entered)
+
+    def onEnterWorld(self, prereqs):
+        sounds.playSound(_sounds_config['CLOUD_AGGRO'], self.model)
+        amount = self._conf['group']['count']
+        if not self._conf['group'].get('area_radius'):
+            self.bbRadius = 2.0
+
+            def on_load_ref(prereqs):
+                fly_animation = 'fly_1'
+                for i in xrange(amount):
+                    model = prereqs.produce(0)
+                    box = BigWorld.BoxAttachment()
+                    box.minBounds = (-0.5, -0.25, 0)
+                    box.maxBounds = (0.5, 0.25, 0.5)
+                    box.name = str(i)
+                    model.root.attach(box)
+                    fly_action = getattr(model, fly_animation)
+                    self.skeletonCollider.addCollider(box)
+                    self.addModel(model)
+                    fr = fly_action.frameRate
+                    rate = randrange(fr * 0.8, fr * 1.2)
+                    fly_action(random() * fly_action.duration, None, 0, -1, -1, rate)
+                    self.colliderNames[box.name] = i
+                    self._models.append((model, box))
+
+                return
+
+            ResourceLoader.asyncLoad([(ResourceLoader.MODEL, MODEL, amount)], on_load_ref)
+            BigWorld.callback(1.0, self._apply_params)
+            self._idle_sound = sounds.playSound(_sounds_config['GROUP_IDLE'], self.model)
+            self._debug_line_holder = None
+            self._debug_cylinder_holder = None
+            self._debug_line_holder = DEBUG and LinesHolder()
+            self._debug_cylinder_holder = Cylinder()
+
+            def tick():
+                if self.isDestroyed:
+                    return
+                self._debug_cylinder_holder.clear()
+                if self.filter.attackMode:
+                    origin = self.position + self.filter.entityPosOffset + Vector3(0, self.filter.lowPlaneY, 0)
+                    dest = self.position + self.filter.entityPosOffset + Vector3(0, self.filter.highPlaneY, 0)
+                    self._debug_cylinder_holder.drawCylinder(origin, dest, self.filter.areaRadius)
+                self._debug_line_holder.add(self.position)
+                BigWorld.callback(0, tick)
+
+            tick()
+        return
+
+    def set_state(self, old_value):
+        if self.state == GS.RETREAT:
+            fly_animation = 'fly_up'
+            for model in self.models:
+                fly_action = getattr(model, fly_animation)
+                fr = fly_action.frameRate
+                rate = randrange(fr * 0.8, fr * 1.2)
+                fly_action(random() * fly_action.duration, None, 0, -1, -1, rate)
+
+            sounds.playSound(_sounds_config['CLOUD_AGGRO'], self.model)
+        elif self.state == GS.DELETE:
+
+            def normalize_filter():
+                if self.isDestroyed:
+                    return
+                self.filter.speed = BirdflockCommon.FLOCK_SPEED
+                self.filter.influenceRadius = BirdflockCommon.FLOCK_INFLUENCE
+
+            BigWorld.callback(BirdflockCommon.NORMALIZE_AFTER, normalize_filter)
+            BigWorld.callback(BirdflockCommon.DISAPPEAR_AFTER, self._disappear)
+        return
+
+    def _disappear(self):
+        if self.isDestroyed:
+            return
+
+        def _on_fade(model):
+            model.visible = False
+
+        for model, _ in self._models:
+            creature_fader.enable(model, _on_fade, 3.0)
+
+    def bird_killed(self, bird_index, killer_id):
+        if not self.models[bird_index].visible:
+            return
+        pos, direction, _, speed, _ = self.filter.getBoidData(bird_index)
+        sounds.playSound(_sounds_config['GROUP_DEATH'], self.models[bird_index])
+        self.models[bird_index].visible = False
+        dead_bird = DeadBird(pos, direction * speed, self.position, self.spaceID)
+        if killer_id == BigWorld.player().id:
+            if DEBUG:
+                print '  Birdgroup: last bird killed', killer_id
+
+            def dead_bird_fallen(position):
+                if DEBUG:
+                    print '  Birdgroup: request spawn', killer_id, position
+                self.cell.request_spawn_container(killer_id, position)
+                temp_sound_model = BigWorld.Model('')
+                BigWorld.addModel(temp_sound_model)
+                temp_sound_model.position = position
+                sounds.playSound(_sounds_config['GROUP_LAST_FALL'], temp_sound_model)
+                BigWorld.callback(5.0, partial(BigWorld.delModel, temp_sound_model))
+
+            dead_bird.collide_callback = dead_bird_fallen
+
+    def on_victim_damaged(self, victim_id):
+        sounds.playSound(_sounds_config['GROUP_ATTACK'], self.model)
+
+    def bleedFromShoot(self, pos, blood_orientation, collider_name, ammo_type, damager_id):
+        pass
+
+    def onLeaveWorld(self):
+        for model, box in self._models:
+            creature_fader.cancelModel(model)
+            model.root.detach(box)
+
+        self.skeletonCollider.clearColliders()
+        self.models = []
+        self.skeletonCollider = None
+        self.colliderNames = None
+        if self._idle_sound:
+            self._idle_sound.stop()
+            self._idle_sound.releaseSound()
+            self._idle_sound = None
+        if self._pot_id:
+            BigWorld.delPot(self._pot_id)
+        if self._debug_line_holder:
+            self._debug_line_holder.clear()
+            self._debug_line_holder = None
+        if self._debug_cylinder_holder:
+            self._debug_cylinder_holder.clear()
+            self._debug_cylinder_holder = None
+        self.model = None
+        return
+
+    @property
+    def _conf(self):
+        space_name = BWPersonality.spaceName(self.spaceID)
+        return BirdflockCommon.get_config_by_index(space_name, self.conf_index, purge=DEBUG)

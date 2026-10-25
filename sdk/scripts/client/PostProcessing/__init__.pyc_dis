@@ -1,0 +1,477 @@
+# Embedded file name: ./client/PostProcessing/__init__.py
+"""The PostProcessing Module.  This imports all of the c++ _PostProcessing module
+into the PostProcessing namespace.  It allows code to be written in script to
+directly override c++ behaviour."""
+from _PostProcessing import *
+from _PostProcessing import debug as _debug
+from _PostProcessing import chain as _chain
+from _PostProcessing import save as _save
+from _PostProcessing import load as _load
+import traceback
+try:
+    from _PostProcessing import chainByType
+except Exception as e:
+
+    def chainByType(a, b):
+        print 'ERORORORORORORORO'
+        traceback.print_stack()
+
+
+import RenderTargets
+import Phases
+import BigWorld
+import ChainView
+import ResMgr
+import exceptions
+from Phases import getPhaseNames
+from collections import defaultdict
+import Listener
+
+class Layers:
+    Count = 4
+    Main, AfterFrame, PreEnviro, PreAlphaBlend = xrange(Count)
+
+
+__chain_effects = {Layers.PreEnviro: {},
+ Layers.PreAlphaBlend: {},
+ Layers.Main: {},
+ Layers.AfterFrame: {}}
+__last_chain_id = 0
+preChainListeners = defaultdict(list)
+chainListeners = []
+_graphicsSettingListeners = Listener.FunctionListeners()
+
+def registerPreChainListeners(foo, sort_level = 0):
+    """ \xd1\x87\xd0\xb5\xd0\xbc \xd0\xb1\xd0\xbe\xd0\xbb\xd1\x8c\xd1\x88\xd0\xb5 sort_level, \xd1\x82\xd0\xb5\xd0\xbc \xd0\xb2\xd1\x8b\xd1\x88\xd0\xb5 \xd0\xbf\xd1\x80\xd0\xb8\xd0\xbe\xd1\x80\xd0\xb8\xd1\x82\xd0\xb5\xd1\x82 \xd1\x83 foo
+    """
+    if foo not in preChainListeners[sort_level]:
+        preChainListeners[sort_level].append(foo)
+        return True
+
+
+def deregisterPreChainListeners(foo):
+    found = False
+    for list_listeners in preChainListeners.values():
+        if foo in list_listeners:
+            list_listeners.remove(foo)
+            found = True
+
+    return found
+
+
+def _dataSectionFromFilename(filename, createIfMissing = False):
+    """
+    This method returns a data section, given a data section
+    or a filename
+    """
+    ds = None
+    if isinstance(filename, ResMgr.DataSection):
+        ds = filename
+    else:
+        ds = ResMgr.openSection(filename, createIfMissing)
+        if ds == None:
+            basePath = 'system/post_processing/chains/'
+            ds = ResMgr.openSection(basePath + filename, createIfMissing)
+    return ds
+
+
+def _materialPrerequisites(materialSect):
+    ret = []
+    ret.append(materialSect.readString('fx'))
+    for name, sect in materialSect.items():
+        if name == 'property' and sect.has_key('Texture'):
+            ret.append(sect.readString('Texture'))
+
+    return ret
+
+
+def prerequisites(filename):
+    """
+    This method returns a list of resources required for background loading.
+    It assumes the data section has been preloaded, since this function needs
+    to parse the xml file and must return synchronously.
+    
+    There are not many resources held by PP effects, mainly their materials.
+    The only exceptions are VisualTransferMeshes.
+    """
+    ds = _dataSectionFromFilename(filename)
+    ret = []
+    if ds:
+        for name, effectSect in ds.items():
+            for name, phaseSect in effectSect.items():
+                if phaseSect.has_key('material'):
+                    ret += _materialPrerequisites(phaseSect['material'])
+                if phaseSect.has_key('filterQuad'):
+                    if phaseSect['filterQuad'].has_key('PyVisualTransferMesh'):
+                        ret.append(phaseSect['filterQuad']['PyVisualTransferMesh'].readString('resourceID'))
+
+    return ret
+
+
+def addPPChainByName(name, priority = 100, layer = None, silence = False):
+    effects, _layer = load('system/post_processing/chains/' + name + '.ppchain')
+    if layer is None:
+        layer = _layer
+    _layer = _layer or layer
+    return addPPChainEffects(effects, priority, _layer)
+
+
+def addPPChainEffects(effects, priority = 100, layer = None, silence = False):
+    global __chain_effects
+    global __last_chain_id
+    if layer is None:
+        layer = Layers.Main
+    __last_chain_id += 1
+    chain_id = __last_chain_id
+    __chain_effects[layer][chain_id] = (priority, effects)
+    if not silence:
+        update_chain()
+    return chain_id
+
+
+def removePPChain(chain_id):
+    for layer in xrange(Layers.Count):
+        if chain_id in __chain_effects[layer]:
+            del __chain_effects[layer][chain_id]
+            update_chain()
+            return True
+
+    return False
+
+
+def getPPChainByID(chain_id):
+    for layer in xrange(Layers.Count):
+        if chain_id in __chain_effects[layer]:
+            return __chain_effects[layer][chain_id]
+
+    return None
+
+
+def removeAllPPChain():
+    for layer in xrange(Layers.Count):
+        __chain_effects[layer] = {}
+
+    update_chain()
+
+
+def printAllPPChain(pref = '   '):
+    for layer_id in xrange(Layers.Count):
+        print 'layer_id = %s (%s)' % (layer_id, len(__chain_effects[layer_id]))
+        for chain_id, (priority, effects) in sorted(__chain_effects[layer_id].items()):
+            print pref, 'chain_id = %s, priority = %s' % (chain_id, priority)
+            if type(effects) == list:
+                for e in effects:
+                    print pref * 2, 'Effect [%s]' % e.name
+
+            else:
+                print pref * 2, 'Effect [%s]' % effects.name
+
+
+def update_chain():
+
+    def get_sorted_effects(layer_effects):
+        layer_effects.sort(key=lambda x: int(x[0]))
+        chains = []
+        for priority, effect in layer_effects:
+            if isinstance(effect, list):
+                chains.extend(effect)
+            else:
+                chains.append(effect)
+
+        return chains
+
+    for layer in [Layers.Main,
+     Layers.AfterFrame,
+     Layers.PreEnviro,
+     Layers.PreAlphaBlend]:
+        effects = get_sorted_effects(__chain_effects[layer].values())
+        chainByType(layer, effects)
+
+    on_chain_change()
+
+
+def chain(*kargs):
+    """
+    This method overloads the chain method in C++, and extends it
+    to provide listener support
+    """
+    if len(kargs) == 0:
+        return _chain()
+    raise ValueError('method chain( *kargs ) only read')
+
+
+def on_chain_change():
+    global chainListeners
+    for listener in chainListeners:
+        listener()
+
+
+def save(dataSection):
+    """
+    This method overloads the underlying C++ function, and allows us to
+    check if the dataSection is actually a filename instead.  Also added
+    is the default folder name from WorldEditor
+    """
+    dataSection = _dataSectionFromFilename(dataSection, True)
+    return _save(dataSection)
+
+
+def load(inDataSection):
+    """
+    This method overloads the underlying C++ function, and allows us to
+    check if the dataSection is actually a filename instead.  Also added
+    is the default folder name from WorldEditor
+    """
+    dataSection = _dataSectionFromFilename(inDataSection)
+    if dataSection is None:
+        raise IOError('dataSection empty. %s ' % repr(inDataSection))
+    layer = dataSection.readInt('Layer') if dataSection['Layer'] is not None else None
+    return (_load(dataSection), layer)
+
+
+def isSupported(dataSection):
+    """
+    This method checks an dataSection to see if all the Effects contained
+    therein are supported by the current graphics setting.
+    
+    Currently the only issue is that cases are depth-based effects are not
+    available if the MRTDepth setting is not turned on.
+    """
+    optionIdx = BigWorld.getGraphicsSetting('MRT_DEPTH')
+    if optionIdx == 0:
+        return True
+    else:
+        ds = ResMgr.openSection(dataSection)
+        if ds is None:
+            raise exceptions.AttributeError(dataSection)
+        effects = ds.readStrings('Effect')
+        for name in effects:
+            if name in ('Depth of Field (variable filter)', 'Depth of Field (bokeh control)', 'Depth of Field (multi-blur)', 'Rainbow', 'God Rays', 'Volume Light'):
+                return False
+
+        return True
+
+
+def getEffect(name):
+    """
+    This function finds the appropriate effect in the post-processing chain
+    """
+    ch = chain()
+    for e in ch:
+        if e.name == name:
+            return e
+
+    raise exceptions.NameError(name)
+    return None
+
+
+def debug():
+    """
+    This method hides the debug method in C++, and extends it
+    by automatically creating a render target for the debug object
+    , and showing a GUI     component representing this texture
+    """
+    import GUI
+    s = GUI.Simple('')
+    GUI.addRoot(s)
+    db = Debug()
+    db.renderTarget = BigWorld.RenderTarget('debug post-processing', 1024, 1024)
+    _debug(db)
+    s.texture = db.renderTarget.texture
+    s.materialFX = 'SOLID'
+    return s
+
+
+def debugGui():
+    if _debug() == None:
+        db = Debug()
+        db.renderTarget = BigWorld.RenderTarget('debug post-processing', 1024, 1024)
+        _debug(db)
+        print 'created debug rT'
+    import GUI
+    w = GUI.Window('')
+    GUI.addRoot(w)
+    w.script = ChainView.ChainView(w)
+    w.script.createChildren()
+    w.size = (0.75, 3.0)
+    return w
+
+
+def defaultChain(optionIdx = -1):
+    """
+    Create the default BigWorld PostProcessing chain, for the given
+    graphics setting level.  If no graphics setting level is passed in,
+    the current Post Processing graphics setting is read from the
+    graphics setting registry and used.
+    For WorldEditor
+    """
+    if optionIdx == -1:
+        optionIdx = BigWorld.getGraphicsSetting('POST_PROCESSING')
+    RenderTargets.clearRenderTargets()
+    removeAllPPChain()
+    effects = None
+    if optionIdx == 0:
+        effects, layer = load('High Graphics Setting.ppchain')
+    elif optionIdx == 1:
+        effects, layer = load('Medium Graphics Setting.ppchain')
+    elif optionIdx == 2:
+        effects, layer = load('Low Graphics Setting.ppchain')
+    elif optionIdx == 3:
+        pass
+    if effects:
+        layer = layer or Layers.Main
+        addPPChainEffects(effects, layer=layer)
+        return layer
+    else:
+        return
+
+
+def registerGraphicsSettingListener(listener):
+    global _graphicsSettingListeners
+    _graphicsSettingListeners.append(listener)
+
+
+def _onSelectQualityOption(optionIdx):
+    """
+    Callback from the graphics settings system when the user changes the desired
+    post-processing quality.
+    """
+    from Effects import Properties
+    _graphicsSettingListeners(optionIdx)
+    BigWorld.callback(0.1, RenderTargets.reportMemoryUsage)
+
+
+_graphicsSetting = None
+
+def _registerGraphicsSettings():
+    """
+    Create and register graphics settings for Post Processing
+    """
+    global _graphicsSetting
+    gs = BigWorld.GraphicsSetting('POST_PROCESSING', 'Post Processing', -1, False, False, _onSelectQualityOption)
+    gs.addOption('High', 'High', True)
+    gs.addOption('Medium', 'Medium', True)
+    gs.addOption('Low', 'Low', True)
+    gs.addOption('Disabled', 'Disabled', True)
+    gs.registerSetting()
+    _graphicsSetting = gs
+
+
+def _deregisterGraphicsSettings():
+    """
+    Create and register graphics settings for Post Processing
+    """
+    global _graphicsSetting
+    _graphicsSetting.callback = None
+    _graphicsSetting = None
+    return
+
+
+def init():
+    print 'PostProcessing.init()'
+    RenderTargets.createStubs()
+    _registerGraphicsSettings()
+
+
+def fini():
+    print 'PostProcessing.fini()'
+    removeAllPPChain()
+    _deregisterGraphicsSettings()
+    RenderTargets.fini()
+    Phases.finiPhases()
+    _graphicsSettingListeners.reset()
+
+
+def gatherPhases(effect, name):
+    """This function returns a list of phases
+    matching the search string.  Wildcard *
+    can be used"""
+    if name == '*':
+        return effect.phases
+    else:
+        phases = []
+        for phase in effect.phases:
+            if name == phase.name:
+                phases.append(phase)
+
+        return phases
+
+
+def gatherEffects(chain, name):
+    """This function returns a list of effects
+    matching the search string.  Wildcard *
+    can be used"""
+    if name == '*':
+        return chain
+    else:
+        effects = []
+        for effect in chain:
+            if name == effect.name:
+                effects.append(effect)
+
+        return effects
+
+
+def setMaterialProperty(chain, name, value):
+    """
+    This function sets a material property on a chain.
+    
+    The name of the variable can be specified in 1 up to
+    3 parts, separated with a forward slash :
+    
+    material variable name
+    phase name/material variable name
+    effect name/phase name/material variable name
+    
+    Additionally, you can use a wild card on the effect or
+    phase name :
+    
+    effect name/*/variable name
+    
+    If there is more than one phase that has the name that
+    matches, the property will be set on multiple materials.
+    """
+    if isinstance(chain, (list, tuple)):
+        chain = chain[0]
+    if isinstance(chain, Effect):
+        chain = [chain]
+    if chain == None:
+        print 'PostProcessing::Error 0', chain, name
+        traceback.print_stack()
+        return
+    elif len(chain) == 0:
+        print 'PostProcessing::Error 1', chain, name
+        traceback.print_stack()
+        return
+    else:
+        searchFields = name.split('/')
+        if len(searchFields) == 3:
+            effects = gatherEffects(chain, searchFields[0])
+            searchFields = searchFields[1:]
+        else:
+            effects = gatherEffects(chain, '*')
+        phases = []
+        if len(searchFields) == 2:
+            for effect in effects:
+                phases += gatherPhases(effect, searchFields[0])
+
+            searchFields = searchFields[1:]
+        else:
+            for effect in effects:
+                phases += gatherPhases(effect, '*')
+
+        if not phases:
+            print 'PostProcessing::Error 2', chain, name
+            traceback.print_stack()
+        if len(searchFields) == 1:
+            for phase in phases:
+                try:
+                    setattr(phase.material, searchFields[0], value)
+                except AttributeError:
+                    pass
+
+        return
+
+
+from FilterKernels import *
+from Effects import *

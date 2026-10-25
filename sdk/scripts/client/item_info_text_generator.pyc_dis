@@ -1,0 +1,931 @@
+# Embedded file name: ./client/item_info_text_generator.py
+import BigWorld
+import BWPersonality
+import nodes_attach
+import time
+from Items import ItemsCatalog
+import InventoryNames
+import ItemsUtils
+from Localization import lc
+import ItemCategories as IC
+import traceback
+import Stats
+import ResMgr
+import EffectUtils
+import colorCodes as cc
+from copy import deepcopy
+from collections import defaultdict
+import CharacterUtils
+import scope_reticle_settings
+import BlackBox
+from FiringDefs import DamageTypes
+from amulets_utils import AmuletWrapper
+from utils import force_unicode
+import grades_utils
+from melee_avatar_skill import melee_conf
+import set_abil_utils
+from ItemsUtils import GetItemName
+from EffectData import EffectNames
+
+def exsist_path(path):
+    return None != ResMgr.openSection(path)
+
+
+def findParentNodeInfo(item_class, item_param, isDebugInfo, color = ''):
+    ParentNodeIDs = item_param.get('ParentNodeIDs', None)
+    if not ParentNodeIDs:
+        return u''
+    else:
+        res = set()
+        for node_id in ParentNodeIDs:
+            res.add(nodes_attach.NODE.getNodeLC(node_id))
+
+        if not res:
+            return u''
+        text = '\n' + color + lc('Inventory.client.parentNodeInfo') + '\n'
+        for info in res:
+            text += u'-%s\n' % info
+
+        return text
+
+
+def findCanAttachItems(item_class, item_param, isDebugInfo, text_magaz = None, weapon = None, main_color = None, hightlight_color = None):
+    if item_class not in (ItemsCatalog.WEAPON, ItemsCatalog.PART):
+        return u''
+    ch_nodes = item_param.get('ChildrenNodes', {})
+    if not ch_nodes:
+        return u''
+    if not isDebugInfo:
+        install_str = u''
+        if text_magaz:
+            install_str += '\n  -  ' + lc('Inventory.client.CAN_INSTALL_MAGAZ').format(text_magaz) + u'; '
+        for key in ch_nodes.keys():
+            att_str = u''
+            if not nodes_attach.NODE._nodesIDshowInfo[key]:
+                continue
+            if weapon and weapon.getChildrenByNodeID(key):
+
+                def get_lc(att):
+                    return u'<hlink=%s;INFO:WEAPON_ATTACH:%s:%s;>' % (att.getNameLC(True), weapon.getItemID(), att.getItemID())
+
+                att_str = u', '.join([ get_lc(att) for att in weapon.getChildrenByNodeID(key) ])
+                att_str = u' [%s]' % att_str
+            install_str += '\n  -  ' + nodes_attach.NODE.getNodeLC(key) + att_str + u'; '
+
+        if not install_str:
+            return u''
+        return lc('Inventory.client.CAN_INSTALL').format(hightlight_color + install_str + main_color) + u'\n'
+    ch_nodes = set(ch_nodes.keys())
+    can_attached = []
+    for ch_item in ItemsCatalog.PARTS.values():
+        ch_parent_nodes = ch_item.get('ParentNodeIDs', [])
+        if not ch_parent_nodes:
+            continue
+        if ch_nodes.intersection(ch_parent_nodes):
+            can_attached.append(ch_item)
+
+    if not can_attached:
+        return lc('Inventory.client.NOTHING_TO_INSTALL')
+    can_attached.sort(key=lambda e: e['TypeID'])
+    install_str = u''
+    for attachitemparam in can_attached:
+        part_type = attachitemparam['TypeID']
+        if not attachitemparam.has_key('HideFromINFO') or isDebugInfo:
+            link = u'<hlink=%s;INFO:TYPE:%s;>' % (ItemsUtils.GetItemName(part_type), part_type)
+            showtype = u' [<hlink={0};CREATEID:{0}>] '.format(part_type) if isDebugInfo else u''
+            install_str += '\n  -  ' + link + showtype + u'; '
+
+    return u'Attach: %s\n' % install_str
+
+
+TEXT_COLOR = u'<color=2552552552555>'
+TEXT_COLOR_RED = u'<color=2550500502555>'
+TEXT_COLOR_DONAT = u'<color=255171016255>'
+
+def get_battery_block(item, isDebugInfo):
+    item_type = item['complexItemType']
+    item_param = ItemsCatalog.GetItemParam(item_type)
+    text = ''
+    if item_param.has_key('ManualFuel'):
+        max_battery_level = ItemsUtils.get_max_battery_level(item_type)
+        battery_level = ItemsUtils.GetBatteryLevel(item) if item else max_battery_level
+        consumption = item_param['FuelConsumption']
+        battery_level_percent = round(100.0 * battery_level / max_battery_level, 1)
+        text += lc('Inventory.client.BATTERY_LEVEL').format(battery_level_percent) + u'\n'
+        if item_param.get('SubType') == ItemsCatalog.EXTRACTOR:
+            maxcomsumption = item_param['ConsumptionSpoiled'] * consumption
+            text += lc('Inventory.client.BATTERY_CONSUMPTION2').format(round(consumption / max_battery_level * 100, 2), round(maxcomsumption / max_battery_level * 100.0, 2)) + u'\n'
+            text += lc('Inventory.client.EXTRACTIONCONSUMPTION').format(round(item_param['ConsumptionExtraction'] / max_battery_level * 100)) + u'\n'
+        else:
+            print 'consumption', consumption, ' max_battery_level', max_battery_level
+            text += lc('Inventory.client.BATTERY_CONSUMPTION').format(round(consumption / max_battery_level * 100, 2)) + u'\n'
+        battery_param = None
+        for gadget in ItemsCatalog.AMMOS:
+            param = ItemsCatalog.GetItemParam(gadget)
+            if 'AmmoClass' not in param:
+                print 'ERROR AMMO ITEM. Not found key AmmoClass'
+                print param
+                raise
+            if param['AmmoClass'] == item_param['ManualFuel']:
+                battery_param = param
+                break
+
+        show_type = u' [<hlink={0};CREATEID:{0}>] '.format(battery_param['TypeID']) if isDebugInfo else u''
+        link = u'<hlink=%s;INFO:TYPE:%s;>' % (ItemsUtils.GetItemName(battery_param['TypeID']), battery_param['TypeID'])
+        used_text = link + show_type + u';'
+        text += lc('Inventory.client.USES_BATTERY').format('\n- ' + used_text) + u'\n\n'
+    return text
+
+
+def _item_weight_rounded(item, item_param):
+    return round(ItemsUtils.GetItemWeight(item) if item else item_param.get('Weight', 999), 3)
+
+
+def _compile_set_text(player, item, item_params, inc_params, main_color):
+    set_equip = item_params.get('SetEquip')
+    if not set_equip:
+        return
+    else:
+        cur_items_count = 0
+        equipped_armor = getattr(player, 'EquippedArmor', None)
+        checked_item_types = set()
+        if equipped_armor:
+            for item_data in equipped_armor.values():
+                item_type = item_data['itemType']
+                if item_type <= 0:
+                    continue
+                if item_type in checked_item_types:
+                    continue
+                ip = ItemsCatalog.GetItemParam(item_type)
+                se = ip.get('SetEquip')
+                if se != set_equip:
+                    continue
+                checked_item_types.add(item_type)
+                cur_items_count += 1
+
+        l_key = 'Inventory.client.abilsets.' + set_equip
+        lines = [lc(l_key)]
+        effects = defaultdict(list)
+        for effect_id in set_abil_utils.get_abil_config(set_equip).get('info_effects', []):
+            effect = EffectUtils.getEffect(effect_id)
+            states = effect.get('passive')
+            if not states:
+                continue
+            for stat in states:
+                effects[stat['needStacksFrom']].append(stat)
+
+        item_bonuses = defaultdict(list)
+        for cloth_count, data in sorted(effects.items()):
+            for bonus in data:
+                for stat_index in bonus['stat_index'].iterkeys():
+                    item_bonuses[cloth_count].append(ItemsUtils.get_change_stat_desc(stat_index, bonus)[0])
+
+        skill_text = lc(l_key + '.ActiveSkill')
+        skill_name = u'"{0}"'.format(lc(l_key + '.SkillName'))
+        skill_name = cc.highlighted_xml + skill_name + u'<tooltip={0}>'.format(lc(l_key + '.tooltip')) + main_color
+        skill_text = skill_text.format(skill_name)
+        item_bonuses[set_abil_utils.ITEMS_TO_ABIL].append(skill_text)
+        for cloth_count, bonuses in item_bonuses.iteritems():
+            description = u' '.join(bonuses)
+            if cur_items_count >= cloth_count:
+                description = cc.green_xml + description + main_color
+            line = lc('Inventory.client.abilsets.bonus_value').format(cloth_count) + u' ' + description
+            lines.append(line)
+
+        if item_params.get('SetEquipMain', False):
+            cur_charge = ItemsUtils.GetSingleInconstantParam(item, ItemsCatalog.INC_SETCHARGE) or 0
+            max_charge = set_abil_utils.get_abil_charge_config(set_equip)['max']
+            lines.append(lc('Inventory.client.abilsets.charge').format(cur_charge, max_charge))
+        return u'\n'.join(lines)
+
+
+def GetItemInfoText(player, item_type, item = None, isAttach = False, isDebugInfo = False, color = None, text_color_highlight = None, fromshop = False):
+    import clweapon
+    from AvatarCommon import AvatarCommon
+    from Inventory import Inventory
+    import QuestDispatcher as QD
+    if not color:
+        main_color = TEXT_COLOR
+        if not text_color_highlight:
+            text_color_highlight = u'<color=255255255255>'
+        text = main_color
+        if item:
+            item_inconstant_param = ItemsUtils.GetComplexItemInconstanParams(item, player)
+        else:
+            text += ItemsUtils.GetItemName(item_type) + u'\n'
+            item_inconstant_param = None
+        item_class = ItemsCatalog.GetItemClass(item_type)
+        item_class_lc = ItemsCatalog.GetItemClassLC(item_type)
+        item_param = ItemsCatalog.GetItemParam(item_type)
+        item_category = ItemsCatalog.GetItemCategory(item_type)
+
+        def hightlight(text, *params):
+            params = list(params)
+            params[0] = text_color_highlight + unicode(params[0])
+            return text.format(*params) + main_color
+
+        def getColoredEffectLC(eff_id):
+            ef = EffectUtils.getEffect(eff_id)
+            effect_name = EffectUtils.getEffectLcName(ef['id'])
+            if isDebugInfo:
+                effect_name += ' [%s]' % ef['id']
+            tooltip = EffectUtils.getEffectTooltip(ef['id'])
+            tooltip = tooltip.replace(u'\r', u'')
+            tooltip = tooltip.replace(u'\n', u'[n]')
+            tooltip = tooltip.replace('>', '?')
+            tooltip = tooltip.replace('<', '?')
+            eff_color = u'<color=255000000255>'
+            if ef.get('type', 0) == EffectUtils.EFFECT_TYPE.BUFF:
+                eff_color = u'<color=119179084255>'
+            return eff_color + '<tooltip=%s>' % tooltip + effect_name + main_color
+
+        def _eff_by_chance(effcts):
+            res = u''
+            for sub_eff in effcts:
+                if not EffectUtils.getEffect(sub_eff['Effect']).get('VisibleEffect', False):
+                    continue
+                pwr = sub_eff.get('EffectPower', 1)
+                chance = sub_eff.get('chance', 1.0)
+                if pwr > 0:
+                    line = lc('Inventory.client.subEffectAdd')
+                else:
+                    line = lc('Inventory.client.subEffectRem')
+                chance = '%s%s%%%s' % (text_color_highlight, int(chance * 100), main_color)
+                pwr = '%s%s%s' % (text_color_highlight, abs(pwr), main_color)
+                res += line.format(getColoredEffectLC(sub_eff['Effect']), pwr, chance) + u'\n'
+
+            return res
+
+        def gen_text_effects(effid_stacks = None):
+            if not effid_stacks:
+                effid_stacks = {}
+                res = u''
+                effect = item_param.get('Effect', None)
+                chance100 = '%s100%%%s' % (text_color_highlight, main_color)
+                if effect:
+                    if ItemsCatalog.EFFECTS_HEAL in effect:
+                        heal = effect[ItemsCatalog.EFFECTS_HEAL]
+                        if heal > 1:
+                            heal = '%s%s%s' % (text_color_highlight, heal, main_color)
+                            res += lc('Inventory.client.EFFECTS_HEAL').format(heal) + u'\n'
+                    EffectPower = effect.get('EffectPower', 0)
+                    if 'Effect' in effect:
+                        ef = EffectUtils.getEffect(effect['Effect'])
+                        ef and ef.get('VisibleEffect', False) and EffectPower and res += lc('Inventory.client.buff_Effect').format(getColoredEffectLC(effect['Effect']), '%s%s%s' % (text_color_highlight, effect.get('EffectPower', 0), main_color), chance100)
+                        res += '\n'
+            for effect_id, effect_stack in sorted(effid_stacks.items(), key=lambda e: -e[1]):
+                if not EffectUtils.getEffect(effect_id).get('VisibleEffect', False):
+                    continue
+                res += lc('Inventory.client.buff_Effect').format(getColoredEffectLC(effect_id), '%s%s%s' % (text_color_highlight, effect_stack, main_color), chance100)
+                res += '\n'
+
+            res += _eff_by_chance(item_param.get('SubEffects', []))
+            return res
+
+        if isDebugInfo:
+            if item_param.get('DevComment'):
+                text += 'DevComment: %s \n' % force_unicode(item_param['DevComment'])
+            text += 'TypeID: %s \n' % item_type
+            text += 'ID: %s \n' % (item['complexItemID'] if item else 'None')
+            text += 'class: %s   %s\n' % (item_class, item_class_lc)
+            text += 'created: %s \n' % (time.strftime('%b %d %Y %H:%M:%S', time.gmtime(item['creationTime'])) if item else 'None')
+            text += 'rating: {0}\n'.format(ItemsUtils.GetItemRating(item, item_inconstant_param))
+            if item_inconstant_param and item_inconstant_param.get(ItemsCatalog.INC_FROM_STEAM):
+                text += 'FROM_STEAM: True\n'
+            if 'ModelPath' in item_param:
+                text += 'ModelPath: %s \n' % item_param['ModelPath']
+                if not exsist_path(item_param['ModelPath']):
+                    text += TEXT_COLOR_RED + 'ModelPath  not found file!\n' + TEXT_COLOR
+            if 'OnFlorModel' in item_param:
+                text += 'OnFlorModel: %s \n' % item_param['OnFlorModel']
+                if not exsist_path(item_param['OnFlorModel']):
+                    text += TEXT_COLOR_RED + 'OnFlorModel  not found file!\n' + TEXT_COLOR
+            text += 'itemName: %s \n' % ItemsCatalog.GetItemVarName(item_type)
+            text += u'\n'
+            text += hightlight(lc('Inventory.client.MONEY_COST'), item_param.get('Cost', '????????')) + u'\n'
+            if item_param.has_key('GoldCost') and item_param['GoldCost'] > 0:
+                text += hightlight(lc('Inventory.client.GOLDCOST'), item_param['GoldCost']) + u'\n'
+            text += u'\n'
+        category_name = IC.get_name(item_category)
+        text += hightlight(lc('Inventory.client.CATEGORY'), category_name) + u'\n'
+        FireWood = item_param.get('FireWood', None)
+        CookingTime = item_param.get('CookingTime', None)
+        CookingTo = item_param.get('CookingTo', None)
+        waterNumberOfSips = item_param.get('waterNumberOfSips', None)
+        if FireWood:
+            text += hightlight(lc('Inventory.client.FireWood'), FireWood) + u'\n'
+        if CookingTime:
+            text += hightlight(lc('Inventory.client.CookingTime'), CookingTime) + u'\n'
+        if item and ItemsUtils.GetItemCondition(None, item) <= 0:
+            waterNumberOfSips = False
+        if waterNumberOfSips:
+            text += lc('Inventory.client.CookingToCLEAN_WATER') + u'\n'
+            text += hightlight(lc('Inventory.client.waterNumberOfSips'), waterNumberOfSips) + u'\n'
+            EffectPower = item_param['Effect']['EffectPower']
+            text += hightlight(lc('Inventory.client.volumeOfWater'), waterNumberOfSips * EffectPower) + u'\n'
+            dirty = False
+            if item:
+                dirty = ItemsUtils.getWaterDirtyPot(item)
+                if dirty:
+                    text += lc('Inventory.client.DIRTY_WATER') + u'\n'
+                else:
+                    text += lc('Inventory.client.CLEAN_WATER') + u'\n'
+            if dirty and item_param.get('EffectDirty'):
+                text += lc('Inventory.client.CAN_POISON_INFO') + u'\n'
+                text += _eff_by_chance(item_param['EffectDirty'])
+            if not dirty and item_param.get('EffectCleanByChance'):
+                text += lc('Inventory.client.CAN_CLEAR_INFO') + u'\n'
+                text += _eff_by_chance(item_param['EffectCleanByChance'])
+        elif CookingTo:
+            text += hightlight(lc('Inventory.client.CookingTo'), ItemsUtils.GetItemName(CookingTo)) + u'\n'
+        CookingPotIngredientDifficult = item_param.get('CookingPotIngredientDifficult', None)
+        if CookingPotIngredientDifficult:
+            difficult = lc('Inventory.client.CookingDifficult.%s' % CookingPotIngredientDifficult)
+            text += hightlight(lc('Inventory.client.CookingPotIngredientDifficult'), difficult) + u'\n'
+        CookingPotIngredientPoison = item_param.get('CookingPotIngredientPoison', None)
+        if CookingPotIngredientPoison is not None:
+            is_poison_text = lc('Inventory.client.PoisonYes') if CookingPotIngredientPoison else lc('Inventory.client.PoisonNo')
+            text += hightlight(lc('Inventory.client.CookingPotIngredientPoison'), is_poison_text) + u'\n'
+        if item_class == ItemsCatalog.WEAPON:
+            weapon = clweapon.ClWeapon(item, parent_entity=player)
+            text += hightlight(lc('Inventory.client.GUNTYPE'), InventoryNames.GunTypeNames.get(item_param['GunType'], '???')) + u'\n'
+            gun_bulletSpreadGrad = grades_utils.get_current_param('gun_bulletSpreadGrad', item, player) if item else item_param.get('gun_bulletSpreadGrad', 0)
+            rateOfFireSM = grades_utils.get_current_param('rateOfFireSM', item, player) if item else item_param.get('rateOfFireSM', 0)
+            text += hightlight(lc('Inventory.client.GUN_GROUPING'), round(gun_bulletSpreadGrad / 0.016667, 1)) + u'\n'
+            text += hightlight(lc('Inventory.client.LEVEL'), item_param.get('exp_Level', '????')) + u'\n'
+            if isDebugInfo:
+                text += u'\n'
+                max_condition = grades_utils.get_current_param('MaxCondition', item, player) if item else item_param.get('MaxCondition', None)
+                text += hightlight(lc('Inventory.client.MAXCONDITION'), '%.0f' % max_condition) + u'\n'
+                text += hightlight(lc('Inventory.client.QUALITYDISTRIBUTION'), item_param.get('QualityDistribution', None)) + u'\n'
+                text += hightlight(lc('Inventory.client.REPAIRDIFFICULTY'), item_param.get('RepairDifficulty', None)) + u'\n'
+                text += hightlight(lc('Inventory.client.REPAIRSPENTITEMS'), item_param.get('RepairSpentItems', None)) + u'\n'
+                text += hightlight(lc('Inventory.client.DISASSEMBLESTO'), item_param.get('disassemblesTo', None)) + u'\n'
+                text += hightlight(lc('Inventory.client.BARTERABLECONDITION'), '%.0f' % item_param.get('BarterableCondition', None)) + u'\n'
+                text += u'\n'
+            text += hightlight(lc('Inventory.client.FIRE_RATE'), '%.0f' % (rateOfFireSM or 0)) + u'\n'
+            penetration = grades_utils.get_current_param('Penetration', item, player) if item else item_param.get('Penetration', 0)
+            if penetration < -20:
+                penetration_degree = lc('Inventory.client.PEN_DEGREE_LOW')
+            elif penetration <= 20:
+                penetration_degree = lc('Inventory.client.PEN_DEGREE_MEDIUM')
+            else:
+                penetration_degree = lc('Inventory.client.PEN_DEGREE_HIGH')
+            text += hightlight(lc('Inventory.client.PENETRATION_DEGREE'), penetration_degree) + u'\n'
+            text += u'\n'
+            if item_inconstant_param:
+                condition = ItemsUtils.GetItemConditionPercentString(None, item, True, item_param, item_inconstant_param)
+                if isDebugInfo:
+                    condition = ItemsUtils.GetItemConditionPercentString(None, item, False, item_param, item_inconstant_param)
+                if item_class not in [ItemsCatalog.WEAPON]:
+                    text += hightlight(lc('Inventory.client.STATE'), condition) + u'\n'
+                text += hightlight(lc('Inventory.client.REPAIRS_NUMBER'), item_inconstant_param.get(ItemsCatalog.INC_REPAIRS_NUMBER, 0)) + u'\n'
+                if item_class in [ItemsCatalog.WEAPON, ItemsCatalog.CLOTH]:
+                    pollut_player = BigWorld.player()
+                    if not hasattr(pollut_player, 'ActiveItemPollutions'):
+                        pollut_player = None
+                    pollut = ItemsUtils.GetItemPollution(item, entity=pollut_player)
+                    pollutions_types = ItemsUtils.GetItemPollutionsTypes(item_type)
+                    for poll_type in pollutions_types:
+                        text += hightlight(lc(ItemsCatalog.DIRT_TYPE_TO_NAME[poll_type]), pollut[poll_type]) + '\n'
+
+                if not fromshop and item_class in [ItemsCatalog.WEAPON]:
+                    text += '\n<grade>\n\n\n\n\n\n\n\n\n\n\n\n\n'
+            if item_inconstant_param:
+                if item_inconstant_param.get(ItemsCatalog.INC_IS_BROKEN, 0) > 0:
+                    text += lc('Inventory.client.WEAPON_JAMMED') + u'\n'
+            text += u'\n'
+            AmmoClassList = set()
+            magaz_text = u''
+            MagazineClassList = weapon.getParam().get('MagazineClassList', [])
+            if MagazineClassList:
+                for magaz_type in sorted(ItemsCatalog.PARTS.keys()):
+                    magaz_param = ItemsCatalog.GetItemParam(magaz_type)
+                    magazineclass = magaz_param.get('MagazineClass', None)
+                    if magazineclass and magazineclass in MagazineClassList:
+                        if magaz_param.has_key('HideFromINFO') and not isDebugInfo:
+                            continue
+                        AmmoClassList.add(magaz_param.get('AmmoClass', None))
+                        showtype = u' [<hlink={0};CREATEID:{0}>] '.format(magaz_param['TypeID']) if isDebugInfo else u''
+                        link = u'<hlink=%s;INFO:TYPE:%s;>' % (ItemsUtils.GetItemName(magaz_param['TypeID']), magaz_param['TypeID'])
+                        magaz_text += '\n- ' + link + showtype + u';'
+
+            if not MagazineClassList:
+                AmmoClassList.add(weapon.getAmmoClass())
+            ammos_text = u''
+            for used_ammo_class in AmmoClassList:
+                if used_ammo_class:
+                    ammos_text += lc(ItemsCatalog.LC_AMMO.get(used_ammo_class, '<ammo_class-%s>' % used_ammo_class))
+
+            text += hightlight(lc('Inventory.client.CAPACITY_MAGAZINE'), weapon.getAmmoCapacity(), ammos_text) + u'\n'
+            if weapon.getAmmoClassAdditionalDict():
+                am_cl_add_list = weapon.getAmmoClassAdditionalDict().keys()
+                am_lc = [ lc(ItemsCatalog.LC_AMMO.get(am_cl, '<ammo_class-%s>' % am_cl)) for am_cl in am_cl_add_list ]
+                text += lc('Inventory.client.AMMO_ADDITIONAL') + '  ' + u';\n'.join(am_lc) + '\n'
+            loaded_munition_type = weapon.getAmmoType()
+            if loaded_munition_type:
+                link = u' [<hlink=%s;INFO:TYPE:%s;>]' % (ItemsUtils.GetItemName(loaded_munition_type), loaded_munition_type)
+                text += hightlight(lc('Inventory.client.NUM_ARMED'), weapon.getAmmoNumber(), link) + u' '
+                if isDebugInfo:
+                    text += u'[%s]' % loaded_munition_type
+                text += u'\n'
+            else:
+                text += hightlight(lc('Inventory.client.NUM_ARMED'), 0, '') + u'\n'
+            used_text = u''
+            launcer_param = weapon.getLauncherParam()
+            if launcer_param:
+                gr_capacity = weapon.getCurrentGrenadeCapacity()
+                gr_number = weapon.getCurrentGrenadeNumber()
+                gr_type = weapon.getCurrentGrenadeType()
+                gr_link = ''
+                if gr_number:
+                    gr_link = u' [<hlink=%s;INFO:TYPE:%s;>]' % (ItemsUtils.GetItemName(gr_type), gr_type)
+                text += u'\n'
+                text += lc('Inventory.client.CAPACITY_LAUNCHER').format(gr_capacity) + '\n'
+                text += lc('Inventory.client.NUM_ARMED_LAUNCHER').format(gr_number, gr_link) + '\n\n'
+                AmmoClassList.add(weapon.getLaunchereAmmoClass())
+            text_magaz = u''
+            if MagazineClassList:
+                for magaz_class in MagazineClassList:
+                    text_magaz += lc('nodesNames.MAGAZINECLASS.%s' % magaz_class)
+
+            if isDebugInfo:
+                AmmoClassList.update(weapon.getAmmoClassAdditionalDict().keys())
+                for ammo in sorted(ItemsCatalog.AMMOS.keys()):
+                    ammo_param = ItemsCatalog.GetItemParam(ammo)
+                    if ammo_param.get('HideFromINFO') and not isDebugInfo:
+                        continue
+                    if not ammo_param.get('AmmoClass'):
+                        print '(info)not valid Ammo item', ammo_param.get('TypeID', '???')
+                        continue
+                    if ammo_param['AmmoClass'] and ammo_param['AmmoClass'] in AmmoClassList:
+                        showtype = u' [<hlink={0};CREATEID:{0}>] '.format(ammo_param['TypeID']) if isDebugInfo else u''
+                        link = u'<hlink=%s;INFO:TYPE:%s;>' % (ItemsUtils.GetItemName(ammo_param['TypeID']), ammo_param['TypeID'])
+                        used_text += '\n- ' + link + showtype + u';'
+
+                text += used_text + u'\n'
+            text += u'\n'
+            text += findCanAttachItems(item_class, item_param, isDebugInfo, text_magaz, weapon, main_color, text_color_highlight) + u'\n'
+            if isDebugInfo:
+                text += 'MAGAZINES:' + magaz_text + '\n'
+            text += hightlight(lc('Inventory.client.WEIGHT'), _item_weight_rounded(item, item_param)) + u'\n'
+            DropPercent = item_param.get('DropPercent', 1.0)
+            if DropPercent > 0:
+                text += hightlight(lc('Inventory.client.DROPCHANCE'), DropPercent * 100.0) + u'\n'
+            elif DropPercent <= 0:
+                text += lc('Inventory.client.DROPCHANCE_NO') + u'\n'
+            text += u'\n'
+            weapon.destroy()
+        if item_class == ItemsCatalog.CLOTH:
+            text += hightlight(lc('Inventory.client.LEVEL'), item_param.get('exp_Level', '????')) + u'\n'
+            if item_param.has_key('GadjetSlots') and item_param['GadjetSlots'] > 0:
+                text += hightlight(lc('Inventory.client.GADJETSLOTS'), item_param['GadjetSlots']) + u'\n'
+            text += u'\n'
+            if isDebugInfo:
+                text += u'\n'
+                text += hightlight(lc('Inventory.client.MAXCONDITION'), '%.0f' % item_param.get('MaxCondition', None)) + u'\n'
+                text += hightlight(lc('Inventory.client.QUALITYDISTRIBUTION'), item_param.get('QualityDistribution', None)) + u'\n'
+                text += hightlight(lc('Inventory.client.REPAIRDIFFICULTY'), item_param.get('RepairDifficulty', None)) + u'\n'
+                text += hightlight(lc('Inventory.client.REPAIRSPENTITEMS'), item_param.get('RepairSpentItems', None)) + u'\n'
+                text += hightlight(lc('Inventory.client.DISASSEMBLESTO'), item_param.get('disassemblesTo', None)) + u'\n'
+                text += hightlight(lc('Inventory.client.BARTERABLECONDITION'), '%.0f' % item_param.get('BarterableCondition', None)) + u'\n'
+                text += u'\n'
+            percent = 1.0
+            if item:
+                text += hightlight(lc('Inventory.client.STATE'), ItemsUtils.GetItemConditionPercentString(None, item, True, item_param, item_inconstant_param)) + u'\n'
+                percent = round(ItemsUtils.GetItemConditionRatio(None, item, item_inconstant_param), 2)
+                if item_inconstant_param and item_param.get('GasMaskFilterClass'):
+                    filter_type = item_inconstant_param.get(ItemsCatalog.INC_GASMASK_FILTER_TYPE)
+                    filter_cond = item_inconstant_param.get(ItemsCatalog.INC_GASMASK_FILTER_COND)
+                    if getattr(player, 'EquippedGasMaskCond', None) and player.EquippedGasMaskCond['gasmask_id'] == item['complexItemID']:
+                        if isDebugInfo:
+                            text += 'INC_GASMASK_FILTER_TYPE  %s\n' % filter_type
+                            if filter_type:
+                                text += 'INC_GASMASK_FILTER_COND  %s\n' % ItemsUtils.INCConditionToCondition(filter_type, filter_cond)
+                        filter_type = player.EquippedGasMaskCond['filter_type']
+                        filter_cond = player.EquippedGasMaskCond['cond']
+                    if not filter_type:
+                        text += hightlight(lc('Inventory.client.GASMASK_FILTER'), lc('Inventory.client.NO')) + u'\n'
+                    else:
+                        filter_name = ItemsUtils.GetItemName(filter_type)
+                        filter_cond_perc = ItemsUtils.getFilterConditionPercentString(filter_type, filter_cond)
+                        text += hightlight(lc('Inventory.client.GASMASK_FILTER'), filter_name) + u'\n'
+                        text += hightlight(lc('Inventory.client.GASMASK_FILTER_COND'), filter_cond_perc) + u'\n'
+            bodyzone_sturdiness = item_param.get('bodyzone_sturdiness', {})
+            if bodyzone_sturdiness:
+                cond_ratio = min(1, percent / 0.7)
+                sturdiness = int(round(max(bodyzone_sturdiness.values()) * cond_ratio))
+                text += hightlight(lc('Inventory.client.STURDINESS'), sturdiness) + u'\n'
+            text += u'\n'
+            set_text = _compile_set_text(player, item, item_param, item_inconstant_param, main_color)
+            if set_text:
+                text += set_text + u'\n\n'
+            text += get_battery_block(item, isDebugInfo)
+            defence_text = u''
+            text_effect = u''
+            effect_defence = {}
+            equp_effect_ids = AvatarCommon.GetItemEffectId(item, 'EquipEffect')
+            equp_effects = []
+            if equp_effect_ids:
+                for effect_id in equp_effect_ids:
+                    effect = EffectUtils.getEffect(effect_id)
+                    if not effect:
+                        continue
+                    if not effect.get('VisibleEffect', None):
+                        continue
+                    if effect.get('set_effect', None):
+                        continue
+                    equp_effects.append(effect)
+
+                equp_effect = EffectUtils.parseEffectStates(equp_effects)
+                effect_defence = equp_effect.get(Stats.ch_Defence, {})
+                text_effect = ItemsUtils.GetChangeStatsDecriptions(equp_effect, color, text_color_highlight)
+
+            def GetEffectDamageTakenModDecriptions(effectslst):
+                res = []
+                for eff in effectslst:
+                    for subeff in eff.get('passive', []):
+                        if subeff['className'] == 'DamageTakenModifier':
+                            val = text_color_highlight + '%.1f%%' % abs(subeff['value'] * 100) + color
+                            if subeff['value'] < 0:
+                                res.append(lc('Inventory.client.DamageTakenModifierDecreases').format(val))
+                            else:
+                                res.append(lc('Inventory.client.DamageTakenModifierIncreases').format(val))
+
+                return '\n'.join(res)
+
+            text_effect_damage_mod = GetEffectDamageTakenModDecriptions(equp_effects)
+            for body_part in item_param['Defence'].keys():
+                defence_text += '| ' + InventoryNames.BodyPartsNames[body_part] + u' : \n'
+                part_defence_dict = item_param['Defence'][body_part]
+                part2_defence_dict = effect_defence.get(body_part, {})
+                for key in part_defence_dict:
+                    if key == DamageTypes.BULLET:
+                        continue
+                    defence_val = part_defence_dict[key] * percent
+                    if part2_defence_dict.has_key(key):
+                        defence_val += part2_defence_dict[key]
+                    dmg_name = InventoryNames.DamageNames.get(key, u'???? [%s]' % key)
+                    defence_text += u'|   + ' + dmg_name + u' : ' + text_color_highlight + str(defence_val / 10) + '%\n' + main_color
+
+                defence_text += u'\n'
+
+            if defence_text:
+                text += lc('Inventory.client.DEFENCE') + u'\n' + defence_text
+            if text_effect.strip():
+                text += text_effect.strip()
+                text += u'\n'
+            if text_effect_damage_mod.strip():
+                text += text_effect_damage_mod
+                text += u'\n'
+            AddInventorySlots = item_param.get('AddInventorySlots', None)
+            if AddInventorySlots:
+                text += lc('Inventory.client.AddInventorySlots').format(AddInventorySlots) + u'\n'
+            text += hightlight(lc('Inventory.client.WEIGHT'), _item_weight_rounded(item, item_param)) + u'\n'
+            if item_param.get('DropPercent', 1.0) > 0:
+                text += hightlight(lc('Inventory.client.DROPCHANCE'), item_param.get('DropPercent', 1.0) * 100) + u'\n'
+            else:
+                text += lc('Inventory.client.DROPCHANCE_NO') + u'\n'
+            text += u'\n'
+        if item_class in [ItemsCatalog.WEAPON, ItemsCatalog.CLOTH] and item_param.get('RepairSpentItems'):
+            bb = BlackBox.readRepairInfo(item_param.get('RepairSpentItems'))['groups']
+            if bb:
+                text += '\n'
+                repairs_text = u''
+                for idgr, group in enumerate(bb, 1):
+                    if group['chance'] <= 0:
+                        continue
+                    for bbitem in group['items']:
+                        if bbitem['dropChance'] <= 0:
+                            continue
+                        gitemID = int(bbitem['itemID'])
+                        link = u'<hlink=%s;INFO:TYPE:%s;>' % (ItemsUtils.GetItemName(gitemID), gitemID)
+                        showtype = u' [<hlink={0};CREATEID:{0}>] '.format(gitemID) if isDebugInfo else u''
+                        repairs_text += u' %s%s,' % (link, showtype) if group != bb[-1] else u' %s%s.' % (link, showtype)
+
+                text += lc('Inventory.client.REPAIR_NEED_ITEMS').format(repairs_text) + '\n'
+                text += '\n\n'
+
+        def all_key_found(keys, item_param):
+            for k in keys:
+                if k not in item_param:
+                    return False
+
+            return True
+
+        if item_class == ItemsCatalog.AMMO:
+            batteries = [673,
+             644,
+             645,
+             646]
+            if item_type not in batteries and all_key_found('DamageMain Penetration'.split(), item_param):
+                text += hightlight(lc('Inventory.client.PENETRATION'), item_param['Penetration']) + u'\n'
+                damage_main = item_param.get('DamageMain')
+                if damage_main:
+                    damage_min = min((damage_min for damage_min, _ in damage_main.values()))
+                    damage_max = max((damage_max for _, damage_max in damage_main.values()))
+                    text += hightlight(lc('Inventory.client.MAIN_DAMAGE2'), damage_min, damage_max) + u'\n\n'
+                    text += lc('Inventory.client.DAMAGE_CONDITION') + u'\n'
+            used_text = u''
+            text += u'\n'
+            detaining = item_param.get('AddDetaining', None)
+            if detaining:
+                text += hightlight(lc('Inventory.client.DETAINING'), detaining) + u'\n'
+            text += hightlight(lc('Inventory.client.WEIGHT'), _item_weight_rounded(item, item_param)) + u'\n'
+            if item_param.get('DropPercent', 1.0) > 0:
+                text += hightlight(lc('Inventory.client.DROPCHANCE'), item_param.get('DropPercent', 1.0) * 100) + u'\n'
+            else:
+                text += lc('Inventory.client.DROPCHANCE_NO') + u'\n'
+            text += u'\n'
+            if isDebugInfo:
+                text += u'\nTracerVisible: %s' % item_param.get('TracerVisible', False) + u'\n\n'
+
+        def calck_sturdiness_from_effects(effect_ids):
+            result = 0
+            try:
+                for ee in effect_ids:
+                    for sub in EffectUtils.getEffect(ee)['passive']:
+                        if sub['className'] == 'SturdinessMod':
+                            result += sub['value']
+
+            except:
+                print traceback.format_exc()
+
+            return result
+
+        if item_class == ItemsCatalog.BUFF:
+            text += hightlight(lc('Inventory.client.LEVEL'), item_param.get('exp_Level', '????')) + u'\n'
+            text += u'\n'
+            if 'IsArtefactContainer' in item_param:
+                text += hightlight(lc('Inventory.client.CONTAINTER_MAX_ART'), item_param['MaxArtefact']) + u'\n'
+                text += hightlight(lc('Inventory.client.CONTAINTER_MAX_USES'), item_param['MaxUseArtefact']) + u'\n'
+                text += u'\n'
+            if ItemsUtils.is_item_type_recipe(item_type):
+                if item_type in getattr(BigWorld.player(), 'KnowingRecipes', []):
+                    text += cc.green_xml + lc('Inventory.client.knownrecipe') + main_color + '\n'
+                else:
+                    text += text_color_highlight + lc('Inventory.client.unknownrecipe') + main_color + '\n'
+            text += Inventory.GetReceiptInfo(item_param)
+            rep_items = item_param.get('RepairOnlyItemsType', [])
+            if rep_items:
+                repair_items = [ u'<hlink={0};INFO:TYPE:{1};>'.format(GetItemName(itm), itm) for itm in rep_items ]
+                text += lc('Inventory.client.RepairOnlyItemsType') + u' ' + u', '.join(repair_items) + u'\n'
+            package_size = 1
+            if item_param.get('PackageSize'):
+                package_size = ItemsUtils.GetItemPackageSize(item_type, item=item)
+                text += hightlight(lc('Inventory.client.PACKAGESIZE'), package_size) + u'\n'
+            sturdiness = 0
+            cooking_effects = {}
+            if item_inconstant_param and ItemsCatalog.INC_COOK_SATIETY in item_inconstant_param:
+                cooking_effects = ItemsUtils.getCookingEffects(item, item_inconstant_param)
+                satiety = int(item_inconstant_param[ItemsCatalog.INC_COOK_SATIETY])
+                cooking_effects[EffectNames.Food_eat] = max(1, satiety)
+                print 'Food_eat', cooking_effects[EffectNames.Food_eat]
+                cook_debuff_stacks = item_inconstant_param.get(ItemsCatalog.INC_COOK_ISDEBUFF)
+                if cook_debuff_stacks:
+                    cooking_effects[EffectNames.Food_poison] = cook_debuff_stacks
+            text += gen_text_effects(effid_stacks=cooking_effects)
+            if sturdiness:
+                text += hightlight(lc('Inventory.client.STURDINESS'), sturdiness) + u'\n'
+            if item_param.get('CanUseOnTarget'):
+                text += u'\n' + lc('Inventory.client.CAN_USE_ON_TARGET') + u'\n'
+            if item_param.get('RessurectOrder', None):
+                text += lc('Inventory.client.RESSURECT_AVAILABLE') + u'\n'
+                text += u'\n'
+            text += hightlight(lc('Inventory.client.WEIGHT'), _item_weight_rounded(item, item_param)) + u'\n'
+            if item_param.get('DropPercent', 1.0) > 0:
+                text += hightlight(lc('Inventory.client.DROPCHANCE'), item_param.get('DropPercent', 1.0) * 100) + u'\n'
+            else:
+                text += lc('Inventory.client.DROPCHANCE_NO') + u'\n'
+            text += u'\n'
+            DonateBonus = item_param.get('DonateBonus', {})
+            if DonateBonus:
+                text += u'\n'
+                text += lc('Inventory.client.DONATE_BONUS') + u'\n'
+                for bonus_type, bonus_count in DonateBonus.items():
+                    bonus_name = ItemsUtils.GetItemName(bonus_type)
+                    text += lc('Inventory.client.DONATE_BONUS_ITEM').format(bonus_name, bonus_count)
+                    text += u'\n'
+
+                text += u'\n'
+            if 'isBlackBox' in item_param:
+                bb_name = item_param['Name']
+                if bb_name and BlackBox.has_bb_garant(bb_name):
+                    article, garant = BlackBox.get_bb_article(bb_name)
+                    group_index = BlackBox.get_article_data(article).get('group_index')
+                    if group_index is None:
+                        text += lc('Inventory.client.BB_ITEM').format(garant)
+                    else:
+                        text += lc('Inventory.client.BB_GROUP').format(garant, group_index + 1)
+                text += u'\n'
+        if item_class in [ItemsCatalog.EXPLOSION]:
+            text += hightlight(lc('Inventory.client.LEVEL'), item_param.get('exp_Level', '????')) + u'\n'
+            text += u'\n'
+            text += hightlight(lc('Inventory.client.NUM_PROJECTILES'), item_param['NumPieces']) + u'\n'
+            text += hightlight(lc('Inventory.client.WAVE_RADIUS'), item_param['DamageRadius']) + u'\n'
+            text += u'\n'
+            text += hightlight(lc('Inventory.client.WEIGHT'), _item_weight_rounded(item, item_param)) + u'\n'
+            if item_param.get('DropPercent', 1.0) > 0:
+                text += hightlight(lc('Inventory.client.DROPCHANCE'), item_param.get('DropPercent', 1.0) * 100) + u'\n'
+            else:
+                text += lc('Inventory.client.DROPCHANCE_NO') + u'\n'
+            text += u'\n'
+        if item_class in [ItemsCatalog.GADGET]:
+            text += hightlight(lc('Inventory.client.LEVEL'), item_param.get('exp_Level', '????')) + u'\n'
+            text += u'\n'
+            if item_param.has_key('ExtractTime'):
+                text += hightlight(lc('Inventory.client.EXSTRACT_TIME'), item_param['ExtractTime']) + u'\n'
+            if item_param.has_key('PreparationTime'):
+                text += hightlight(lc('Inventory.client.PREPARATION_TIME'), item_param['PreparationTime'] * 5) + u'\n'
+            text += u'\n'
+            text += get_battery_block(item, isDebugInfo)
+            if item and ItemsCatalog.GetItemCategory(item_type) == IC.AMULET:
+                amulet = AmuletWrapper(item)
+                if not amulet.is_working():
+                    if amulet.condition <= 0:
+                        text += '\xd0\x90\xd0\xbc\xd1\x83\xd0\xbb\xd0\xb5\xd1\x82 \xd1\x81\xd0\xbb\xd0\xbe\xd0\xbc\xd0\xb0\xd0\xbd!' + u'\n'
+                    else:
+                        text += lc('Inventory.client.amulet_empty') + u'\n'
+                condition_str = str(int(amulet.condition * 100.0 / amulet.max_condition)) + '%'
+                text += hightlight(lc('Inventory.client.STATE'), condition_str) + u'\n'
+                capacity_str = str(int(amulet.capacity * 100.0 / amulet.max_capacity)) + '%'
+                text += hightlight(lc('Inventory.client.capacity'), capacity_str) + u'\n'
+                ttl = ItemsUtils.timeToStringTTL(amulet.time_to_live)
+                text += hightlight(lc('Inventory.client.ttl_amulet'), ttl) + u'\n'
+                if isDebugInfo:
+                    text += u'-condition= %s/%s\n' % (amulet.condition, amulet.max_condition)
+                    text += u'-capacity= %s / %s\n' % (amulet.capacity, amulet.max_capacity)
+                    text += u'-time_to_live= %s \n' % amulet.time_to_live
+            elif ItemsCatalog.INC_CONDITION in item_inconstant_param and 'MaxCondition' in item_param:
+                text += hightlight(lc('Inventory.client.STATE'), ItemsUtils.GetItemConditionPercentString(None, item, True, item_param, item_inconstant_param)) + u'\n'
+            text += u'\n'
+            if item_param.get('melee_skill_name'):
+
+                def _gen_melee(damag_str, mconf):
+                    res = u''
+                    dmg = mconf['damage']
+                    dmg_str = u'{0}-{1}\n'.format(dmg[0], dmg[1])
+                    res += hightlight(damag_str, dmg_str)
+                    res += hightlight(lc('Inventory.client.melee_damage_penetration'), mconf['damage_penetration'])
+                    res += '\n'
+                    if mconf.get('apply_effect_id'):
+                        ef = EffectUtils.getEffect(mconf['apply_effect_id'])
+                        if ef and ef.get('VisibleEffect', False):
+                            eff_name = getColoredEffectLC(mconf['apply_effect_id'])
+                            stack = mconf['apply_effect_stack']
+                            chance100 = '{0}%'.format(mconf['apply_effect_chance'] * 100)
+                            res += lc('Inventory.client.melee_effect').format(eff_name, '%s%s%s' % (text_color_highlight, stack, main_color), chance100)
+                            res += '\n'
+                    res += '\n'
+                    return res
+
+                mconf = melee_conf.getWorseAttack(item_param['melee_skill_name'])
+                text += _gen_melee(lc('Inventory.client.melee_worse_damage'), mconf)
+                mconf = melee_conf.getBestAttack(item_param['melee_skill_name'])
+                text += _gen_melee(lc('Inventory.client.melee_powerful_damage'), mconf)
+            text += hightlight(lc('Inventory.client.WEIGHT'), _item_weight_rounded(item, item_param)) + u'\n'
+            if item_param.get('DropPercent', 1.0) > 0:
+                text += hightlight(lc('Inventory.client.DROPCHANCE'), item_param.get('DropPercent', 1.0) * 100) + u'\n'
+            else:
+                text += lc('Inventory.client.DROPCHANCE_NO') + u'\n'
+            text += u'\n'
+        if item_class == ItemsCatalog.LOOT:
+            text += hightlight(lc('Inventory.client.LEVEL'), item_param.get('exp_Level', '????')) + u'\n'
+            text += gen_text_effects()
+            text += hightlight(lc('Inventory.client.WEIGHT'), _item_weight_rounded(item, item_param)) + u'\n'
+            if item_param.get('DropPercent', 1.0) > 0:
+                text += hightlight(lc('Inventory.client.DROPCHANCE'), item_param.get('DropPercent', 1.0) * 100) + u'\n'
+            else:
+                text += lc('Inventory.client.DROPCHANCE_NO') + u'\n'
+            text += u'\n'
+        if item_class == ItemsCatalog.ARTIFACT:
+            text += hightlight(lc('Inventory.client.LEVEL'), item_param.get('exp_Level', '????')) + u'\n'
+            text += u'\n'
+            if item and item['complexItemID'] > 0:
+                if isAttach:
+                    power_time = ItemsUtils.GetItemArtefactInContainerDepleetionTime(item)
+                else:
+                    power_time = ItemsUtils.GetArtefactDepleetionTime(item, item_param, BWPersonality.gpd.time_diff)
+                if power_time == None:
+                    text += lc('Inventory.client.ARTIFACT_CHARGE_FULL') + u'\n'
+                elif power_time < 0.0:
+                    text += lc('Inventory.client.ARTIFACT_CHARGE_DEPLEETED') + u'\n'
+                else:
+                    if isAttach:
+                        percent = ItemsUtils.GetArtefactInContainerDepleetionPercent(item, item_param) * 100
+                    else:
+                        percent = ItemsUtils.GetArtefactDepleetionPercent(item, item_param) * 100
+                    time_to_live = ItemsUtils.timeToString(power_time)
+                    text += u'\n' + hightlight(lc('Inventory.client.ARTIFACT_CHARGE_REMAINING'), time_to_live, percent)
+                text += u'\n'
+            text += hightlight(lc('Inventory.client.WEIGHT'), _item_weight_rounded(item, item_param)) + u'\n'
+            if item_param.get('DropPercent', 1.0) > 0:
+                text += hightlight(lc('Inventory.client.DROPCHANCE'), item_param.get('DropPercent', 1.0) * 100) + u'\n'
+            else:
+                text += lc('Inventory.client.DROPCHANCE_NO') + u'\n'
+                text += u'\n'
+            PickupEffect = AvatarCommon.GetItemEffectId(item, 'PickupEffect')
+            EquipEffect = AvatarCommon.GetItemEffectId(item, 'EquipEffect')
+            PickupEffect = PickupEffect[0] if PickupEffect else None
+            EquipEffect = EquipEffect[0] if EquipEffect else None
+            if PickupEffect:
+                text += lc('Inventory.client.ART_PickupEffect') + ' ' + getColoredEffectLC(PickupEffect) + u'\n'
+            if PickupEffect and PickupEffect == EquipEffect:
+                text += lc('Inventory.client.ART_EquipEffect_x2') + u'\n'
+            elif EquipEffect:
+                text += lc('Inventory.client.ART_EquipEffect') + ' ' + getColoredEffectLC(EquipEffect) + u'\n'
+            text += u'\n'
+        if item_class == ItemsCatalog.PART:
+            text += hightlight(lc('Inventory.client.LEVEL'), item_param.get('exp_Level', '????')) + u'\n'
+            text += u'\n'
+            if item_param.get('PartType') == ItemsCatalog.SCOPE:
+                scope_type = item_param.get('ScopeType')
+                scope_param = scope_reticle_settings.SCOPE_MULTIPLER_TABLE.get(scope_type)
+                if scope_param:
+                    scopes = map(lambda x: 'x%s' % int(x[0]), scope_param['zoom'])
+                    scopes = ', '.join(scopes)
+                    text += lc('Inventory.client.SCOPE').format(scopes) + u'\n'
+
+            def get_prefix(value):
+                if value > 1:
+                    return lc('Inventory.client.increases')
+                return lc('Inventory.client.decreases')
+
+            if item_param.get('SpreadMod', 1.0) != 1.0:
+                text += get_prefix(item_param.get('SpreadMod', 1.0)).format(lc('Inventory.client.SpreadMod').format((item_param.get('SpreadMod') - 1) * 100)) + u'\n'
+            if item_param.get('RecoilMod', 1.0) != 1.0:
+                text += get_prefix(item_param.get('RecoilMod', 1.0)).format(lc('Inventory.client.RecoilMod').format((item_param.get('RecoilMod') - 1) * 100)) + u'\n'
+            if item_inconstant_param:
+                condition = ItemsUtils.GetItemConditionPercentString(None, item, True, item_param, item_inconstant_param)
+                if condition:
+                    text += hightlight(lc('Inventory.client.STATE'), condition) + u'\n'
+            if item_param.get('PartType', None) in (ItemsCatalog.MAGAZINE, ItemsCatalog.LAUNCHER):
+                AmmoClass = item_param.get('AmmoClass', None)
+                if isDebugInfo:
+                    for ammo in ItemsCatalog.AMMOS:
+                        ammo_param = ItemsCatalog.GetItemParam(ammo)
+                        if ammo_param.get('HideFromINFO', False):
+                            continue
+                        if ammo_param['AmmoClass'] == AmmoClass:
+                            showtype = u' [<hlink={0};CREATEID:{0}>] '.format(ammo_param['TypeID']) if isDebugInfo else u''
+                            link = u'<hlink=%s;INFO:TYPE:%s;>' % (ItemsUtils.GetItemName(ammo_param['TypeID']), ammo_param['TypeID'])
+                            text += '- ' + link + showtype + u';\n'
+
+                ammos_text = lc(ItemsCatalog.LC_AMMO.get(AmmoClass, '<ammo_class-%s>' % AmmoClass))
+                text += hightlight(lc('Inventory.client.CAPACITY_MAGAZINE'), item_param.get('AmmoCapacity', 0), ammos_text) + u'\n'
+                if item_inconstant_param:
+                    ammo_type = item_inconstant_param.get(ItemsCatalog.INC_LOADED_MUNITION_TYPE, 0)
+                    ammo_number = item_inconstant_param.get(ItemsCatalog.INC_MUNITION_NUMBER, 0)
+                    if ammo_type and ammo_number > 0:
+                        link = u' [<hlink=%s;INFO:TYPE:%s;>]' % (ItemsUtils.GetItemName(ammo_type), ammo_type)
+                        text += u'\n' + lc('Inventory.client.NUM_ARMED').format(ammo_number, link) + u'\n'
+                    else:
+                        text += hightlight(lc('Inventory.client.NUM_ARMED'), 0, '') + u'\n'
+            if item_param.get('PartType', None) != ItemsCatalog.MAGAZINE:
+                text += findParentNodeInfo(item_class, item_param, isDebugInfo)
+                text += findCanAttachItems(item_class, item_param, isDebugInfo, main_color=main_color, hightlight_color=text_color_highlight) + u'\n'
+            if item_param.get('DisableStandardSight', None) is False:
+                text += lc('Inventory.client.CANSWITCHSCOPEMODE') + u'\n'
+            if item_param.get('isNightVision') == 1:
+                text += lc('Inventory.client.NIGHTVISIONSCOPE') + u'\n'
+            text += u'\n'
+            text += hightlight(lc('Inventory.client.WEIGHT'), _item_weight_rounded(item, item_param)) + u'\n'
+            ammo_capacity_external = 0
+            ammo_capacity_external += item_param.get('AmmoCapacityExternalStart', 0)
+            ammo_capacity_external += item_param.get('AmmoCapacityExternalEnd', 0)
+            if ammo_capacity_external > 0:
+                text += lc('Inventory.client.AMMO_CAPACITY_EXTERNAL').format(ammo_capacity_external) + u'\n'
+            if item_param.get('DropPercent', 1.0) > 0:
+                text += hightlight(lc('Inventory.client.DROPCHANCE'), item_param.get('DropPercent', 1.0) * 100) + u'\n'
+            else:
+                text += lc('Inventory.client.DROPCHANCE_NO') + u'\n'
+            text += u'\n'
+        if item != None:
+            if ItemsUtils.IsQuestItem(item, item_inconstant_param):
+                quest_name = QD.getQuestTitleByID(QD.get_parent_by_id(item_inconstant_param[ItemsCatalog.IS_QUEST_ITEM]))
+                if quest_name:
+                    text += lc('Inventory.client.BELONGS_TO_QUEST') % quest_name + u'\n'
+                else:
+                    text += lc('Inventory.client.QUEST_ITEM') + u'\n'
+            if ItemsUtils.IsPersonalItem(item):
+                text += lc('Inventory.client.PERSONAL_ITEM') + u'\n'
+            if ItemsUtils.IsDungeonItem(item):
+                text += lc('Inventory.client.DUNGEON_ITEM') + u'\n'
+            unblock_timestamp = ItemsUtils.getItemBlockBySteamEndTime(item, entity=player, item_inconstant_param=item_inconstant_param)
+            if unblock_timestamp:
+                unblock_date = time.strftime('%b %d %Y %H:%M:%S', time.localtime(unblock_timestamp))
+                text += TEXT_COLOR_DONAT
+                text += lc('Inventory.client.ITEM_BLOCK_BY_STEAM').format(unblock_date)
+                text += main_color + u'\n\n'
+            text += Inventory.GetItemDescription(item) + u'\n'
+        else:
+            text += ItemsUtils.GetItemDescription(item_type)
+        if item:
+            item_ttl = ItemsUtils.GetItemDestroyTime(item, item_param)
+            if item_ttl is not None:
+                text += u'\n' + lc('Inventory.client.ITEM_TIME_TO_LIVE').format(ItemsUtils.timeToStringTTL(item_ttl))
+        if item_param.get('isBlackBox') and item_param.get('Name') and BigWorld.player():
+            mutiliplier, is_on = BigWorld.player().getBBServerChanceMultiplier(item_param.get('Name', ''))
+            time_start, time_end = is_on and BigWorld.player().getBBHolidayTime()
+            text += u'\n' + lc('Inventory.client.BLACK_BOXS_HOLYDAY').format(time_start, time_end) + u'\n'
+    return text

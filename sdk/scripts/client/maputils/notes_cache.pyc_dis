@@ -1,0 +1,90 @@
+# Embedded file name: ./client/maputils/notes_cache.py
+from hashlib import md5
+import os
+import utils
+import pyson
+import space_utils
+import traceback
+from MapNotes import MapNotes
+_path = os.path.join(utils.stalker_path(), 'usercontent/mapnotes')
+
+class NotesCache:
+
+    def __init__(self, player_name, serv_name):
+        self._versions = {}
+        self._dirty_maps = set()
+        self._loaded_data = None
+        if not os.path.exists(_path):
+            os.makedirs(_path)
+        file_name = md5((serv_name + player_name).encode('utf8')).hexdigest()[:14]
+        self._file_path = os.path.join(_path, file_name)
+        if os.path.exists(self._file_path):
+            try:
+                with open(self._file_path) as f:
+                    hash_string = f.readline().strip()
+                    file_string = f.read()
+                    cur_hash = str(hash(file_string))
+                    if hash_string != cur_hash:
+                        raise RuntimeError('invalid hash', hash_string, cur_hash)
+                    self._loaded_data = pyson.loads(file_string)
+                    for map_id, data in self._loaded_data.iteritems():
+                        self._versions[map_id] = data['version']
+
+            except:
+                traceback.print_exc()
+                traceback.print_stack()
+                self._loaded_data = {}
+
+        else:
+            self._loaded_data = {}
+        return
+
+    def get_version(self, map_id):
+        if self._loaded_data is None:
+            return
+        else:
+            return self._versions.get(map_id, 0)
+
+    def get_data(self, map_id):
+        result = []
+        for note_data in self._loaded_data[map_id]['data']:
+            result.append((note_data['servuid'],
+             note_data['flags'],
+             note_data['position'][0],
+             note_data['position'][1],
+             note_data['notes']))
+
+        return result
+
+    def update(self, map_id, version):
+        print 'NotesCache: ', map_id, version
+        if self.get_version(map_id) == version:
+            return
+        self._versions[map_id] = version
+        self._dirty_maps.add(map_id)
+
+    def flush(self, personal_marks):
+
+        def beautify_data(data):
+            for mark in data:
+                mark['position'] = tuple((mark['position'][0], mark['position'][2]))
+                mark['flags'] = MapNotes.pack(mark['flags'], mark['color'])
+                del mark['uid']
+                del mark['spaceName']
+
+            return data
+
+        if self._dirty_maps:
+            with open(self._file_path, 'w') as f:
+                for map_id in self._dirty_maps:
+                    space_name = space_utils.get_long_space_name_by_id(map_id)
+                    version = self._versions[map_id]
+                    if version:
+                        self._loaded_data[map_id] = {'version': version,
+                         'data': beautify_data(personal_marks[space_name])}
+                    elif map_id in self._loaded_data:
+                        del self._loaded_data[map_id]
+
+                self._dirty_maps.clear()
+                dumped_string = pyson.dumps(self._loaded_data)
+                f.write(str(hash(dumped_string)) + '\n' + dumped_string)

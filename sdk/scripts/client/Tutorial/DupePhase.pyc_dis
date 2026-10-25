@@ -1,0 +1,117 @@
+# Embedded file name: ./client/Tutorial/DupePhase.py
+import BWPersonality
+import math
+import BigWorld
+from Phase import Phase
+from Localization import lc
+from Helpers.BWCoroutine import BWMemberCoroutine, BWWaitForPeriod, BWWaitForCondition
+import TutorialUtils
+import sounds_manager as sounds
+import traceback
+
+class DupePhase(Phase):
+
+    def __init__(self, *args, **kargs):
+        Phase.__init__(self, *args, **kargs)
+        self.set_standard_text(lc('Tutorial.phases.PHASE_20_0'))
+        self.show_in_gui()
+        self._sounds = []
+        self._coroutine = self._coroutine()
+        self._coroutine.run()
+
+    def _update_effects(self, ratio, old_ratio, fade_component):
+
+        def calc_drunk(ratio_value):
+            return int(math.ceil(ratio_value * 10.0))
+
+        def calc_dead(ratio_value):
+            return ratio_value > 0.7
+
+        def calc_fade(ratio_value):
+            return max(0, ratio_value - 0.7) / 0.3 * 255.0
+
+        if calc_drunk(ratio) != calc_drunk(old_ratio):
+            self.actor.updateDrunkEffect(calc_drunk(ratio))
+        if calc_dead(ratio) and not calc_dead(old_ratio):
+            self.actor.dead = 1
+            self.actor.set_dead(0)
+            self._play_sound('players/damage')
+            self._play_sound('players/heartbeat/slow')
+            BWPersonality.GUICore.tutorial_gui.component.visible = False
+        if calc_fade(ratio) != calc_fade(old_ratio):
+            fade_component.colour[3] = calc_fade(ratio)
+
+    def _play_sound(self, path):
+        try:
+            sound = sounds.getSound(path)
+            sound.play()
+            self._sounds.append(sound)
+        except:
+            traceback.print_exc()
+
+    @BWMemberCoroutine
+    def _coroutine(self):
+        self._play_sound('players/gas_suffocation')
+        self._play_sound('players/whispers')
+        self._play_sound('players/deafening')
+        self.actor.startSpiderHallucianations()
+        dialog_component = BWPersonality.GUICore.dialog_screen.component
+        dialog_depth = dialog_component.position[2]
+        fade_component = self.create_fade_component()
+        fade_component.colour[3] = 0
+        BWPersonality.GUICore.worldLayer.addChild(fade_component, 'tutorial_fade')
+        time = 0.0
+        total_time = 10.0
+        unscaled_time = 0.0
+        while time < total_time:
+            old_ratio = time / total_time
+            if not BWPersonality.GUICore.is_dialog_screen_visible():
+                time += BigWorld.getTimeDelta()
+            old_unscaled_time = unscaled_time
+            unscaled_time += BigWorld.getTimeDelta()
+            if unscaled_time >= 6.0 and old_unscaled_time < 6.0:
+                self._play_sound('players/injury')
+            ratio = time / total_time
+            self._update_effects(ratio, old_ratio, fade_component)
+            yield BWWaitForPeriod(0)
+
+        BWPersonality.GUICore.dialog_screen.hide()
+        dialog_component.position[2] = 0
+        BWPersonality.GUICore.worldLayer.reSort()
+        from NPC import NPC
+        npc = next((e for e in BigWorld.entities.values() if isinstance(e, NPC) and e.npcName == TutorialUtils.TUTOR_NAME))
+        self.actor.start_talk(npc, TutorialUtils.DUPE_DIALOG_ID)
+        yield BWWaitForCondition(lambda : not BWPersonality.GUICore.is_dialog_screen_visible(), None, 0)
+
+        def magic():
+            if not self.actor:
+                return
+            self.actor.onGetUpPlayed(False)
+
+        self.actor.dead = 0
+        self.actor.set_dead(1)
+        magic()
+        BigWorld.callback(2, magic)
+        self.actor.stopSpiderHallucianations()
+        self.actor.removeDrunkEffect()
+        dialog_component.position[2] = dialog_depth
+        BWPersonality.GUICore.worldLayer.reSort()
+        self._coroutine = None
+        self.phase_completed()
+        return
+
+    def create_component(self):
+        return self.create_standard_text()
+
+    def on_destroy(self):
+        Phase.on_destroy(self)
+        if self._coroutine:
+            self._coroutine.stop()
+            self._coroutine = None
+        for sound in self._sounds:
+            if sound:
+                sound.stop()
+                sound.releaseSound()
+
+        self._sounds = []
+        return

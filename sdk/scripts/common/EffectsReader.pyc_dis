@@ -1,0 +1,110 @@
+# Embedded file name: ./common/EffectsReader.py
+EFFECTS_PATH = 'scripts/common/data/effects.pyson'
+EFFECTS_PATH_DELETED = 'scripts/common/data/effects_deleted.pyson'
+if __name__ == '__main__':
+    import sys, os
+    sys.path.append('../')
+    sys.path.append('../../../sys/tools/ResMgrEmulator')
+    sys.path.append('../../../sys/res/scripts/common/Lib')
+    import ResMgr
+    ResMgr.set_res_path(os.path.abspath('../..'))
+import ResMgr
+import pyson
+import os
+import time
+
+def dumps_sorted(data):
+    data = sorted(data, key=lambda e: e['EffectID'])
+    return pyson.dumps(data)
+
+
+class EffectReader(dict):
+    """docstring for EffectManager"""
+    instance = None
+
+    def __new__(cls):
+        if cls.instance is None:
+            cls.instance = dict.__new__(cls)
+            cls.instance.init()
+        return cls.instance
+
+    def init(self):
+        self._deleted = {}
+        self.ID_TO_NAME = {}
+        self.NAME_TO_ID = {}
+        self.load()
+
+    def getEffectIDByName(self, script_name):
+        return self.NAME_TO_ID[script_name]
+
+    def load(self, purge = False):
+        if purge:
+            ResMgr.purge(EFFECTS_PATH, True)
+        binary = ResMgr.openSection(EFFECTS_PATH).asBinary
+        data = pyson.loads(binary)
+        for eff in data:
+            EffectID = eff['EffectID']
+            eff['id'] = EffectID
+            self[EffectID] = eff
+            script_name = eff.get('_script_name_')
+            if script_name:
+                setattr(self, script_name, EffectID)
+                self.ID_TO_NAME[EffectID] = script_name
+                self.NAME_TO_ID[script_name] = EffectID
+
+    def getEffect(self, EffectID):
+        return self.get(EffectID, None)
+
+    def getFreeIds(self, count = 1, from_ = 1):
+        new_id = from_
+        res = []
+        while True:
+            if self.isIdFree(new_id):
+                res.append(new_id)
+            if len(res) >= count:
+                return res
+            new_id += 1
+
+    def isIdFree(self, EffectID):
+        if EffectID in self:
+            return False
+        if EffectID in self._deleted:
+            return False
+        return True
+
+    def loadDeleted(self):
+        binary = ResMgr.openSection(EFFECTS_PATH_DELETED).asBinary
+        data = pyson.loads(binary) if binary else []
+        for eff in data:
+            EffectID = eff['EffectID']
+            self._deleted[EffectID] = eff
+
+    def deleteEffects(self, EffectIDsList, author = u'', comment = u''):
+        for EffectID in EffectIDsList:
+            eff = self[EffectID]
+            del self[EffectID]
+            if '_meta_' not in eff:
+                eff['_meta_'] = {}
+            eff['_meta_']['delete_time'] = int(time.time())
+            eff['_meta_']['delete_author'] = author
+            eff['_meta_']['delete_comment'] = comment
+            self._deleted[EffectID] = eff
+
+        self.save()
+        fullpath = os.path.join(ResMgr.RES_PATH, EFFECTS_PATH_DELETED)
+        with open(fullpath, 'w') as f:
+            f.write(dumps_sorted(self._deleted.values()))
+
+    def save(self):
+        fullpath = os.path.join(ResMgr.RES_PATH, EFFECTS_PATH)
+        with open(fullpath, 'w') as f:
+            f.write(dumps_sorted(self.values()))
+
+    def isDeletedEfect(self, EffectID):
+        return EffectID in self._deleted
+
+    def getDeletedIds(self):
+        return self._deleted.keys()
+
+
+effects_dict = EffectReader()

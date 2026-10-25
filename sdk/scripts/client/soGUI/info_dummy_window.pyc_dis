@@ -1,0 +1,670 @@
+# Embedded file name: ./client/soGUI/info_dummy_window.py
+import colorCodes as cc
+from utils import Listenable
+import math_bw
+from Math import Matrix, Vector3
+import traceback
+from Localization import lc
+import GUI
+import BigWorld
+import Math
+import Pixie
+import UCManager
+import DyeConstant
+import StalkerModel
+from EquipSlotsConfigs import EquipSlotTypes as EST
+from weapon_attachment import WeaponAttachment
+import ItemsUtils
+import Keys
+import clweapon
+from Items import ItemsCatalog
+import copy
+import functools
+import ItemCategories as IC
+from soGUI.soButton import soButton
+from ui.button import Button
+from soGUI.soTextField import soTextField3
+from Helpers.PyGUI.PyGUIBase import Interceptor
+hands_scale = 0.5
+
+class DummyWinMode:
+    Inside, Outside = range(2)
+
+
+class EventType:
+    OnFullClick, OnCloseClick = ((r, 'infodummy') for r in range(2))
+
+
+common_config = {'scale_sencivity': 0.005,
+ 'min_dist': 1.2,
+ 'max_dist': 6.0,
+ 'start_dist': 2.0,
+ 'start_yaw': 3.14,
+ 'min_pitch': -1.0,
+ 'max_pitch': 1.0,
+ 'start_pitch': 0.0}
+override_categories = {IC.ARTIFACT: {'min_dist': 3,
+               'max_dist': 5.0,
+               'start_dist': 4.0},
+ IC.WEAPON: {'min_dist': 0.6,
+             'max_dist': 3,
+             'start_dist': 1,
+             'start_yaw': -2},
+ IC.PISTOL: {'min_dist': 1.5,
+             'max_dist': 3,
+             'start_dist': 2}}
+override_types = {207: {'min_dist': 5,
+       'max_dist': 7,
+       'start_dist': 6}}
+
+class DummyWindow(Interceptor, Listenable):
+    factoryString = 'InfoWindow.DummyWindow'
+
+    def __init__(self, component):
+        Listenable.__init__(self)
+        Interceptor.__init__(self, component)
+        self._config = common_config
+        self._model_renderer = None
+        self._model = None
+        self._weapon = None
+        self._item = None
+        self._width, self._height = (0, 0)
+        self.setupRoot()
+        return
+
+    def _update_info_text(self, screen_width, screen_height):
+        if not self._item:
+            return False
+        description = ItemsUtils.GetItemDescription(self._item['complexItemType'])
+        if not description:
+            return False
+        text = cc.active_xml + lc('Inventory.client.INFO_HELP0') + '\n\n'
+        text += cc.inactive_xml + description
+        info_width = min(screen_width / 3, 600)
+        self._tf.width, self._tf.height = info_width, 1000
+        self._tf.setTextWidth(info_width)
+        self._tf.setText(text, immidiate=True)
+        self._tf.recalc_auto_height()
+        self._tf.component.position = (screen_width - 32, screen_height - 32, 0.05)
+        return True
+
+    def do_reposition(self, width, height, mode):
+        if mode == DummyWinMode.Inside:
+            self.component.btnclose.visible = False
+            vsc = 'soGUI/elements/btn_full.xml'
+            self._tf.component.visible = False
+        elif mode == DummyWinMode.Outside:
+            self.component.btnclose.visible = True
+            vsc = 'soGUI/elements/btn_unfull.xml'
+            self._tf.component.visible = self._update_info_text(width, height)
+        self.component.btnfull.script.initVSC(vsc)
+        width, height = int(width), int(height)
+        if (self._width, self._height) == (width, height):
+            return
+        else:
+            self._width, self._height = width, height
+            restore_item = None
+            if self.component.visible and self._item:
+                restore_item = self._item
+            if self._model_renderer:
+                self._model_renderer.models = []
+                self._model_renderer.dynamic = False
+            self._model = None
+            self.component.renderDummy.texture = None
+            if self._weapon:
+                self._weapon.clearCopyModel()
+                self._weapon.destroyModels()
+                self._weapon = None
+            comp = self.component
+            comp.width, comp.height = width, height
+            comp = self.component.renderDummy
+            comp.width, comp.height = width, height
+            comp = self.component.btnfull
+            pos = self.component.width - 8
+            if mode == DummyWinMode.Outside:
+                pos -= comp.width + 8
+            comp.position[0] = pos
+            self._help_comp.position[1] = height
+            self.component.btnclose.script.transform.apply_mode()
+            mr = BigWorld.PyModelRenderer(width, height)
+            for _ in xrange(10):
+                mr.delDirectionLight(0)
+                mr.delOmniLight(0)
+
+            dir1 = Math.Vector3((1, -1, 0))
+            dir1.normalise()
+            mr.addOmniLight((1.2, 1.2, 1.2, 1.5), (-0.2, 0.2, -5), 3, 18)
+            mr.nearPlane = 0.01
+            c = 0.6
+            mr.addAmbientColor((c,
+             c,
+             c,
+             c))
+            self._model_renderer = mr
+            self.updateView()
+            if restore_item:
+                self.show(restore_item)
+            return
+
+    def setupRoot(self):
+        comp = self.component
+        comp.colour = (255, 255, 255, 255)
+        comp.materialFX = 'BLEND'
+        comp.visible = False
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('LEFT', 'TOP')
+        comp.position = (0, 0, 0.1)
+        comp = GUI.Window()
+        btn = soButton(comp)
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('RIGHT', 'TOP')
+        comp.materialFX = 'BLEND'
+        comp.width, comp.height = (24, 24)
+        comp.position = (0, 8, 0.05)
+        btn.initVSC('soGUI/elements/btn_full.xml')
+        btn.onBound()
+        btn.setVisualState('normal')
+        btn.onClick = self._on_full_click
+        self.component.addChild(comp, 'btnfull')
+        comp = GUI.Window()
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.colour = (255, 255, 255, 255)
+        comp.materialFX = 'BLEND'
+        comp.position = (0, 0, 0.2)
+        comp.visible = True
+        comp.clippable = False
+        self.component.addChild(comp, 'renderDummy')
+        comp = GUI.Window()
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('LEFT', 'BOTTOM')
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.position = (16, 0, 0.05)
+        comp.width, comp.height = (400, 60)
+        comp.clippable = False
+        self.component.renderDummy.addChild(comp)
+        self._help_comp = comp
+        pos_x = 0
+        col = (140, 140, 140, 255)
+        comp = GUI.Window('soGUI/elements/lmb.dds')
+        comp.materialFX = 'BLEND'
+        comp.hpm, comp.vpm = ('PIXEL', 'CLIP')
+        comp.ha, comp.va = ('LEFT', 'CENTER')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = comp.texture.width, comp.texture.height
+        comp.clippable = False
+        comp.colour = col
+        comp.position = (pos_x, 0, 0.05)
+        self._help_comp.addChild(comp)
+        pos_x += comp.width + 8
+        comp = GUI.Text(lc('Inventory.client.INFO_HELP1'), 'RobotoCondensedRegular_16.font')
+        comp.hpm, comp.vpm = ('PIXEL', 'CLIP')
+        comp.ha, comp.va = ('LEFT', 'CENTER')
+        comp.position = (pos_x, 0, 0.05)
+        comp.colour = col
+        comp.clippable = False
+        self._help_comp.addChild(comp)
+        pos_x += comp.stringDimensions(comp.text)[0] + 16
+        comp = GUI.Window('soGUI/elements/mmb.dds')
+        comp.materialFX = 'BLEND'
+        comp.hpm, comp.vpm = ('PIXEL', 'CLIP')
+        comp.ha, comp.va = ('LEFT', 'CENTER')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = comp.texture.width, comp.texture.height
+        comp.clippable = False
+        comp.colour = col
+        comp.position = (pos_x, 0, 0.05)
+        self._help_comp.addChild(comp)
+        pos_x += comp.width + 8
+        comp = GUI.Text(lc('Inventory.client.INFO_HELP2'), 'RobotoCondensedRegular_16.font')
+        comp.hpm, comp.vpm = ('PIXEL', 'CLIP')
+        comp.ha, comp.va = ('LEFT', 'CENTER')
+        comp.position = (pos_x, 0, 0.05)
+        comp.colour = col
+        comp.clippable = False
+        self._help_comp.addChild(comp)
+        btn = Button(self.component, 'btnclose', depth=0.05)
+        btn.set_visual('soGUI/frame/buttons/wincross.json')
+        btn.transform.set_base_resolution(None)
+        size = (self.component.btnfull.width, self.component.btnfull.height)
+        btn.transform.set_pixel_mode((1, 0), (1, 0), size, pixel_pos=(-8, 8))
+        btn.component.frame.filterType = 'LINEAR'
+        btn.on_click = self._on_close_click
+        comp = GUI.Window()
+        width, height = (400, 1000)
+        self._tf = soTextField3(comp, width=width, textWidth=width, height=height, borderWidth=0, vOffset=0, hOffset=0)
+        comp.ha, comp.va = ('RIGHT', 'BOTTOM')
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.hm, comp.wm = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = width, height
+        comp.position = (1, -1, 0.05)
+        comp.visible = False
+        self.component.addChild(comp)
+        self._distance = 1.0
+        self._yaw = 0.0
+        self._pitch = 0.0
+        self._position = Vector3()
+        self._scale = 1.0
+        return
+
+    def _on_close_click(self):
+        self.notify_listeners(EventType.OnCloseClick)
+
+    def _on_full_click(self):
+        self.notify_listeners(EventType.OnFullClick)
+
+    def updateView(self):
+        if not self._model:
+            return
+        t = Matrix()
+        t.setTranslate(Vector3(-self._position))
+        m1 = Matrix()
+        m1.setRotateY(-self._yaw)
+        m2 = Matrix()
+        m2.setRotateX(self._pitch)
+        m2.preMultiply(m1)
+        m2.preMultiply(t)
+        self._model.setWorldTransform(m2)
+        t = Matrix()
+        t.setTranslate(Vector3(0, 0, self._distance))
+        self._model_renderer.viewMatrix = t
+
+    def show(self, item):
+        self._tagert_node_name = None
+        self._model = None
+        self._item = item
+        self.clearModel()
+        self._model_renderer.dynamic = True
+        self.component.renderDummy.texture = self._model_renderer.texture
+        self.component.visible = True
+        item_type = self._item['complexItemType']
+        self.caption = ItemsUtils.GetItemName(item_type).encode('utf-8')
+        self.onBound()
+        return
+
+    def hide(self):
+        self._model = None
+        self._model_renderer.models = []
+        self._model_renderer.dynamic = False
+        self.component.renderDummy.texture = None
+        self.component.visible = False
+        self._item = None
+        if self._weapon:
+            self._weapon.clearCopyModel()
+            self._weapon.destroyModels()
+            self._weapon = None
+        return
+
+    def handleMouseEvent(self, component, event):
+        if event.dz:
+            scroll_speed = self._config['scale_sencivity'] * self._distance / self._config['max_dist']
+            self._distance = math_bw.clamp(self._distance - event.dz * scroll_speed, self._config['min_dist'] * self._scale, self._config['max_dist'] * self._scale)
+            self.updateView()
+            return True
+        if BigWorld.isKeyDown(Keys.KEY_LEFTMOUSE):
+            x, y = event.dx, event.dy
+            if x:
+                self._yaw += x * 0.01
+            if y:
+                self._pitch = math_bw.clamp(self._pitch - y * 0.01, self._config['min_pitch'], self._config['max_pitch'])
+            self.updateView()
+            return True
+        return True
+
+    def getModel(self):
+        return self._model
+
+    def composeWeapon(self, item, item_params):
+        if self._weapon:
+            self._weapon.destroy()
+        self._weapon = clweapon.ClWeapon(item)
+        model = self._weapon.getModel()
+        return model
+
+    def composePART(self, item, item_params):
+        m = filter(None, item_params.get('ModelNames', {}).values())
+        if m:
+            m = m[0]
+        if 'ModelPath' in item_params:
+            m = item_params['ModelPath']
+        model = BigWorld.Model(m if m else 'models/Test/sphere_small.model')
+        inc_params = ItemsUtils.GetComplexItemInconstanParams(item)
+        colorise_a = inc_params.get(ItemsCatalog.INC_COLORISE_A, 0)
+        colorise_b = inc_params.get(ItemsCatalog.INC_COLORISE_B, 0)
+        WeaponAttachment.update_color(item_params['TypeID'], (colorise_a, colorise_b), model)
+        return model
+
+    def composeCLOTHNewPers(self, item, item_params):
+        height = 1.0
+        if item['itemList']:
+            sub_item_params = ItemsCatalog.GetItemParam(item['itemList'][0]['itemType'])
+            if item['complexItemType'] in sub_item_params.get('ParentItemTypes', []):
+                item_params = copy.deepcopy(item_params)
+                item_params['ModelNames'] = sub_item_params['ModelNames']
+                item_params['Tint'] = sub_item_params['Tint']
+        model_lst = item_params['ModelNames'].values()
+        scale = None
+        try:
+            temp_model = BigWorld.Model(*model_lst)
+            b_min, b_max = temp_model.getMinMaxbounds
+            scale = max(b_max - b_min)
+        except:
+            traceback.print_stack()
+            traceback.print_exc()
+
+        model_lst = ['characters2/basemodel/StalkerBase2.model'] + list(model_lst)
+        model_lst.append('characters2/basemodel/ClothBase/ClothBase.model')
+        dyes = {'Head_skinned': set([EST.HEAD]),
+         'Torso_skinned': set([EST.BODY, EST.UW_BODY]),
+         'Jaket_skinned': set([EST.BODY,
+                           EST.UW_BODY,
+                           EST.U_SHIRT,
+                           EST.M_SHIRT]),
+         'Legs_skinned': set([EST.LEGS]),
+         'Pants_skinned': set([EST.LEGS, EST.UW_LEGS, EST.U_PANTS]),
+         'Hands_skinned': set([EST.GLOVES]),
+         'Foots_skinned': set([EST.UW_FOOT]),
+         'Boots_skinned': set([EST.FEET, EST.SHOES, EST.C_SHOES])}
+        slot_type = set(item_params.get('SlotType', []))
+        overide_slots = set([ s for s, val in item_params.get('OverrideSlots', []) if not val ])
+        if slot_type.issubset([EST.HEAD,
+         EST.HELMET,
+         EST.HAT,
+         EST.MOUTH,
+         EST.EYES,
+         EST.EARS]):
+            self._tagert_node_name = 'Head'
+            height = 1.6
+        elif slot_type.issubset([EST.U_SHIRT,
+         EST.M_SHIRT,
+         EST.JACKET,
+         EST.ARMOR,
+         EST.VEST_MED,
+         EST.BELT]):
+            self._tagert_node_name = 'Spine'
+            height = 1.2
+            scale = hands_scale
+        elif slot_type.issubset([EST.BACKPACK_MED]):
+            self._tagert_node_name = 'Spine'
+            height = 1.2
+        elif slot_type.issubset([EST.GLOVES, EST.C_GLOVES]):
+            self._tagert_node_name = 'Spine'
+            height = 0.9
+            scale = hands_scale
+        elif slot_type.issubset([EST.C_BODY, EST.C_HAT]):
+            self._tagert_node_name = 'Head'
+            height = 1.6
+        elif slot_type.issubset([EST.UW_FOOT,
+         EST.FEET,
+         EST.SHOES,
+         EST.C_SHOES]):
+            self._tagert_node_name = 'Scene Root'
+            height = 0.2
+        elif slot_type.issubset([EST.C_PANTS]):
+            self._tagert_node_name = ''
+            height = 0.5
+        else:
+            self._tagert_node_name = ''
+        try:
+            model = BigWorld.Model(*tuple(model_lst))
+        except:
+            print item
+            print model_lst
+            StalkerModel.printSourcesNotFound(model_lst)
+            raise
+
+        for dye, restr in dyes.items():
+            if restr.intersection(slot_type) or restr.intersection(overide_slots):
+                setattr(model, dye, 'no_render')
+
+        delegate_params = item_params
+        delegate_item = item
+        for subitem in item['itemList']:
+            subitem_params = ItemsCatalog.GetItemParam(subitem['itemType'])
+            if item['complexItemType'] in subitem_params.get('ParentItemTypes', []):
+                delegate_params = subitem_params
+                delegate_item = subitem
+
+        if delegate_params.get('Tint'):
+            mater = None
+            for mater, tint in delegate_params['Tint'].items():
+                setattr(model, mater, tint)
+
+            colorise = ItemsUtils.getItemColorise(delegate_item)
+            if colorise:
+                colors, tintid, dayEnd = colorise
+                colors = ItemsUtils.listColorsToColor4_4(colors)
+                for mater, tint in delegate_params['Tint'].items():
+                    StalkerModel.setColoredTexture(model, mater, tintid, colors)
+
+            emblem = ItemsUtils.getItemEmblem(delegate_item)
+            if emblem:
+
+                def on_icon_loaded(mater, image_id, feed_name, texture):
+                    StalkerModel.setFeed(model, None, mater, feed_name, texture)
+                    return
+
+                for mater, tint in delegate_params['Tint'].items():
+                    UCManager.ucmanager.loadImg(emblem[0], functools.partial(on_icon_loaded, mater))
+
+        if self._tagert_node_name:
+            self._cloth_taget_node = model.node(self._tagert_node_name)
+        return (model, height, scale)
+
+    def composeCLOTH(self, item, item_params):
+        item_models = filter(None, item_params['ModelNames'].values())
+        if not item_models:
+            return BigWorld.Model('models/Test/sphere_small.model')
+        else:
+            slot_type = set(item_params['SlotType'])
+            body = [StalkerModel.STALKER_MODEL.BASE]
+            bodyDyes = []
+            if not set([EST.U_SHIRT, EST.M_SHIRT]) | slot_type:
+                body.append('characters/avatars/body/body_bandit.model')
+                bodyDyes.append('tint_suite_npc_body')
+            if EST.HANDS not in slot_type:
+                body.append('characters/avatars/hands/hands_bandit.model')
+                bodyDyes.append('suite_npc_bandit_skinned')
+            if not set([EST.SHOES, EST.C_SHOES]) | slot_type:
+                body.append('characters/avatars/boots/boots_bertsi.model')
+                bodyDyes.append('tint_boots')
+            if not set([EST.U_PANTS, EST.PANTS, EST.C_PANTS]) | slot_type:
+                body.append('characters/avatars/legs/legs_bigpants.model')
+                bodyDyes.append('Material_25_skinned')
+            head = []
+            headDyes = []
+            if EST.HEAD not in slot_type:
+                head.append('characters/avatars/heads/head_m5_28.model')
+                headDyes.append('head_m5_set2_skinned')
+            backpack = []
+            backpackDyes = []
+            if set([EST.ARMOR,
+             EST.U_SHIRT,
+             EST.M_SHIRT,
+             EST.HANDS,
+             EST.C_SHOES,
+             EST.SHOES,
+             EST.U_PANTS,
+             EST.PANTS,
+             EST.C_PANTS]) | slot_type:
+                self._tagert_node_name = 'Scene Root'
+                body.extend(item_models)
+            elif set([EST.HEAD, EST.HAT, EST.C_HAT]) | slot_type:
+                self._tagert_node_name = 'HP_head'
+                head.extend(item_models)
+            elif EST.BACKPACK_MED in slot_type:
+                self._tagert_node_name = 'HP_backpack_noarmor'
+                backpack.extend(item_models)
+            else:
+                print 'error in ', item, item_params
+                raise ValueError, 'error in %s' % str(slot_type)
+            allmodels = {}
+            try:
+                body_model = BigWorld.Model(*tuple(body))
+            except:
+                print item
+                print body
+                StalkerModel.printSourcesNotFound(tuple(body))
+                raise
+
+            allmodels['Scene Root'] = body_model
+            for mater in bodyDyes:
+                setattr(body_model, mater, 'grey')
+
+            if head:
+                head_model = BigWorld.Model(*tuple(head))
+                allmodels['HP_head'] = head_model
+                body_model.head = head_model
+                for mater in headDyes:
+                    setattr(head_model, mater, 'grey')
+
+            if backpack:
+                backpack_model = BigWorld.Model(*tuple(backpack))
+                allmodels['HP_backpack_noarmor'] = backpack_model
+                body_model.backpack_noarmor = backpack_model
+                for mater in backpackDyes:
+                    setattr(backpack_model, mater, 'grey')
+
+            body_model.node('HP_head').attach(BigWorld.Model(''))
+            body_model.node('HP_backpack_noarmor').attach(BigWorld.Model(''))
+            self._cloth_taget_node = body_model.node(self._tagert_node_name)
+            model = allmodels.get(self._tagert_node_name)
+            if not model:
+                return body_model
+            if 'Tint' in item_params and item_params['Tint']:
+                mater = None
+                for mater, tint in item_params['Tint'].items():
+                    setattr(model, mater, tint)
+
+                colorise = ItemsUtils.getItemColorise(item)
+                if colorise:
+                    colors, tintid, dayEnd = colorise
+                    tintname = DyeConstant.getClothTintnameByID(tintid)
+                    StalkerModel.setTint(model, mater, tintname)
+                    colors = ItemsUtils.listColorsToColor4_4(colors)
+                    StalkerModel.setcolors(model, mater, colors)
+                emblem = ItemsUtils.getItemEmblem(item)
+                if emblem:
+                    feedName = UCManager.ucmanager.loadImg(emblem[0], lambda *e: 1)
+                    StalkerModel.setFeed(model, '', mater, feedName)
+            return body_model
+
+    def getArtifactComposeModel(self, item, item_params):
+        if item_params.get('OnFlorModel'):
+            item_model = BigWorld.Model(item_params['OnFlorModel'])
+            if item_params.get('OnFlorTint'):
+                item_model.tints = item_params['OnFlorTint']
+        elif item_params.get('ModelNames'):
+            item_model = BigWorld.Model(*item_params['ModelNames'].values())
+        else:
+            item_model = BigWorld.Model('models/Test/sphere_small.model')
+        if item_params.get('ParticleName'):
+            ps = Pixie.create(item_params.get('ParticleName'))
+            item_model.root.attach(ps)
+        return item_model
+
+    def getDefComposeModel(self, item, item_params):
+        if item_params.has_key('ModelPath'):
+            item_model = BigWorld.Model(item_params['ModelPath'])
+        elif item_params.has_key('OnFlorModel'):
+            item_model = BigWorld.Model(item_params['OnFlorModel'])
+            if item_params.has_key('OnFlorTint'):
+                item_model.tints = item_params['OnFlorTint']
+        else:
+            if not item_params.get('ModelNames'):
+                return BigWorld.Model('models/Test/sphere_small.model')
+            if 2 not in item_params['ModelNames']:
+                item_params['ModelNames'][2] = None
+            item_model = BigWorld.player().getModelByNamesDict({0: item_params['ModelNames']})
+        return item_model
+
+    def composeModel(self):
+        if not self._item:
+            return (BigWorld.Model('models/Test/sphere_small.model'),
+             None,
+             None,
+             None)
+        else:
+            item_type = self._item['complexItemType']
+            item_params = copy.deepcopy(ItemsCatalog.GetItemParam(item_type))
+            item_class = ItemsCatalog.GetItemClass(item_type)
+            if item_class == ItemsCatalog.PART:
+                return (self.composePART(self._item, item_params),
+                 None,
+                 None,
+                 None)
+            if item_class == ItemsCatalog.WEAPON:
+                return (self.composeWeapon(self._item, item_params),
+                 None,
+                 Vector3(),
+                 None)
+            if item_class == ItemsCatalog.CLOTH:
+                if item_params.get('SlotType') or item_params.get('ParentItemTypes'):
+                    model, height, scale = self.composeCLOTHNewPers(self._item, item_params)
+                    position = Vector3(0, height, 0)
+                    return (model,
+                     'FaceGen',
+                     position,
+                     scale)
+                else:
+                    return (self.composeCLOTH(self._item, item_params),
+                     'Idle_Info_Window',
+                     None,
+                     None)
+            if item_class == ItemsCatalog.ARTIFACT:
+                return (self.getArtifactComposeModel(self._item, item_params),
+                 'idle',
+                 None,
+                 None)
+            model = self.getDefComposeModel(self._item, item_params)
+            return (model,
+             None,
+             None,
+             None)
+
+    def clearModel(self):
+        self._model, action_name, self._position, self._scale = self.composeModel()
+        self._config = copy.deepcopy(common_config)
+        category_id = ItemsCatalog.GetItemCategory(self._item['complexItemType'])
+        categories = []
+        while category_id is not None:
+            categories.append(category_id)
+            category_id = IC.get_parent(category_id)
+
+        for i in range(len(categories) - 1, -1, -1):
+            config = override_categories.get(categories[i])
+            if config:
+                self._config.update(config)
+
+        config = override_types.get(self._item['complexItemType'])
+        if config:
+            self._config.update(config)
+        b_min, b_max = self._model.getMinMaxbounds
+        if self._position is None:
+            self._position = (b_max - b_min) * 0.5 + b_min
+        if self._scale is None:
+            self._scale = max(b_max - b_min)
+        self._yaw = self._config['start_yaw']
+        self._pitch = self._config['start_pitch']
+        self._distance = self._scale * math_bw.clamp(self._config['start_dist'], self._config['min_dist'], self._config['max_dist'])
+        self._model_renderer.models = [self._model]
+        if action_name:
+            action = getattr(self._model, action_name, None)
+            if action:
+                try:
+                    action()
+                except:
+                    print '[ERROR] item:', self._item['complexItemType']
+                    traceback.print_exc()
+
+            else:
+                item_type = self._item['complexItemType']
+                item_class = ItemsCatalog.GetItemClass(item_type)
+                if item_class != ItemsCatalog.ARTIFACT:
+                    print '[ERROR] item:', self._item['complexItemType']
+                    print 'not found action:', [action_name]
+        self.updateView()
+        return

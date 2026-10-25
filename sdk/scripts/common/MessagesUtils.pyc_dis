@@ -1,0 +1,125 @@
+# Embedded file name: ./common/MessagesUtils.py
+from ChatChannelConfig import CHANNEL_CONSTS
+from Localization import lc, get_user_localization
+import utils_bw
+from utils import force_utf8
+import traceback
+MESSAGES_LIMIT = 10
+
+class MessageCodes:
+    DEBUG = 1
+    DONAT_BASE_OWNER = 2
+    DONAT_BASE_WITHDRAW = 3
+    KICKED_FROM_CLAN = 4
+    RECR_TO_CLAN = 5
+    RECR_REFUSE = 6
+
+
+def compile_create_table_request():
+    result = 'CREATE TABLE IF NOT EXISTS db_stalker_data_archive.arch_messages (db_id BIGINT NOT NULL PRIMARY KEY,'
+    for i in xrange(MESSAGES_LIMIT):
+        result += ' message{i} SMALLINT NOT NULL DEFAULT 0, raw_data{i} BLOB,'.format(i=i)
+
+    result += ' pointer TINYINT NOT NULL);'
+    return result
+
+
+def compile_write_request(db_id, message_code, raw_data, prev_data):
+    """ \xd0\xb2\xd0\xbe\xd0\xb7\xd0\xb2\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd1\x81\xd1\x82\xd1\x80\xd0\xbe\xd0\xba\xd1\x83 \xd0\xb7\xd0\xb0\xd0\xbf\xd1\x80\xd0\xbe\xd1\x81\xd0\xb0 \xd0\xb8 \xd1\x80\xd0\xb5\xd0\xb4\xd0\xb0\xd0\xba\xd1\x82\xd0\xb8\xd1\x80\xd1\x83\xd0\xb5\xd1\x82 prev_data """
+    if not prev_data:
+        prev_data[:] = [db_id]
+        for i in xrange(MESSAGES_LIMIT):
+            prev_data.extend(('0', None))
+
+        prev_data.append(0)
+    raise int(prev_data[0]) == db_id or AssertionError
+    pointer = int(prev_data[-1])
+    prev_data[pointer * 2 + 1] = message_code
+    prev_data[pointer * 2 + 2] = raw_data
+    pointer = (pointer + 1) % MESSAGES_LIMIT
+    prev_data[-1] = pointer
+    result1 = 'REPLACE INTO db_stalker_data_archive.arch_messages (db_id,'
+    result2 = ' pointer) VALUES({0},'.format(db_id)
+    result3 = ' {0});'.format(pointer)
+    for i in xrange(MESSAGES_LIMIT):
+        message_code = prev_data[i * 2 + 1]
+        raw_data = prev_data[i * 2 + 2]
+        result1 += ' message{0},'.format(i)
+        result2 += ' {0},'.format(message_code)
+        if raw_data not in (None, ''):
+            result1 += ' raw_data{0},'.format(i)
+            result2 += " '{0}',".format(utils_bw.escape_value(raw_data))
+
+    return result1 + result2 + result3
+
+
+def compile_delete_request():
+    return 'DELETE FROM db_stalker_data_archive.arch_messages WHERE db_id = {db_id}'
+
+
+def compile_read_request():
+    return 'SELECT * FROM db_stalker_data_archive.arch_messages WHERE db_id = {db_id}'
+
+
+def convert_data_to_blob(message_code, data):
+    if message_code in (MessageCodes.DEBUG, MessageCodes.RECR_TO_CLAN):
+        return ''
+    if message_code in (MessageCodes.DONAT_BASE_OWNER, MessageCodes.DONAT_BASE_WITHDRAW):
+        return utils_bw.escape_value(data)
+    if message_code == MessageCodes.KICKED_FROM_CLAN:
+        kicker_name, reason = data
+        reason = utils_bw.escape_value(reason)
+        return kicker_name + ' ' + reason
+    raise NotImplementedError(message_code)
+
+
+def decode_message_data(message_code, data):
+    """ \xd0\xb2\xd0\xbe\xd0\xb7\xd0\xb2\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 message, sender, channel """
+    if message_code == MessageCodes.DEBUG:
+        return (u'debug message text', u'debug sender', CHANNEL_CONSTS.SYSTEM)
+    if message_code == MessageCodes.DONAT_BASE_OWNER:
+        base_name = lc('DonateBases.name.' + data)
+        return (lc('Mailable.codedMessage.DONAT_BASE_OWNER').format(base_name), u'', CHANNEL_CONSTS.SYSTEM)
+    if message_code == MessageCodes.DONAT_BASE_WITHDRAW:
+        base_name = lc('DonateBases.name.' + data)
+        return (lc('Mailable.codedMessage.DONAT_BASE_WITHDRAW').format(base_name), u'', CHANNEL_CONSTS.SYSTEM)
+    if message_code == MessageCodes.KICKED_FROM_CLAN:
+        split_index = data.index(' ')
+        kicker_name, reason = data[:split_index], data[split_index + 1:]
+        if kicker_name:
+            kicker_name = kicker_name.decode('utf8')
+        if reason:
+            reason = reason.decode('utf8')
+        return (lc('ServerClientMessages.Clans_Messages_PLATER_HAS_KICKED_PLAYER_PERSONAL').format(kicker_name, reason), u'', CHANNEL_CONSTS.CLAN)
+    if message_code == MessageCodes.RECR_TO_CLAN:
+        return (lc('Clans.Messages.YOU_HAVE_JOINED_IN_CLAN'), u'', CHANNEL_CONSTS.CLAN)
+    if message_code == MessageCodes.RECR_REFUSE:
+        return (lc('ServerClientMessages.Clans_Messages_RECR_REFUSE'), u'', CHANNEL_CONSTS.CLAN)
+    raise NotImplementedError(message_code)
+
+
+def get_ban_utf_message(remains_sec, pubreason, user = None):
+    try:
+        if user:
+            language = get_user_localization(user)
+            pubreason = force_utf8(pubreason)
+
+            def getl(code):
+                return lc(code, language=language, utf8=True)
+
+            if remains_sec > 3600:
+                xTime = getl('Account.base.REMAINING_HOURS') % (remains_sec / 3600.0)
+            elif remains_sec > 60:
+                xTime = getl('Account.base.REMAINING_MINUTES') % (remains_sec / 60.0)
+            elif remains_sec > 0:
+                xTime = getl('Account.base.REMAINING_SECONDS') % remains_sec
+            else:
+                xTime = getl('Account.base.UNTIL_SPECIAL_ORDERS')
+            strx = pubreason and '{0} {1} {2}.'.format(getl('Account.base.YOU_ARE_BANNED_REASON'), pubreason, xTime)
+        else:
+            strx = getl('Account.base.YOU_ARE_BANNED') + xTime + '.'
+        return strx
+    except:
+        traceback.print_exc()
+        traceback.print_stack()
+        return ''

@@ -1,0 +1,295 @@
+# Embedded file name: ./client/soGUI/revive_win/revive_win.py
+import GUI
+import json
+import pyson
+import ResMgr
+import BigWorld
+import traceback
+import BWPersonality
+import colorCodes as cc
+from soGUI import soButton
+from Localization import lc
+from utils import letters_gen
+from functools import partial
+from Helpers.PyGUI.PyGUIBase import DragWin
+from revive_button import revive_button, revive_button_right
+from soGUI.base_to_capture_gui.flag_indicator import flag_indicator
+PATH = 'scripts/client/data/BaseToCapture/base_spawners_data.pyson'
+PATH_SPAWNERS = 'scripts/common/data/BaseToCapture/B2C_spawners.json'
+section = ResMgr.openSection(PATH)
+SPAWN_DATA = pyson.loads(section.asBinary)
+section = ResMgr.openSection(PATH_SPAWNERS)
+COORDS_DATA = json.loads(section.asBinary)
+
+class ImageView:
+
+    def __init__(self, component):
+        self.component = component
+        self._path = None
+        return
+
+    def _on_image_loaded(self, path, image):
+        if self._path != path:
+            return
+        self.component.texture = image.produce(0)
+
+    def set_image(self, path):
+        self._path = path
+        self.component.texture = None
+        self.component.textureName = ''
+        if self._path:
+            BigWorld.loadResourceListBG([path], partial(self._on_image_loaded, self._path))
+        return
+
+
+class ReviveWin(DragWin):
+
+    def __init__(self):
+        self.base_name = ''
+        self.coords = None
+        self.spawners = []
+        self.spawners_right = []
+        self.flags = []
+        self.last_select = -1
+        self.cur_select = -1
+        self.is_defender = False
+        self.is_spawn_ready = False
+        comp = GUI.Window()
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.materialFX = 'SOLID'
+        comp.width, comp.height = (1280, 671)
+        comp.position = (0, 0, 0.8)
+        comp.visible = False
+        DragWin.__init__(self, comp)
+        self.map_width = 1171
+        self.map_height = 571
+        comp = GUI.Frame2('soGUI/frame/basic_frame_1.dds')
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.wm, comp.hm = ('CLIP', 'CLIP')
+        comp.materialFX = 'BLEND'
+        comp.width, comp.height = (2, 2)
+        comp.position = (0, 0, 0.9)
+        self.component.addChild(comp)
+        comp = GUI.Text(lc('GUI.revive_win.title1'), 'RobotoCondensedRegular_16.font')
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('LEFT', 'TOP')
+        comp.colour = cc.active_rgba
+        comp.position = (4, 6, 0.3)
+        self.component.addChild(comp)
+        comp = GUI.Window()
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('LEFT', 'TOP')
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.materialFX = 'SOLID'
+        comp.width, comp.height = self.map_width, self.map_height
+        comp.position = (4, 30, 0.8)
+        self.component.addChild(comp)
+        self._image_view = ImageView(comp)
+        comp = GUI.Text(u'', 'RobotoCondensedRegular_16.font')
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.hpm, comp.vpm = ('CLIP', 'PIXEL')
+        comp.colour = cc.inactive_rgba
+        comp.position = (0, self.component.height - 54, 0.3)
+        self.component.addChild(comp, 'text')
+        button_size = (200, 26)
+        button_pos_y = self.component.height - 24
+        margin = 117
+        comp = GUI.Window('')
+        btn = soButton(comp)
+        comp.vpm, comp.hpm = ('PIXEL', 'PIXEL')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.width, comp.height = button_size
+        comp.position = (self.component.width * 0.5, button_pos_y, 0.4)
+        comp.label.text = lc('GUI.revive_win.btnsavezone')
+        btn.initVSC('soGUI/elements/button_1.xml')
+        btn.onBound()
+        btn.onClick = self._on_safe_zone_click
+        btn.setDisabledState(True)
+        self.component.addChild(comp, 'btn_safe0')
+        comp = GUI.Window('')
+        btn = soButton(comp)
+        comp.vpm, comp.hpm = ('PIXEL', 'PIXEL')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.width, comp.height = button_size
+        comp.position = (self.component.width * 0.5 - margin, button_pos_y, 0.4)
+        comp.label.text = lc('GUI.revive_win.btnsavezone')
+        btn.initVSC('soGUI/elements/button_1.xml')
+        btn.onBound()
+        btn.onClick = self._on_safe_zone_click
+        self.component.addChild(comp, 'btn_safe1')
+        comp = GUI.Window('')
+        btn = soButton(comp)
+        comp.vpm, comp.hpm = ('PIXEL', 'PIXEL')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.width, comp.height = button_size
+        comp.position = (self.component.width * 0.5 + margin, button_pos_y, 0.4)
+        comp.label.text = lc('GUI.revive_win.btnroom')
+        btn.initVSC('soGUI/elements/button_1.xml')
+        btn.onBound()
+        btn.onClick = self._on_room_click
+        self.component.addChild(comp, 'btn_room')
+        return
+
+    def show(self, base_name, spawner_counts, spawner_limits, is_defence, active_flags, have_ammo_room, last_spawn_id):
+        self.component.visible = True
+        self._on_show(base_name, spawner_counts, spawner_limits, is_defence, active_flags, have_ammo_room, last_spawn_id)
+
+    def update(self, base_name, spawner_counts, spawner_limits):
+        if not self.component.visible:
+            return
+        if self.base_name != base_name:
+            return
+        for ind, count in enumerate(spawner_counts):
+            self.spawners[ind].update_text(min(count, spawner_limits[ind]), spawner_limits[ind])
+            self.spawners_right[ind].update_text(min(count, spawner_limits[ind]), spawner_limits[ind])
+
+    def update_timer(self, text):
+        self.component.text.text = text
+
+    def point_relative_to_rectangle(self, rectangle, p):
+        x1, y1, x2, y2 = rectangle
+        min_x = min(x1, x2)
+        max_x = max(x1, x2)
+        min_y = min(y1, y2)
+        max_y = max(y1, y2)
+        width = abs(max_x - min_x)
+        height = abs(max_y - min_y)
+        px, py = p[0], p[-1]
+        if width == 0 or height == 0:
+            return (0, 0)
+        rel_x = abs(float(px - min_x)) / width
+        rel_y = abs(float(py - min_y)) / height
+        return (rel_x, rel_y)
+
+    def _on_show(self, base_name, spawner_counts, spawner_limits, is_defence, active_flags, have_ammo_room, last_spawn_id):
+        for i in self.spawners:
+            self.component.delChild(i.component)
+
+        self.spawners = []
+        for i in self.spawners_right:
+            self.component.delChild(i.component)
+
+        self.spawners_right = []
+        for i in self.flags:
+            self.component.delChild(i.component)
+
+        self.flags = []
+        self.cur_select = -1
+        BWPersonality.GUICore.setBestCursor()
+        self.base_name = base_name
+        self.is_defender = is_defence
+        key = 'defence' if is_defence else 'attack'
+        pic_path = SPAWN_DATA.get(base_name, {}).get(key, {}).get('picture')
+        self.coords = SPAWN_DATA.get(base_name, {}).get(key, {}).get('coords')
+        self._image_view.set_image(pic_path)
+        self.component.text.text = lc('GUI.revive_win.text0')
+        self.component.btn_safe0.visible = False
+        self.component.btn_safe1.script.setDisabledState(not self.is_spawn_ready)
+        self.component.btn_room.script.setDisabledState(not self.is_spawn_ready)
+        self.component.btn_room.visible = have_ammo_room
+        margin = 0
+        if have_ammo_room:
+            margin = 117
+        self.component.btn_safe1.position.x = self.component.width * 0.5 - margin
+        data = COORDS_DATA.get(self.base_name).get(key, [])
+        for index, i in enumerate(data):
+            if len(spawner_counts) - 1 < index or len(spawner_limits) - 1 < index:
+                traceback.print_stack()
+                print 'spawners ERROR', index, len(spawner_counts), len(spawner_limits), data
+                continue
+            coords = i['position']
+            if self.coords is not None:
+                mult_x, mult_y = self.point_relative_to_rectangle(self.coords, coords)
+            else:
+                mult_x, mult_y = 0.1 + 0.1 * index, 0.1
+            btn = revive_button(index, is_defence)
+            btn.component.position = (self.map_width * mult_x, 30 + self.map_height - self.map_height * mult_y, 0)
+            btn.update_text(min(spawner_counts[index], spawner_limits[index]), spawner_limits[index])
+            if last_spawn_id == index and not is_defence:
+                btn.disabled()
+            self.component.addChild(btn.component, 'spawner_{0}'.format(index))
+            btn.on_select = self._on_spawn_select
+            self.spawners.append(btn)
+            btn = revive_button_right(index, is_defence)
+            btn.component.position = (self.component.width - 100, 30 + 67 * index, 0)
+            btn.on_select = self._on_spawn_select
+            btn.update_text(min(spawner_counts[index], spawner_limits[index]), spawner_limits[index])
+            self.spawners_right.append(btn)
+            if last_spawn_id == index and not is_defence:
+                btn.disabled()
+            self.component.addChild(btn.component, 'spawner_r_{0}'.format(index))
+
+        flags = COORDS_DATA.get(self.base_name).get('flags', [])
+        lgen = letters_gen()
+        if self.coords is None:
+            return
+        else:
+            for index, flag_data in enumerate(flags):
+                leter = next(lgen)
+                if not active_flags & 1 << index:
+                    continue
+                mult_x, mult_y = self.point_relative_to_rectangle(self.coords, flag_data['position'])
+                fl = flag_indicator(25)
+                fl.set_data(leter, True, True)
+                fl.set_value(0)
+                fl.component.verticalPositionMode = 'PIXEL'
+                fl.component.horizontalPositionMode = 'PIXEL'
+                fl.component.horizontalAnchor = 'CENTER'
+                fl.component.verticalAnchor = 'CENTER'
+                fl.component.position = (self.map_width * mult_x, 30 + self.map_height - self.map_height * mult_y, 0.1)
+                self.component.addChild(fl.component, 'flag_{0}'.format(index))
+                self.flags.append(fl)
+
+            return
+
+    def _on_safe_zone_click(self):
+        BigWorld.player().try_rise_player()
+        self.hide()
+
+    def _on_room_click(self):
+        BigWorld.player().cell.capture_spawn_in_ammoroom()
+        self.hide()
+
+    def _on_spawn_select(self, index):
+        self.cur_select = index
+        for i in self.spawners:
+            i.icon.selected = i.index == self.cur_select
+            i.update_colors()
+
+        for i in self.spawners_right:
+            i.icon.selected = i.index == self.cur_select
+            i.update_colors()
+
+        if self.is_spawn_ready and self.cur_select != -1:
+            BigWorld.player().cell.capture_spawn_on_base(self.base_name, self.cur_select, self.is_defender)
+            self.hide()
+            return
+
+    def on_spawn_is_ready(self):
+        if not self.component.visible:
+            return
+        self.is_spawn_ready = True
+        if self.cur_select != -1:
+            BigWorld.player().cell.capture_spawn_on_base(self.base_name, self.cur_select, self.is_defender)
+            self.hide()
+            return
+        self.component.text.text = lc('GUI.revive_win.text0')
+        self.component.btn_safe1.script.setDisabledState(False)
+        self.component.btn_room.script.setDisabledState(False)
+
+    def hide(self):
+        if self.component.visible:
+            self.component.visible = False
+            self._on_hide()
+        self.is_spawn_ready = False
+
+    def _on_hide(self):
+        BWPersonality.GUICore.setBestCursor()
+
+    @property
+    def visible(self):
+        return self.component.visible

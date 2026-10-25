@@ -1,0 +1,74 @@
+# Embedded file name: ./client/test_bot/bot_brain.py
+from Helpers.BWCoroutine import BWMemberCoroutine, BWWaitForCoroutine
+from utils import Listenable
+from test_bot.commands.commands import get_coroutine
+
+class EventType:
+    OnStarted, OnStopped, OnStatChanged = (('bot_brain', r) for r in range(3))
+
+
+class Statistics:
+
+    def __init__(self):
+        self.command = None
+        self.errors = []
+        return
+
+
+class BotBrain(Listenable):
+
+    def __init__(self, run_params, commands):
+        Listenable.__init__(self)
+        self._run_params = run_params
+        self._commands = commands
+        self.statistics = Statistics()
+        self._coroutine = None
+        return
+
+    def start(self):
+        raise not self._coroutine or AssertionError
+        self._coroutine = self._run()
+        self.notify_listeners(EventType.OnStarted)
+        self._coroutine.run()
+
+    def stop(self):
+        if self._coroutine:
+            self._coroutine.stop()
+            self._coroutine = None
+            data = {'close_window': 'close_on_end' in self._run_params}
+            self.notify_listeners(EventType.OnStopped, data)
+        return
+
+    def is_running(self):
+        return bool(self._coroutine)
+
+    def destroy(self):
+        self.stop()
+        Listenable.release(self)
+
+    def _append_error(self, text):
+        self.statistics.errors.append(text)
+        self.notify_listeners(EventType.OnStatChanged)
+        print u'Test bot error: ', text.encode('utf8')
+
+    @BWMemberCoroutine
+    def _run(self):
+        for command in self._commands:
+            self.statistics.command = command
+            self.notify_listeners(EventType.OnStatChanged)
+            command_and_args = command.split(' ', 1)
+            command = command_and_args[0]
+            args = command_and_args[1] if len(command_and_args) > 1 else u''
+            coroutine = get_coroutine(command, args)
+            if coroutine:
+                yield BWWaitForCoroutine(coroutine.run())
+                for error in coroutine.errors:
+                    self._append_error(error)
+
+            else:
+                self._append_error(u'not found command: ' + command)
+
+        self.statistics.command = None
+        self.notify_listeners(EventType.OnStatChanged)
+        self.stop()
+        return

@@ -1,0 +1,107 @@
+# Embedded file name: ./client/Squids/squid_child.py
+import BigWorld
+from Math import Vector3, Matrix
+import sys
+from math_bw import move_towards
+from Constants import MAX_SPEED, TIME_TO_TARGET, DEPTH, SINK_SPEED, ARRIVE_CHECK_RADIUS, CHANGE_SUNK_PERIOD
+from random import uniform
+
+class SteeringOutput:
+    pass
+
+
+class Arrive(object):
+
+    def connect(self, squid):
+        self._squid = squid
+
+    def get_steering(self):
+        steering_output = SteeringOutput()
+        target_velocity = self._target_pos - self._char_pos
+        target_velocity.normalise()
+        target_velocity *= MAX_SPEED
+        steering_output.linear = (target_velocity - self._char_vel) / TIME_TO_TARGET
+        return steering_output
+
+    @property
+    def _target_pos(self):
+        return self._squid.target
+
+    @property
+    def _char_vel(self):
+        return self._squid._velocity
+
+    @property
+    def _char_pos(self):
+        return self._squid._position
+
+
+arrive = Arrive()
+
+class SquidChild(object):
+
+    def __init__(self):
+        self._model = BigWorld.Model('models/city/props/irrigation_canal/cocoons.model')
+
+    def initialize(self, targets):
+        self._depth = -DEPTH
+        self._sunk = True
+        self.destroyed = False
+        self._targets = targets
+        self._target_index = 1
+        self._velocity = Vector3()
+        self._position = targets[0]
+        self._prev_dist_to_target = sys.float_info.max
+        self._change_depth_time = uniform(*CHANGE_SUNK_PERIOD) * 0.5
+        BigWorld.addModel(self._model)
+
+    def update(self, dtime):
+        self._change_depth_time -= dtime
+        if self._change_depth_time <= 0.0:
+            self._change_depth_time = uniform(*CHANGE_SUNK_PERIOD)
+            self._sunk = not self._sunk
+        if self._position.distSqrTo(self._targets[-1]) < 2.0:
+            self._sunk = True
+        desired_depth = -DEPTH if self._sunk else 0.0
+        self._depth = move_towards(self._depth, desired_depth, dtime * SINK_SPEED)
+        dist_to_target = (self.target - self._position).length
+        if dist_to_target > self._prev_dist_to_target and dist_to_target < ARRIVE_CHECK_RADIUS:
+            self._prev_dist_to_target = sys.float_info.max
+            self._target_index += 1
+            if len(self._targets) <= self._target_index:
+                self.destroy()
+                return
+        else:
+            self._prev_dist_to_target = dist_to_target
+        arrive.connect(self)
+        steering_output = arrive.get_steering()
+        self._aplly_steering_output(steering_output, dtime)
+
+    def _aplly_steering_output(self, steering_output, dtime):
+        self._position = self._position + self._velocity * dtime
+        self._velocity += steering_output.linear * dtime
+
+    def destroy(self):
+        if not self.destroyed:
+            BigWorld.delModel(self._model)
+            self.destroyed = True
+
+    @property
+    def target(self):
+        return self._targets[self._target_index]
+
+    @property
+    def _position(self):
+        return self.__position
+
+    @_position.setter
+    def _position(self, value):
+        self.__position = value
+        if self._velocity.length:
+            direction = self._velocity
+        else:
+            direction = self.target - value
+        m = Matrix()
+        m.lookAt(value + Vector3(0, self._depth, 0), direction, Vector3(0, 1, 0))
+        m.invert()
+        self._model.setWorldTransform(m)

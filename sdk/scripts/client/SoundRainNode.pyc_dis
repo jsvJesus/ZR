@@ -1,0 +1,199 @@
+# Embedded file name: ./client/SoundRainNode.py
+import BigWorld
+import BWPersonality
+from sounds_manager import playSound
+import Settings
+import GUI
+from utils import ignoreError
+from Helpers.Caps import CAP_EXCLUDE
+DEBUG = False
+MAX_RADIUS = 15
+
+def switchDebugMode():
+    global DEBUG
+    DEBUG = not DEBUG
+    for e in BigWorld.entities.values():
+        if isinstance(e, SoundRainNode):
+            e.updateDebugMode()
+            e._update_debug_text()
+
+    return DEBUG
+
+
+class SoundRainNode(BigWorld.Entity):
+    enable_from_trigger = False
+
+    def __init__(self):
+        BigWorld.Entity.__init__(self)
+        self.targetCaps = [CAP_EXCLUDE]
+        self.lastSound = None
+        self._textnode = None
+        self.model_debug = None
+        self.model_debug2 = None
+        self._sound_played = False
+        self.lastSoundName = ''
+        self._last_vol = -2.0
+        self._pl_inside = False
+        self.rain_active = False
+        self.under_water = False
+        self.__pot_handle = BigWorld.addPot(self.matrix, MAX_RADIUS, self.hitPot)
+        return
+
+    def hitPot(self, enteredTrap, handle):
+        if self.isDestroyed:
+            BigWorld.delPot(handle)
+            return
+        p = BigWorld.player()
+        if enteredTrap:
+            self.under_water = p.is_camera_in_water()
+            p.add_camerainwater_listener(self)
+            self._pl_inside = True
+            self.startSound()
+        else:
+            p.remove_camerainwater_listener(self)
+            self._pl_inside = False
+            self.stopSound()
+
+    def __timer_debug(self):
+        if not DEBUG:
+            return
+        if self.isDestroyed:
+            return
+        BigWorld.callback(0.5, self.__timer_debug)
+        if not self._textnode:
+            return
+        tint = 'Default'
+        if not self._sound_played:
+            colour = (255, 205, 149, 245)
+        elif self.lastSound.isVirtual:
+            colour = (255, 0, 0, 255)
+            tint = 'red'
+        else:
+            colour = (10, 205, 10, 245)
+        self.model_debug2.dye = tint
+        self._textnode.colour = colour
+        self.model_debug2.visible = self._sound_played
+
+    def startSound(self):
+        self._update_debug_text()
+        if not self._pl_inside:
+            return
+        if not self.rain_active:
+            return
+        if self.under_water:
+            return
+        if self.lastSound:
+            self.lastSound.play()
+        else:
+            self.lastSound = playSound(self.sound_type, self.model)
+        self._sound_played = True
+        self._update_volume()
+        if DEBUG and self.model_debug2:
+            self.model_debug2.visible = True
+
+    def updateDebugMode(self):
+        if DEBUG and not self.model_debug:
+            self.model_debug = BigWorld.Model('models/bolvan/helpers/sound_node.model')
+            self.model_debug.scale = (0.3, 0.3, 0.3)
+            self.model_debug2 = BigWorld.Model('models/bolvan/helpers/light_ambient_server.model')
+            textnode = GUI.Text('node id {0}'.format(self.id))
+            textnode.explicitSize = True
+            textnode.multiline = True
+            textnode.size = (3, 1)
+            textnode.colour = (255, 205, 149, 245)
+            textnode.filterType = 'LINEAR'
+            textnode.verticalAnchor = 'BOTTOM'
+            textnode.position = (0, 1, 0)
+            atch = GUI.Attachment()
+            atch.component = textnode
+            atch.faceCamera = True
+            self.model_debug.root.attach(atch)
+            self.model_debug.position = self.position
+            self.model_debug2.position = self.position + (0, 2.5, 0)
+            self.addModel(self.model_debug)
+            self.addModel(self.model_debug2)
+            self.model_debug2.visible = False
+            self._attach = atch
+            self._textnode = textnode
+            self.__timer_debug()
+        elif self.model_debug and not DEBUG:
+            self._clear_debug_attaches()
+
+    def _clear_debug_attaches(self):
+        if not self.model_debug:
+            return
+        else:
+            self.model_debug.root.detach(self._attach)
+            self._attach.component = None
+            self.delModel(self.model_debug)
+            self.delModel(self.model_debug2)
+            self.model_debug = None
+            self.model_debug2 = None
+            self._attach = None
+            self._textnode = None
+            return
+
+    def _update_debug_text(self):
+        if not DEBUG or not self._textnode:
+            return
+        self._textnode.text = u'pl-%s,rain-%s, v:%.2f\n%s' % (self._pl_inside,
+         self.rain_active,
+         self._last_vol,
+         self.sound_type)
+
+    def stopSound(self):
+        self._update_debug_text()
+        self._sound_played = False
+        if self.lastSound:
+            self.lastSound.stop()
+            self.lastSound.releaseSound()
+            self.lastSound = None
+        if DEBUG:
+            self.model_debug2.visible = False
+        return
+
+    def onEnterWorld(self, prereq):
+        self.updateDebugMode()
+        self.model = BigWorld.Model('')
+        Settings.Settings().addSfxChangeObserver(self)
+        BWPersonality.gpd.weather.registerSoundRainNode(self)
+
+    def sfxVolumeChanged(self, volume):
+        self._update_volume()
+
+    def on_camera_in_water(self, status):
+        """ \xd0\xbf\xd0\xbe\xd0\xb3\xd1\x80\xd1\x83\xd0\xb6\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5 \xd0\xba\xd0\xb0\xd0\xbc\xd0\xb5\xd1\x80\xd1\x8b \xd0\xbf\xd0\xbe\xd0\xb4 \xd0\xb2\xd0\xbe\xd0\xb4\xd1\x83 (1) \xd0\xb8\xd0\xb7 \xd0\xbf\xd0\xbe\xd0\xb4 \xd0\xb2\xd0\xbe\xd0\xb4\xd1\x8b (0) """
+        self.under_water = status
+        if status:
+            self.stopSound()
+        else:
+            self.startSound()
+
+    def setStatusRain(self, status):
+        self.rain_active = status
+        if self.rain_active:
+            self.startSound()
+        else:
+            self.stopSound()
+
+    @ignoreError
+    def _update_volume(self):
+        if not self.rain_active:
+            return
+        if not self.lastSound:
+            return
+        if not self._pl_inside:
+            return
+        volume = Settings.Settings().getEnvironmentVolume()
+        self._last_vol = volume
+        self.lastSound.set_volume(volume)
+        self._update_debug_text()
+
+    def onLeaveWorld(self):
+        self.stopSound()
+        Settings.Settings().removeSfxChangeObserver(self)
+        BWPersonality.gpd.weather.deRegisterSoundRainNode(self)
+        BigWorld.delPot(self.__pot_handle)
+        self.model = None
+        self._clear_debug_attaches()
+        return

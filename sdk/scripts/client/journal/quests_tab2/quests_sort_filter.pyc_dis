@@ -1,0 +1,146 @@
+# Embedded file name: ./client/journal/quests_tab2/quests_sort_filter.py
+import Constants
+import rep_utils
+from Localization import lc
+import GUI
+import Quest
+from soGUI.soCheckBox import soCheckBox
+import soGUI
+import colorCodes as CC
+from journal.sort_filter import SortFilter
+import space_utils
+
+class QuestsSortFilter(SortFilter):
+
+    def __init__(self, component, listener):
+        SortFilter.__init__(self, component, listener, True, True, True)
+
+    def create_content(self):
+        left_pos = 16
+        max_height = 50
+        comp = GUI.Text(lc('GUI.QuestLog.rep_filter'))
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.font = 'RobotoCondensedRegular_16.font'
+        comp.position = (left_pos, 8, 0.5)
+        self.component.filter_content.addChild(comp)
+        comp = GUI.Text(lc('GUI.QuestLog.quest_filter0'))
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.font = 'RobotoCondensedRegular_16.font'
+        comp.position = (left_pos, max_height - 6, 0.5)
+        comp.colour = CC.inactive_rgba
+        self.component.filter_content.addChild(comp)
+
+        def create_checkbox(x, y, text):
+            cb = soCheckBox(GUI.Window(), soGUI.CheckBoxPropsStructure(labelText=text, labelColour=CC.inactive_rgba))
+            comp = cb.component
+            comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+            comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+            comp.materialFX = 'BLEND'
+            comp.position = (x, y, 0.5)
+            self.component.filter_content.addChild(comp)
+            cb.onStateChange = self.notify_mode_changed
+            cb.onBound()
+            return cb
+
+        y_disp = 20
+        height = max_height + y_disp
+        left_pos = 16
+        self._cb_open = create_checkbox(left_pos, height, lc('GUI.QuestLog.q_state_filters.opened'))
+        self._cb_open.setActive()
+        height += y_disp
+        self._cb_failed = create_checkbox(left_pos, height, lc('GUI.QuestLog.q_state_filters.failed'))
+        height += y_disp
+        self._cb_closed = create_checkbox(left_pos, height, lc('GUI.QuestLog.q_state_filters.closed'))
+        max_height = 152
+        min_height = 480
+        x_disp = 250
+        height = max_height + y_disp
+        comp = GUI.Text(lc('GUI.QuestLog.rep_filter1'))
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.font = 'RobotoCondensedRegular_16.font'
+        comp.position = (left_pos, max_height - 6, 0.5)
+        comp.colour = CC.inactive_rgba
+        self.component.filter_content.addChild(comp)
+        self._space_checks = []
+
+        def create_space_checkbox(x, y, text, space_id):
+            cb = soCheckBox(GUI.Window(), soGUI.CheckBoxPropsStructure(labelText=text, labelColour=CC.inactive_rgba))
+            cb.setActive()
+            comp = cb.component
+            comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+            comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+            comp.materialFX = 'BLEND'
+            comp.position = (x, y, 0.5)
+            self.component.filter_content.addChild(comp)
+            cb.onStateChange = self._on_checkbox
+            cb.disableLabelColour = (80, 80, 80, 255)
+            cb.space_id = space_id
+            cb.onBound()
+            self._space_checks.append(cb)
+            return cb
+
+        for space_id, space_name in space_utils.get_all_spaces():
+            if space_name in space_utils.test_dev_spaces:
+                continue
+            create_space_checkbox(left_pos, height, space_utils.getLokalizedSpaceNameByName(space_name), space_id)
+            height += y_disp
+            if height > min_height:
+                height = max_height + y_disp
+                left_pos += x_disp
+
+        self._update_buttons()
+
+    def _on_checkbox(self):
+        self.notify_mode_changed()
+        self._update_buttons()
+
+    def _update_buttons(self):
+        count = 0
+        for cb in self._space_checks:
+            if cb.isChecked():
+                count += 1
+
+        self._select_all_btn.setDisabledState(False or count == len(self._space_checks))
+        self._deselect_all_btn.setDisabledState(False or count == 0)
+
+    def _on_select_all_click(self):
+        for cb in self._space_checks:
+            cb.setActive()
+
+        self.notify_mode_changed()
+        self._update_buttons()
+
+    def check_filter_state(self, state):
+        opened, closed, failed = Quest.unpack_quest_type(self.mode['type_filter'])
+        if state in (Quest.STATE_OPENED, Quest.STATE_ONTEST):
+            return opened
+        if state == Quest.STATE_CLOSED:
+            return closed
+        if state == Quest.STATE_FAILED:
+            return failed
+        return True
+
+    def _on_deselect_all_click(self):
+        for cb in self._space_checks:
+            cb.setInactive()
+
+        self.notify_mode_changed()
+        self._update_buttons()
+
+    @property
+    def mode(self):
+        type_filter = Quest.pack_quest_type(self._cb_open.isChecked(), self._cb_closed.isChecked(), self._cb_failed.isChecked())
+        spaces = set()
+        for ch in self._space_checks:
+            if ch.isChecked():
+                spaces.add(ch.space_id)
+
+        space_filter = rep_utils.pack_int_set(spaces)
+        if len(spaces) == len(self._space_checks):
+            space_filter = Constants.UINT64_MAXVALUE
+        return {'sort': self._sort_mode,
+         'type_filter': type_filter,
+         'space_filter': space_filter}

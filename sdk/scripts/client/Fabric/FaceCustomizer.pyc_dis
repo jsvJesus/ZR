@@ -1,0 +1,592 @@
+# Embedded file name: ./client/Fabric/FaceCustomizer.py
+import BigWorld
+import BWPersonality
+from Helpers.PyGUI.PyGUIBase import PyGUIBase
+from Helpers.PyGUI.DraggableComponent import DraggableComponent
+import GUI
+from random import randint
+import FaceSettings
+import math_bw
+import Keys
+from Math import Matrix
+from FaceController import FaceController
+from DummyRotating import DummyRotating
+from soGUI.soButton import soButton
+import traceback
+from DummyCameraFlyer import FOV
+from soGUI.openFileDialog import OpenFileDialog, SaveFileDialog
+import json
+from EquipSlotsConfigs import EquipSlotTypes as EST
+import os
+import utils
+from soGUI.soCheckBox import soCheckBox
+import soGUI
+from FaceSettings import LimitsConfigurator as LC
+_DEBUG = False
+_AUTOSAVE_PATH = os.path.join(utils.stalker_path(), 'usercontent/backup.fcd')
+_AUTOSAVE_PERIOD = 30
+
+class FaceCustomizer:
+    """ \xd0\xbe\xd1\x82\xd0\xb2\xd0\xb5\xd1\x87\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xb7\xd0\xb0 \xd1\x80\xd1\x83\xd1\x87\xd0\xbd\xd1\x83\xd1\x8e \xd0\xbb\xd0\xb5\xd0\xbf\xd0\xba\xd1\x83 \xd0\xbb\xd0\xb8\xd1\x86\xd0\xb0 """
+    last_face_file_name = '../res/headpresets'
+
+    def __init__(self, dummy):
+        self._dummy = dummy
+        self._debug_win = None
+        self._params_win = None
+        self._setup_renderer()
+        self._destroyed = False
+        self._next_save_time = BigWorld.time() + _AUTOSAVE_PERIOD
+        BigWorld.callback(0, self._tick)
+        self._face_controller = FaceController.create_controller(self)
+        self._face_controller.dynamic = True
+        self._selected_bone_name = None
+        self._mouse_pos = None
+        self._plane_fader = PlaneFader()
+        self._locked = True
+        self._save_dialog = None
+        self._open_dialog = None
+        self._head_node = self._dummy.model.node('Head')
+        self.on_enter_game_callback = lambda : None
+        BWPersonality.GUICore.face_debug_win = self
+        return
+
+    @property
+    def face_limits_type(self):
+        return self._dummy.face_limits_type
+
+    def lock(self, value):
+        self._locked = value
+        if not self._locked and not self._params_win and _DEBUG:
+            self.show_params_win()
+
+    def show_debug_win(self):
+        self._debug_win = FaceCustomizerWin()
+        self._debug_win.show(self._mr.texture)
+
+    def show_params_win(self):
+        self._params_win = FaceDebugWin(self._dummy.face_limit_type == LC.NPC)
+        self._params_win.show()
+        self._params_win.limits_changed_callback = self._limits_changed
+        self._params_win.npc_mode_callback = self._npc_mode_changed
+
+    def _setup_renderer(self):
+        self._model = BigWorld.Model('characters2/basemodel/StalkerBase2.model', 'characters2/clothing/ManNude/HeadZone/ManHeadZone_colored.model')
+        self._model.origin('Head')
+        size = BigWorld.screenSize()
+        if size[0] > 512 or size[1] > 512:
+            factor = 512.0 / max(size[0], size[1])
+            size = (size[0] * factor, size[1] * factor)
+        self._mr = BigWorld.PyModelRenderer(int(size[0]), int(size[1]))
+        self._mr.addAmbientColor((1, 1, 1, 1))
+        self._mr.viewMatrix = BigWorld.camera().matrix
+        self._mr.dynamic = True
+        self._mr.models = [self._model]
+        self._mr.nearPlane = 0.1
+        self._mr.farPlane = 10
+        self._mr.fov = FOV
+
+        def random_color():
+            colors = set()
+            step = 25
+            while True:
+                color_step = (randint(0, step), randint(0, step), randint(0, step))
+                if color_step in colors:
+                    continue
+                colors.add(color_step)
+                homo_color = (color_step[0] / float(step),
+                 color_step[1] / float(step),
+                 color_step[2] / float(step),
+                 1.0)
+                yield (homo_color, color_step)
+
+        randomcolor_generator = random_color()
+        self.color_to_bone = {}
+        for i, material_name in enumerate(FaceSettings.plane_config.keys()):
+            if not hasattr(self._model, material_name):
+                print "FaceCustomizer (ERROR): can't find plane named", material_name
+                continue
+            try:
+                setattr(self._model, material_name, 'colored')
+                homo_color, color_step = randomcolor_generator.next()
+                getattr(self._model, material_name).g_colour = homo_color
+                self.color_to_bone[color_step] = material_name
+            except Exception as e:
+                print "FaceCustomizer (ERROR): can't set shader color for", material_name, e
+
+    def _tick(self):
+        if self._destroyed:
+            return
+        elif BigWorld.player().__class__.__name__ == 'PlayerAvatar':
+            self.on_enter_game_callback()
+            return
+        else:
+            if BigWorld.player() and BigWorld.player().accessLevel == 6 and BigWorld.isKeyDown(Keys.KEY_F3) and not self._params_win and BigWorld.player().dummy._face_mode:
+                self.show_params_win()
+            self._model.setWorldTransform(Matrix(self._head_node))
+            raw_data = getattr(getattr(self._dummy, 'face_controller', None), 'raw_data', None)
+            if raw_data is not None:
+                self._face_controller.raw_data = self._dummy.face_controller.raw_data
+            if self._locked:
+                if self._selected_bone_name:
+                    self._plane_selected(None, self._selected_bone_name)
+                    self._selected_bone_name = None
+            else:
+                mouse_pos = BWPersonality.game.mcursor.position
+
+                def int_to_color_step(col):
+
+                    def to_step(value):
+                        return math_bw.clamp(int(value / 255.0 * 26.0), 0, 25)
+
+                    r = 255 & col >> 16
+                    g = 255 & col >> 8
+                    b = 255 & col
+                    return (to_step(r), to_step(g), to_step(b))
+
+                if BigWorld.isKeyDown(Keys.KEY_RIGHTMOUSE):
+                    bone_name = None
+                elif BigWorld.isKeyDown(Keys.KEY_LEFTMOUSE):
+                    bone_name = self._selected_bone_name
+                else:
+                    color_int = self._mr.texture.getColour(int(math_bw.clamp(self._mr.texture.width * math_bw.clamp((mouse_pos[0] + 1.0) * 0.5), 0, self._mr.texture.width - 1)), int(math_bw.clamp(self._mr.texture.height * math_bw.clamp(1.0 - (mouse_pos[1] + 1.0) * 0.5), 0, self._mr.texture.height - 1)))
+                    color_step = int_to_color_step(color_int)
+                    bone_name = self.color_to_bone.get(color_step)
+                if self._selected_bone_name != bone_name:
+                    self._plane_selected(bone_name, self._selected_bone_name)
+                    self._selected_bone_name = bone_name
+                if self._mouse_pos != mouse_pos:
+                    if self._selected_bone_name and BigWorld.isKeyDown(Keys.KEY_LEFTMOUSE):
+                        self._drag_plane(self._mouse_pos, mouse_pos, self._selected_bone_name)
+                    self._mouse_pos = mouse_pos
+            BigWorld.callback(0, self._tick)
+            if BigWorld.player() and BigWorld.player().accessLevel == 6 and BigWorld.time() >= self._next_save_time:
+                self._next_save_time = BigWorld.time() + _AUTOSAVE_PERIOD
+                self._autosave()
+            return
+
+    def _plane_selected(self, plane_name, prev_plane_name):
+        if prev_plane_name:
+            self._plane_fader.hide_fade(self._dummy.model, prev_plane_name)
+        if plane_name:
+            self._plane_fader.show_fade(self._dummy.model, plane_name)
+        DummyRotating().lock(bool(plane_name))
+        if self._params_win and plane_name:
+            self._params_win.update_last_selected_plain(plane_name)
+
+    def _drag_plane(self, from_pos, to_pos, plane_name):
+        handles_list = FaceSettings.plane_config[plane_name]
+        if handles_list:
+            self._dummy.face_controller.drag_handles(from_pos, to_pos, handles_list)
+            self._face_controller.raw_data = self._dummy.face_controller.raw_data
+        if self._params_win and plane_name:
+            self._params_win.update_last_dragged_plain(plane_name)
+            if handles_list:
+                handles = [ self._face_controller.name_to_handle[h] for h in handles_list ]
+                self._params_win.update_last_dragged_position(handles[0].raw_data.translation)
+                self._params_win.update_last_dragget_scale(math_bw.getScaleMatrix(handles[0].raw_data))
+        self._on_face_changed()
+
+    def _on_face_changed(self):
+        pass
+
+    def doReposition(self):
+        self._mr.dynamic = False
+        self._setup_renderer()
+
+    def destroy(self):
+        self._dummy = None
+        self._mr.dynamic = False
+        self._destroyed = True
+        self._plane_fader.destroy()
+        BWPersonality.GUICore.face_debug_win = None
+        if self._params_win:
+            self._params_win.hide()
+        FaceController.destroy_controller(self)
+        self._face_controller = None
+        return
+
+    def _npc_mode_changed(self, npc_mode):
+        self._dummy.on_npc_face_type_click(npc_mode)
+
+    def _limits_changed(self):
+        self._face_controller.limites_changed()
+        self._dummy.face_controller.limites_changed()
+
+    def _on_file_open(self, file_name):
+        BWPersonality.GUICore.loginFlash.component.focus = True
+        if not file_name:
+            return
+        FaceCustomizer.last_face_file_name = file_name
+        with open(file_name, 'r') as f:
+            personality = json.load(f)
+            self._dummy.set_loaded_personality(personality)
+
+    def _on_file_save(self, file_name):
+        BWPersonality.GUICore.loginFlash.component.focus = True
+        if not file_name:
+            return
+        FaceCustomizer.last_face_file_name = file_name
+        with open(file_name, 'w+') as f:
+            personality = self._dummy.read_personality()
+            face_parts = {}
+            for slot_type in EST.get_face_slots():
+                face_parts[slot_type] = EST.get_slot_data(self._dummy, slot_type)
+
+            import utils
+            personality, face_parts = utils.PY(personality), utils.PY(face_parts)
+            json.dump((personality, face_parts), f)
+
+    def _autosave(self):
+        self._on_file_save(_AUTOSAVE_PATH)
+
+    def on_face_load_click(self):
+        if not self._save_dialog:
+            self._save_dialog = OpenFileDialog(GUI.Window())
+            BWPersonality.GUICore.loginFlash.component.focus = False
+        self._save_dialog.show(self._on_file_open, init_dir=FaceCustomizer.last_face_file_name, filters=['.fcd'])
+
+    def on_face_save_click(self):
+        if not self._open_dialog:
+            self._open_dialog = SaveFileDialog(GUI.Window())
+            BWPersonality.GUICore.loginFlash.component.focus = False
+        self._open_dialog.show(self._on_file_save, init_dir=FaceCustomizer.last_face_file_name, filters=['.fcd'])
+
+    @property
+    def model(self):
+        return self._model
+
+
+class FaceDebugWin(PyGUIBase, DraggableComponent):
+    """ \xd0\xb4\xd0\xb5\xd0\xb1\xd0\xb0\xd0\xb6\xd0\xbd\xd0\xbe\xd0\xb5 \xd0\xbe\xd0\xba\xd0\xbd\xd0\xbe (\xd0\xbf\xd1\x80\xd0\xb5\xd0\xb4\xd0\xbe\xd1\x81\xd1\x82\xd0\xb0\xd0\xb2\xd0\xbb\xd1\x8f\xd0\xb5\xd1\x82 \xd0\xb8\xd0\xbd\xd1\x84\xd0\xbe\xd1\x80\xd0\xbc\xd0\xb0\xd1\x86\xd0\xb8\xd1\x8e \xd0\xbe \xd0\xbb\xd0\xb8\xd0\xbc\xd0\xb8\xd1\x82\xd0\xb0\xd1\x85 \xd0\xb8 \xd0\xba\xd0\xbe\xd1\x81\xd1\x82\xd1\x8f\xd1\x85) """
+
+    def __init__(self, npc_mode):
+        component = GUI.Window()
+        PyGUIBase.__init__(self, component)
+        DraggableComponent.__init__(self, True, True, True, xoffset=0, yoffset=0)
+        component.script = self
+        self.limits_changed_callback = None
+        self.setupRoot(npc_mode)
+        return
+
+    def setupRoot(self, npc_mode):
+        width = 600
+        height = 216
+        cmp = self.component
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'CLIP'
+        cmp.horizontalAnchor = 'RIGHT'
+        cmp.verticalAnchor = 'BOTTOM'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.width, cmp.height = width, height
+        cmp.position = (1.0, -1.0, 0.1)
+        cmp.colour = (255, 255, 255, 100)
+        cmp.materialFX = 'BLEND'
+        cmp.visible = False
+        cmp.dragFocus = True
+        self.component.mouseButtonFocus = True
+        cmp = GUI.Frame2('soGUI/frame/basic_frame_1.dds')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.horizontalAnchor = 'CENTER'
+        cmp.verticalAnchor = 'CENTER'
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.width, cmp.height = width, height
+        cmp.height = self.component.height
+        cmp.position = (width * 0.5, height * 0.5, 1.0)
+        self.component.addChild(cmp, 'win_frame')
+        cmp = GUI.Text('')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.verticalAnchor = 'TOP'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.font = 'RobotoCondensedRegular_16.font'
+        cmp.colourFormatting = True
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.position = (16, 32, 0.2)
+        cmp.text = 'last selected plane:'
+        self.component.win_frame.addChild(cmp)
+        self._last_selected_text = cmp
+        cmp = GUI.Text('')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.verticalAnchor = 'TOP'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.font = 'RobotoCondensedRegular_16.font'
+        cmp.colourFormatting = True
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.position = (16, 50, 0.2)
+        cmp.text = 'last dragged plane:'
+        self.component.win_frame.addChild(cmp)
+        self._last_dragged_text = cmp
+        cmp = GUI.Text('')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.verticalAnchor = 'TOP'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.font = 'RobotoCondensedRegular_16.font'
+        cmp.colourFormatting = True
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.position = (16, 68, 0.2)
+        cmp.text = 'last dragged position:'
+        self.component.win_frame.addChild(cmp)
+        self._last_dragged_position = cmp
+        cmp = GUI.Text('')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.verticalAnchor = 'TOP'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.font = 'RobotoCondensedRegular_16.font'
+        cmp.colourFormatting = True
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.position = (16, 86, 0.2)
+        cmp.text = 'last dragged scale:'
+        self.component.win_frame.addChild(cmp)
+        self._last_dragged_scale = cmp
+        buf_btn = soButton(GUI.Window())
+        cmp = buf_btn.component
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.width = 130
+        cmp.height = 29
+        cmp.position = (16, 104, 0.2)
+        buf_btn.initVSC('soGUI/elements/button_1.xml')
+        buf_btn.onBound()
+        buf_btn.setVisualState('normal')
+        buf_btn.onClick = self._on_buffer_pos_click
+        cmp.label.text = u'\u0432 \u0431\u0443\u0444\u0435\u0440 (position)'
+        self.component.win_frame.addChild(cmp)
+        buf_btn = soButton(GUI.Window())
+        cmp = buf_btn.component
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.width = 130
+        cmp.height = 29
+        cmp.position = (152, 104, 0.2)
+        buf_btn.initVSC('soGUI/elements/button_1.xml')
+        buf_btn.onBound()
+        buf_btn.setVisualState('normal')
+        buf_btn.onClick = self._on_buffer_scale_click
+        cmp.label.text = u'\u0432 \u0431\u0443\u0444\u0435\u0440 (scale)'
+        self.component.win_frame.addChild(cmp)
+        buf_btn = soButton(GUI.Window())
+        cmp = buf_btn.component
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.width = 180
+        cmp.height = 29
+        cmp.position = (152, 136, 0.2)
+        buf_btn.initVSC('soGUI/elements/button_1.xml')
+        buf_btn.onBound()
+        buf_btn.setVisualState('normal')
+        buf_btn.onClick = self._generate_portraits
+        cmp.label.text = u'\u0433\u0435\u043d\u0435\u0440\u0438\u0440\u043e\u0432\u0430\u0442\u044c \u043f\u043e\u0440\u0442\u0440\u0435\u0442\u044b'
+        self.component.win_frame.addChild(cmp, 'genbutton')
+        reload_btn = soButton(GUI.Window())
+        cmp = reload_btn.component
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.width = 140
+        cmp.height = 29
+        cmp.position = (16, 136, 0.2)
+        reload_btn.initVSC('soGUI/elements/button_1.xml')
+        reload_btn.onBound()
+        reload_btn.setVisualState('normal')
+        reload_btn.onClick = self._on_reload_click
+        cmp.label.text = u'\u043e\u0431\u043d\u043e\u0432\u0438\u0442\u044c \u043b\u0438\u043c\u0438\u0442\u044b'
+        self.component.win_frame.addChild(cmp)
+        self._cb = soCheckBox(GUI.Window(), soGUI.CheckBoxPropsStructure(labelText=u'\u0440\u0435\u0436\u0438\u043c \u041d\u0418\u041f'))
+        comp = self._cb.component
+        comp.horizontalPositionMode = comp.verticalPositionMode = 'CLIP'
+        comp.horizontalAnchor = 'RIGHT'
+        comp.verticalAnchor = 'TOP'
+        comp.materialFX = 'BLEND'
+        comp.position = (1, 1, 0.4)
+        if npc_mode:
+            self._cb.setActive()
+        self._cb.box.onClick = self._check_click
+        self.component.addChild(comp)
+        comp.verticalPositionMode = 'PIXEL'
+        comp.position += (0, 32, 0)
+
+    def _check_click(self):
+        if self.npc_mode_callback:
+            self.npc_mode_callback(self._cb.isChecked())
+
+    def _on_reload_click(self):
+        if self.limits_changed_callback:
+            self.limits_changed_callback()
+
+    def _generate_portraits(self):
+        import npc_portraits
+        self.component.win_frame.genbutton.script.setDisabledState(True)
+
+        def completed():
+            self.component.win_frame.genbutton.script.setDisabledState(False)
+
+        npc_portraits.run(completed)
+
+    def _on_buffer_pos_click(self):
+        buffer_text = self._last_dragged_text.text + '\n' + self._last_dragged_position.text
+        BigWorld.clipboardSetPlainText(buffer_text)
+
+    def _on_buffer_scale_click(self):
+        buffer_text = self._last_dragged_text.text + '\n' + self._last_dragged_scale.text
+        BigWorld.clipboardSetPlainText(buffer_text)
+
+    def update_last_selected_plain(self, plane_name):
+        self._last_selected_text.text = 'last selected plane: ' + plane_name
+
+    def update_last_dragged_plain(self, plane_name):
+        self._last_dragged_text.text = 'last dragged plane: ' + plane_name
+
+    def update_last_dragged_position(self, position):
+        self._last_dragged_position.text = 'last dragged position: ' + str(position)
+
+    def update_last_dragget_scale(self, scale):
+        self._last_dragged_scale.text = 'last dragged scale: ' + str(scale)
+
+    def show(self):
+        if self.component.parent is None:
+            BWPersonality.GUICore.generalLayer.addChild(self.component, 'face_debugger')
+        self.component.visible = True
+        return
+
+    def hide(self):
+        self.component.visible = False
+
+
+class FaceCustomizerWin(PyGUIBase, DraggableComponent):
+    """ \xd0\xb5\xd1\x89\xd1\x91 \xd0\xbe\xd0\xb4\xd0\xbd\xd0\xbe \xd0\xb4\xd0\xb5\xd0\xb1\xd0\xb0\xd0\xb6\xd0\xbd\xd0\xbe\xd0\xb5 \xd0\xbe\xd0\xba\xd0\xbd\xd0\xbe (\xd1\x80\xd0\xb5\xd0\xbd\xd0\xb4\xd0\xb5\xd1\x80\xd0\xb8\xd1\x82 \xd1\x86\xd0\xb2\xd0\xb5\xd1\x82\xd0\xbd\xd1\x83\xd1\x8e \xd1\x80\xd0\xbe\xd0\xb6\xd1\x83) """
+
+    def __init__(self):
+        component = GUI.Window()
+        PyGUIBase.__init__(self, component)
+        DraggableComponent.__init__(self, True, True, True, xoffset=0, yoffset=0)
+        component.script = self
+        self.setupRoot()
+
+    def handleMouseButtonEvent(self, comp, event):
+        return DraggableComponent.handleMouseButtonEvent(self, comp, event)
+
+    def setupRoot(self):
+        width = BigWorld.screenSize()[0] * 0.5
+        height = BigWorld.screenSize()[1] * 0.5
+        cmp = self.component
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'CLIP'
+        cmp.horizontalAnchor = 'RIGHT'
+        cmp.verticalAnchor = 'BOTTOM'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.width, cmp.height = width, height
+        cmp.position = (1.0, -1.0, 0.1)
+        cmp.colour = (255, 255, 255, 100)
+        cmp.materialFX = 'BLEND'
+        cmp.visible = False
+        cmp.dragFocus = True
+        self.component.mouseButtonFocus = True
+        cmp = GUI.Frame2('soGUI/frame/basic_frame_1.dds')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.horizontalAnchor = 'CENTER'
+        cmp.verticalAnchor = 'CENTER'
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.width, cmp.height = width, height
+        cmp.height = self.component.height
+        cmp.position = (width * 0.5, height * 0.5, 1.0)
+        self.component.addChild(cmp, 'win_frame')
+        cmp = GUI.Simple('textures/default/blue_dark.dds')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.horizontalAnchor = 'CENTER'
+        cmp.verticalAnchor = 'BOTTOM'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'SOLID'
+        cmp.position = (width * 0.5, height - 37, 0.5)
+        self.component.addChild(cmp, 'render_space')
+        cmp.width, cmp.height = width - 4, height - 67
+
+    def show(self, texture):
+        if self.component.parent is None:
+            BWPersonality.GUICore.generalLayer.addChild(self.component, 'face_customizer')
+        self.component.visible = True
+        if hasattr(self.component, 'render_space'):
+            self.component.render_space.texture = texture
+        return
+
+
+UP, DOWN = xrange(2)
+FADE_TIME = 0.5
+
+class PlaneParams:
+
+    def __init__(self, alpha, direction, original_color):
+        self.alpha = alpha
+        self.direction = direction
+        self.original_color = original_color
+
+
+class PlaneFader:
+    """ \xd0\xb7\xd0\xb0\xd1\x82\xd1\x83\xd1\x85\xd0\xb0\xd0\xbd\xd0\xb8\xd0\xb5 \xd0\xb8 \xd0\xb2\xd1\x82\xd1\x83\xd1\x85\xd0\xb0\xd0\xbd\xd0\xb8\xd0\xb5 \xd0\xbf\xd0\xbb\xd0\xb5\xd0\xb9\xd1\x82\xd0\xbe\xd0\xb2 \xd0\xbc\xd0\xbe\xd0\xb4\xd0\xb5\xd0\xbb\xd0\xb8 """
+
+    def __init__(self):
+        self._dyes = {}
+        self._destroyed = False
+
+    def get_color(self, plane_params):
+        oc = plane_params.original_color
+        return (oc[0],
+         oc[1],
+         oc[2],
+         oc[3] * plane_params.alpha)
+
+    def show_fade(self, model, dye):
+        if not self._dyes:
+            self.cur_time = BigWorld.time()
+            BigWorld.callback(0, self.tick)
+        setattr(model, dye, 'highlighted')
+        key = (model, dye)
+        if key in self._dyes:
+            self._dyes[key].direction = UP
+        else:
+            self._dyes[key] = PlaneParams(0.0, UP, getattr(model, dye).g_colour)
+        getattr(model, dye).g_colour = self.get_color(self._dyes[key])
+
+    def hide_fade(self, model, dye):
+        key = (model, dye)
+        if key in self._dyes:
+            self._dyes[key].direction = DOWN
+
+    def destroy(self):
+        self._destroyed = True
+
+    def tick(self):
+        if self._destroyed or not self._dyes:
+            return
+        dtime = (BigWorld.time() - self.cur_time) / FADE_TIME
+        self.cur_time = BigWorld.time()
+        for key in self._dyes.keys():
+            try:
+                getattr(key[0], key[1]).g_colour = self.get_color(self._dyes[key])
+            except:
+                print 'FaceCustomizer (ERROR): bad dye key', key, self._dyes, getattr(key[0], key[1]).tint
+                self._dyes.clear()
+                traceback.print_exc()
+            else:
+                if self._dyes[key].direction == UP:
+                    self._dyes[key].alpha = min(self._dyes[key].alpha + dtime, 1.0)
+                else:
+                    self._dyes[key].alpha -= dtime
+                    if self._dyes[key].alpha <= 0.0:
+                        setattr(key[0], key[1], 'no_render')
+                        del self._dyes[key]
+
+        BigWorld.callback(0, self.tick)

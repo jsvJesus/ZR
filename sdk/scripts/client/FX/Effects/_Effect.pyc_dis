@@ -1,0 +1,155 @@
+# Embedded file name: ./client/FX/Effects/_Effect.py
+import ResMgr
+from FX import s_sectionProcessors
+from bwdebug import ERROR_MSG, WARNING_MSG
+
+def prerequisites(filename, sfx_file_prereqs = None):
+    """ \xd0\xbf\xd0\xb0\xd1\x80\xd1\x81\xd0\xb8\xd1\x82 \xd1\x84\xd0\xb0\xd0\xb9\xd0\xbb \xd0\xb8 \xd0\xb2\xd1\x8b\xd1\x82\xd0\xb0\xd1\x81\xd0\xba\xd0\xb8\xd0\xb2\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xb8\xd0\xb7 \xd0\xbd\xd0\xb5\xd0\xb3\xd0\xbe \xd1\x81\xd0\xbf\xd0\xb8\xd1\x81\xd0\xbe\xd0\xba \xd1\x80\xd0\xb5\xd1\x81\xd1\x83\xd1\x80\xd1\x81\xd0\xbe\xd0\xb2,
+            \xd0\xbd\xd0\xb5\xd0\xbe\xd0\xb1\xd1\x85\xd0\xbe\xd0\xb4\xd0\xb8\xd0\xbc\xd1\x8b\xd1\x85 \xd0\xb4\xd0\xbb\xd1\x8f \xd0\xbf\xd1\x80\xd0\xb5\xd0\xb4\xd0\xb2\xd0\xb0\xd1\x80\xd0\xb8\xd1\x82\xd0\xb5\xd0\xbb\xd1\x8c\xd0\xbd\xd0\xbe\xd0\xb9 \xd0\xb7\xd0\xb0\xd0\xb3\xd1\x80\xd1\x83\xd0\xb7\xd0\xba\xd0\xb8
+    """
+    if filename == '':
+        return ()
+    fx = Effect(filename)
+    fx._prerequisites(sfx_file_prereqs)
+    return tuple(fx.need_prereqs)
+
+
+class Effect:
+    TTL = None
+
+    def __init__(self, fileName):
+        self.actors = {}
+        self.joints = {}
+        self.events = []
+        self.fileName = fileName
+
+    def _prerequisites(self, sfx_file_prereqs = None):
+        pSection = None
+        self.need_prereqs = set()
+        try:
+            if sfx_file_prereqs:
+                pSection = sfx_file_prereqs[self.fileName]
+        except KeyError:
+            pass
+
+        if not pSection:
+            try:
+                pSection = ResMgr.openSection(self.fileName)
+            except Exception as err:
+                ERROR_MSG('ERROR FOR: %r' % self.fileName, self)
+                raise err
+
+        if not pSection:
+            ERROR_MSG('Could not open file', self.fileName)
+            return
+        else:
+            self._prerequisitesFromSection(pSection)
+            self.need_prereqs.add(self.fileName)
+            return
+
+    def _create(self, prereqs = None, store_sounds = None):
+        try:
+            pSection = prereqs[self.fileName]
+            if not isinstance(pSection, ResMgr.DataSection):
+                pSection = pSection[0]
+        except KeyError:
+            try:
+                pSection = ResMgr.openSection(self.fileName)
+            except Exception as err:
+                print 'ERROR FOR :', self, repr(self.fileName)
+                raise err
+
+            print 'WARNING - creating Effect from no prerequisites could be costly', repr(self.fileName)
+        except TypeError:
+            pSection = ResMgr.openSection(self.fileName)
+            print 'WARNING - creating Effect from no prerequisites could be costly', repr(self.fileName)
+
+        if pSection is not None:
+            self._createFromSection(pSection, prereqs, store_sounds=store_sounds)
+        else:
+            ERROR_MSG('Could not open file', self.fileName)
+            return
+        return
+
+    def _parse(self, tag, store, pSection, prereqs = None, gatherPrerequisites = False, store_sounds = None):
+        for sname, ds in pSection.items():
+            if sname != tag:
+                continue
+            section = ds.values()[0]
+            if not s_sectionProcessors.has_key(section.name):
+                ERROR_MSG('No section processor matches the tag ', section.name, ds.asString, self.fileName)
+                continue
+            instance = s_sectionProcessors[section.name]()
+            if gatherPrerequisites:
+                if section.asString:
+                    self.need_prereqs.add(section.asString)
+                if hasattr(instance, 'prerequisites'):
+                    pre = instance.prerequisites(section)
+                    pre = filter(bool, pre)
+                    self.need_prereqs.update(pre)
+            else:
+                result = None
+                if tag == 'Actor':
+                    try:
+                        result = prereqs[self.fileName][1][ds.asString]
+                    except:
+                        pass
+
+                    if section.name == 'PPChain' and isinstance(result, ResMgr.DataSection):
+                        result = None
+                    if result and section.name == 'Light':
+                        instance.apply_params(section, result)
+                if result is None:
+                    result = instance.load(section, prereqs)
+                if section.name == 'PlaySound':
+                    if not result:
+                        print 'ERROR SFX PlaySound:', self.fileName
+                    if result and store_sounds is not None:
+                        store_sounds[result.tag] = result
+                if result != None:
+                    try:
+                        store[ds.asString] = result
+                    except:
+                        store.append((ds.asString, result))
+
+                else:
+                    ERROR_MSG('None was returned.  Not adding to this effect : ', section.name, ds.asString, self.fileName)
+
+        return
+
+    def _modelName(self, visualName):
+        if len(visualName) > 7:
+            if visualName[-7:] == '.visual':
+                return visualName[:-7] + '.model'
+        return visualName
+
+    def _prerequisitesFromSection(self, pSection):
+        self._parse('Actor', self.actors, pSection, gatherPrerequisites=True)
+        self._parse('Event', self.events, pSection, gatherPrerequisites=True)
+
+    def _createFromSection(self, pSection, prereqs = None, store_sounds = None):
+        self._parse('Actor', self.actors, pSection, prereqs)
+        self._parse('Joint', self.joints, pSection, prereqs)
+        self._parse('Event', self.events, pSection, prereqs, store_sounds=store_sounds)
+        ttl_ = pSection['TTL']
+        if ttl_ is not None and ttl_.asFloat > 0:
+            self.TTL = ttl_.asFloat
+        for key, obj in self.events:
+            obj.fileName = self.fileName
+
+        for obj in self.joints.values():
+            obj.fileName = self.fileName
+
+        for actor in self.joints.keys():
+            if not self.actors.has_key(actor):
+                ERROR_MSG('Actor not found %r sfx:' % actor, self.fileName)
+                del self.joints[actor]
+
+        for actor in self.actors.keys():
+            if not self.joints.has_key(actor):
+                WARNING_MSG('Actor exists, but is not attached anywhere  %r' % actor, self.fileName)
+
+        return
+
+    def _extendTime(self, event, duration):
+        pass

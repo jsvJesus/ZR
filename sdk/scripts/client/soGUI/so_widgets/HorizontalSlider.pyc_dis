@@ -1,0 +1,188 @@
+# Embedded file name: ./client/soGUI/so_widgets/HorizontalSlider.py
+import BigWorld
+import GUI
+from Helpers.PyGUI.PyGUIBase import Interceptor
+from math_bw import smooth_damp
+import Keys
+EPS = 1e-05
+
+def clamp_val(val, min_val, max_val):
+    return min(max(min_val, val), max_val)
+
+
+BAR_BG_COLOR = (20, 28, 31, 255)
+
+class HorizontalSlider(Interceptor):
+    factoryString = 'soGUI.HorizontalSlider'
+
+    def __init__(self, h_anchor, v_anchor, bar_width, bar_height, handler_width, handler_height, position, on_value_changed, min_val = 0, max_val = 100, default_val = None):
+        comp = GUI.Window('soGUI/frame/paint/white.dds')
+        Interceptor.__init__(self, comp, intercept_buttons=True, intercept_moving=True)
+        self._bar_width = bar_width
+        self._bar_height = bar_height
+        self._handler_width = handler_width
+        self._handler_height = handler_height
+        self._on_value_changed = on_value_changed
+        if not min_val < max_val:
+            raise AssertionError
+            self.min_val = min_val
+            self.max_val = max_val
+            self._distance_min_max = float(max_val - min_val)
+            default_val = default_val is None and self.min_val
+        self._to_drag_pos = None
+        self._to_move_pos = None
+        self._velocity = 0
+        self._callback_handler = None
+        self.setupRoot(h_anchor, v_anchor, bar_width, max(bar_height, handler_height), position)
+        self.setupContent()
+        self.set_value(default_val)
+        return
+
+    def setupRoot(self, h_anchor, v_anchor, width, height, position):
+        """
+        \xd0\x91\xd0\xb0\xd0\xb7\xd0\xbe\xd0\xb2\xd1\x8b\xd0\xb9 \xd0\xba\xd0\xbe\xd0\xbc\xd0\xbf\xd0\xbe\xd0\xbd\xd0\xb5\xd0\xbd\xd1\x82
+        """
+        cmp = self.component
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.horizontalAnchor, cmp.verticalAnchor = h_anchor, v_anchor
+        cmp.width, cmp.height = width, height
+        cmp.colour = (0, 0, 0, 0)
+        cmp.materialFX = 'BLEND'
+        cmp.position = position
+
+    def setupContent(self):
+        """
+        \xd0\x9f\xd1\x80\xd0\xbe\xd1\x87\xd0\xb8\xd0\xb5 \xd0\xba\xd0\xbe\xd0\xbc\xd0\xbf\xd0\xbe\xd0\xbd\xd0\xb5\xd0\xbd\xd1\x82\xd1\x8b
+        """
+        cmp = GUI.Simple('textures/default/white.dds')
+        cmp.horizontalPositionMode, cmp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        cmp.widthMode, cmp.heightMode = ('PIXEL', 'PIXEL')
+        cmp.horizontalAnchor, cmp.verticalAnchor = ('LEFT', 'CENTER')
+        cmp.materialFX = 'SOLID'
+        cmp.colour = BAR_BG_COLOR
+        cmp.width = self._bar_width
+        cmp.height = self._bar_height
+        cmp.position = (0, self.component.height * 0.5, 0.5)
+        self.component.addChild(cmp, 'bar_bg')
+        cmp = GUI.Simple('textures/default/white.dds')
+        cmp.horizontalPositionMode, cmp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        cmp.widthMode, cmp.heightMode = ('PIXEL', 'PIXEL')
+        cmp.horizontalAnchor, cmp.verticalAnchor = ('LEFT', 'CENTER')
+        cmp.materialFX = 'SOLID'
+        cmp.width = self._bar_width
+        cmp.height = self._bar_height
+        cmp.position = (0, self.component.height * 0.5, 0.5)
+        self.component.addChild(cmp, 'bar')
+        self.bar = cmp
+        cmp = GUI.Simple('textures/default/white.dds')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.horizontalAnchor, cmp.verticalAnchor = ('CENTER', 'CENTER')
+        cmp.materialFX = 'BLEND'
+        cmp.width = self._handler_width
+        cmp.height = self._handler_height
+        cmp.position = (0, self.component.height * 0.5, 0.5)
+        self.component.addChild(cmp, 'handler')
+        self.handler = cmp
+
+    def handleMouseButtonEvent(self, component, event):
+        """
+        \xd0\x9e\xd0\xb1\xd1\x80\xd0\xb0\xd0\xb1\xd0\xbe\xd1\x82\xd0\xba\xd0\xb0 \xd1\x81\xd0\xbe\xd0\xb1\xd1\x8b\xd1\x82\xd0\xb8\xd0\xb9 \xd0\xbc\xd1\x8b\xd1\x88\xd0\xb8
+        """
+        if event.isKeyDown():
+            local_pos = self.component.screenToLocal(GUI.mcursor().position)
+            mouse_ratio = float(local_pos.x) / self.component.width
+            self._cancel_callbacks()
+
+            def get_handler_ratio_limits():
+                center_x = self.handler.position.x
+                handler_w_half = self.handler.width * 0.5
+                left = (center_x - handler_w_half) / self.component.width
+                right = (center_x + handler_w_half) / self.component.width
+                pos_0 = clamp_val(left, min_val=0.0, max_val=1.0)
+                pos_1 = clamp_val(right, min_val=0.0, max_val=1.0)
+                return (pos_0, pos_1)
+
+            pos_0, pos_1 = get_handler_ratio_limits()
+            if pos_0 <= mouse_ratio <= pos_1:
+                self._to_drag_pos = (pos_0, mouse_ratio, pos_1)
+                self._to_move_pos = None
+                self._drag_tick()
+            else:
+                self._to_drag_pos = None
+                self._to_move_pos = mouse_ratio
+                self._velocity = 0
+                self._move_tick()
+        return True
+
+    def _set_ratio(self, ratio):
+        self.cur_ratio = ratio
+        handler_w = self.handler.width
+        local_pos = handler_w * 0.5 + ratio * (self.component.width - handler_w)
+        self.handler.position.x = local_pos
+        self.bar.width = self._bar_width * ratio
+        self._on_value_changed(self.get_value(), ratio)
+
+    def set_value(self, val):
+        val = min(max(self.min_val, val), self.max_val)
+        ratio = (val - self.min_val) / self._distance_min_max
+        self._set_ratio(ratio)
+
+    def get_value(self):
+        return self.min_val + self._distance_min_max * self.cur_ratio
+
+    def _move_tick(self):
+        """
+        \xd0\x9f\xd0\xb5\xd1\x80\xd0\xb5\xd0\xbc\xd0\xb5\xd1\x89\xd0\xb5\xd0\xbd\xd0\xb8\xd1\x8f \xd0\xba \xd0\xbd\xd1\x83\xd0\xb6\xd0\xbd\xd0\xbe\xd0\xbc\xd1\x83 \xd0\xbf\xd0\xbe\xd0\xbb\xd0\xbe\xd0\xb6\xd0\xb5\xd0\xbd\xd0\xb8\xd1\x8e
+        """
+        self._to_drag_pos = None
+        if not self.component.visible:
+            return
+        elif self._to_move_pos is None:
+            return
+        else:
+            new_ratio, self._velocity = smooth_damp(self.cur_ratio, self._to_move_pos, self._velocity, 0.1, 50, BigWorld.getTimeDelta())
+            if abs(new_ratio - self.cur_ratio) < EPS:
+                self._velocity = 0
+                return
+            elif new_ratio == self.cur_ratio:
+                return
+            self._set_ratio(new_ratio)
+            self._cancel_callbacks()
+            self._callback_handler = BigWorld.callback(0, self._move_tick)
+            return
+
+    def _drag_tick(self):
+        """
+        \xd0\x9e\xd0\xb1\xd1\x80\xd0\xb0\xd0\xb1\xd0\xbe\xd1\x82\xd0\xba\xd0\xb0 \xd0\xbf\xd0\xb5\xd1\x80\xd0\xb5\xd1\x82\xd0\xb0\xd1\x81\xd0\xba\xd0\xb8\xd0\xb2\xd0\xb0\xd0\xbd\xd0\xb8\xd1\x8f \xd0\xbc\xd1\x8b\xd1\x88\xd1\x8c\xd1\x8e
+        """
+        self._to_move_pos = None
+        if not BigWorld.isKeyDown(Keys.KEY_LEFTMOUSE):
+            self._to_drag_pos = None
+        if not self.component.visible:
+            self._to_drag_pos = None
+        if not self._to_drag_pos:
+            return
+        else:
+            local_pos = self.component.screenToLocal(GUI.mcursor().position)
+            mouse_ratio = float(local_pos.x) / self.component.width
+            p0, mr, p1 = self._to_drag_pos
+            disp = mouse_ratio - mr
+            pos_0 = max(0, p0 + disp)
+            handle_size = p1 - p0
+            pos_1 = pos_0 + handle_size
+            if pos_1 > 1:
+                pos_1 = 1
+                pos_0 = pos_1 - handle_size
+            free_size = 1 - handle_size
+            new_ratio = float(pos_0) / free_size
+            self._set_ratio(new_ratio)
+            self._callback_handler = BigWorld.callback(0, self._drag_tick)
+            return
+
+    def _cancel_callbacks(self):
+        if self._callback_handler:
+            BigWorld.cancelCallback(self._callback_handler)
+            self._callback_handler = None
+        return

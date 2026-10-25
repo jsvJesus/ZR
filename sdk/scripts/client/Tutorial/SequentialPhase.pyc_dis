@@ -1,0 +1,72 @@
+# Embedded file name: ./client/Tutorial/SequentialPhase.py
+import BigWorld
+from Phase import Phase
+import traceback
+
+class SequentialPhase(Phase):
+    """ \xd0\xb7\xd0\xb0\xd0\xbf\xd0\xb8\xd1\x85\xd0\xb8\xd0\xb2\xd0\xb0\xd1\x82\xd1\x8c \xd0\xbd\xd0\xb5 \xd0\xb3\xd0\xbe\xd1\x82\xd0\xbe\xd0\xb2\xd1\x8b\xd0\xb5 \xd1\x84\xd0\xb0\xd0\xb7\xd1\x8b, \xd0\xb0 callable, \xd1\x81\xd0\xbe\xd0\xb7\xd0\xb4\xd0\xb0\xd1\x8e\xd1\x89\xd0\xb8\xd0\xb5 \xd0\xb8\xd1\x85 """
+
+    def __init__(self, phases_builders, global_index, actor, lock_interactions = False):
+        Phase.__init__(self, global_index, actor, lock_interactions=lock_interactions)
+        self._inside_triggers = set()
+        self._phase_index = -1
+        self._phases = phases_builders
+        self.phase_started_callback = self.phase_started
+        self._next_phase()
+
+    def phase_started(self, phase, phase_index):
+        pass
+
+    def _next_phase(self):
+        self._phase_index += 1
+        if self._phase_index >= len(self._phases):
+            self.phase_completed()
+            return
+        self._phases[self._phase_index] = self._phases[self._phase_index]()
+        self._cur_phase.complete_callback = self._phase_completed
+        self.phase_started_callback(self._cur_phase, self._phase_index)
+        for trigger_id in self._inside_triggers:
+            trigger = BigWorld.entities.get(trigger_id)
+            if trigger:
+                self._cur_phase.on_player_client_trigger(True, trigger)
+
+    def _phase_completed(self):
+        self._cur_phase.on_destroy()
+        self._next_phase()
+
+    def on_destroy(self):
+        Phase.on_destroy(self)
+        if self._phase_index < len(self._phases):
+            try:
+                self._cur_phase.on_destroy()
+            except:
+                print traceback.format_exc()
+
+        self._phases[:] = []
+
+    @property
+    def _cur_phase(self):
+        return self._phases[self._phase_index]
+
+    def on_player_client_trigger(self, is_inside, trigger):
+        if is_inside:
+            self._inside_triggers.add(trigger.id)
+        elif trigger.id in self._inside_triggers:
+            self._inside_triggers.remove(trigger.id)
+        if self._phase_index < len(self._phases):
+            self._cur_phase.on_player_client_trigger(is_inside, trigger)
+
+    def on_throwable_anomaly_hit(self, throwable_id, anomaly_id):
+        if self._phase_index < len(self._phases):
+            self._cur_phase.on_throwable_anomaly_hit(throwable_id, anomaly_id)
+
+    def on_weapon_upgrade(self, item_id):
+        if self._phase_index < len(self._phases):
+            self._cur_phase.on_weapon_upgrade(item_id)
+
+    def get_state(self):
+        return u'index: ' + str(self.global_index) + u'  subindex: ' + str(self._phase_index) + '  type: ' + self.__class__.__name__
+
+    @property
+    def lock_interactions(self):
+        return self._cur_phase.lock_interactions

@@ -1,0 +1,453 @@
+# Embedded file name: ./client/vivert_client/old/octotree.py
+from Math import Vector3
+from math_bw import clamp
+from math import sqrt
+from sys import float_info
+from drawable import Drawable, DrawType
+f_max = float_info.max
+
+class OctoTree(Drawable):
+    max_triangles = 3
+
+    def __init__(self, bound_box, triangles):
+        Drawable.__init__(self)
+        self.bb = bound_box
+        self.triangles = triangles
+        self.children = []
+        if len(self.triangles) >= OctoTree.max_triangles and self.bb.msize > 1:
+            hsize = self.bb.msize * 0.5
+            half_size = Vector3(hsize, hsize, hsize)
+            for p in (self.bb.p_min,
+             self.bb.p_min + Vector3(hsize, 0, 0),
+             self.bb.p_min + Vector3(0, 0, hsize),
+             self.bb.p_min + Vector3(hsize, 0, hsize),
+             self.bb.p_min + Vector3(0, hsize, 0),
+             self.bb.p_min + Vector3(hsize, hsize, 0),
+             self.bb.p_min + Vector3(0, hsize, hsize),
+             self.bb.p_min + Vector3(hsize, hsize, hsize)):
+                bb = BoundBox(p, p + half_size)
+                triangles = []
+                for triangle in self.triangles:
+                    if bb.is_intersects_with_triangle(triangle):
+                        triangles.append(triangle)
+
+                self.children.append(OctoTree(bb, triangles))
+
+    def search_nearest_triangle(self, point):
+        max_dist = [f_max,
+         f_max,
+         None,
+         None]
+
+        def check_octo(octo):
+            bb_point = octo.bb.project_point(point)
+            if bb_point.distSqrTo(point) > max_dist[1]:
+                return
+            for tri in octo.triangles:
+                dist, p = tri.to_point_distance(point)
+                if dist >= max_dist[0]:
+                    continue
+                max_dist[:] = [dist,
+                 dist * dist,
+                 p,
+                 tri]
+
+        octo = self.find(point)
+        check_list = [octo]
+        searched = set(check_list)
+        while check_list:
+            octo = check_list.pop(0)
+            check_octo(octo)
+            valid_neigbs = []
+            for neigb in octo.neigbours:
+                if neigb in searched:
+                    continue
+                bb_point = neigb.bb.project_point(point)
+                if bb_point.distSqrTo(point) > max_dist[1]:
+                    continue
+                valid_neigbs.append(neigb)
+                searched.add(neigb)
+
+            check_list.extend(valid_neigbs)
+
+        distance, point, trianle = max_dist[0], max_dist[2], max_dist[3]
+        return (distance, point, trianle)
+
+    def propagate_neigbours(self, potential_neigbours):
+
+        def are_neibours(other):
+            if other is self:
+                return False
+            return other.bb.are_neibours(self.bb)
+
+        self.neigbours = []
+        potential_neigbours = filter(are_neibours, potential_neigbours)
+        if self.children:
+            for child in self.children:
+                child.propagate_neigbours(potential_neigbours + self.children)
+
+        else:
+
+            def extract_neibours(tree):
+                result = []
+                if tree.children:
+                    for ch in tree.children:
+                        if are_neibours(ch):
+                            result.extend(extract_neibours(ch))
+
+                else:
+                    result.append(tree)
+                return result
+
+            for pt in potential_neigbours:
+                self.neigbours.extend(extract_neibours(pt))
+
+    def iterate_all(self):
+        yield self
+        for child in self.children:
+            for ch in child.iterate_all():
+                yield ch
+
+    def iterate_low_level(self):
+        if self.children:
+            for child in self.children:
+                for ch in child.iterate_low_level():
+                    yield ch
+
+        else:
+            yield self
+
+    def find(self, point):
+        if not self.children and self.bb.contains_point(point):
+            return self
+        else:
+            if point[1] <= self.bb.center[1]:
+                child_range = range(0, 4)
+            else:
+                child_range = range(4, 8)
+            for child_index in child_range:
+                child = self.children[child_index]
+                if child.bb.contains_point(point):
+                    return child.find(point)
+
+            return None
+
+    def get_draw_data(self, draw_type):
+        result = []
+        for tri in self.triangles:
+            result.extend(tri.get_draw_data(draw_type))
+
+        return result
+
+
+class BoundBox(Drawable):
+
+    def __init__(self, p_min, p_max):
+        Drawable.__init__(self)
+        self.p_min = p_min
+        self.p_max = p_max
+        self.color = (0, 0, 1, 1)
+        self.size = p_max - p_min
+        self.extents = self.size * 0.5
+        self.msize = max(self.size)
+        self.center = (p_max + p_min) * 0.5
+
+    def contains_point(self, point):
+        for i in range(3):
+            if point[i] < self.p_min[i]:
+                return False
+            if point[i] > self.p_max[i]:
+                return False
+
+        return True
+
+    def project_point(self, point):
+        point = Vector3(point)
+        for i in range(3):
+            point[i] = clamp(point[i], self.p_min[i], self.p_max[i])
+
+        return point
+
+    def are_neibours(self, bb):
+        epsilon = 0.1
+
+        def compare(value, value1, value2):
+            if value1 - value > epsilon:
+                return False
+            if value - value2 > epsilon:
+                return False
+            return True
+
+        for i in range(3):
+            if not compare(self.p_min[i], bb.p_min[i], bb.p_max[i]):
+                return not compare(self.p_max[i], bb.p_min[i], bb.p_max[i]) and not compare(bb.p_min[i], self.p_min[i], self.p_max[i]) and not compare(bb.p_max[i], self.p_min[i], self.p_max[i]) and False
+
+        return True
+
+    def is_intersects_with_bb(self, bb):
+        for i in range(3):
+            if self.p_max[i] < bb.p_min[i]:
+                return False
+            if self.p_min[i] > bb.p_max[i]:
+                return False
+
+        return True
+
+    def is_intersects_with_triangle(self, triangle):
+        if not self.is_intersects_with_bb(triangle.bb):
+            return False
+        extents = self.extents * 1.01
+        X, Y, Z = (0, 1, 2)
+        v0 = triangle.p0 - self.center
+        v1 = triangle.p1 - self.center
+        v2 = triangle.p2 - self.center
+        f0 = triangle.p1 - triangle.p0
+        f1 = triangle.p2 - triangle.p1
+        f2 = triangle.p0 - triangle.p2
+        a00 = Vector3(0, -f0[Z], f0[Y])
+        p0 = v0.dot(a00)
+        p1 = v1.dot(a00)
+        p2 = v2.dot(a00)
+        r = extents[Y] * abs(f0[Z]) + extents[Z] * abs(f0[Y])
+        if max(-max(p0, p1, p2), min(p0, p1, p2)) > r:
+            return False
+        a01 = Vector3(0, -f1[Z], f1[Y])
+        p0 = v0.dot(a01)
+        p1 = v1.dot(a01)
+        p2 = v2.dot(a01)
+        r = extents[Y] * abs(f1[Z]) + extents[Z] * abs(f1[Y])
+        if max(-max(p0, p1, p2), min(p0, p1, p2)) > r:
+            return False
+        a02 = Vector3(0, -f2[Z], f2[Y])
+        p0 = v0.dot(a02)
+        p1 = v1.dot(a02)
+        p2 = v2.dot(a02)
+        r = extents[Y] * abs(f2[Z]) + extents[Z] * abs(f2[Y])
+        if max(-max(p0, p1, p2), min(p0, p1, p2)) > r:
+            return False
+        a10 = Vector3(f0[Z], 0, -f0[X])
+        p0 = v0.dot(a10)
+        p1 = v1.dot(a10)
+        p2 = v2.dot(a10)
+        r = extents[X] * abs(f0[Z]) + extents[Z] * abs(f0[X])
+        if max(-max(p0, p1, p2), min(p0, p1, p2)) > r:
+            return False
+        a11 = Vector3(f1[Z], 0, -f1[X])
+        p0 = v0.dot(a11)
+        p1 = v1.dot(a11)
+        p2 = v2.dot(a11)
+        r = extents[X] * abs(f1[Z]) + extents[Z] * abs(f1[X])
+        if max(-max(p0, p1, p2), min(p0, p1, p2)) > r:
+            return False
+        a11 = Vector3(f2[Z], 0, -f2[X])
+        p0 = v0.dot(a11)
+        p1 = v1.dot(a11)
+        p2 = v2.dot(a11)
+        r = extents[X] * abs(f2[Z]) + extents[Z] * abs(f2[X])
+        if max(-max(p0, p1, p2), min(p0, p1, p2)) > r:
+            return False
+        a20 = Vector3(-f0[Y], f0[X], 0)
+        p0 = v0.dot(a20)
+        p1 = v1.dot(a20)
+        p2 = v2.dot(a20)
+        r = extents[X] * abs(f0[Y]) + extents[Y] * abs(f0[X])
+        if max(-max(p0, p1, p2), min(p0, p1, p2)) > r:
+            return False
+        a21 = Vector3(-f1[Y], f1[X], 0)
+        p0 = v0.dot(a21)
+        p1 = v1.dot(a21)
+        p2 = v2.dot(a21)
+        r = extents[X] * abs(f1[Y]) + extents[Y] * abs(f1[X])
+        if max(-max(p0, p1, p2), min(p0, p1, p2)) > r:
+            return False
+        a22 = Vector3(-f2[Y], f2[X], 0)
+        p0 = v0.dot(a22)
+        p1 = v1.dot(a22)
+        p2 = v2.dot(a22)
+        r = extents[X] * abs(f2[Y]) + extents[Y] * abs(f2[X])
+        if max(-max(p0, p1, p2), min(p0, p1, p2)) > r:
+            return False
+        if max(v0[X], v1[X], v2[X]) < -extents[X] or min(v0[X], v1[X], v2[X]) > extents[X]:
+            return False
+        if max(v0[Y], v1[Y], v2[Y]) < -extents[Y] or min(v0[Y], v1[Y], v2[Y]) > extents[Y]:
+            return False
+        if max(v0[Z], v1[Z], v2[Z]) < -extents[Z] or min(v0[Z], v1[Z], v2[Z]) > extents[Z]:
+            return False
+        plane_normal = f0.crossProduct(f1)
+        plane_distance = abs(plane_normal.dot(v0))
+        r = extents[X] * abs(plane_normal[X]) + extents[Y] * abs(plane_normal[Y]) + extents[Z] * abs(plane_normal[Z])
+        if plane_distance > r:
+            return False
+        return True
+
+
+class Triangle(Drawable):
+
+    def __init__(self, p0, p1, p2):
+        Drawable.__init__(self)
+        p_min = Vector3(min(p0[0], p1[0], p2[0]), min(p0[1], p1[1], p2[1]), min(p0[2], p1[2], p2[2]))
+        p_max = Vector3(max(p0[0], p1[0], p2[0]), max(p0[1], p1[1], p2[1]), max(p0[2], p1[2], p2[2]))
+        self.p0, self.p1, self.p2 = p0, p1, p2
+        self.bb = BoundBox(p_min, p_max)
+        self.color = (1, 0, 0, 1)
+
+    def get_draw_data(self, draw_type):
+        if draw_type == DrawType.Wire:
+            return [self.p0,
+             self.p1,
+             self.p1,
+             self.p2,
+             self.p2,
+             self.p0]
+        if draw_type == DrawType.Solid:
+            return [self.p0, self.p1, self.p2]
+
+    def is_connected_to_tri(self, tri):
+
+        def are_near(p0, p1):
+            return sum(map(abs, p0 - p1)) < 0.05
+
+        counter = 0
+        ps0 = (self.p0, self.p1, self.p2)
+        ps1 = (tri.p0, tri.p1, tri.p2)
+        for i in range(3):
+            for j in range(3):
+                if are_near(ps0[i], ps1[j]):
+                    counter += 1
+
+        return counter == 2
+
+    def to_point_distance(self, P):
+        B = Vector3(self.p0)
+        E0 = Vector3(self.p1) - B
+        E1 = Vector3(self.p2) - B
+        D = B - P
+        a = E0.dot(E0)
+        b = E0.dot(E1)
+        c = E1.dot(E1)
+        d = E0.dot(D)
+        e = E1.dot(D)
+        f = D.dot(D)
+        det = a * c - b * b
+        s = b * e - c * d
+        t = b * d - a * e
+        if s + t <= det:
+            if s < 0.0:
+                if t < 0.0:
+                    if d < 0:
+                        t = 0.0
+                        if -d >= a:
+                            s = 1.0
+                            sqrdistance = a + 2.0 * d + f
+                        else:
+                            s = -d / a
+                            sqrdistance = d * s + f
+                    else:
+                        s = 0.0
+                        if e >= 0.0:
+                            t = 0.0
+                            sqrdistance = f
+                        elif -e >= c:
+                            t = 1.0
+                            sqrdistance = c + 2.0 * e + f
+                        else:
+                            t = -e / c
+                            sqrdistance = e * t + f
+                else:
+                    s = 0
+                    if e >= 0:
+                        t = 0
+                        sqrdistance = f
+                    elif -e >= c:
+                        t = 1
+                        sqrdistance = c + 2.0 * e + f
+                    else:
+                        t = -e / c
+                        sqrdistance = e * t + f
+            elif t < 0:
+                t = 0
+                if d >= 0:
+                    s = 0
+                    sqrdistance = f
+                elif -d >= a:
+                    s = 1
+                    sqrdistance = a + 2.0 * d + f
+                else:
+                    s = -d / a
+                    sqrdistance = d * s + f
+            else:
+                invDet = 1.0 / det
+                s = s * invDet
+                t = t * invDet
+                sqrdistance = s * (a * s + b * t + 2.0 * d) + t * (b * s + c * t + 2.0 * e) + f
+        elif s < 0.0:
+            tmp0 = b + d
+            tmp1 = c + e
+            if tmp1 > tmp0:
+                numer = tmp1 - tmp0
+                denom = a - 2.0 * b + c
+                if numer >= denom:
+                    s = 1.0
+                    t = 0.0
+                    sqrdistance = a + 2.0 * d + f
+                else:
+                    s = numer / denom
+                    t = 1 - s
+                    sqrdistance = s * (a * s + b * t + 2 * d) + t * (b * s + c * t + 2 * e) + f
+            else:
+                s = 0.0
+                if tmp1 <= 0.0:
+                    t = 1
+                    sqrdistance = c + 2.0 * e + f
+                elif e >= 0.0:
+                    t = 0.0
+                    sqrdistance = f
+                else:
+                    t = -e / c
+                    sqrdistance = e * t + f
+        elif t < 0.0:
+            tmp0 = b + e
+            tmp1 = a + d
+            if tmp1 > tmp0:
+                numer = tmp1 - tmp0
+                denom = a - 2.0 * b + c
+                if numer >= denom:
+                    t = 1.0
+                    s = 0
+                    sqrdistance = c + 2.0 * e + f
+                else:
+                    t = numer / denom
+                    s = 1 - t
+                    sqrdistance = s * (a * s + b * t + 2.0 * d) + t * (b * s + c * t + 2.0 * e) + f
+            else:
+                t = 0.0
+                if tmp1 <= 0.0:
+                    s = 1
+                    sqrdistance = a + 2.0 * d + f
+                elif d >= 0.0:
+                    s = 0.0
+                    sqrdistance = f
+                else:
+                    s = -d / a
+                    sqrdistance = d * s + f
+        else:
+            numer = c + e - b - d
+            if numer <= 0:
+                s = 0.0
+                t = 1.0
+                sqrdistance = c + 2.0 * e + f
+            else:
+                denom = a - 2.0 * b + c
+                if numer >= denom:
+                    s = 1.0
+                    t = 0.0
+                    sqrdistance = a + 2.0 * d + f
+                else:
+                    s = numer / denom
+                    t = 1 - s
+                    sqrdistance = s * (a * s + b * t + 2.0 * d) + t * (b * s + c * t + 2.0 * e) + f
+        if sqrdistance < 0:
+            sqrdistance = 0
+        dist = sqrt(sqrdistance)
+        PP0 = B + s * E0 + t * E1
+        return (dist, PP0)

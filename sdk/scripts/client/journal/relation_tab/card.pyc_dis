@@ -1,0 +1,271 @@
+# Embedded file name: ./client/journal/relation_tab/card.py
+import BigWorld
+import BWPersonality
+import GUI
+from soGUI.soTextField import soTextField3
+from soGUI.soHyperLinkComponent import soHyperLinkComponent as HyperLink
+from soGUI.soButton import soButton
+from Helpers.PyGUI import Utils
+from Helpers.PyGUI.PyGUIBase import Interceptor
+import ResourceLoader
+import AdditionalNPCParameters as AP
+from Localization import lc
+from NPCs import NPCs
+from ui.button import Button
+from reptab_wrapper import ReptabWrapper
+import rep_utils
+from knowledge import knowledge_parser as kp
+import colorCodes as cc
+PICS_PATH = 'scripts/client/data/npc_portraits/{0}.dds'
+
+class Card(object):
+    DETAILS_INTERFACE_ID = 'Relation_tab_card_details_interface_id'
+    FRACTIONS_INTERFACE_ID = 'Relation_tab_card_fractions_interface_id'
+
+    def __init__(self, component, quest_click_callback):
+        self._component = component
+        self._setup(quest_click_callback)
+        self.npc_id = None
+        self.on_need_spec = lambda npc_id: None
+        self.on_radio_click = lambda npc_id: None
+        self.on_group_click = lambda gr_id: None
+        self._tick_controller_id = None
+        return
+
+    def on_show(self):
+        self._tabview.on_show()
+        BWPersonality.GUICore.addListener('hlinkEvent', self._hlink_event)
+        if self._component.visible:
+            self._tick()
+
+    def on_hide(self):
+        self._tabview.on_hide()
+        BWPersonality.GUICore.removeListener('hlinkEvent', self._hlink_event)
+
+    def disable(self):
+        self.npc_id = None
+        self._component.visible = False
+        return
+
+    def set_data(self, npc_id, spec_data = None):
+        self._tabview.set_npc_id(npc_id)
+        self.npc_id = npc_id
+        if spec_data:
+            self._spec_data = spec_data
+        else:
+            self._spec_data = None
+            self.on_need_spec(npc_id)
+        self._component.visible = True
+        npc_name = AP.get_npc_name_by_id(self.npc_id)
+        local_name = lc(NPCs.names_by_npcName[npc_name])
+        self._component.titleLabel.text = local_name
+        if self._spec_data and self._spec_data['acquainted']:
+            desc_text = lc('NPCDescriptions.{0}'.format(npc_name.replace('!', '')))
+        else:
+            desc_text = lc('GUI.QuestLog.Reputation.Unknowndescription')
+        self._component.description.script.setText('<font=RobotoCondensedRegular_16.font>' + cc.inactive_xml + desc_text, immidiate=True)
+        fractions_text = u'<font=RobotoCondensedRegular_16.font>'
+        if self._spec_data:
+            if self._spec_data['gr_ids']:
+                for gr_id in self._spec_data['gr_ids']:
+                    fractions_text += u'<hlink={0};{1}>\n'.format(rep_utils.get_name(gr_id), gr_id)
+
+            else:
+                fractions_text += lc('GUI.QuestLog.Reputation.Unknownfraction')
+        fractions_text = fractions_text.strip()
+        self._component.fraction.script.setText(fractions_text)
+        prof_name = AP.get_npc_profession_by_name(npc_name)
+        self._component.profession.text = lc('NPCs.PROFESSION.' + prof_name if prof_name else 'GUI.QuestLog.Reputation.Unknownprofession')
+
+        def pic_loaded(refs):
+            texture = refs.produce(0)
+            if texture.loadedSuccess:
+                self._component.picture.texture = texture
+                self._component.picture.visible = True
+
+        self._component.picture.visible = False
+        if self._spec_data and self._spec_data['acquainted']:
+            ResourceLoader.asyncLoad([(ResourceLoader.TEXTURE, PICS_PATH.format(npc_name))], pic_loaded)
+        self._component.details.visible = False
+        self._tick()
+        text = '\n\n' + desc_text
+        if self._spec_data:
+            knowledge_text = kp.compile_knowledge_additional_description(kp.get_npc_additionals(self.npc_id), self._spec_data['additionals'])
+            if knowledge_text:
+                text += '\n\n' + knowledge_text
+        self._component.details.description.script.setText('<font=RobotoCondensedRegular_16.font>' + cc.inactive_xml + text)
+        return
+
+    def _hlink_event(self, event, data):
+        if event != HyperLink.EVENT_CLICK:
+            return
+        data, interface_id = data
+        if interface_id == Card.DETAILS_INTERFACE_ID:
+            self._on_details_click()
+        elif interface_id == Card.FRACTIONS_INTERFACE_ID:
+            self.on_group_click(int(data))
+
+    def _on_details_click(self):
+        self._component.details.visible = True
+
+    def _tick(self):
+        if self._tick_controller_id:
+            BigWorld.cancelCallback(self._tick_controller_id)
+        self._tick_controller_id = None
+        if not Utils.is_visible_in_hierarchy(self._component):
+            return
+        else:
+            radio_working = self._data_provider.is_radio_working()
+            p = BigWorld.player()
+            can_radio = self._spec_data and self._spec_data['can_radio'] and self._spec_data['acquainted'] and not p.isDestroyed and not p.dead
+            self._component.radio_btn.script.setDisabledState(not radio_working or not can_radio)
+            self._tick_controller_id = BigWorld.callback(1, self._tick)
+            return
+
+    def _setup(self, quest_click_callback):
+
+        def spawn_text(position, text, align, name, colour):
+            comp = GUI.Text(text)
+            comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+            comp.horizontalAnchor, comp.verticalAnchor = align, 'TOP'
+            comp.font = 'RobotoCondensedRegular_16.font'
+            comp.colour = colour
+            comp.materialFX = 'BLEND'
+            comp.position = position
+            comp.width = 300
+            self._component.addChild(comp, name)
+            return comp
+
+        left = 16
+        spawn_text((left, 11, 0.3), u'???', 'LEFT', 'titleLabel', cc.inactive_rgba)
+        spawn_text((196, 42, 0.3), lc('GUI.QuestLog.Reputation.Profession'), 'LEFT', 'professionTitle', cc.inactive_rgba)
+        spawn_text((196, 62, 0.3), lc('GUI.QuestLog.Reputation.Fraction'), 'LEFT', 'fractionTitle', cc.inactive_rgba)
+        spawn_text((296, 42, 0.3), u'???', 'LEFT', 'profession', cc.active_rgba)
+        tf = soTextField3(GUI.Window(), width=300, textWidth=300, height=300, hScroll=False, vScroll=False, hOffset=-1)
+        tf.INTERFACE_ID = self.FRACTIONS_INTERFACE_ID
+        comp = tf.component
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.position = (296, 62, 0.3)
+        self._component.addChild(comp, 'fraction')
+        description = soTextField3(GUI.Window(), width=550, textWidth=530, height=90, hScroll=False, vScroll=False)
+        comp = description.component
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.position = (left, 152, 0.3)
+        self._component.addChild(comp, 'description')
+        comp = GUI.Simple('textures/default/white.dds')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width = comp.height = 96
+        comp.position = (left, 42, 0.3)
+        comp.colour = (0, 0, 0, 150)
+        comp.materialFX = 'SOLID'
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        self._component.addChild(comp, 'picture_base')
+        comp = GUI.Simple('textures/default/white.dds')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width = comp.height = 96
+        comp.position = (left, 42, 0.3)
+        comp.colour = (255, 255, 255, 255)
+        comp.filterType = 'LINEAR'
+        comp.materialFX = 'SOLID'
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.visible = False
+        self._component.addChild(comp, 'picture')
+        comp = GUI.Window('soGUI/GUIs/radio.dds')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width = comp.height = 24
+        comp.position = (self._component.width - 45, 15, 0.1)
+        comp.materialFX = 'SOLID'
+        comp.materialFX = 'BLEND'
+        comp.horizontalAnchor, comp.verticalAnchor = ('RIGHT', 'TOP')
+        btn = soButton(comp)
+        btn.initVSC('soGUI/GUIs/radio_button.xml')
+        btn.onBound()
+        btn.onClick = lambda : self.on_radio_click(self.npc_id)
+        btn.setVisualState('normal')
+        self._component.addChild(comp, 'radio_btn')
+        comp = GUI.Window('soGUI/GUIs/local.dds')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width = comp.height = 24
+        comp.position = (self._component.width - 15, 15, 0.1)
+        comp.materialFX = 'SOLID'
+        comp.materialFX = 'BLEND'
+        comp.horizontalAnchor, comp.verticalAnchor = ('RIGHT', 'TOP')
+        btn = soButton(comp)
+        btn.initVSC('soGUI/GUIs/radio_button.xml')
+        btn.onClick = lambda : BWPersonality.GUICore.show_npc_on_map(self.npc_id, self._spec_data['space'])
+        btn.onBound()
+        btn.setVisualState('normal')
+        self._component.addChild(comp, 'local_btn')
+        comp = GUI.Window()
+        tf = soTextField3(comp, 200, 36, textWidth=-1, hScroll=False, vScroll=False, hideScroll=True, borderWidth=0, vOffset=0, hOffset=0, textureless=1)
+        tf.INTERFACE_ID = self.DETAILS_INTERFACE_ID
+        tf.setText(u'<font=RobotoCondensedRegular_16.font><alignment=right><hlink={0};>'.format(lc('GUI.QuestLog.DETAILS')))
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.position = (326, 220, 0.5)
+        self._component.addChild(comp, 'collapse')
+        comp = GUI.Window()
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = (556, 240)
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'BOTTOM')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.position = (1, 516, 0.8)
+        self._component.addChild(comp, 'quests_background')
+        comp = GUI.Frame2('soGUI/frame/con_frame_rounded.dds')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = self._component.width, self._component.height
+        comp.materialFX = 'SOLID'
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.position = (0, 0, 0.1)
+        Interceptor(comp)
+        comp.visible = False
+        self._component.addChild(comp, 'details')
+        parent_comp = comp
+        description = soTextField3(GUI.Window(), width=parent_comp.width - 18, textWidth=parent_comp.width - 36, height=parent_comp.height, hScroll=False, vScroll=True, hideScroll=False)
+        comp = description.component
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = parent_comp.horizontalAnchor, parent_comp.verticalAnchor
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.position = (parent_comp.position[0] + 16, parent_comp.position[1], 0.5)
+        self._component.details.addChild(comp, 'description')
+        self._component.isClip = False
+        btn = Button(self._component.details, 'back_button', frame=True)
+        btn.set_visual('soGUI/frame/buttons/linkbutton.json')
+        btn.set_image('soGUI/frame/left_arrow.dds')
+        pivot = (1, 0)
+        clip_pos = (1, 1)
+        pixel_pos = (0, 5)
+        btn.transform.set_base_resolution(None)
+        btn.on_click = self._on_back_btn_click
+        btn.set_text(lc('GUI.QuestLog.BACK_BTN'))
+        btn.set_font_unscalable()
+        string_width = btn.text.get_string_width()
+        image_width = btn.image.component.width
+        size = (string_width + image_width + 6, 35)
+        btn.transform.set_pixel_mode(pivot, clip_pos, size, pixel_pos=pixel_pos)
+        comp = GUI.Window()
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'BOTTOM')
+        comp.position = (1, self._component.height - 1, 0.5)
+        self._component.addChild(comp, 'tabview')
+        comp.width, comp.height = self._component.width - 2, 240
+        self._tabview = ReptabWrapper(comp, quest_click_callback)
+        return
+
+    def _on_back_btn_click(self):
+        self._component.details.visible = False
+
+    @property
+    def _data_provider(self):
+        return BigWorld.player()

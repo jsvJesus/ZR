@@ -1,0 +1,127 @@
+# Embedded file name: ./client/GadgetDevice.py
+import BigWorld
+import sounds_manager as sounds
+import ItemsUtils
+import BWPersonality
+from Localization import lc
+import ChatChannelConfig
+from Constants import MESSAGE_TYPES as MT
+CHANNEL_CONSTS = ChatChannelConfig.ChannelConsts()
+
+class GadgetDevice(object):
+    """ \xd0\x9a\xd0\xbb\xd0\xb0\xd1\x81\xd1\x81 \xd0\xb3\xd0\xb0\xd1\x80\xd0\xb4\xd0\xb6\xd0\xb5\xd1\x82\xd0\xbe\xd0\xb2, \xd0\xbe\xd1\x81\xd1\x82\xd0\xb0\xd0\xbb\xd1\x8c\xd0\xbd\xd1\x8b\xd0\xb5 \xd0\xb3\xd0\xb0\xd0\xb4\xd0\xb6\xd0\xb5\xd1\x82\xd1\x8b \xd0\xbd\xd0\xb0\xd1\x81\xd0\xbb\xd0\xb5\xd0\xb4\xd0\xbe\xd0\xb2\xd0\xb0\xd1\x82\xd1\x8c \xd0\xb4\xd0\xbe\xd0\xbb\xd0\xb6\xd0\xbd\xd1\x8b """
+    SOUND_SWITCH_ON = ''
+    SOUND_SWITCH_OFF = ''
+    SERVER_LOAD = 4
+    TICK_TIME = 0.25
+
+    def __init__(self, parent):
+        self._parent = parent
+        self._working = False
+        self._item = None
+        self._tick_callback_id = None
+        self._tick_counter = 0
+        return
+
+    def onLeaveWorld(self):
+        self.work_stop(play_sound=False)
+        self._parent = None
+        self._item = None
+        return
+
+    def get_device_id(self):
+        if not self._item:
+            return 0
+        return self._item['complexItemID']
+
+    def get_local_action(self):
+        """ \xd1\x81\xd1\x82\xd1\x80\xd0\xbe\xd0\xba\xd0\xb0 \xd0\xb4\xd0\xbb\xd1\x8f \xd0\xb8\xd1\x81\xd0\xbf\xd0\xbe\xd0\xbb\xd1\x8c\xd0\xb7\xd0\xbe\xd0\xb2\xd0\xb0\xd0\xbd\xd0\xb8\xd1\x8f \xd0\xb2 \xd0\xba\xd0\xbe\xd0\xbd\xd1\x82\xd0\xb5\xd0\xba\xd1\x81\xd1\x82\xd0\xbe\xd0\xbc \xd0\xbc\xd0\xb5\xd0\xbd\xd1\x8e """
+        return lc('Inventory.client.{0}'.format('TURN_OFF' if self._working else 'TURN_ON'))
+
+    def switch(self, item_id, play_sound = True):
+        """ \xd0\xb2\xd0\xba\xd0\xbb\xd1\x8e\xd1\x87\xd0\xb8\xd1\x82\xd1\x8c, \xd0\xb5\xd1\x81\xd0\xbb\xd0\xb8 \xd0\xb2\xd1\x8b\xd0\xba\xd0\xbb\xd1\x8e\xd1\x87\xd0\xb5\xd0\xbd \xd0\xb8 \xd0\xb2\xd1\x8b\xd0\xba\xd0\xbb\xd1\x8e\xd1\x87\xd0\xb8\xd1\x82\xd1\x8c, \xd0\xb5\xd1\x81\xd0\xbb\xd0\xb8 \xd0\xb2\xd0\xba\xd0\xbb\xd1\x8e\xd1\x87\xd0\xb5\xd0\xbd """
+        if self._parent.is_dead():
+            return
+        else:
+            self._item = ItemsUtils.GetComplexItemByID(self._parent, item_id)
+            was_working = self._working
+            self.work_stop(self._item, was_working and play_sound)
+            if not was_working:
+                inc_params = ItemsUtils.GetComplexItemInconstanParams(self._item, self._parent)
+                if ItemsUtils.GetItemConditionRatio(None, self._item, inc_params) <= 0:
+                    self._parent.putMessage(CHANNEL_CONSTS.SYSTEM, lc('Inventory.client.LOW_CONDITION'))
+                    return
+                if not ItemsUtils.GetBatteryLevel(self._item):
+                    self._parent.putMessage(CHANNEL_CONSTS.SYSTEM, lc('Inventory.client.NEED_BATTERIES'))
+                    return
+                self._parent.cell.append_to_battery_consumers(self._item['complexItemID'])
+                self.work_start(play_sound)
+            return
+
+    def is_working(self):
+        return self._working
+
+    def work_start(self, play_sound = True):
+        """ \xd0\xbd\xd0\xb0\xd1\x87\xd0\xb0\xd1\x82\xd1\x8c \xd1\x80\xd0\xb0\xd0\xb1\xd0\xbe\xd1\x82\xd1\x83 \xd0\xb3\xd0\xb0\xd0\xb4\xd0\xb6\xd0\xb5\xd1\x82\xd0\xb0 """
+        if self.SOUND_SWITCH_ON and play_sound:
+            sounds.playSound(self.SOUND_SWITCH_ON, self._parent.model)
+        if not self._tick_callback_id:
+            self._tick_callback_id = BigWorld.callback(self.TICK_TIME, self._tick)
+        self._working = True
+        self._parent.on_gadget_update(self._item, True)
+
+    def work_stop(self, item = None, play_sound = True):
+        """ \xd0\xbf\xd1\x80\xd0\xb5\xd0\xba\xd1\x80\xd0\xb0\xd1\x82\xd0\xb8\xd1\x82\xd1\x8c \xd1\x80\xd0\xb0\xd0\xb1\xd0\xbe\xd1\x82\xd1\x83 \xd0\xb3\xd0\xb0\xd0\xb4\xd0\xb6\xd0\xb5\xd1\x82\xd0\xb0 """
+        if self._item:
+            self._parent.cell.remove_from_battery_consumers(self._item['complexItemID'])
+        if item:
+            self._item = item
+        self._working = False
+        self._tick_counter = 0
+        if self._tick_callback_id:
+            BigWorld.cancelCallback(self._tick_callback_id)
+            self._tick_callback_id = None
+        if play_sound and self.SOUND_SWITCH_OFF:
+            sounds.playSound(self.SOUND_SWITCH_OFF, self._parent.model)
+        self._parent.on_gadget_update(self._item, False)
+        return
+
+    def _tick(self):
+        if self._parent.isDestroyed:
+            self._parent = None
+            self._item = None
+            return
+        else:
+            self._tick_counter += 1
+            if not ItemsUtils.GetBatteryLevel(self._item):
+                self._parent.putMessage(CHANNEL_CONSTS.SYSTEM, lc('Inventory.client.NEED_BATTERIES'))
+                self._tick_callback_id = None
+                self.work_stop(self._item)
+                return
+            inc_params = ItemsUtils.GetComplexItemInconstanParams(self._item, self._parent)
+            if ItemsUtils.GetItemConditionRatio(None, self._item, inc_params) <= 0.0:
+                self._parent.putMessage(CHANNEL_CONSTS.SYSTEM, lc('Inventory.client.LOW_CONDITION'))
+                self._tick_callback_id = None
+                self.work_stop(self._item)
+                return
+            if self.is_working():
+                self._tick_callback_id = BigWorld.callback(self.TICK_TIME, self._tick)
+            if self._tick_counter >= self.SERVER_LOAD:
+                self._tick_counter = 0
+                if not self._spoil_gadget() and self._tick_callback_id:
+                    BigWorld.cancelCallback(self._tick_callback_id)
+                self._send_to_server()
+            return
+
+    def _spoil_gadget(self):
+        """ \xd0\xa1\xd0\xbb\xd0\xbe\xd0\xbc\xd0\xb0\xd1\x82\xd1\x8c \xd0\xb4\xd0\xb5\xd0\xb2\xd0\xb0\xd0\xb9\xd1\x81 """
+        item = ItemsUtils.GetComplexItemByID(self._parent, self._item['complexItemID'])
+        if not item:
+            BWPersonality.gpd.sendHightMessage('\xd0\xa7\xd1\x82\xd0\xbe-\xd1\x82\xd0\xbe \xd0\xbf\xd0\xbe\xd1\x88\xd0\xbb\xd0\xbe \xd0\xbd\xd0\xb5 \xd1\x82\xd0\xb0\xd0\xba \xd1\x81 \xd1\x80\xd0\xb0\xd0\xb4\xd0\xb8\xd0\xbe\xd1\x81\xd1\x82\xd0\xb0\xd0\xbd\xd1\x86\xd0\xb8\xd0\xb5\xd0\xb9', MT.PERSONAL)
+            return False
+        self._parent.cell.BreakGadget(self._item['complexItemID'], 1)
+        return True
+
+    def _send_to_server(self):
+        """ \xd0\xbe\xd1\x82\xd0\xbf\xd1\x80\xd0\xb0\xd0\xb2\xd0\xbb\xd1\x8f\xd1\x82\xd1\x8c \xd0\xb4\xd1\x80\xd1\x83\xd0\xb3\xd0\xb8\xd0\xbc \xd0\xb0\xd0\xb2\xd0\xb0\xd1\x82\xd0\xb0\xd1\x80\xd0\xb0\xd0\xbc """
+        pass

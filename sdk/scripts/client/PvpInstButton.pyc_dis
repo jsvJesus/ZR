@@ -1,0 +1,113 @@
+# Embedded file name: ./client/PvpInstButton.py
+import BigWorld
+from csconstans import BUTTON_MODEL, BUTTON_INTERACTION_DIST, BUTTON_INTERACTION_DURATION
+from Localization import lc
+from Helpers.Caps import CAP_INTERACT
+from soGUI.soInworldMarkers import soInworldMarker
+from sounds_manager import playSound
+from time import time
+import BWPersonality
+import Constants
+import RestrictionsUtils
+
+class PvpInstButton(BigWorld.Entity):
+
+    def __init__(self):
+        BigWorld.Entity.__init__(self)
+        self.targetCaps = [CAP_INTERACT]
+        self.name = lc('soFlashPVP.PvpInstButton_name')
+        self._btn_sound = None
+        self._end_use_time = 0
+        self._press_callback_id = 0
+        return
+
+    def prerequisites(self):
+        return [BUTTON_MODEL]
+
+    def onEnterWorld(self, prereqs):
+        self.model = prereqs[BUTTON_MODEL]
+        self._btn_sound = playSound('environment/events/button_flash', self.model)
+        result = BWPersonality.settings.keyBindings.updateHook(self)
+        if result:
+            BigWorld.player().setControlLock(Constants.ControlLockTypes.INTERACT, True)
+            BigWorld.player().update_turn_states()
+
+    def onLeaveWorld(self):
+        if self._btn_sound:
+            self._btn_sound.stop()
+            self._btn_sound = None
+        self.model = None
+        result = BWPersonality.settings.keyBindings.unregisterHook(self)
+        if result:
+            BigWorld.player().setControlLock(Constants.ControlLockTypes.INTERACT, False)
+            BigWorld.player().update_turn_states()
+        return
+
+    def on_end_press(self):
+        player = BigWorld.player()
+        self._end_use_time = 0
+        if self._press_callback_id:
+            BigWorld.cancelCallback(self._press_callback_id)
+            self._press_callback_id = 0
+        player.CancelAction(RestrictionsUtils.CHANNEL_ITEMS)
+        player.setControlLock(Constants.ControlLockTypes.INTERACT, False)
+        player.update_turn_states()
+        BWPersonality.settings.keyBindings.clearHook()
+
+    def on_success(self):
+        if self.isDestroyed:
+            return
+        self.on_end_press()
+        player = BigWorld.player()
+        if player.dead:
+            return
+        dist = player.position.distTo(self.position)
+        if dist > BUTTON_INTERACTION_DIST:
+            return
+        self.cell.interact()
+        playSound('environment/events/terminal_button', self.model)
+
+    def on_fail(self):
+        if self.isDestroyed:
+            return
+        self.on_end_press()
+        BWPersonality.GUICore.cast_bar.interruptCast()
+
+    def interact(self, player):
+        player.cancel_action_release()
+        if not player.CheckRestriction(RestrictionsUtils.CHANNEL_ITEMS) or player.control_locked:
+            return
+        duration = BUTTON_INTERACTION_DURATION
+        player.DoAction(RestrictionsUtils.CHANNEL_ITEMS, duration, u'Wait...')
+        player.setControlLock(Constants.ControlLockTypes.INTERACT, True)
+        player.update_turn_states()
+        BWPersonality.settings.keyBindings.registerHook(self)
+        self._end_use_time = time() + duration
+        self._press_callback_id = BigWorld.callback(duration, self.on_success)
+        BWPersonality.GUICore.cast_bar.runCast(duration)
+
+    def get_mark_name(self):
+        return self.name
+
+    def get_target_mark(self, distance):
+        if distance > BUTTON_INTERACTION_DIST:
+            return None
+        else:
+            return soInworldMarker.MARKER_USE
+
+    def get_hightlight(self, distance):
+        if distance > BUTTON_INTERACTION_DIST:
+            return None
+        else:
+            return True
+
+    def actionHook(self, actionName, okayToGo, event):
+        if actionName == 'InteractObject':
+            if event.isKeyDown():
+                return False
+            if self._end_use_time:
+                if time() < self._end_use_time:
+                    self.on_fail()
+            BWPersonality.settings.keyBindings.clearHook()
+            return True
+        return True

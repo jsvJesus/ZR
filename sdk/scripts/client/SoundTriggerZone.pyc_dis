@@ -1,0 +1,142 @@
+# Embedded file name: ./client/SoundTriggerZone.py
+import BigWorld
+from ClientFiguredTrapInterface import ClientFiguredTrapInterface
+from soundudo_modeludo_holder import SoundUDOModelUDOHolder
+import GUI
+from Math import Matrix
+from client_utils import readable_space_pos
+ETERNAL_CYLINDER, CYLINDER, CUBE, SPHERE, POLYGONAL = xrange(5)
+DEBUG_MODE = False
+
+def switch_debug_mode():
+    global DEBUG_MODE
+    DEBUG_MODE = not DEBUG_MODE
+    for e in BigWorld.entities.values():
+        if isinstance(e, SoundTriggerZone):
+            e.update_debug_mode()
+
+    return DEBUG_MODE
+
+
+class SoundTriggerZone(BigWorld.Entity, ClientFiguredTrapInterface, SoundUDOModelUDOHolder):
+
+    def __init__(self):
+        BigWorld.Entity.__init__(self)
+        ClientFiguredTrapInterface.__init__(self)
+        SoundUDOModelUDOHolder.__init__(self)
+        self._model_debug = None
+        return
+
+    def __repr__(self):
+        if self.isDestroyed:
+            return 'SoundTriggerZone[%s]Destroyed' % self.id
+        return 'SoundTriggerZone[%s] at %s' % (self.id, readable_space_pos(self))
+
+    def onEnterWorld(self, prereqs):
+        SoundUDOModelUDOHolder.onEnterWorld(self, prereqs)
+        self.update_debug_mode()
+
+    def onLeaveWorld(self):
+        SoundUDOModelUDOHolder.onLeaveWorld(self)
+        self._clear_debug_attaches()
+
+    def onPlayerInside(self):
+        player = BigWorld.player()
+        if not player or player.isDestroyed:
+            return
+        self.setActivated(True)
+        self._update_debug_text()
+
+    def onPlayerOutside(self):
+        self.setActivated(False)
+        self._update_debug_text()
+
+    def _draw_model_debug_shape(self):
+        figure_type = self.figure_type
+        matrix = Matrix(self.matrix)
+        if figure_type == SPHERE:
+            self._draw_sphere(matrix)
+        elif figure_type == ETERNAL_CYLINDER:
+            self._draw_cylinder(matrix, eternal_height=True)
+        elif figure_type == CUBE:
+            self._draw_cube(matrix)
+        elif figure_type == CYLINDER:
+            self._draw_cylinder(matrix)
+        else:
+            raise ValueError('undefined figure_type: %s | %s' % (figure_type, self))
+
+    def _draw_sphere(self, matrix):
+        radius = self.radius
+        total_matrix = Matrix()
+        total_matrix.setScale((radius, radius, radius))
+        total_matrix.translation = matrix.translation
+        self._model_debug_shape = BigWorld.Model('helpers/models/unit_sphere.model')
+        self.addModel(self._model_debug_shape)
+        self._model_debug_shape.setWorldTransform(total_matrix)
+        self._model_debug_shape.newScaleTest = (radius, radius, radius)
+
+    def _draw_cube(self, matrix):
+        total_matrix = Matrix()
+        total_matrix.setScale((self.sizeX, self.sizeY, self.sizeZ))
+        total_matrix.postMultiply(matrix)
+        self._model_debug_shape = BigWorld.Model('models/bolvan/leveldesign/trigger_box_alpha.model')
+        self.addModel(self._model_debug_shape)
+        self._model_debug_shape.setWorldTransform(total_matrix)
+        self._model_debug_shape.newScaleTest = (self.sizeX, self.sizeY, self.sizeZ)
+
+    def _draw_cylinder(self, matrix, eternal_height = False):
+        radius = self.radius
+        height = 50.0 if eternal_height else self.height
+        total_matrix = Matrix()
+        total_matrix.setScale((radius, radius, radius))
+        total_matrix.translation = matrix.translation
+        self._model_debug_shape = BigWorld.Model('helpers/models/unit_cylinder.model')
+        self.addModel(self._model_debug_shape)
+        self._model_debug_shape.setWorldTransform(total_matrix)
+        self._model_debug_shape.newScaleTest = (radius, height, radius)
+
+    def update_debug_mode(self):
+        if DEBUG_MODE and not self._model_debug:
+            self._model_debug = BigWorld.Model('')
+            textnode = GUI.Text('SoundTriggerZone id={0}'.format(self.id))
+            textnode.explicitSize = True
+            textnode.multiline = True
+            textnode.size = (5, 1)
+            textnode.colour = (255, 205, 149, 245)
+            textnode.filterType = 'LINEAR'
+            textnode.verticalAnchor = 'BOTTOM'
+            textnode.position = (0, 1, 0)
+            atch = GUI.Attachment()
+            atch.component = textnode
+            atch.faceCamera = True
+            self._model_debug.root.attach(atch)
+            self._model_debug.position = self.position
+            self._model_debug.newScaleTest = (0.3, 0.3, 0.3)
+            self.addModel(self._model_debug)
+            self._attach = atch
+            self._textnode = textnode
+            self._draw_model_debug_shape()
+        elif self._model_debug and not DEBUG_MODE:
+            self._clear_debug_attaches()
+
+    def _update_debug_text(self):
+        if not DEBUG_MODE:
+            return
+        if not self._model_debug:
+            return
+        self._textnode.text = 'SoundTriggerZone -> %s' % self._activated
+        self._textnode.size = (5, 1)
+
+    def _clear_debug_attaches(self):
+        if not self._model_debug:
+            return
+        else:
+            self._model_debug.root.detach(self._attach)
+            self._attach.component = None
+            self.delModel(self._model_debug)
+            self.delModel(self._model_debug_shape)
+            self._model_debug = None
+            self._model_debug_shape = None
+            self._attach = None
+            self._textnode = None
+            return

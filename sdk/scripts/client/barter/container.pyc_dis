@@ -1,0 +1,105 @@
+# Embedded file name: ./client/barter/container.py
+from utils import Listenable
+import ItemsUtils
+from Codes import BadActions as BA
+
+class EventType:
+    OnAdded, OnRemoved, OnCleared, OnMoneyChanged, OnLockChanged, BadData = ((r, 'bartcontainer') for r in range(6))
+
+
+class LockType:
+    Null, Lock, Confirm = range(3)
+
+
+_max_items = 21
+
+class BartContainer(Listenable):
+
+    def __init__(self):
+        Listenable.__init__(self)
+        self._owner = None
+        self.items = []
+        self.money = 0
+        self.locked = LockType.Null
+        return
+
+    def can_add_items(self, items):
+        """ \xd0\xb2\xd0\xbe\xd0\xb7\xd0\xb2\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xba\xd0\xbe\xd0\xb4 \xd0\xbe\xd1\x88\xd0\xb8\xd0\xb1\xd0\xba\xd0\xb8 """
+        if self.locked != LockType.Null or not self._owner:
+            return BA.OTHER
+        else:
+            for item in items:
+                result = ItemsUtils.is_item_tradable(self._owner, item)
+                if result:
+                    return result
+
+            return None
+
+    def get_free_space(self):
+        return _max_items - len(self.items)
+
+    def add_items(self, items):
+        ids = set((it['complexItemID'] for it in self.items))
+        valid_items = []
+        for item in items:
+            if not item or item['complexItemID'] in ids:
+                continue
+            valid_items.append(item)
+
+        if valid_items:
+            if len(self.items) + len(valid_items) > _max_items:
+                self.notify_listeners(EventType.BadData)
+            else:
+                self.items.extend(valid_items)
+                data = {'items': valid_items}
+                self.notify_listeners(EventType.OnAdded, data)
+
+    def set_owner(self, owner):
+        self._owner = owner
+
+    def on_show(self, owner):
+        self.set_owner(owner)
+
+    def set_lock(self, value):
+        if value != self.locked:
+            self.locked = value
+            data = {'locked': value}
+            self.notify_listeners(EventType.OnLockChanged, data)
+
+    def set_money(self, money):
+        if money != self.money:
+            prev_money = self.money
+            self.money = money
+            data = {'money': self.money,
+             'prev_money': prev_money}
+            self.notify_listeners(EventType.OnMoneyChanged, data)
+
+    def remove_items(self, item_ids):
+        dirty = False
+        removed_items = []
+        for i in range(len(self.items) - 1, -1, -1):
+            if self.items[i]['complexItemID'] in item_ids:
+                dirty = True
+                removed_items.append(self.items[i])
+                del self.items[i]
+
+        if dirty:
+            data = {'item_ids': item_ids,
+             'removed_items': removed_items}
+            self.notify_listeners(EventType.OnRemoved, data)
+
+    def is_item_locked(self, item_id):
+        for item in self.items:
+            if item['complexItemID'] == item_id:
+                return True
+
+        return False
+
+    def clear(self):
+        if self.items or self.money or self.locked != LockType.Null or self._owner:
+            self.items[:] = []
+            self._owner = None
+            self.money = 0
+            self.locked = LockType.Null
+            self.notify_listeners(EventType.OnCleared)
+        return

@@ -1,0 +1,115 @@
+# Embedded file name: ./client/OpenWorldEventPlace.py
+import BigWorld
+from functools import partial
+from SoundNode import SoundNode
+import open_world_events_config as owe_config
+
+class OpenWorldEventPlace(BigWorld.Entity):
+    """" client/EventStarter """
+
+    def __init__(self):
+        BigWorld.Entity.__init__(self)
+        self.sound_nodes = []
+
+    def __repr__(self):
+        if self.isDestroyed:
+            return 'OpenWorldEventPlace[id=%s]Destroyed' % self.id
+        return 'OpenWorldEventPlace({0}|{1}|{2})'.format(self.id, self.event_name, self.position)
+
+    @property
+    def config(self):
+        return owe_config.CONFIG_DATA.get(self.event_name, {})
+
+    @property
+    def gameplay(self):
+        return self.config.get('gameplay', owe_config.GAMEPLAY_KILL_NPCS)
+
+    @property
+    def _is_active_gameplay(self):
+        if not self.is_active_env:
+            return
+        if self.gameplay == owe_config.GAMEPLAY_PROTECT_NPCS:
+            return self.is_active_gameplay
+        return True
+
+    def onEnterWorld(self, prereqs):
+        self._update_models()
+        self._create_sounds()
+
+    def onLeaveWorld(self):
+        self._deactivate_all()
+
+    def set_is_active_env(self, old_val):
+        if self.is_active_env:
+            self._update_models()
+            self._update_sounds()
+        else:
+            self._deactivate_all()
+
+    def set_is_active_gameplay(self, old_val):
+        self._update_models()
+        self._update_sounds()
+
+    def _deactivate_all(self):
+        for udo in self.model_sfx_udos:
+            try:
+                udo.deactivate()
+            except BigWorld.UnresolvedUDORefException:
+                pass
+
+        for i in self.sound_nodes:
+            try:
+                i.deactivateFromTrigger()
+            except BigWorld.UnresolvedUDORefException:
+                pass
+
+    def _update_models(self):
+        if self.isDestroyed:
+            return
+        if not self.is_active_env:
+            return
+        for udo in self.model_sfx_udos:
+            if not hasattr(udo, 'activate'):
+                BigWorld.callback(1.0, self._update_models)
+                return
+
+        for udo in self.model_sfx_udos:
+            if hasattr(udo, '_to_anim'):
+                udo.activate(to_anim=self._is_active_gameplay)
+            else:
+                udo.activate()
+
+    def _create_sounds(self):
+        if self.isDestroyed:
+            return
+        if not self.is_active_env:
+            return
+        self.sound_nodes = []
+        for udo in self.sound_udos:
+            if not hasattr(udo, 'sounds'):
+                BigWorld.callback(1.0, self._create_sounds)
+                return
+
+        def wait_for_entity(node_id):
+            sound_node = BigWorld.entities.get(node_id)
+            if not sound_node:
+                BigWorld.callback(0.1, partial(wait_for_entity, node_id))
+                return
+            self.sound_nodes.append(sound_node)
+            if len(self.sound_nodes) == len(self.sound_udos):
+                self._update_sounds()
+
+        for udo in self.sound_udos:
+            sound_node_id = SoundNode.create_from_udo(udo, self.spaceID)
+            wait_for_entity(sound_node_id)
+
+    def _update_sounds(self):
+        if self.isDestroyed:
+            return
+        if not self.is_active_env:
+            return
+        if not self.sound_nodes:
+            self._create_sounds()
+            return
+        for i in self.sound_nodes:
+            i.activateFromTrigger()

@@ -1,0 +1,400 @@
+# Embedded file name: ./client/ArtefactExtractor.py
+import BigWorld
+import Keys
+import Math
+from copy import copy
+import Helpers.Caps
+import BWPersonality
+import soGUI
+import random
+import ItemsUtils
+from Items import ItemsCatalog
+import time
+import traceback
+from soGUI.soArtifactQTE import soArtifactQTE
+from Localization import lc
+import ChatChannelConfig
+import sounds_manager as sounds
+from Constants import ScanArtsMode
+CHANNEL_CONSTS = ChatChannelConfig.ChannelConsts()
+from utils_bw import isinstance_ext
+
+class PressGame:
+    ALL_KEYS = [Keys.KEY_UPARROW,
+     Keys.KEY_DOWNARROW,
+     Keys.KEY_LEFTARROW,
+     Keys.KEY_RIGHTARROW,
+     Keys.KEY_1,
+     Keys.KEY_2,
+     Keys.KEY_3,
+     Keys.KEY_4,
+     Keys.KEY_5,
+     Keys.KEY_6,
+     Keys.KEY_7,
+     Keys.KEY_8,
+     Keys.KEY_9]
+    SOUND_SWITCH_ON = 'items/radiometer_bella/bella_switch_on'
+    SOUND_SWITCH_OFF = 'items/radiometer_bella/bella_switch_on'
+
+    def onDeath(self):
+        BigWorld.player().cell.remove_from_battery_consumers(self.item_dict['complexItemID'])
+        BWPersonality.GUICore.removeListener('artifactQTEEvent', self.artifactQTEEvent)
+        sounds.playSound(PressGame.SOUND_SWITCH_OFF)
+        if self.spoil_callback_id:
+            BigWorld.cancelCallback(self.spoil_callback_id)
+            self.spoil_callback_id = None
+        return
+
+    def __init__(self, extractor_params, item):
+        self.fGameStarted = False
+        self.extractor_params = extractor_params
+        self.item_dict = ItemsUtils.GetComplexItemByID(BigWorld.player(), item['complexItemID'])
+        self._fpreparation = False
+        self.spoil_callback_id = None
+        self._prep_id = None
+        self._prep_slider_timer = None
+        self.DefaultScaner()
+        self.InitGame()
+        BWPersonality.GUICore.addListener('artifactQTEEvent', self.artifactQTEEvent)
+        BWPersonality.GUICore.showArtifactQTE()
+        BWPersonality.GUICore.setArtifactQTEData(self.detector_visual_data)
+        sounds.playSound(PressGame.SOUND_SWITCH_ON)
+        if not self.spoil_callback_id:
+            self.spoil_callback_id = BigWorld.callback(self.SPOIL_PERIOD, self._spoil_gadget)
+        return
+
+    def setArtifactQTEStatus(self, status, data = None):
+        BWPersonality.GUICore.artifactQTE.onGameStatus(status, data)
+
+    def InitGame(self, updateCoord = False):
+        self.game_timer = None
+        self.TIME_DISCRETE = 0.05
+        self.flow_time = 0
+        self.game_stage = 0
+        self.SPOIL_PERIOD = 3.0
+        speed = self.extractor_params.get('ExtractTime', 1.0)
+        self.TIME_GATES = map(lambda x: x * float(speed), xrange(1, 6))
+        self.NEEDED_KEYS = []
+        for _ in self.TIME_GATES:
+            self.NEEDED_KEYS.append(self.ALL_KEYS[random.randint(0, len(self.ALL_KEYS) - 1)])
+
+        self.current_needed_key = None
+        self.fStagePassed = False
+        self.fGameWin = True
+        self.choosen_anomaly = None
+        self.detector_visual_data.update({'slider': 0.0,
+         'QTEdata': {},
+         'keyData': [],
+         'selector': 0,
+         'prepare': False})
+        if updateCoord:
+            BigWorld.player().cell.get_anomalies_for_extractor(ScanArtsMode.Extractor)
+        return
+
+    def OnGameEnded(self):
+        if self.game_timer:
+            BigWorld.cancelCallback(self.game_timer)
+        if self._prep_slider_timer:
+            BigWorld.cancelCallback(self._prep_slider_timer)
+        if self._prep_id:
+            BigWorld.cancelCallback(self._prep_id)
+        self.fGameStarted = False
+        self.DefaultScaner()
+        anomaly_id = self.choosen_anomaly
+        self.choosen_anomaly = None
+        if self.fGameWin:
+            try:
+                if not ItemsUtils.CheckMaxItemNumber(BigWorld.player(), 1):
+                    BigWorld.player().ReportFail(ItemsUtils.FAIL_MAX_ITEMS)
+                    return
+                BWPersonality.game.onEndArtifactExstract(anomaly_id)
+                BigWorld.player().onSuccessArtifactExstract(self.extractor_params, self.item_dict)
+                anomaly = BigWorld.entities[anomaly_id]
+                anomaly.give_item_to_avatar(BigWorld.player().id)
+            except KeyError:
+                print 'PressGame::OnGameEnded. KeyError anomaly:', anomaly_id
+                return
+            except:
+                traceback.print_exc()
+
+            self.SetQTEStatus(soArtifactQTE.STATUS_WIN)
+            if 'SpoilPerExtraction' in self.extractor_params:
+                BigWorld.player().cell.BreakGadget(self.item_dict['complexItemID'], self.extractor_params['SpoilPerExtraction'])
+        else:
+            BWPersonality.game.onCancelArtifactExstract(anomaly_id)
+            self.SetQTEStatus(soArtifactQTE.STATUS_FAIL)
+            BigWorld.player().onFailedArtifactExstract(self.extractor_params, self.item_dict['complexItemID'])
+        self.detector_visual_data['keyData'] = []
+        return
+
+    def ChangeGameStage(self):
+        """\xd0\x97\xd0\xb0\xd0\xbf\xd0\xb8\xd1\x81\xd1\x8b\xd0\xb2\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xb2 \xd0\xbf\xd0\xb5\xd1\x80\xd0\xb5\xd0\xbc\xd0\xb5\xd0\xbd\xd0\xbd\xd1\x83\xd1\x8e \xd1\x82\xd0\xb5\xd0\xba\xd1\x83\xd1\x89\xd0\xb8\xd0\xb9 \xd1\x83\xd1\x80\xd0\xbe\xd0\xb2\xd0\xb5\xd0\xbd\xd1\x8c \xd0\xb8\xd0\xb3\xd1\x80\xd1\x8b."""
+        self.current_needed_key = self.NEEDED_KEYS[self.game_stage]
+
+    def onStageChange(self, oldStage, newStage):
+        """\xd0\x9c\xd0\xb5\xd0\xbd\xd1\x8f\xd0\xb5\xd1\x82 \xd0\xb2\xd0\xbd\xd0\xb5\xd1\x88\xd0\xbd\xd0\xb8\xd0\xb9 \xd0\xb2\xd0\xb8\xd0\xb4 \xd1\x8f\xd1\x87\xd0\xb5\xd0\xb5\xd0\xba \xd0\xbf\xd1\x80\xd0\xb8\xd0\xb1\xd0\xbe\xd1\x80\xd0\xb0, \xd0\xba\xd0\xbe\xd0\xb3\xd0\xb4\xd0\xb0 \xd0\xbc\xd0\xb5\xd0\xbd\xd1\x8f\xd0\xb5\xd1\x82\xd1\x81\xd1\x8f \xd1\x83\xd1\x80\xd0\xbe\xd0\xb2\xd0\xb5\xd0\xbd\xd1\x8c \xd0\xb8\xd0\xb3\xd1\x80\xd1\x8b."""
+        if self.fStagePassed:
+            self.fStagePassed = False
+            self.UpdateKeys()
+        else:
+            self.fGameWin = False
+            sounds.playSound('items/mgd/fail')
+            self.OnGameEnded()
+
+    def stopGame(self):
+        self.fGameWin = False
+        self._fpreparation = False
+        self.OnGameEnded()
+
+    def handle_key(self, key):
+        if self.detector_visual_data['QTEStatus'] != soArtifactQTE.STATUS_PLAY:
+            return False
+        if key == Keys.KEY_NUMPAD1:
+            key = Keys.KEY_1
+        elif key == Keys.KEY_NUMPAD2:
+            key = Keys.KEY_2
+        elif key == Keys.KEY_NUMPAD3:
+            key = Keys.KEY_3
+        elif key == Keys.KEY_NUMPAD4:
+            key = Keys.KEY_4
+        elif key == Keys.KEY_NUMPAD5:
+            key = Keys.KEY_5
+        elif key == Keys.KEY_NUMPAD6:
+            key = Keys.KEY_6
+        elif key == Keys.KEY_NUMPAD7:
+            key = Keys.KEY_7
+        elif key == Keys.KEY_NUMPAD8:
+            key = Keys.KEY_8
+        elif key == Keys.KEY_NUMPAD9:
+            key = Keys.KEY_9
+        elif key == Keys.KEY_NUMPAD0:
+            key = Keys.KEY_0
+        if self.game_stage < len(self.TIME_GATES):
+            if key in self.ALL_KEYS:
+                sounds.playSound('items/mgd/click')
+                if key == self.current_needed_key:
+                    self.fStagePassed = True
+                    self.current_needed_key = -1
+                    self.UpdateKeys()
+                else:
+                    sounds.playSound('items/mgd/fail')
+                    self.fGameWin = False
+                    self.OnGameEnded()
+                return True
+        return False
+
+    def GetGameStage(self):
+        """\xd0\x92\xd0\xbe\xd0\xb7\xd0\xb2\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd1\x83\xd1\x80\xd0\xbe\xd0\xb2\xd0\xb5\xd0\xbd\xd1\x8c \xd0\xb8\xd0\xb3\xd1\x80\xd1\x8b (\xd1\x8f\xd1\x87\xd0\xb5\xd0\xb9\xd0\xba\xd0\xb0, \xd0\xbe\xd1\x82\xd0\xb3\xd0\xb0\xd0\xb4\xd1\x8b\xd0\xb2\xd0\xb0\xd0\xb5\xd0\xbc\xd0\xb0\xd1\x8f \xd0\xbd\xd0\xb0 \xd0\xb4\xd0\xb0\xd0\xbd\xd0\xbd\xd1\x8b\xd0\xb9 \xd0\xbc\xd0\xbe\xd0\xbc\xd0\xb5\xd0\xbd\xd1\x82)."""
+        stage_count = 0
+        for gate in self.TIME_GATES:
+            if gate < self.flow_time:
+                stage_count += 1
+            else:
+                return stage_count
+
+        return len(self.TIME_GATES)
+
+    def onFlowChanged(self):
+        """\xd0\x98\xd0\xb7\xd0\xbc\xd0\xb5\xd0\xbd\xd1\x8f\xd0\xb5\xd1\x82 \xd0\xbf\xd0\xbe\xd0\xb7\xd0\xb8\xd1\x86\xd0\xb8\xd1\x8e \xd1\x81\xd0\xbb\xd0\xb0\xd0\xb9\xd0\xb4\xd0\xb5\xd1\x80\xd0\xb0."""
+        self.UpdateSlider()
+
+    def _spoil_gadget(self):
+        """ \xd0\xb8\xd1\x81\xd0\xbf\xd0\xbe\xd1\x80\xd1\x82\xd0\xb8\xd1\x82\xd1\x8c \xd0\xbf\xd1\x80\xd0\xb8\xd0\xb1\xd0\xbe\xd1\x80 """
+        if 'SpoilPerSecond' not in self.extractor_params:
+            return
+        else:
+            spoil_amount = int(self.extractor_params['SpoilPerSecond'] * self.SPOIL_PERIOD)
+            p = BigWorld.player()
+            item_id = self.item_dict['complexItemID']
+            citem = ItemsUtils.GetComplexItemByID(BigWorld.player(), item_id)
+            if not citem:
+                self.DestroyExtractor()
+                return
+            p.cell.BreakGadget(item_id, spoil_amount)
+            if p.artefactExtractor:
+                self.spoil_callback_id = BigWorld.callback(self.SPOIL_PERIOD, self._spoil_gadget)
+            else:
+                self.spoil_callback_id = None
+            inc_params = ItemsUtils.GetComplexItemInconstanParams(self.item_dict)
+            cond = ItemsUtils.GetItemConditionRatio(None, self.item_dict, inc_params)
+            if cond <= 0.0:
+                self.DestroyExtractor()
+                p.putMessage(CHANNEL_CONSTS.SYSTEM, lc('Inventory.client.LOW_CONDITION'))
+            return
+
+    def CheckGameState(self):
+        """\xd0\x9f\xd1\x80\xd0\xbe\xd0\xb2\xd0\xb5\xd1\x80\xd1\x8f\xd0\xb5\xd1\x82 \xd1\x82\xd0\xb5\xd0\xba\xd1\x83\xd1\x89\xd0\xb5\xd0\xb5 \xd1\x81\xd0\xbe\xd1\x81\xd1\x82\xd0\xbe\xd1\x8f\xd0\xbd\xd0\xb8\xd0\xb5 \xd0\xb8\xd0\xb3\xd1\x80\xd1\x8b \xd0\xb8 \xd0\xbe\xd0\xb1\xd0\xbd\xd0\xbe\xd0\xb2\xd0\xbb\xd1\x8f\xd0\xb5\xd1\x82 \xd0\xb5\xd0\xb3\xd0\xbe."""
+        self.flow_time += self.TIME_DISCRETE
+        self.onFlowChanged()
+        new_stage = self.GetGameStage()
+        if new_stage != self.game_stage:
+            self.game_stage = new_stage
+            self.onStageChange(self.game_stage, new_stage)
+            if not self.fGameStarted:
+                return
+            if self.game_stage >= len(self.TIME_GATES):
+                self.OnGameEnded()
+                return
+            self.ChangeGameStage()
+        self.game_timer = BigWorld.callback(self.TIME_DISCRETE, self.CheckGameState)
+
+    def StartGame(self, anomaly_id):
+        """\xd0\x97\xd0\xb0\xd0\xbf\xd1\x83\xd1\x81\xd0\xba\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xb8\xd0\xb3\xd1\x80\xd1\x83."""
+        self._fpreparation = False
+        if self.fGameStarted:
+            return
+        if not BigWorld.player().CanStartArtefactExtraction(self.extractor_params, self.item_dict):
+            return
+        self.fGameStarted = True
+        self.InitGame(updateCoord=True)
+        self.UpdateDotSelection(anomaly_id)
+        self.UpdateKeys()
+        self.ChangeGameStage()
+        self.game_timer = BigWorld.callback(self.TIME_DISCRETE, self.CheckGameState)
+
+    def GetCoordDict(self, anomaly_ids_list):
+        """\xd0\x92\xd0\xbe\xd0\xb7\xd0\xb2\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd1\x81\xd0\xbb\xd0\xbe\xd0\xb2\xd0\xb0\xd1\x80\xd1\x8c \xd1\x80\xd0\xb0\xd1\x81\xd0\xbf\xd0\xbe\xd0\xbb\xd0\xbe\xd0\xb6\xd0\xb5\xd0\xbd\xd0\xb8\xd1\x8f \xd1\x80\xd0\xb0\xd0\xb7\xd1\x8b\xd1\x81\xd0\xba\xd0\xb8\xd0\xb2\xd0\xb0\xd0\xb5\xd0\xbc\xd1\x8b\xd1\x85 \xd1\x81\xd1\x83\xd1\x89\xd0\xbd\xd0\xbe\xd1\x81\xd1\x82\xd0\xb5\xd0\xb9.
+        
+        \xd0\xa1\xd0\xbb\xd0\xbe\xd0\xb2\xd0\xb0\xd1\x80\xd1\x8c, \xd0\xb3\xd0\xb4\xd0\xb5 \xd0\xba\xd0\xbb\xd1\x8e\xd1\x87 \xd1\x8d\xd1\x82\xd0\xbe id \xd1\x81\xd1\x83\xd1\x89\xd0\xbd\xd0\xbe\xd1\x81\xd1\x82\xd0\xb8, \xd0\xb7\xd0\xbd\xd0\xb0\xd1\x87\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5 - \xd0\xb5\xd1\x91 \xd0\xba\xd0\xbe\xd0\xbe\xd1\x80\xd0\xb4\xd0\xb8\xd0\xbd\xd0\xb0\xd1\x82\xd1\x8b
+        \xd0\xbd\xd0\xb0 \xd1\x8d\xd0\xba\xd1\x80\xd0\xb0\xd0\xbd\xd1\x87\xd0\xb8\xd0\xba\xd0\xb5 ( [-1, 1] ).
+        """
+        player_look = copy(BigWorld.camera().direction)
+        player_right_hand = Math.Vector3(0, 1, 0) * player_look
+        player_look = Math.Vector2(player_look[0], player_look[2])
+        player_right_hand = Math.Vector2(player_right_hand[0], player_right_hand[2])
+        player_look.normalise()
+        player_right_hand.normalise()
+        QTECodes = {}
+        show_range = ItemsUtils.DETECTOR_RANGE
+        player_position = BigWorld.player().position
+        for entity_id in anomaly_ids_list:
+            entity = BigWorld.entities.get(entity_id)
+            if not entity:
+                continue
+            if not isinstance_ext(entity, 'Anomaly'):
+                continue
+            if entity.position.distTo(player_position) < show_range:
+                entity_vector = entity.position - player_position
+                entity_vector = Math.Vector2(entity_vector[0], entity_vector[2])
+                x_coord = entity_vector.dot(player_right_hand)
+                y_coord = entity_vector.dot(player_look)
+                QTECodes[entity.id] = (x_coord / show_range, y_coord / show_range)
+
+        return QTECodes
+
+    def UpdateQTDots(self):
+        """\xd0\x9e\xd0\xb1\xd0\xbd\xd0\xbe\xd0\xb2\xd0\xb8\xd1\x82\xd1\x8c \xd1\x82\xd0\xbe\xd1\x87\xd0\xba\xd0\xb8 \xd1\x80\xd0\xb0\xd0\xb7\xd1\x8a\xd0\xb8\xd1\x81\xd0\xba\xd0\xb8\xd0\xb2\xd0\xb0\xd0\xb5\xd0\xbc\xd1\x8b\xd1\x85 \xd1\x81\xd1\x83\xd1\x89\xd0\xbd\xd0\xbe\xd1\x81\xd1\x82\xd0\xb5\xd0\xb9 \xd0\xbd\xd0\xb0 \xd1\x8d\xd0\xba\xd1\x80\xd0\xb0\xd0\xbd\xd0\xb5."""
+        if not BigWorld.player().CanStartArtefactScan(self.extractor_params, self.item_dict):
+            return
+        BigWorld.player().cell.get_anomalies_for_extractor(ScanArtsMode.Extractor)
+
+    def SetQTDots(self, anomaly_ids_list):
+        self.detector_visual_data['QTEdata'] = self.GetCoordDict(anomaly_ids_list)
+        BWPersonality.GUICore.setArtifactQTEData(self.detector_visual_data)
+
+    def UpdateSlider(self):
+        """\xd0\x98\xd0\xb7\xd0\xbc\xd0\xb5\xd0\xbd\xd1\x8f\xd0\xb5\xd1\x82 \xd0\xbf\xd0\xbe\xd0\xb7\xd0\xb8\xd1\x86\xd0\xb8\xd1\x8e \xd1\x81\xd0\xbb\xd0\xb0\xd0\xb9\xd0\xb4\xd0\xb5\xd1\x80\xd0\xb0."""
+        self.detector_visual_data['slider'] = self.flow_time / self.TIME_GATES[-1]
+        BWPersonality.GUICore.setArtifactQTEData(self.detector_visual_data)
+
+    def UpdateSliderPreparation(self):
+        """\xd0\x98\xd0\xb7\xd0\xbc\xd0\xb5\xd0\xbd\xd1\x8f\xd0\xb5\xd1\x82 \xd0\xbf\xd0\xbe\xd0\xb7\xd0\xb8\xd1\x86\xd0\xb8\xd1\x8e \xd1\x81\xd0\xbb\xd0\xb0\xd0\xb9\xd0\xb4\xd0\xb5\xd1\x80\xd0\xb0."""
+        if not self._fpreparation:
+            return
+        time_has_passed = time.time() - self._fpreparation_start
+        slider = 1.0 - time_has_passed / self._fpreparation_delay
+        self.detector_visual_data['slider'] = slider
+        BWPersonality.GUICore.setArtifactQTEData(self.detector_visual_data)
+        self._prep_slider_timer = BigWorld.callback(0.1, self.UpdateSliderPreparation)
+
+    def SetQTEStatus(self, status, data = None):
+        """\xd0\xa3\xd1\x81\xd1\x82\xd0\xb0\xd0\xbd\xd0\xbe\xd0\xb2\xd0\xb8\xd1\x82\xd1\x8c \xd0\xb8 \xd0\xbe\xd0\xb1\xd0\xbd\xd0\xbe\xd0\xb2\xd0\xb8\xd1\x82\xd1\x8c \xd1\x81\xd1\x82\xd0\xb0\xd1\x82\xd1\x83\xd1\x81 \xd0\xb8\xd0\xb3\xd1\x80\xd1\x8b."""
+        self.detector_visual_data['QTEStatus'] = status
+        BWPersonality.GUICore.setArtifactQTEData(self.detector_visual_data)
+        self.setArtifactQTEStatus(status, data)
+
+    def UpdateDotSelection(self, anomaly_id, prepare = False):
+        self.choosen_anomaly = anomaly_id
+        self.detector_visual_data['selector'] = anomaly_id
+        self.detector_visual_data['prepare'] = prepare
+        BWPersonality.GUICore.setArtifactQTEData(self.detector_visual_data)
+
+    def UpdateKeys(self):
+        """\xd0\x9e\xd1\x82\xd0\xb2\xd0\xb5\xd1\x87\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xb7\xd0\xb0 \xd0\xb2\xd0\xb8\xd0\xb4\xd0\xb8\xd0\xbc\xd0\xbe\xd1\x81\xd1\x82\xd1\x8c \xd0\xba\xd0\xbb\xd1\x8e\xd1\x87\xd0\xb0  \xd0\xb2 \xd0\xba\xd0\xb0\xd0\xb6\xd0\xb4\xd0\xbe\xd0\xb9 \xd1\x8f\xd1\x87\xd0\xb5\xd0\xb9\xd0\xba\xd0\xb5."""
+        key_data = []
+        for index, key in enumerate(self.NEEDED_KEYS):
+            if index < self.game_stage:
+                key_data.append((key, True, False))
+            elif index <= self.game_stage:
+                key_data.append((key, True, not self.fStagePassed))
+            else:
+                key_data.append((key, False, False))
+
+        self.detector_visual_data['keyData'] = key_data
+        BWPersonality.GUICore.setArtifactQTEData(self.detector_visual_data)
+
+    def StartArtExtraction(self, anomaly_id):
+        if self.fGameStarted:
+            return
+        if self._fpreparation:
+            return
+        anomaly = BigWorld.entities[anomaly_id]
+        if anomaly.position.distTo(BigWorld.player().position) < ItemsUtils.EXTRACTION_RANGE:
+            delay = self.extractor_params.get('PreparationTime', 2.0)
+            self.SetQTEStatus(soArtifactQTE.STATUS_PREPARATION, delay)
+            self._anomaly_id = anomaly_id
+            self._fpreparation = True
+            self._fpreparation_start = time.time()
+            self._fpreparation_delay = delay
+            self._prep_id = BigWorld.callback(delay, self._play)
+            self.UpdateDotSelection(anomaly_id, prepare=True)
+            self.UpdateSliderPreparation()
+            BWPersonality.GUICore.artifactQTE.onGameNotify(soArtifactQTE.NOTIFY_START_GAME, anomaly_id)
+            BWPersonality.game.onPrepareArtifactExstract(anomaly_id, delay, self.extractor_params)
+        else:
+            BWPersonality.GUICore.artifactQTE.onGameNotify(soArtifactQTE.NOTIFY_ERROR_DIST, anomaly_id)
+
+    def _play(self):
+        self._fpreparation = False
+        self._prep_id = None
+        self.SetQTEStatus(soArtifactQTE.STATUS_PLAY)
+        self.StartGame(self._anomaly_id)
+        BWPersonality.game.onStartArtifactExstract(self._anomaly_id)
+        return
+
+    def artifactQTEEvent(self, event, data):
+        if event == soArtifactQTE.EVENT_SCANNED:
+            self.UpdateQTDots()
+        elif event == soArtifactQTE.EVENT_SELECT:
+            self.StartArtExtraction(data)
+        elif event == soArtifactQTE.EVENT_CLOSED:
+            self.DestroyExtractor()
+        elif event == soArtifactQTE.EVENT_SCAN_RESULT:
+            anomaly_ids, result = data
+            self.SetQTDots(anomaly_ids)
+        elif event == soArtifactQTE.EVENT_RESTART:
+            self.DefaultScaner()
+
+    def DestroyExtractor(self):
+        self.stopGame()
+        self.onDeath()
+        BigWorld.player().artefactExtractor = None
+        BWPersonality.GUICore.showArtifactQTE(False)
+        if self._prep_slider_timer:
+            BigWorld.cancelCallback(self._prep_slider_timer)
+            self._prep_slider_timer = None
+        if self._prep_id:
+            BigWorld.cancelCallback(self._prep_id)
+            self._prep_id = None
+        self._fpreparation = False
+        return
+
+    def DefaultScaner(self):
+        """\xd0\x92\xd1\x8b\xd1\x81\xd1\x82\xd0\xb0\xd0\xb2\xd0\xbb\xd1\x8f\xd0\xb5\xd1\x82 \xd0\xb2\xd0\xbd\xd0\xb5\xd1\x88\xd0\xbd\xd0\xb8\xd0\xb9 \xd0\xb2\xd0\xb8\xd0\xb4 \xd1\x81\xd0\xba\xd0\xb0\xd0\xbd\xd0\xb5\xd1\x80\xd0\xb0 \xd1\x81 \xd0\xbd\xd0\xb5\xd0\xbd\xd0\xb0\xd1\x87\xd0\xb0\xd1\x82\xd0\xbe\xd0\xb9 \xd0\xb8\xd0\xb3\xd1\x80\xd0\xbe\xd0\xb9."""
+        self.detector_visual_data = {'slider': 0.0,
+         'QTEdata': {},
+         'keyData': [],
+         'selector': 0,
+         'prepare': False,
+         'QTEStatus': soArtifactQTE.STATUS_IDLE}
+        BWPersonality.GUICore.setArtifactQTEData(self.detector_visual_data)

@@ -1,0 +1,206 @@
+# Embedded file name: ./client/maputils/cmap.py
+import BigWorld
+import GUI
+from space_model import EventType as SpaceET
+from party_model import EventType as PartyET
+from MarksData import MarksData
+from soGUI.WorldMapGUI.marks_filter import FilterMode as FM, FilterEventType as FilterET
+from mark_controllers import PlayerMarkController, PersonalMarksController, CorpseMarksController, TargetMarkController, NpcMarksController, PartyMarksController, WantedMarkController, DeathMarksController, PvpMarksController, QuestMarksController, WorldMarkController, CompoundMarkController
+
+class CMap(object):
+    _default_range = 50.0
+
+    def __init__(self, space_model, party_model):
+        comp = GUI.Minimap()
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.wm, comp.hm = ('CLIP', 'CLIP')
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.width, comp.height = (2, 2)
+        comp.position = (0, 0, 0.5)
+        comp.rotate = False
+        comp.range = CMap._default_range
+        comp.filterType = 'LINEAR'
+        comp.maskName = 'soGUI/frame/minimap/mask.dds'
+        comp.materialFX = 'BLEND'
+        comp.textureName = 'soGUI/frame/paint/black.dds'
+        comp.maxMargin = 0.1
+        comp.clampRange = 0.9
+        comp.margin = 0.3
+        comp.useBlendEntries = True
+        comp.onEnterRange = self._on_enter_range
+        comp.onLeaveRange = self._on_leave_range
+        self.component = comp
+        self._player_mark_controller = PlayerMarkController(self)
+        self._personal_marks_controller = PersonalMarksController(self)
+        self._target_mark_controller = TargetMarkController(self)
+        self._npc_marks_controller = NpcMarksController(self)
+        self._party_marks_controller = PartyMarksController(self)
+        self._corpse_marks_controller = CorpseMarksController(self)
+        self._wanted_mark_controller = WantedMarkController(self)
+        self._death_marks_controller = DeathMarksController(self)
+        self._pvp_marks_controller = PvpMarksController(self)
+        self._quest_marks_controller = QuestMarksController(self)
+        self._world_marks_controller = WorldMarkController(self)
+        self._compound_marks_controller = CompoundMarkController(self)
+        self._controllers = [self._player_mark_controller,
+         self._personal_marks_controller,
+         self._target_mark_controller,
+         self._npc_marks_controller,
+         self._party_marks_controller,
+         self._corpse_marks_controller,
+         self._wanted_mark_controller,
+         self._death_marks_controller,
+         self._pvp_marks_controller,
+         self._quest_marks_controller,
+         self._world_marks_controller,
+         self._compound_marks_controller]
+        self._marks_data = None
+        self._filterset = None
+        self._space_model = space_model
+        self._space_model.add_listener(self._on_space_event)
+        party_model.add_listener(self._on_party_event)
+        comp = GUI.Simple('soGUI/worldMaps/nomap.dds')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = comp.texture.width, comp.texture.height
+        self.component.addChild(comp, 'nomap')
+        return
+
+    def _on_enter_range(self, note_id):
+        self._quest_marks_controller.on_enter_range(note_id)
+
+    def _on_leave_range(self, note_id):
+        self._quest_marks_controller.on_leave_range(note_id)
+
+    def _on_space_event(self, event_type, data):
+        if event_type == SpaceET.OnSpaceChanged:
+            self._set_space(data)
+        elif event_type == SpaceET.OnZoomChanged:
+            if data['zoom']:
+                self.component.range = data['zoom']
+            else:
+                self.component.range = CMap._default_range
+
+    def _on_party_event(self, event_type, data):
+        if event_type == PartyET.OnMemberAdded:
+            self._party_marks_controller.create_mark(data['member_id'])
+        elif event_type == PartyET.OnMemberRemoved:
+            self._party_marks_controller.remove_mark(data['member_id'])
+        elif event_type in (PartyET.OnDie, PartyET.OnRevive):
+            BigWorld.callback(0, self._party_marks_controller.check_dead)
+
+    def set_filterset(self, filterset):
+        if self._filterset:
+            self._filterset.remove_listener(self._on_filterset_event)
+        self._filterset = filterset
+        if self._filterset:
+            self._filterset.add_listener(self._on_filterset_event)
+        for c in self._controllers:
+            c.on_filter_data_changed()
+
+    def set_marks_data(self, marks_data):
+        if self._marks_data == marks_data:
+            return
+        if self._marks_data:
+            self._marks_data.remove_listener(self._on_marks_event)
+        self._marks_data = marks_data
+        if self._marks_data:
+            self._marks_data.add_listener(self._on_marks_event)
+        for c in self._controllers:
+            c.on_marks_data_changed()
+
+    def _on_marks_event(self, event_type, data):
+        space_name = data.get('spacename')
+        if event_type == MarksData.TARGET_MARK_CHANGED:
+            self._target_mark_controller.on_data_changed()
+        elif event_type == MarksData.WANTED_MARK_CHANGED:
+            self._wanted_mark_controller.on_data_changed()
+        if space_name != self._space_model.space_name:
+            return
+        else:
+            if event_type == MarksData.EVENT_PERSONAL_LOADED:
+                self._personal_marks_controller.on_loaded()
+            elif event_type == MarksData.EVENT_PERSONAL_ADDED:
+                self._personal_marks_controller.create_mark(data['mark'])
+            elif event_type == MarksData.EVENT_PERSONAL_DELETED:
+                self._personal_marks_controller.remove_mark(data['mark'])
+            elif event_type == MarksData.EVENT_COMMON_LOADED:
+                self._npc_marks_controller.on_loaded()
+                self._corpse_marks_controller.on_loaded()
+                self._death_marks_controller.on_loaded()
+                self._quest_marks_controller.on_loaded()
+                self._world_marks_controller.on_loaded()
+                self._compound_marks_controller.on_loaded()
+            elif event_type == MarksData.EVENT_NPC_VISITED:
+                npc_id = data['npc_id']
+                self._npc_marks_controller.create_mark(npc_id)
+            elif event_type == MarksData.EVENT_NPC_DELETED:
+                for npc_id in data['npc_ids']:
+                    self._npc_marks_controller.remove_mark(npc_id)
+
+            elif event_type == MarksData.EVENT_CORPSE_ADDED:
+                data = (data['name'], {'pos': data['position']})
+                self._corpse_marks_controller.create_mark(data)
+            elif event_type == MarksData.EVENT_CORPSE_REMOVED:
+                self._corpse_marks_controller.remove_mark(data['name'])
+            elif event_type == MarksData.EVENT_PLAYER_DIE:
+                self._death_marks_controller.create_mark((data['position'], None))
+            elif event_type == MarksData.EVENT_PLAYER_UNDIE:
+                self._death_marks_controller.remove_mark(data['position'])
+            elif event_type == MarksData.EVENT_PVP_FLAGS_UPDATED:
+                blue_pos, red_pos = data['bluepos'], data['redpos']
+                self._pvp_marks_controller.on_data_changed(blue_pos, red_pos)
+            elif event_type == MarksData.EVENT_QUESTMARK_CHANGED:
+                self._quest_marks_controller.on_data_changed(data['is_active'], data['quest_id'])
+            elif event_type == MarksData.EVENT_WORLDPLACE_ADDED:
+                self._world_marks_controller.create_mark(data['mark'])
+            elif event_type == MarksData.EVENT_WORLDPLACE_REMOVED:
+                self._world_marks_controller.remove_mark(data['place_id'])
+            elif event_type == MarksData.EVENT_COMPOUND_ADDED:
+                for mark in data['marks']:
+                    self._compound_marks_controller.create_mark(mark)
+
+            elif event_type == MarksData.EVENT_COMPOUND_REMOVED:
+                for mark_id, _ in data['marks']:
+                    self._compound_marks_controller.remove_mark(mark_id)
+
+            return
+
+    def _on_filterset_event(self, event_type, data):
+        if event_type == FilterET.FilterChanged:
+            mode = data['mode']
+            if mode == FM.Target:
+                self._target_mark_controller.on_filter_changed()
+            elif mode == FM.Personal:
+                self._personal_marks_controller.on_filter_changed()
+            elif mode == FM.Npc:
+                self._npc_marks_controller.on_filter_changed()
+            elif mode == FM.Party:
+                self._party_marks_controller.on_filter_changed()
+            elif mode == FM.Corpses:
+                self._corpse_marks_controller.on_filter_changed()
+            elif mode == FM.Quests:
+                self._quest_marks_controller.on_filter_changed()
+
+    def release(self):
+        self.component.onEnterRange = self._on_enter_range
+        self.component.onLeaveRange = self._on_leave_range
+        if self._marks_data:
+            self._marks_data.remove_listener(self._on_marks_event)
+            self._marks_data = None
+        if self._filterset:
+            self._filterset.remove_listener(self._on_filterset_event)
+            self._filterset = None
+        self._quest_marks_controller.release()
+        return
+
+    def _set_space(self, data):
+        self.component.delAllTextureLayers()
+        if data:
+            self.component.addTextureLayer(1, data['texture'], data['space_size'], data['space_shift'])
+            self.component.viewpoint = BigWorld.player().matrix
+            self.component.nomap.visible = False
+        else:
+            self.component.nomap.visible = True
+        space_name = data and data['space_name']
+        for c in self._controllers:
+            c.set_space(space_name)

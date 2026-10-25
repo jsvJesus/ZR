@@ -1,0 +1,129 @@
+# Embedded file name: ./client/heli_weapon.py
+import BigWorld
+import traceback
+import math_bw
+from clweapon import ClWeapon
+from ItemsUtils import nodebyslot
+from tmp_blends import HalfBlend
+from FX.persistent_ext_bg import loadPersistentExtBG
+import heliconstants as H
+
+class HeliWeapon(ClWeapon):
+
+    def __init__(self, helicopter = None, *w, **kw):
+        ClWeapon.__init__(self, *w, **kw)
+        self.helicopter = helicopter
+        self.slot_name = 'PrimarySlot'
+        self._broken_sfx = None
+        self.holster_node_name = nodebyslot[self.slot_name]
+        self.isBelly = False
+        self.broken = False
+        self._overheat_sound = None
+        self._spend_ammo = False
+        self.temp_ratio = 0
+        try:
+            model = self.getModel()
+            model.set2_skinned = 'glow'
+        except:
+            traceback.print_exc()
+
+        self._glow = HalfBlend()
+        self._gt_id = BigWorld.callback(0.03, self._update_glow)
+        self.playSound('guns/machinegun/helicopter/reload')
+        loadPersistentExtBG(H.SFX_CLIN_GUN, self._onLoadBrokenSfx)
+        return
+
+    def set_ammo_type(self, ammotype):
+        self._magazine.setAmmoType(ammotype)
+
+    def onHeliWeaponTemperature(self, temp_ratio, broken):
+        if self.broken and not broken:
+            self.playSound('guns/machinegun/helicopter/reload')
+            self.stopOverheatSound()
+            self._updateSfxBroken(broken)
+        if broken and not self.broken:
+            self.playSound('guns/machinegun/helicopter/break')
+            self.stopOverheatSound()
+            self._overheat_sound = self.playSound('guns/machinegun/helicopter/overheat')
+            self._updateSfxBroken(broken)
+        self.broken = broken
+        self.temp_ratio = temp_ratio
+        glow = math_bw.clamp(5 * temp_ratio - 0.1, 0, 4)
+        self._glow.setValueTo(glow)
+        if self._overheat_sound:
+            self._overheat_sound.set_param('overheat', self.overheat)
+
+    def _onLoadBrokenSfx(self, sfx):
+        if self._isDestroyed:
+            return
+        self._broken_sfx = sfx
+        self._updateSfxBroken(self.broken)
+
+    def _updateSfxBroken(self, broken):
+        if not self._broken_sfx:
+            return
+        if not self._broken_sfx.source:
+            self._broken_sfx.attach(self.getModel())
+        if broken:
+            self._broken_sfx.go()
+        else:
+            self._broken_sfx.stop_particles_spawn()
+
+    def set_need_spend_ammo(self, spend_ammo):
+        self._spend_ammo = spend_ammo
+
+    def spendAmmo(self, *w, **kw):
+        if self._spend_ammo:
+            result = super(HeliWeapon, self).spendAmmo(*w, **kw)
+            self.on_spend_ammo()
+            return result
+
+    def on_spend_ammo(self):
+        pass
+
+    def getJammed(self):
+        return self.broken
+
+    def shoot(self, *w, **kw):
+        if self.getAmmoNumber() and self._magazine:
+            try:
+                mag_model = self._magazine.getModel()
+                mag_model.shot()
+            except:
+                traceback.print_exc()
+
+        ClWeapon.shoot(self, *w, **kw)
+        if self._sh_sound:
+            self._sh_sound.set_param('overheat', self.overheat)
+
+    @property
+    def overheat(self):
+        return int(math_bw.clamp(self.temp_ratio * 100.0, 0, 100))
+
+    def _update_glow(self):
+        model = self.getModel()
+        if not model:
+            return
+        self._glow.updateBlend(BigWorld.getTimeDelta())
+        model.set2_skinned.glowFactor = (self._glow.getCurrentValue(),
+         0,
+         0,
+         0)
+        self._gt_id = BigWorld.callback(0.03, self._update_glow)
+
+    def destroy(self):
+        if getattr(self, '_broken_sfx', None):
+            self._broken_sfx.stop()
+            self._broken_sfx.detach()
+            self._broken_sfx = None
+        ClWeapon.destroy(self)
+        BigWorld.cancelCallback(self._gt_id)
+        self.stopOverheatSound()
+        self.on_spend_ammo = lambda : None
+        return
+
+    def stopOverheatSound(self):
+        if self._overheat_sound:
+            self._overheat_sound.stop()
+            self._overheat_sound = None
+        return

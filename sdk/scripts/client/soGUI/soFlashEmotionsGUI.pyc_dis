@@ -1,0 +1,306 @@
+# Embedded file name: ./client/soGUI/soFlashEmotionsGUI.py
+import BWPersonality
+import BigWorld
+import GUI
+import Keys
+import pyson
+import GesturesUtils
+from .FlashGUIBase import FlashScriptGUIBase
+from .flash_utils import FlashTeamWorker
+from Localization import lc
+from Helpers import BWKeyBindings
+import utils
+import os
+from soGUI import MouseShaper
+from soGUI.GUIPositions import GUIPositions
+
+class soFlashEmotionsGUI(FlashScriptGUIBase, FlashTeamWorker):
+    factoryString = 'soFlashEmotionsGUI'
+
+    def __init__(self, component):
+        """\xd0\x9a\xd0\xbe\xd0\xbd\xd1\x81\xd1\x82\xd1\x80\xd1\x83\xd0\xba\xd1\x82\xd0\xbe\xd1\x80."""
+        FlashScriptGUIBase.__init__(self, component)
+        FlashTeamWorker.__init__(self)
+        layer = BWPersonality.GUICore.flashWorldLayer
+        self.bind_to_parrent_layer(layer)
+        self._current_cursor = ''
+        self._emotions_data = None
+        self._save_path = os.path.join(utils.stalker_path(), 'usercontent/emotions.pyson')
+        self._saved_data = {}
+        self._key_bind_id = 0
+        return
+
+    @classmethod
+    def create(cls, movie_path_name = None, backgroundAlpha = 0):
+        """\xd0\x9c\xd0\xb5\xd1\x82\xd0\xbe\xd0\xb4 \xd0\xb4\xd0\xbb\xd1\x8f \xd1\x81\xd0\xbe\xd0\xb7\xd0\xb4\xd0\xb0\xd0\xbd\xd0\xb8\xd1\x8f \xd0\xba\xd0\xbe\xd0\xbc\xd0\xbf\xd0\xbe\xd0\xbd\xd0\xb5\xd0\xbd\xd1\x82\xd0\xb0."""
+        movie_path = 'extendedGUI/EmotionsGUI.swf'
+        backgroundAlpha = 0
+        component = super(soFlashEmotionsGUI, cls).create(movie_path, backgroundAlpha)
+        component.position = (0, 0, 0.18)
+        component.visible = True
+        component.focus = True
+        component.mouseButtonFocus = False
+        component.crossFocus = True
+        component.moveFocus = True
+        component.dragFocus = False
+        component.dropFocus = False
+        return component
+
+    def read_saved_settings(self):
+        if self._saved_data:
+            return self._saved_data
+        loaded_data = {}
+        if os.path.exists(self._save_path):
+            try:
+                with open(self._save_path, 'rb') as fh:
+                    loaded_data = pyson.loads(fh.read())
+            except:
+                pass
+
+        self._saved_data = loaded_data
+        return loaded_data
+
+    def save_settings(self):
+        settings_dir = os.path.dirname(self._save_path)
+        if not os.path.exists(settings_dir):
+            os.makedirs(settings_dir)
+        with open(self._save_path, 'wb') as fh:
+            fh.write(pyson.dumps(self._saved_data))
+
+    def externalInterfaceHandler(self, *args, **kws):
+        FlashTeamWorker.externalInterfaceHandler(self, *args, **kws)
+
+    def parseEmotions(self):
+        self.read_saved_settings()
+        data = GesturesUtils.get_anim_data()
+        self._emotions_data = {}
+        anim_array = []
+        for index, emotion in enumerate(data['emotions']):
+            key_name = emotion.get('key', '')
+            key_id = 0
+            if key_name:
+                key_id = BWKeyBindings._stringToKey(key_name)
+            if not self._saved_data or not self._saved_data.get('selected'):
+                checked = True
+            else:
+                checked = id not in self._saved_data.get('selected', [])
+            key_name = self._get_keyname(key_name)
+            if emotion['id'] in self._saved_data:
+                key_id = self._saved_data[emotion['id']]
+                key_name = self.get_keyname_by_keyid(key_id)
+            self._emotions_data[emotion['id']] = {'name': emotion['name'],
+             'key': key_id,
+             'key_name': key_name,
+             'index': index}
+            anim_array.append({'id': emotion['id'],
+             'label': lc('EmotionsGUI.%s' % emotion['name']),
+             'checked': checked,
+             'key_name': key_name,
+             'key_id': key_id})
+
+        return anim_array
+
+    def get_keyname_by_keyid(self, key_id):
+        key_name = BWKeyBindings._keyToString(key_id)
+        key_name = self._get_keyname(key_name)
+        return key_name
+
+    def _get_keyname(self, key_name):
+        key_name = key_name.replace('NUMPAD', 'Num ')
+        key_name = key_name.replace('MINUS', '-')
+        key_name = key_name.replace('ADD', 'Num +')
+        key_name = key_name.replace('STAR', '*')
+        key_name = key_name.replace('SLASH', '/')
+        return key_name
+
+    @FlashTeamWorker.sending_method
+    def set_local(self):
+        return {'Title': lc('EmotionsGUI.Title'),
+         'BIND_KEY': lc('EmotionsGUI.BIND_KEY'),
+         'Help': lc('EmotionsGUI.Help'),
+         'Localization': BWPersonality.settings.getLanguage()}
+
+    @FlashTeamWorker.sending_method
+    def change_local(self):
+        return {'Localization': BWPersonality.settings.getLanguage()}
+
+    @FlashTeamWorker.exchanging_method
+    def get_settings(self):
+        animations = self.get_emotions_data()
+        return {'Animations': animations}
+
+    @FlashTeamWorker.receiving_method
+    def set_settings(self):
+        self.save_settings()
+        self.updateEmotionData()
+
+    def get_emotions_data(self, animations_ids = ()):
+        anim_array = []
+        if not self._emotions_data:
+            print 'ERROR EMOTIONS!!! NOT EMOTION DATA'
+            return
+        for id in self._emotions_data:
+            if animations_ids and id in animations_ids:
+                continue
+            if not self._saved_data or not self._saved_data.get('selected'):
+                checked = True
+            else:
+                checked = id not in self._saved_data.get('selected', [])
+            anim_array.append({'id': id,
+             'label': lc('EmotionsGUI.%s' % self._emotions_data[id]['name']),
+             'checked': checked,
+             'key_name': self._emotions_data[id]['key_name'],
+             'key_id': self._emotions_data[id]['key']})
+
+        return anim_array
+
+    @FlashTeamWorker.sending_method
+    def set_animations(self, animations):
+        return {'Title': lc('EmotionsGUI.Title'),
+         'Animations': animations}
+
+    @FlashTeamWorker.sending_method
+    def set_current_animations(self, animations_ids):
+        anim_array = self.get_emotions_data(animations_ids)
+        if not anim_array:
+            return
+        self.save_settings()
+        return {'Animations': anim_array}
+
+    @FlashTeamWorker.receiving_method
+    def check_anim(self, anim_id, value):
+        if not self._saved_data.get('selected'):
+            self._saved_data['selected'] = []
+        if value:
+            if anim_id in self._saved_data['selected']:
+                self._saved_data['selected'].remove(anim_id)
+        elif anim_id not in self._saved_data['selected']:
+            self._saved_data['selected'].append(anim_id)
+
+    @FlashTeamWorker.receiving_method
+    def change_anim_key(self, anim_id):
+        self._key_bind_id = anim_id + 1
+
+    def get_current_animations(self):
+        anim_data = self.read_saved_settings()
+        anim_ids = anim_data.get('selected', [])
+        self.set_current_animations(anim_ids)
+
+    @FlashTeamWorker.sending_method
+    def reset_position(self):
+        print 'soFlashEmotionsGUI::reset_position'
+        return True
+
+    @FlashTeamWorker.sending_method
+    def doReposition(self):
+        return True
+
+    @FlashTeamWorker.receiving_method
+    def save_position(self, x, y):
+        GUIPositions.save_position(self.factoryString, (x, y))
+
+    @FlashTeamWorker.sending_method
+    def load_position(self, pos):
+        x, y = pos
+        return {'x': x,
+         'y': y}
+
+    def get_flash_position(self):
+        pos = GUIPositions.get_positon(self.factoryString)
+        if not pos:
+            return
+        self.load_position(pos)
+
+    @FlashTeamWorker.exchanging_method
+    def localized_resource(self, paths):
+        """\xd0\x92\xd0\xbe\xd0\xb7\xd0\xb2\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xb7\xd0\xb0\xd0\xbf\xd1\x80\xd0\xbe\xd1\x89\xd0\xb5\xd0\xbd\xd0\xbd\xd1\x8b\xd0\xb5 \xd1\x84\xd0\xb0\xd0\xb9\xd0\xbb\xd1\x8b \xd0\xbb\xd0\xbe\xd0\xba\xd0\xb0\xd0\xbb\xd0\xb8\xd0\xb7\xd0\xb0\xd1\x86\xd0\xb8\xd0\xb8 \xd0\xb2 \xd1\x84\xd0\xbe\xd1\x80\xd0\xbc\xd0\xb0\xd1\x82\xd0\xb5 json."""
+        return super(soFlashEmotionsGUI, self).localized_resource(paths)
+
+    @FlashTeamWorker.receiving_method
+    def ready(self):
+        self.set_local()
+        arr = self.parseEmotions()
+        if arr:
+            self.set_animations(arr)
+        self.get_current_animations()
+        self.get_flash_position()
+
+    def updateEmotionData(self):
+        arr = self.get_emotions_data()
+        if arr:
+            self.set_animations(arr)
+        self.get_current_animations()
+
+    @FlashTeamWorker.receiving_method
+    def set_cursor(self, cursor_data):
+        """\xd0\xa3\xd1\x81\xd1\x82\xd0\xb0\xd0\xbd\xd0\xb0\xd0\xb2\xd0\xbb\xd0\xb8\xd0\xb2\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xbd\xd1\x83\xd0\xb6\xd0\xbd\xd1\x8b\xd0\xb9 \xd0\xba\xd1\x83\xd1\x80\xd1\x81\xd0\xbe\xd1\x80 \xd0\xb4\xd0\xbb\xd1\x8f \xd1\x80\xd0\xb5\xd1\x81\xd0\xb0\xd0\xb9\xd0\xb7\xd0\xb0 \xd0\xbe\xd0\xba\xd0\xbd\xd0\xb0 \xd1\x87\xd0\xb0\xd1\x82\xd0\xb0"""
+        if cursor_data == 'default':
+            if self._current_cursor:
+                MouseShaper.set_shape(self._current_cursor)
+                self._current_cursor = ''
+        else:
+            if not self._current_cursor:
+                self._current_cursor = 'arrow'
+            MouseShaper.set_shape(cursor_data)
+
+    @FlashTeamWorker.receiving_method
+    def play_anim(self, anim_id):
+        anim_index = self._emotions_data[anim_id]['index']
+        BigWorld.player().playAvatarGesture(anim_index + 1)
+
+    @FlashTeamWorker.receiving_method
+    def python_trace(self, text):
+        print 'flash_trace:', text
+
+    @FlashTeamWorker.receiving_method
+    def hide_interface(self):
+        self.hide()
+
+    def show(self):
+        self.visible = True
+        BWPersonality.GUICore.setMouseAltState(True, True)
+        BWPersonality.game.set_cursor_mouse(True)
+
+    def hide(self):
+        self.visible = False
+        BWPersonality.GUICore.setMouseAltState(False, True)
+        BWPersonality.GUICore.setBestCursor()
+
+    def handleMouseButtonEvent(self, comp, event):
+        """\xd0\xa1\xd0\xbc. \xd0\xb4\xd0\xbe\xd0\xba\xd1\x83\xd0\xbc\xd0\xb5\xd0\xbd\xd1\x82\xd0\xb0\xd1\x86\xd0\xb8\xd1\x8e BigWorld."""
+        result = super(soFlashEmotionsGUI, self).handleMouseButtonEvent(comp, event)
+        return result
+
+    def handleMouseEvent(self, comp, event):
+        """\xd0\xa1\xd0\xbc. \xd0\xb4\xd0\xbe\xd0\xba\xd1\x83\xd0\xbc\xd0\xb5\xd0\xbd\xd1\x82\xd0\xb0\xd1\x86\xd0\xb8\xd1\x8e BigWorld."""
+        result = super(soFlashEmotionsGUI, self).handleMouseEvent(comp, event)
+        return result
+
+    def handleKeyEvent(self, event):
+        key = event.key
+        if key in [Keys.KEY_LEFTMOUSE, Keys.KEY_MIDDLEMOUSE, Keys.KEY_RIGHTMOUSE]:
+            return super(soFlashEmotionsGUI, self).handleMouseButtonEvent(self, event)
+        if not event.isKeyDown():
+            return False
+        if not self._emotions_data:
+            return False
+        if self._key_bind_id:
+            cur_id = self._key_bind_id - 1
+            key_name = self.get_keyname_by_keyid(key)
+            for index, emotion in self._emotions_data.items():
+                if emotion['key'] == key or emotion['key_name'] == key_name:
+                    emotion['key'] = 0
+                    emotion['key_name'] = ''
+
+            self._emotions_data[cur_id]['key'] = key
+            self._emotions_data[cur_id]['key_name'] = key_name
+            self._saved_data[cur_id] = key
+            self._key_bind_id = 0
+            self.updateEmotionData()
+            return True
+        for emotion_id in self._emotions_data:
+            if key == self._emotions_data[emotion_id]['key']:
+                self.play_anim(emotion_id)
+                return True
+
+        return False

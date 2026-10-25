@@ -1,0 +1,259 @@
+# Embedded file name: ./client/DungeonDoor.py
+import FX
+import json
+import math
+import ResMgr
+import BigWorld
+import ItemsUtils
+import BWPersonality
+import ResourceLoader
+from time import time
+from Localization import lc
+from functools import partial
+import sounds_manager as sounds
+from DoorCommon import DoorCommon
+from Helpers.Caps import CAP_INTERACT
+from Math import Matrix, Vector2, Vector3
+from math_bw import angle_between_vectors
+from soGUI.soInworldMarkers import soInworldMarker
+from FX.persistent_ext_bg import loadPersistentExtAsync
+from DoorMoverInterface import DoorMoverInterface
+from client_utils import readable_space_pos
+from Constants import MESSAGE_TYPES as MT
+section = ResMgr.openSection('scripts/common/EnumProps/Door.json')
+CONFIG = json.loads(section.asBinary)['model_index']['values']
+
+class DungeonDoor(BigWorld.Entity, DoorCommon, DoorMoverInterface):
+
+    def __init__(self):
+        BigWorld.Entity.__init__(self)
+        DoorMoverInterface.__init__(self)
+        self.name = lc(self.local_name)
+        self._model_path = next((model for index, model in CONFIG if index == self.model_index), None)
+        self.door_model = None
+        self.anim_index = 0
+        self.callback_id = None
+        self.effect = None
+        self.__moving_sound = None
+        self.__locked = False
+        self._sound_callback = None
+        self.filter = BigWorld.NoneFilter()
+        return
+
+    def __repr__(self):
+        if self.isDestroyed:
+            return 'DungeonDoor[%s]Destroyed' % self.id
+        return 'DungeonDoor[%s] at %s' % (self.id, readable_space_pos(self))
+
+    @property
+    def DISABLE_MARK(self):
+        return self.name.strip() == ''
+
+    def set_activated(self, old_value):
+        self.saved_time = time()
+        self.play_animation(not self.activated)
+        if self.activated:
+            self.play_sfx()
+        self.play_sounds()
+
+    def play_sfx(self):
+        if not self.sfx or not self.door_model:
+            return
+        self.stop_sfx()
+
+        def on_load(prereqs):
+            self.effect = FX.PersistentExt(self.sfx, prereqs)
+            self.effect.attach(self.door_model)
+            self.effect.go()
+            BigWorld.callback(30, self.stop_sfx)
+
+        loadPersistentExtAsync([self.sfx], on_load)
+
+    def stop_sfx(self):
+        if self.isDestroyed:
+            return
+        else:
+            if self.effect:
+                self.effect.stop()
+            self.effect = None
+            return
+
+    def play_sounds(self):
+        self.stop_sounds()
+        if self.start_sound:
+            self.__start_sound = sounds.playSound(self.start_sound, model=self.door_model)
+        if self.move_sound:
+            self.__moving_sound = sounds.playSound(self.move_sound, model=self.door_model)
+
+    def stop_sounds(self):
+        if self.__moving_sound:
+            self.__moving_sound.stop()
+            self.__moving_sound = None
+        return
+
+    def on_end(self):
+        self.stop_sounds()
+        if self.end_sound:
+            sounds.playSound(self.end_sound, model=self.door_model)
+
+    def prerequisites(self):
+        if self._model_path:
+            return [self._model_path]
+        return []
+
+    def on_change_scale(self):
+        scale = 1
+        if self.isDestroyed:
+            return
+        if not self.model:
+            return
+        if self.get_interaction_dist() > 0:
+            scale = 30
+        self.model.scale = (scale, scale, scale)
+        self.model.newScaleTest = (scale, scale, scale)
+
+    def onEnterWorld(self, prereqs):
+        if not self.dungeon_activate_id:
+            self.targetCaps = [CAP_INTERACT]
+        if self._model_path:
+            scale = self.scale
+            self.door_model = prereqs[self._model_path]
+            self.door_model.scale = (scale, scale, scale)
+            self.door_model.newScaleTest = (scale, scale, scale)
+            self.door_model.visible = True
+            self.door_model.isObstacle = True
+            self.door_model.position = self.position
+            self.door_model.yaw = self.yaw
+            BigWorld.addModel(self.door_model)
+            self.add_collider()
+            if hasattr(self.door_model, 'no_draw'):
+                self.door_model.no_draw = 'no_draw'
+
+            def on_load(prereqs):
+                if self.isDestroyed:
+                    return
+                self.model = prereqs.produce(0)
+                self.model.visible = False
+                self.model.isCalcBoundBoxFromNodes = 1
+                self.on_change_scale()
+
+            path = 'models/bolvan/helpers/cube_1x1.model'
+            ResourceLoader.asyncLoad([(ResourceLoader.MODEL, path)], on_load)
+            if self.activated:
+                self.play_animation()
+            else:
+                self.play_animation(to_static=True)
+
+    def get_offset(self):
+        return (0, 0, 0)
+        p1, p2 = self.door_model.getMinMaxbounds
+        pos = (p2 - p1) / 2 + p1
+        pos *= self.scale
+        matr_t = Matrix()
+        matr_t.setTranslate(pos)
+        matr_r = Matrix()
+        matr_r.setRotateYPR((self.yaw, self.pitch, self.roll))
+        matr__t = Matrix()
+        matr__t.setTranslate(-pos)
+        new_matr = Matrix()
+        new_matr.preMultiply(matr_r)
+        new_matr.preMultiply(matr_t)
+        return new_matr.translation
+
+    def onLeaveWorld(self):
+        if self.door_model:
+            BigWorld.delModel(self.door_model)
+            self.door_model = None
+        return
+
+    def interact(self, player):
+        if self.__locked:
+            return
+        else:
+            dir_t = player.position - self.position
+            vec_yaw = Vector3()
+            rot = self.rotate * math.pi / 180.0
+            vec_yaw.setPitchYaw(0, self.yaw + rot)
+            p1 = Vector2(dir_t.x, dir_t.z)
+            p1.normalise()
+            p2 = Vector2(vec_yaw.x, vec_yaw.z)
+            p2.normalise()
+            angle = angle_between_vectors(p1, p2)
+            self.__locked = True
+
+            def off_lock():
+                self.__locked = False
+
+            BigWorld.callback(2, off_lock)
+            is_right_side = angle > math.pi / 2
+            if self.is_locked(is_right_side):
+                if self.key_item_type:
+                    if ItemsUtils.GetFirstComplexItemByType(player, self.key_item_type) is None:
+                        key_name = ItemsUtils.GetItemName(self.key_item_type, fGetShortName=True)
+                        self.on_fail_open(lc('ServerClientMessages.Door_NEED_KEY').format(key_name))
+                        return
+                    self.cell.interact(player.id, is_right_side)
+                else:
+                    if self.current_open in [DoorCommon.CLOSE_RIGHT, DoorCommon.CLOSE_LEFT]:
+                        self.on_fail_open(lc('ServerClientMessages.Door_CLOSED_OTHER_SIDE'))
+                        return
+                    if self.current_open in [DoorCommon.CLOSE_ALL]:
+                        if self.open_mode == 2:
+                            return
+                        if self.dungeon_activate_id:
+                            return
+                        if self.open not in [DoorCommon.CLOSE_ALL]:
+                            self.on_fail_open(lc('ServerClientMessages.Door_CLOSED'))
+                        else:
+                            self.on_fail_open(lc('ServerClientMessages.Door_TMP_CLOSED'))
+                        return
+            else:
+                self.cell.interact(player.id, is_right_side)
+            return
+
+    def on_fail_open(self, text):
+        BWPersonality.gpd.sendHightMessage(text, MT.FAIL)
+        if self.fail_sound:
+            sounds.playSound(self.fail_sound, model=self.door_model)
+
+    def get_target_mark(self, distance):
+        if self.get_hightlight(distance):
+            return soInworldMarker.MARKER_USE
+        else:
+            return None
+
+    def get_hightlight(self, distance):
+        if distance > self.get_interaction_dist():
+            return None
+        else:
+            return True
+
+    def get_interaction_dist(self):
+        if self.dungeon_activate_id:
+            return 0
+        if self.open_mode == 2 and self.current_open in [DoorCommon.CLOSE_ALL] and not self.key_item_type:
+            return 0
+        return 5
+
+    def set_open_mode(self, old_value):
+        self.on_change_scale()
+
+    def set_current_open(self, old_value):
+        self.on_change_scale()
+
+    def get_hightlight_model(self):
+        return self.door_model
+
+    def add_collider(self):
+        self.canBeHurtByBullets = False
+        self.canTakeDamage = True
+        self.respawned_recently = False
+        self.skeletonCollider = BigWorld.SkeletonCollider()
+        min_bounds, max_bounds = self.door_model.getMinMaxbounds
+        box = BigWorld.BoxAttachment()
+        box.name = 'box'
+        box.minBounds = min_bounds
+        box.maxBounds = max_bounds
+        self.door_model.root.attach(box)
+        self.door_model.isCalcBoundBoxFromNodes = 1
+        self.skeletonCollider.addCollider(box)

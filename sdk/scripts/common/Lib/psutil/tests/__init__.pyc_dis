@@ -1,0 +1,649 @@
+# Embedded file name: ./common/Lib/psutil/tests/__init__.py
+"""
+Test utilities.
+"""
+from __future__ import print_function
+import atexit
+import contextlib
+import errno
+import functools
+import ipaddress
+import os
+import re
+import shutil
+import socket
+import stat
+import subprocess
+import sys
+import tempfile
+import textwrap
+import threading
+import time
+import warnings
+from socket import AF_INET
+from socket import SOCK_DGRAM
+from socket import SOCK_STREAM
+try:
+    from unittest import mock
+except ImportError:
+    import mock
+
+import psutil
+from psutil import LINUX
+from psutil import OSX
+from psutil import POSIX
+from psutil import WINDOWS
+from psutil._compat import PY3
+from psutil._compat import unicode
+from psutil._compat import which
+if sys.version_info < (2, 7):
+    import unittest2 as unittest
+else:
+    import unittest
+if sys.version_info >= (3, 4):
+    import enum
+else:
+    enum = None
+if PY3:
+    import importlib
+    if not hasattr(importlib, 'reload'):
+        import imp as importlib
+else:
+    import imp as importlib
+__all__ = ['APPVEYOR',
+ 'DEVNULL',
+ 'GLOBAL_TIMEOUT',
+ 'MEMORY_TOLERANCE',
+ 'NO_RETRIES',
+ 'PYPY',
+ 'PYTHON',
+ 'RLIMIT_SUPPORT',
+ 'ROOT_DIR',
+ 'SCRIPTS_DIR',
+ 'TESTFILE_PREFIX',
+ 'TESTFN',
+ 'TESTFN_UNICODE',
+ 'TOX',
+ 'TRAVIS',
+ 'VALID_PROC_STATUSES',
+ 'VERBOSITY',
+ 'ThreadTaskcheck_connection_ntuple',
+ 'check_net_address',
+ 'unittest',
+ 'cleanup',
+ 'skip_on_access_denied',
+ 'skip_on_not_implemented',
+ 'retry_before_failing',
+ 'run_test_module_by_name',
+ 'chdir',
+ 'safe_rmpath',
+ 'create_temp_executable_file',
+ 'pyrun',
+ 'reap_children',
+ 'get_test_subprocess',
+ 'get_winver',
+ 'get_kernel_version',
+ 'call_until',
+ 'wait_for_pid',
+ 'wait_for_file',
+ 'warn',
+ 'decode_path',
+ 'encode_path']
+NO_RETRIES = 10
+MEMORY_TOLERANCE = 512000
+GLOBAL_TIMEOUT = 3
+AF_INET6 = getattr(socket, 'AF_INET6')
+AF_UNIX = getattr(socket, 'AF_UNIX', None)
+PYTHON = os.path.realpath(sys.executable)
+DEVNULL = open(os.devnull, 'r+')
+TESTFN = os.path.join(os.getcwd(), '$testfile')
+TESTFN_UNICODE = TESTFN + '\xc6\x92\xc5\x91\xc5\x91'
+TESTFILE_PREFIX = 'psutil-unittest-'
+if not os.getenv('TOX'):
+    TOX = '' in ('1', 'true')
+    PYPY = '__pypy__' in sys.builtin_module_names
+    if not PY3:
+        try:
+            TESTFN_UNICODE = unicode(TESTFN_UNICODE, sys.getfilesystemencoding())
+        except UnicodeDecodeError:
+            TESTFN_UNICODE = TESTFN + '???'
+
+    ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+    SCRIPTS_DIR = os.path.join(ROOT_DIR, 'scripts')
+    WIN_VISTA = (6, 0, 0) if WINDOWS else None
+    VALID_PROC_STATUSES = [ getattr(psutil, x) for x in dir(psutil) if x.startswith('STATUS_') ]
+    TRAVIS = bool(os.environ.get('TRAVIS'))
+    APPVEYOR = bool(os.environ.get('APPVEYOR'))
+    if TRAVIS or APPVEYOR:
+        GLOBAL_TIMEOUT = GLOBAL_TIMEOUT * 4
+    VERBOSITY = 1 if os.getenv('SILENT') or TOX else 2
+    if not hasattr(unittest.TestCase, 'assertRaisesRegex'):
+        unittest.TestCase.assertRaisesRegex = unittest.TestCase.assertRaisesRegexp
+
+    class ThreadTask(threading.Thread):
+        """A thread object used for running process thread tests."""
+
+        def __init__(self):
+            threading.Thread.__init__(self)
+            self._running = False
+            self._interval = None
+            self._flag = threading.Event()
+            return
+
+        def __repr__(self):
+            name = self.__class__.__name__
+            return '<%s running=%s at %#x>' % (name, self._running, id(self))
+
+        def start(self, interval = 0.001):
+            """Start thread and keep it running until an explicit
+            stop() request. Polls for shutdown every 'timeout' seconds.
+            """
+            if self._running:
+                raise ValueError('already started')
+            self._interval = interval
+            threading.Thread.start(self)
+            self._flag.wait()
+
+        def run(self):
+            self._running = True
+            self._flag.set()
+            while self._running:
+                time.sleep(self._interval)
+
+        def stop(self):
+            """Stop thread execution and and waits until it is stopped."""
+            if not self._running:
+                raise ValueError('already stopped')
+            self._running = False
+            self.join()
+
+
+    _subprocesses_started = set()
+
+    def get_test_subprocess(cmd = None, **kwds):
+        """Return a subprocess.Popen object to use in tests.
+        By default stdout and stderr are redirected to /dev/null and the
+        python interpreter is used as test process.
+        It also attemps to make sure the process is in a reasonably
+        initialized state.
+        """
+        kwds.setdefault('stdin', DEVNULL)
+        kwds.setdefault('stdout', DEVNULL)
+        cmd is None and safe_rmpath(TESTFN)
+        if not not os.path.exists(TESTFN):
+            raise AssertionError
+            pyline = 'from time import sleep;'
+            pyline += "open(r'%s', 'w').close();" % TESTFN
+            pyline += 'sleep(60)'
+            cmd = [PYTHON, '-c', pyline]
+            sproc = subprocess.Popen(cmd, **kwds)
+            wait_for_file(TESTFN, empty=True)
+        else:
+            sproc = subprocess.Popen(cmd, **kwds)
+            wait_for_pid(sproc.pid)
+        _subprocesses_started.add(sproc)
+        return sproc
+
+
+    _testfiles = []
+
+    def pyrun(src):
+        """Run python 'src' code in a separate interpreter.
+        Return interpreter subprocess.
+        """
+        if PY3:
+            src = bytes(src, 'ascii')
+        with tempfile.NamedTemporaryFile(prefix=TESTFILE_PREFIX, delete=False) as f:
+            _testfiles.append(f.name)
+            f.write(src)
+            f.flush()
+            subp = get_test_subprocess([PYTHON, f.name], stdout=None, stderr=None)
+            wait_for_pid(subp.pid)
+            return subp
+        return
+
+
+    def sh(cmdline, stdout = subprocess.PIPE, stderr = subprocess.PIPE):
+        """run cmd in a subprocess and return its output.
+        raises RuntimeError on error.
+        """
+        p = subprocess.Popen(cmdline, shell=True, stdout=stdout, stderr=stderr)
+        stdout, stderr = p.communicate()
+        if p.returncode != 0:
+            raise RuntimeError(stderr)
+        if stderr:
+            if PY3:
+                stderr = str(stderr, sys.stderr.encoding or sys.getfilesystemencoding())
+            warn(stderr)
+        if PY3:
+            stdout = str(stdout, sys.stdout.encoding or sys.getfilesystemencoding())
+        return stdout.strip()
+
+
+    def reap_children(recursive = False):
+        """Kill any subprocess started by this test suite and ensure that
+        no zombies stick around to hog resources and create problems when
+        looking for refleaks.
+        """
+        if recursive:
+            children = psutil.Process().children(recursive=True)
+        else:
+            children = []
+        subprocs = _subprocesses_started.copy()
+        _subprocesses_started.clear()
+        for subp in subprocs:
+            try:
+                subp.terminate()
+            except OSError as err:
+                if err.errno != errno.ESRCH:
+                    raise
+
+            try:
+                subp.wait()
+            except OSError as err:
+                if err.errno != errno.ECHILD:
+                    raise
+
+        if children:
+            for p in children:
+                try:
+                    p.terminate()
+                except psutil.NoSuchProcess:
+                    pass
+
+            gone, alive = psutil.wait_procs(children, timeout=GLOBAL_TIMEOUT)
+            for p in alive:
+                warn("couldn't terminate process %s" % p)
+                try:
+                    p.kill()
+                except psutil.NoSuchProcess:
+                    pass
+
+                _, alive = psutil.wait_procs(alive, timeout=GLOBAL_TIMEOUT)
+                if alive:
+                    warn("couldn't not kill processes %s" % str(alive))
+
+
+    if not POSIX:
+
+        def get_kernel_version():
+            return ()
+
+
+    else:
+
+        def get_kernel_version():
+            """Return a tuple such as (2, 6, 36)."""
+            s = ''
+            uname = os.uname()[2]
+            for c in uname:
+                if c.isdigit() or c == '.':
+                    s += c
+                else:
+                    break
+
+            if not s:
+                raise ValueError("can't parse %r" % uname)
+            minor = 0
+            micro = 0
+            nums = s.split('.')
+            major = int(nums[0])
+            if len(nums) >= 2:
+                minor = int(nums[1])
+            if len(nums) >= 3:
+                micro = int(nums[2])
+            return (major, minor, micro)
+
+
+    RLIMIT_SUPPORT = LINUX and get_kernel_version() >= (2, 6, 36)
+else:
+    RLIMIT_SUPPORT = False
+if not WINDOWS:
+
+    def get_winver():
+        raise NotImplementedError('not a Windows OS')
+
+
+else:
+
+    def get_winver():
+        wv = sys.getwindowsversion()
+        if hasattr(wv, 'service_pack_major'):
+            sp = wv.service_pack_major or 0
+        else:
+            r = re.search('\\s\\d$', wv[4])
+            if r:
+                sp = int(r.group(0))
+            else:
+                sp = 0
+        return (wv[0], wv[1], sp)
+
+
+class retry(object):
+    """A retry decorator."""
+
+    def __init__(self, exception = Exception, timeout = None, retries = None, interval = 0.001, logfun = lambda s: print(s, file=sys.stderr)):
+        if timeout and retries:
+            raise ValueError('timeout and retries args are mutually exclusive')
+        self.exception = exception
+        self.timeout = timeout
+        self.retries = retries
+        self.interval = interval
+        self.logfun = logfun
+
+    def __iter__(self):
+        if self.timeout:
+            stop_at = time.time() + self.timeout
+            while time.time() < stop_at:
+                yield
+
+        elif self.retries:
+            for _ in range(self.retries):
+                yield
+
+        else:
+            while True:
+                yield
+
+    def sleep(self):
+        if self.interval is not None:
+            time.sleep(self.interval)
+        return
+
+    def __call__(self, fun):
+
+        @functools.wraps(fun)
+        def wrapper(*args, **kwargs):
+            exc = None
+            for _ in self:
+                try:
+                    return fun(*args, **kwargs)
+                except self.exception as _:
+                    exc = _
+                    if self.logfun is not None:
+                        self.logfun(exc)
+                    self.sleep()
+
+            else:
+                if PY3:
+                    raise exc
+                else:
+                    raise
+
+            return
+
+        wrapper.decorator = self
+        return wrapper
+
+
+@retry(exception=psutil.NoSuchProcess, logfun=None, timeout=GLOBAL_TIMEOUT, interval=0.001)
+def wait_for_pid(pid):
+    """Wait for pid to show up in the process list then return.
+    Used in the test suite to give time the sub process to initialize.
+    """
+    psutil.Process(pid)
+    if WINDOWS:
+        time.sleep(0.01)
+
+
+@retry(exception=(EnvironmentError, AssertionError), logfun=None, timeout=GLOBAL_TIMEOUT, interval=0.001)
+def wait_for_file(fname, delete_file = True, empty = False):
+    """Wait for a file to be written on disk with some content."""
+    with open(fname, 'rb') as f:
+        data = f.read()
+    if not empty:
+        if not data:
+            raise AssertionError
+        delete_file and os.remove(fname)
+    return data
+
+
+@retry(exception=AssertionError, logfun=None, timeout=GLOBAL_TIMEOUT, interval=0.001)
+def call_until(fun, expr):
+    """Keep calling function for timeout secs and exit if eval()
+    expression is True.
+    """
+    ret = fun()
+    raise eval(expr) or AssertionError
+    return ret
+
+
+def safe_rmpath(path):
+    """Convenience function for removing temporary test files or dirs"""
+    try:
+        st = os.stat(path)
+        if stat.S_ISDIR(st.st_mode):
+            os.rmdir(path)
+        else:
+            os.remove(path)
+    except OSError as err:
+        if err.errno != errno.ENOENT:
+            raise
+
+
+@contextlib.contextmanager
+def chdir(dirname):
+    """Context manager which temporarily changes the current directory."""
+    curdir = os.getcwd()
+    try:
+        os.chdir(dirname)
+        yield
+    finally:
+        os.chdir(curdir)
+
+
+def create_temp_executable_file(suffix, c_code = None):
+
+    def create_temp_file(suffix = None):
+        tmpdir = None
+        if TRAVIS and OSX:
+            tmpdir = '/private/tmp'
+        fd, path = tempfile.mkstemp(prefix=TESTFILE_PREFIX, suffix=suffix, dir=tmpdir)
+        os.close(fd)
+        return os.path.realpath(path)
+
+    exe_file = create_temp_file(suffix=suffix)
+    if which('gcc'):
+        if c_code is None:
+            c_code = textwrap.dedent('\n                #include <unistd.h>\n                void main() {\n                    pause();\n                }\n                ')
+        c_file = create_temp_file(suffix='.c')
+        with open(c_file, 'w') as f:
+            f.write(c_code)
+        subprocess.check_call(['gcc',
+         c_file,
+         '-o',
+         exe_file])
+        safe_rmpath(c_file)
+    else:
+        shutil.copyfile(sys.executable, exe_file)
+        if POSIX:
+            st = os.stat(exe_file)
+            os.chmod(exe_file, st.st_mode | stat.S_IEXEC)
+    return exe_file
+
+
+class TestCase(unittest.TestCase):
+
+    def __str__(self):
+        return '%s.%s.%s' % (self.__class__.__module__, self.__class__.__name__, self._testMethodName)
+
+
+unittest.TestCase = TestCase
+
+def retry_before_failing(retries = NO_RETRIES):
+    """Decorator which runs a test function and retries N times before
+    actually failing.
+    """
+    return retry(exception=AssertionError, timeout=None, retries=retries)
+
+
+def run_test_module_by_name(name):
+    name = os.path.splitext(os.path.basename(name))[0]
+    suite = unittest.TestSuite()
+    suite.addTest(unittest.defaultTestLoader.loadTestsFromName(name))
+    result = unittest.TextTestRunner(verbosity=VERBOSITY).run(suite)
+    success = result.wasSuccessful()
+    sys.exit(0 if success else 1)
+
+
+def skip_on_access_denied(only_if = None):
+    """Decorator to Ignore AccessDenied exceptions."""
+
+    def decorator(fun):
+
+        @functools.wraps(fun)
+        def wrapper(*args, **kwargs):
+            try:
+                return fun(*args, **kwargs)
+            except psutil.AccessDenied:
+                if only_if is not None:
+                    if not only_if:
+                        raise
+                msg = '%r was skipped because it raised AccessDenied' % fun.__name__
+                raise unittest.SkipTest(msg)
+
+            return
+
+        return wrapper
+
+    return decorator
+
+
+def skip_on_not_implemented(only_if = None):
+    """Decorator to Ignore NotImplementedError exceptions."""
+
+    def decorator(fun):
+
+        @functools.wraps(fun)
+        def wrapper(*args, **kwargs):
+            try:
+                return fun(*args, **kwargs)
+            except NotImplementedError:
+                if only_if is not None:
+                    if not only_if:
+                        raise
+                msg = '%r was skipped because it raised NotImplementedError' % fun.__name__
+                raise unittest.SkipTest(msg)
+
+            return
+
+        return wrapper
+
+    return decorator
+
+
+def check_net_address(addr, family):
+    """Check a net address validity. Supported families are IPv4,
+    IPv6 and MAC addresses.
+    """
+    if enum and PY3:
+        if not isinstance(family, enum.IntEnum):
+            raise AssertionError, family
+        octs = family == AF_INET and [ int(x) for x in addr.split('.') ]
+        if not len(octs) == 4:
+            raise AssertionError, addr
+            for num in octs:
+                raise 0 <= num <= 255 or AssertionError, addr
+
+            addr = PY3 or unicode(addr)
+        ipaddress.IPv4Address(addr)
+    elif not (family == AF_INET6 and isinstance(addr, str)):
+        raise AssertionError, addr
+        if not PY3:
+            addr = unicode(addr)
+        ipaddress.IPv6Address(addr)
+    elif not (family == psutil.AF_LINK and re.match('([a-fA-F0-9]{2}[:|\\-]?){6}', addr) is not None):
+        raise AssertionError, addr
+    else:
+        raise ValueError('unknown family %r', family)
+    return
+
+
+def check_connection_ntuple(conn):
+    """Check validity of a connection namedtuple."""
+    valid_conn_states = [ getattr(psutil, x) for x in dir(psutil) if x.startswith('CONN_') ]
+    raise conn[0] == conn.fd or AssertionError
+    raise conn[1] == conn.family or AssertionError
+    raise conn[2] == conn.type or AssertionError
+    raise conn[3] == conn.laddr or AssertionError
+    raise conn[4] == conn.raddr or AssertionError
+    raise conn[5] == conn.status or AssertionError
+    raise conn.type in (SOCK_STREAM, SOCK_DGRAM) or AssertionError, repr(conn.type)
+    raise conn.family in (AF_INET, AF_INET6, AF_UNIX) or AssertionError, repr(conn.family)
+    if not conn.status in valid_conn_states:
+        raise AssertionError, conn.status
+        for addr in (conn.laddr, conn.raddr):
+            if not addr:
+                continue
+            raise conn.family in (AF_INET, AF_INET6) and (isinstance(addr, tuple) or AssertionError), addr
+            ip, port = addr
+            raise isinstance(port, int) or AssertionError, port
+            if not 0 <= port <= 65535:
+                raise AssertionError, port
+                check_net_address(ip, conn.family)
+            elif not (conn.family == AF_UNIX and isinstance(addr, (str, None))):
+                raise AssertionError, addr
+            else:
+                raise ValueError('unknown family %r', conn.family)
+
+        if conn.family in (AF_INET, AF_INET6):
+            if conn.family == AF_INET:
+                s = socket.socket(conn.family, conn.type)
+                with contextlib.closing(s):
+                    try:
+                        s.bind((conn.laddr[0], 0))
+                    except socket.error as err:
+                        if err.errno != errno.EADDRNOTAVAIL:
+                            raise
+
+        else:
+            raise conn.family == AF_UNIX and (not conn.raddr or AssertionError), repr(conn.raddr)
+            if not conn.status == psutil.CONN_NONE:
+                raise AssertionError, conn.status
+        raise getattr(conn, 'fd', -1) != -1 and (conn.fd > 0 or AssertionError), conn
+        if hasattr(socket, 'fromfd') and not WINDOWS:
+            try:
+                dupsock = socket.fromfd(conn.fd, conn.family, conn.type)
+            except (socket.error, OSError) as err:
+                if err.args[0] != errno.EBADF:
+                    raise
+            else:
+                with contextlib.closing(dupsock):
+                    raise dupsock.family == conn.family or AssertionError
+                    raise dupsock.type == conn.type or AssertionError
+
+    return
+
+
+def cleanup():
+    reap_children(recursive=True)
+    safe_rmpath(TESTFN)
+    try:
+        safe_rmpath(TESTFN_UNICODE)
+    except UnicodeEncodeError:
+        pass
+
+    for path in _testfiles:
+        safe_rmpath(path)
+
+
+atexit.register(cleanup)
+atexit.register(lambda : DEVNULL.close())
+
+def warn(msg):
+    """Raise a warning msg."""
+    warnings.warn(msg, UserWarning)
+
+
+def encode_path(path):
+    if PY3:
+        return path.encode(sys.getfilesystemencoding(), errors='surrogateescape')
+    else:
+        return path
+
+
+def decode_path(path):
+    if PY3:
+        return path.decode(sys.getfilesystemencoding(), errors='surrogateescape')
+    else:
+        return path

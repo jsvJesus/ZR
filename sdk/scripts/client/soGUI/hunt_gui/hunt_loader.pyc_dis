@@ -1,0 +1,107 @@
+# Embedded file name: ./client/soGUI/hunt_gui/hunt_loader.py
+import BigWorld
+from utils import Listenable
+from Constants import BoardSort
+from functools import partial
+
+class EventType:
+    OnStartLoad, OnEndLoad = range(2)
+
+
+class HuntLoader(Listenable):
+
+    def __init__(self, rows_count):
+        Listenable.__init__(self)
+        self._rows_count = rows_count
+        self._awaited_request = None
+        self._delay_load_callback = None
+
+        class LoadData:
+            pass
+
+        self._load_data = LoadData()
+        ld = self._load_data
+        ld.index_range, ld.total, ld.sorttype, ld.sortdir, ld.filt = ([0, None],
+         None,
+         BoardSort.Wanted,
+         BoardSort.Forward,
+         u'')
+
+        def ids_provider():
+            while True:
+                for i in range(1, 128):
+                    yield i
+
+        self._ids_provider = ids_provider()
+        return
+
+    def restore_load(self, sorttype, sortdir, filt):
+        if self._load_data.sorttype == sorttype and self._load_data.sortdir == sortdir and self._load_data.filt == filt:
+            self._load(0)
+        else:
+            self.set_mode_and_load_start(sorttype, sortdir, filt)
+
+    def _load(self, search_dir):
+        BigWorld.player().got_hunt_data1 = self._on_got_hunt_data
+
+        def load(search_dir):
+            self._delay_load_callback = None
+            ld = self._load_data
+            if search_dir == 0:
+                if ld.index_range[0] is not None:
+                    start_index = ld.index_range[0]
+                    search_dir = 1
+                else:
+                    start_index = ld.index_range[1]
+                    search_dir = -1
+            elif search_dir == 1:
+                start_index = ld.index_range[1] + 1
+            elif search_dir == -1:
+                start_index = ld.index_range[0] - 1
+            BigWorld.player().base.get_hunt_data0(ld.sorttype, ld.sortdir, search_dir, start_index, self._rows_count, self._awaited_request, ld.filt or u'')
+            return
+
+        self._awaited_request = self._ids_provider.next()
+        self.notify_listeners(EventType.OnStartLoad)
+        if self._delay_load_callback:
+            BigWorld.cancelCallback(self._delay_load_callback)
+        self._delay_load_callback = BigWorld.callback(0.3, partial(load, search_dir))
+
+    def load_next(self):
+        self._load(1)
+
+    def load_prev(self):
+        self._load(-1)
+
+    def set_mode_and_load_start(self, sorttype, sortdir, filt):
+        self._load_data.sorttype = sorttype
+        self._load_data.sortdir = sortdir
+        self._load_data.filt = filt
+        self.load_start()
+
+    def load_start(self):
+        self._load_data.index_range = [0, None]
+        self._load(0)
+        return
+
+    def load_end(self):
+        self._load_data.index_range = [None, self._load_data.total - 1]
+        self._load(0)
+        return
+
+    def on_hide(self):
+        self._awaited_request = None
+        if self._delay_load_callback:
+            BigWorld.cancelCallback(self._delay_load_callback)
+            self._delay_load_callback = None
+        return
+
+    def _on_got_hunt_data(self, data, index_range, total, request_id):
+        if request_id != self._awaited_request:
+            return
+        self._load_data.total = total
+        self._load_data.index_range = list(index_range)
+        data = {'lines': data,
+         'total': total,
+         'range': index_range}
+        self.notify_listeners(EventType.OnEndLoad, data)

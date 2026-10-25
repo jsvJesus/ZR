@@ -1,0 +1,203 @@
+# Embedded file name: ./client/sprayer/cloud.py
+import BigWorld
+from Items import ItemsCatalog
+from Math import Vector3, Matrix
+from utils_bw import collideIgnoreNoVisible
+DEBUG_BOX = False
+
+class ClSTATUS:
+    LIFE = True
+    DEAD = False
+
+
+class Cloud:
+    """
+    \xd0\xba\xd0\xbb\xd0\xb0\xd1\x81\xd1\x81 '\xd0\xbf\xd1\x83\xd0\xbb\xd0\xb8' \xd0\xb4\xd0\xbb\xd1\x8f Sprayer
+    """
+    _model = None
+    _eff = None
+    _destroyed = False
+    _stop_move = False
+    _used_up = False
+    _tid = 0
+
+    def __init__(self, avatar, start_pos, start_dir, ammo_type):
+        self.avatar = avatar
+        self._pos0 = Vector3(start_pos)
+        self._dir0 = Vector3(start_dir)
+        self._pos = Vector3(start_pos)
+        self._dir = Vector3(start_dir)
+        self.ammo_type = ammo_type
+        self._start_time = BigWorld.time()
+        ammo_param = ItemsCatalog.GetItemParam(ammo_type)
+        self._is_poison = ammo_param.get('AmmoClass') == ItemsCatalog.AMMO_CL_SPRAYER_POISON
+        self._cloud_move_time = ammo_param.get('cloud_move_time', 0.1)
+        self._cloud_sink_time = ammo_param.get('cloud_sink_time', 1.0)
+        self._end_time = self._start_time + ammo_param.get('cloud_live_time', 3.5)
+        self._end_move_time = BigWorld.time() + self._cloud_move_time
+        self._end_eff_time = self._end_time - self._cloud_sink_time
+        self.cloud_move_speed = ammo_param.get('cloud_move_speed', 0.1)
+        self.cloud_scale_speed = ammo_param.get('cloud_scale_speed', 0.3)
+        self.cloud_scale = ammo_param.get('cloud_scale_init', 0.2)
+        self.max_cloud_scale = ammo_param.get('max_cloud_scale', 2.1)
+        self.load_model()
+        self._tid = BigWorld.callback(0.001, self._tick)
+
+    def load_model(self):
+        if DEBUG_BOX:
+            self._model = BigWorld.Model('helpers/models/boxc1m.model')
+        else:
+            self._model = BigWorld.Model('')
+        self._model.position = self._pos
+        self.avatar.addModel(self._model)
+        self.updateScale(self.cloud_scale)
+
+    def updateEff(self):
+        pass
+
+    def updateScale(self, value):
+        self.cloud_scale = min(value, self.max_cloud_scale)
+        self._model.scale = (value, value, value)
+        self._model.newScaleTest = (value, value, value)
+
+    def onDestroy(self):
+        self._destroyed = True
+        self._pos = None
+        self._dir = None
+        if self.avatar and self._model:
+            self.avatar.delModel(self._model)
+        self.avatar = None
+        self._model = None
+        self._eff = None
+        return
+
+    def onContact(self, targets_ids, body_zones):
+        self._used_up = True
+        self._stop_move = True
+        self._end_eff_time = BigWorld.time()
+        self._end_time = self._cloud_sink_time + self._end_eff_time
+        if self.avatar is BigWorld.player():
+            self.avatar.cell.sprayer_hits(targets_ids, body_zones, self.ammo_type)
+
+    def addImpulse(self):
+        pass
+
+    def _get_new_pos(self, t):
+        """
+        \xd0\xb2\xd0\xbe\xd0\xb7\xd0\xb2\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xbf\xd0\xbe\xd0\xb7\xd0\xb8\xd1\x86\xd0\xb8\xd1\x8e, \xd0\xb2 \xd0\xba\xd0\xbe\xd1\x82\xd0\xbe\xd1\x80\xd0\xbe\xd0\xb9 \xd0\xb1\xd1\x83\xd0\xb4\xd0\xb5\xd1\x82 \xd0\xbd\xd0\xb0\xd1\x85\xd0\xbe\xd0\xb4\xd0\xb8\xd1\x82\xd1\x81\xd1\x8f \xd1\x87\xd0\xb5\xd1\x80\xd0\xb5\xd0\xb7 t \xd1\x81\xd0\xb5\xd0\xba\xd1\x83\xd0\xbd\xd0\xb4
+        """
+        if self._is_poison:
+            g = Vector3(0.0, 4.9, 0.0)
+        else:
+            g = Vector3(0.0, 0.0, 0.0)
+        v0 = self._dir0 * self.cloud_move_speed
+        self._v = v0 - g * t
+        self._dir = Vector3(self._v)
+        self._dir.normalise()
+        new_pos = self._pos0 + self._v * t
+        return new_pos
+
+    def _tick(self):
+        if self._destroyed:
+            return
+        else:
+            dt = BigWorld.getTimeDelta()
+            if not self._used_up:
+                self.updateScale(self.cloud_scale + self.cloud_scale_speed * dt)
+                self.updateEff()
+            if not self._stop_move:
+                now_time = BigWorld.time()
+                t = now_time - self._start_time
+                new_pos = self._get_new_pos(t)
+                res = collideIgnoreNoVisible(self.avatar.spaceID, self._pos, new_pos + self._dir * self.cloud_scale)
+                if res[0] is not None:
+                    self._checkHit(new_pos)
+                    self._stop_move = True
+                    self._used_up = True
+                elif not self._checkHit(new_pos):
+                    self._pos = new_pos
+                    self._model.position = new_pos
+                if now_time > self._end_move_time:
+                    self._stop_move = True
+            self._tid = BigWorld.callback(0.001, self._tick)
+            return
+
+    def _checkHit(self, new_pos):
+        if self._is_poison:
+            return self._checkHitBullet(new_pos)
+        return self._checkHitBox()
+
+    def _checkHitBullet(self, new_pos):
+
+        def collide(src, dst):
+            res = BigWorld.traceBullet(src, dst, self.avatar.id)
+            if res:
+                target_id, hit_pos, collider_name = res
+                target = BigWorld.entity(target_id)
+                if not getattr(target, 'canTakeDamage', 0):
+                    return
+                if self._is_poison:
+                    if not hasattr(target, 'can_take_cloud_damage'):
+                        return
+                    if not target.can_take_cloud_damage(collider_name):
+                        return
+                body_zone = target.colliderNames.get(collider_name, 0)
+                self.onContact([target.id], [body_zone])
+                if hasattr(target, 'on_cloud_contact'):
+                    target.on_cloud_contact(collider_name, hit_pos, -self._dir)
+                return True
+
+        half = self.cloud_scale * 0.5
+        src = self._pos
+        dst = new_pos + self._dir * half
+        if collide(src, dst):
+            return True
+        m = Matrix()
+        m.lookAt(src, self._dir, Vector3(0, 1, 0))
+        try:
+            m.invert()
+        except:
+            return
+
+        start_pos_list = [Vector3(-half, +half, -half),
+         Vector3(+half, +half, -half),
+         Vector3(+half, -half, -half),
+         Vector3(-half, -half, -half)]
+        dist = (dst - src).length
+        for start_pos in start_pos_list:
+            src = m.applyPoint(start_pos)
+            dst = src + self._dir * dist
+            if collide(src, dst):
+                return True
+
+    def _checkHitBox(self):
+        half = self.cloud_scale * 0.5
+        min_bounds = (-half, -half, -half)
+        max_bounds = (half, half, half)
+        res = BigWorld.traceOrientedBoxWithEntities(self._model.matrix, min_bounds, max_bounds, self.avatar.id)
+        targets_ids = []
+        body_zones = []
+        for target_id, hitbox, local_pos in res:
+            target = BigWorld.entity(target_id)
+            if not getattr(target, 'canTakeDamage', 0):
+                continue
+            body_zone = target.colliderNames.get(hitbox.name, 0)
+            targets_ids.append(target_id)
+            body_zones.append(body_zone)
+            if len(targets_ids) > 5:
+                break
+
+        if targets_ids:
+            self.onContact(targets_ids, body_zones)
+            return True
+
+    def updateLife(self):
+        if self._used_up:
+            return ClSTATUS.DEAD
+        if BigWorld.time() > self._end_time:
+            return ClSTATUS.DEAD
+        if self._stop_move:
+            if self._is_poison:
+                return ClSTATUS.DEAD
+            self._checkHitBox()
+        return ClSTATUS.LIFE

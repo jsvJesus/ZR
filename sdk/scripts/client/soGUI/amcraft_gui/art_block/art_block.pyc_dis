@@ -1,0 +1,226 @@
+# Embedded file name: ./client/soGUI/amcraft_gui/art_block/art_block.py
+import BigWorld
+from functools import partial
+import GUI
+import colorCodes as cc
+from amulets_utils import AmuletWrapper
+from Localization import lc
+from art_block_slot import ArtSlot, ContentType
+import time
+from line_animator import LineAnimator
+from slots_animator import SlotsAnimator
+from Helpers.BWCoroutine import BWMemberCoroutine, BWWaitForPeriod
+import math
+import math_bw
+
+class GlobalAnimator(object):
+
+    def __init__(self, slots, slots_width, lines_component, lines_width):
+        self._lcs = [ s.component.lines for s in slots ]
+        self._lc = lines_component
+        self._slots_width = slots_width
+        self._lines_width = lines_width
+        self._animation_coroutine = None
+        return
+
+    def animate(self, sync_time):
+        self.stop_all()
+        self._animation_coroutine = self._animation_coroutine_runner(sync_time)
+        self._animation_coroutine.run()
+
+    @BWMemberCoroutine
+    def _animation_coroutine_runner(self, sync_time):
+        color = (0.8, 0.8, 0.8, 1)
+        self._lc.fillColor = color
+        for l in self._lcs:
+            l.fillColor = color
+            l.setShapeActives([(0, 1)] * 4)
+
+        self._lc.setShapeActives([(0, 1)] * 3)
+
+        def apply_progress(progress):
+            amplitude = math.sin(progress * math.pi)
+            line_width = math_bw.lerp(self._lines_width, self._lines_width * 2.0, amplitude)
+            self._lc.curveWidth = (self._lines_width, 0, line_width)
+            for l in self._lcs:
+                line_width = math_bw.lerp(self._slots_width, self._slots_width * 2.0, amplitude)
+                l.curveWidth = (self._slots_width, 0, line_width)
+
+        period = 1.5
+        apply_progress(0)
+        while True:
+            time_elapsed = time.time() - sync_time
+            progress = time_elapsed % period / period
+            yield BWWaitForPeriod(0)
+            apply_progress(progress)
+
+    def stop_all(self):
+        if self._animation_coroutine:
+            self._lc.setShapeActives([(0, 0)] * 3)
+            self._lc.curveWidth = (self._lines_width, 0, 0)
+            for l in self._lcs:
+                l.setShapeActives([(0, 0)] * 4)
+                l.curveWidth = (self._slots_width, 0, 0)
+
+            self._animation_coroutine.stop()
+            self._animation_coroutine = None
+        return
+
+
+class ArtBlock:
+
+    def __init__(self, parent_comp):
+        self.component = parent_comp
+        self._slots = []
+        self._labels = []
+        self._items = {}
+        self._amulet = None
+        self._slot_curve_width = 0.1
+        self._lines_curve_width = 0.025
+
+        def create_slot(index, x, y):
+            slot = ArtSlot(self._slot_curve_width)
+            comp = slot.component
+            comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+            comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+            comp.position = (x, y, 0.5)
+            parent_comp.addChild(comp, 'slot' + str(index))
+            slot.on_content_changed = partial(self._on_slot_content_changed, slot)
+            self._slots.append(slot)
+            self._items[slot] = None
+            return
+
+        def create_label(index, x, y, hor_anchor):
+            comp = GUI.Text(u'???')
+            comp.font = 'RobotoCondensedRegular_16.font'
+            comp.colour = cc.active_rgba
+            comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+            comp.horizontalAnchor, comp.verticalAnchor = hor_anchor, 'CENTER'
+            comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+            comp.width, comp.height = (300, 30)
+            comp.position = (x, y, 0.5)
+            parent_comp.addChild(comp, 'label' + str(index))
+            self._labels.append(comp)
+
+        create_slot(0, parent_comp.width * 0.5, 180)
+        create_slot(1, parent_comp.width * 0.5 - 100, 50)
+        create_slot(2, parent_comp.width * 0.5 + 100, 50)
+        create_label(0, parent_comp.width * 0.5, 230, 'CENTER')
+        create_label(1, parent_comp.width * 0.5 - 140, 50, 'RIGHT')
+        create_label(2, parent_comp.width * 0.5 + 140, 50, 'LEFT')
+        self.on_content_changed = lambda : None
+        gl = GUI.LineComponent()
+        gl.horizontalPositionMode, gl.verticalPositionMode = ('CLIP', 'CLIP')
+        gl.horizontalAnchor, gl.verticalAnchor = ('CENTER', 'CENTER')
+        gl.widthMode, gl.heightMode = ('PIXEL', 'PIXEL')
+        gl.width, gl.height = parent_comp.height, parent_comp.height
+        gl.position = (0, 0, 0.9)
+        gl.baseColor = (0.2, 0.2, 0.2, 1)
+        gl.curveWidth = (self._lines_curve_width, 0, 0)
+        parent_comp.addChild(gl, 'lines')
+        gl.setShapes([((0, -0.45), (-0.8, 0.6)), ((-0.8, 0.6), (0.8, 0.6)), ((0.8, 0.6), (0, -0.45))])
+        gl.setShapeActives([(0, 0)] * 3)
+        self._slots_animator = SlotsAnimator(self._slots)
+        self._line_animator = LineAnimator(gl)
+        self._global_animator = GlobalAnimator(self._slots, self._slot_curve_width, gl, self._lines_curve_width)
+        return
+
+    def set_amulet(self, amulet_item):
+        self._amulet = amulet_item and AmuletWrapper(amulet_item)
+        self._sync_time = time.time()
+        for i, slot in enumerate(self._slots):
+            if self._amulet:
+                art_type = self._amulet.slot_artefacts[i]
+                if art_type:
+                    slot.set_art_internal(art_type)
+                else:
+                    slot.set_empty()
+            else:
+                slot.set_disabled()
+
+        if self._amulet:
+            for i in xrange(len(self._labels)):
+                m_id, p = self._amulet.slot_materials[i]
+                self._labels[i].text = u'{0} {1}%'.format(lc('CraftWin.amulet.material.id_' + str(m_id)), int(p * 100))
+
+        else:
+            for l in self._labels:
+                l.text = ''
+
+        self._update_animators()
+
+    def _on_slot_content_changed(self, slot, content):
+        new_art = None
+        if content[0] == ContentType.EXTERNAL:
+            new_art = content[1]
+        prev_art = self._items[slot]
+        if prev_art != new_art:
+            if prev_art:
+                self._user.release_craft_items([prev_art['complexItemID']])
+            self._items[slot] = new_art
+            if new_art:
+                self._user.capture_craft_item(new_art['complexItemID'])
+            self.on_content_changed()
+        self._update_animators()
+        return
+
+    def _update_animators(self):
+        animate_lines = []
+        if self._amulet:
+            for i, (ind0, ind1) in enumerate(((0, 1), (0, 2), (1, 2))):
+                if self._amulet.slot_materials[ind0][0] == self._amulet.slot_materials[ind1][0]:
+                    animate_lines.append(i)
+
+        animate_slot_indices = set()
+        for ind0, ind1 in ((0, 1), (0, 2), (1, 2)):
+            if self._slots[ind0].art_type and self._slots[ind0].art_type == self._slots[ind1].art_type:
+                animate_slot_indices.add(ind0)
+                animate_slot_indices.add(ind1)
+
+        if len(animate_lines) == 3 and len(animate_slot_indices) == 3:
+            self._line_animator.stop_all()
+            self._slots_animator.stop_all()
+            self._global_animator.animate(self._sync_time)
+        else:
+            self._global_animator.stop_all()
+            if animate_lines:
+                self._line_animator.animate(self._sync_time, animate_lines)
+            else:
+                self._line_animator.stop_all()
+            if animate_slot_indices:
+                self._slots_animator.animate(self._sync_time, sorted(list(animate_slot_indices)))
+            else:
+                self._slots_animator.stop_all()
+
+    def get_external_slot_items(self):
+        items = []
+        for s in self._slots:
+            art = None
+            if s.itemData[0] == ContentType.EXTERNAL:
+                art = s.itemData[1]
+            items.append(art)
+
+        return items
+
+    def get_internal_slot_items(self):
+        items = []
+        for s in self._slots:
+            art = None
+            if s.itemData[0] == ContentType.INTERNAL:
+                art = s.itemData[1]
+            items.append(art)
+
+        return items
+
+    def clear(self):
+        for slot in self._slots:
+            slot.set_disabled()
+
+        for label in self._labels:
+            label.text = ''
+
+        self._update_animators()
+
+    @property
+    def _user(self):
+        return BigWorld.player()

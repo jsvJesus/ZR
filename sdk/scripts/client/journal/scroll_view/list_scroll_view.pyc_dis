@@ -1,0 +1,343 @@
+# Embedded file name: ./client/journal/scroll_view/list_scroll_view.py
+import GUI
+from scroll_view import ScrollView
+from collections import defaultdict
+
+class DPEventType:
+    ItemsSet, ItemsExtended, ItemsInserted, ItemHeightChanged, ItemsRemoved = xrange(5)
+
+
+class CPEventType:
+    ItemClicked, = xrange(1)
+
+
+class ItemData(object):
+
+    def __init__(self):
+        self._height = 20
+        self._selected = False
+
+    def set_selected(self, value):
+        self._selected = value
+
+    def set_height(self, value):
+        self._height = value
+
+    def get_height(self):
+        return self._height
+
+    def get_unique_id(self):
+        raise NotImplementedError
+
+    @property
+    def selected(self):
+        return self._selected
+
+
+class ComponentsProvider:
+
+    def __init__(self):
+        self._pool_id = 'slot'
+        self._listener = None
+        return
+
+    def set_listener(self, listener):
+        self._listener = listener
+
+    def on_item_click(self, item):
+        if self._listener:
+            self._listener.on_component_provider_event(CPEventType.ItemClicked, item)
+
+    def apply_component(self, comp, item):
+        comp.height = item.get_height()
+        from random import uniform
+        comp.colour = (uniform(0, 255),
+         uniform(0, 255),
+         uniform(0, 255),
+         255)
+
+    def create_component(self):
+        comp = GUI.Window('soGUI/frame/paint/yellow.dds')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.materialFX = 'SOLID'
+        comp.width, comp.height = (100, 0)
+        return comp
+
+    def get_component(self, item):
+        comp = _pool.get_object(self._pool_id, self.create_component)
+        self.apply_component(comp, item)
+        return comp
+
+    def pool_component(self, comp):
+        _pool.take_object(self._pool_id, comp)
+
+
+class DataProvider(object):
+
+    def __init__(self):
+        self._listener = None
+        self._items = []
+        return
+
+    def set_listener(self, listener):
+        self._listener = listener
+
+    def get_item(self, index):
+        return self._items[index]
+
+    def get_items_count(self):
+        return len(self._items)
+
+    def set_item_height(self, index, value):
+        self._items[index].set_height(value)
+        if self._listener:
+            self._listener.on_data_provider_event(DPEventType.ItemHeightChanged)
+
+    def get_item_height(self, index):
+        return self._items[index].get_height()
+
+    def find_item_by_id(self, item_id):
+        return next((item for item in self._items if item.get_unique_id() == item_id), None)
+
+    def set_items(self, items):
+        self._items = items
+        if self._listener:
+            self._listener.on_data_provider_event(DPEventType.ItemsSet)
+
+    def extend_items(self, items):
+        if not items:
+            return
+        self._items.extend(items)
+        if self._listener:
+            self._listener.on_data_provider_event(DPEventType.ItemsExtended)
+
+    def insert_items(self, index, items):
+        self._items[index:index] = items
+        if self._listener:
+            self._listener.on_data_provider_event(DPEventType.ItemsInserted)
+
+    def remove_items(self, index, count):
+        self._items[index:index + count] = []
+        if self._listener:
+            self._listener.on_data_provider_event(DPEventType.ItemsRemoved)
+
+
+class ListScrollView(ScrollView):
+
+    def __init__(self, component):
+        self._cur_components = {}
+        ScrollView.__init__(self, component)
+        self._dp = DataProvider()
+        self._dp.set_listener(self)
+        self._dp.set_items([])
+        self._cp = ComponentsProvider()
+        self._cp.set_listener(self)
+        self._cur_selection = None
+        self.on_selection_changed_callback = lambda : None
+        return
+
+    def set_data_providers(self, data_provider, component_provider):
+        self._cp.set_listener(None)
+        self._cp = component_provider
+        self._cp.set_listener(self)
+        self._dp.set_listener(None)
+        self._dp = data_provider
+        self._dp.set_listener(self)
+        self._recreate_slots()
+        return
+
+    def on_component_provider_event(self, event_type, data = None):
+        if event_type == CPEventType.ItemClicked:
+            item_data = data
+            self.set_selection(item_data.get_unique_id())
+
+    def set_selection(self, item_uniqe_id, selection_value = True):
+        if self._cur_selection is not None:
+            item_data = self._dp.find_item_by_id(self._cur_selection)
+            if item_data:
+                item_data.set_selected(False)
+                comp = self.get_component_by_itemdata(item_data)
+                if comp:
+                    self._cp.apply_component(comp, item_data)
+        self._cur_selection = item_uniqe_id
+        if self._cur_selection is not None:
+            item_data = self._dp.find_item_by_id(self._cur_selection)
+            if item_data:
+                item_data.set_selected(selection_value)
+                comp = self.get_component_by_itemdata(item_data)
+                if comp:
+                    self._cp.apply_component(comp, item_data)
+        self.on_selection_changed_callback()
+        return
+
+    def get_component_by_itemdata(self, item_data):
+        return self._cur_components.get(item_data.get_unique_id())
+
+    def on_data_provider_event(self, event_type, data = None):
+        if event_type == DPEventType.ItemsSet:
+            self._recreate_slots()
+            self._bar._set_factor(0)
+        elif event_type in (DPEventType.ItemsExtended,
+         DPEventType.ItemsInserted,
+         DPEventType.ItemHeightChanged,
+         DPEventType.ItemsRemoved):
+            content_height = self.get_scroll_content_height()
+            visual_height = self.get_scroll_visual_height()
+            disp = (content_height - visual_height) * self._bar.factor
+            total_disp = visual_height + disp
+            self._recreate_slots()
+            content_height = self.get_scroll_content_height()
+            visual_height = self.get_scroll_visual_height()
+            disp = total_disp - visual_height
+            factor = float(disp) / (content_height - visual_height)
+            self._bar._set_factor(factor)
+
+    def on_content_position_changed(self):
+        self._check_slots()
+
+    def _calc_visible_params(self):
+        top, bottom = self.calc_visual_rect()
+        height = 0
+        top_visible = -1
+        bottom_visible = -1
+        items_count = self._dp.get_items_count()
+        if not items_count:
+            return None
+        else:
+            for i in xrange(items_count):
+                prev_height = height
+                height += self._dp.get_item_height(i)
+                if prev_height <= top and height >= top:
+                    top_visible = i
+                    top_visible_height = prev_height
+                if prev_height <= bottom and height >= bottom:
+                    bottom_visible_height = height
+                    bottom_visible = i
+
+            return (top_visible,
+             bottom_visible,
+             top_visible_height,
+             bottom_visible_height)
+
+    def _check_slots(self):
+        self._update_height()
+        res = self._calc_visible_params()
+        if not res:
+            for _, child in self.component.content.children:
+                self.component.content.delChild(child)
+                self._cp.pool_component(child)
+                self._cur_components.clear()
+
+            return
+        else:
+            top_visible, bottom_visible, top_visible_height, bottom_visible_height = res
+            max_height = None
+            min_height = None
+            child_count = 0
+            for _, child in self.component.content.children:
+                top_height = child.position[1]
+                bottom_height = top_height + child.height
+                if top_height > bottom_visible_height:
+                    self.component.content.delChild(child)
+                    self._cp.pool_component(child)
+                    for key, value in self._cur_components.items():
+                        if value == child:
+                            del self._cur_components[key]
+                            break
+
+                elif bottom_height < top_visible_height:
+                    self.component.content.delChild(child)
+                    self._cp.pool_component(child)
+                    for key, value in self._cur_components.items():
+                        if value == child:
+                            del self._cur_components[key]
+                            break
+
+                else:
+                    if min_height is None:
+                        min_height = self.component.content.height
+                    if max_height is None:
+                        max_height = 0
+                    max_height = max(max_height, bottom_height)
+                    min_height = min(min_height, top_height)
+                    child_count += 1
+
+            if min_height is None or max_height is None:
+                self._recreate_slots()
+                return
+
+            def find_existing(top, bottom):
+                middle = (top + bottom) * 0.5
+                for _, child in self.component.content.children:
+                    top_child = child.position[1]
+                    bottom_child = top_child + child.height
+                    middle_child = (top_child + bottom_child) * 0.5
+                    if top_child < middle < bottom_child and top < middle_child < bottom:
+                        return child
+
+                return None
+
+            height = top_visible_height
+            for i in xrange(top_visible, bottom_visible + 1):
+                prev_height = height
+                comp_height = self._dp.get_item_height(i)
+                height += comp_height
+                if find_existing(prev_height, height):
+                    continue
+                item_data = self._dp.get_item(i)
+                comp = self._cp.get_component(item_data)
+                comp.position = (0, prev_height, 0.5)
+                self.component.content.addChild(comp)
+                self._cur_components[item_data.get_unique_id()] = comp
+
+            return
+
+    def _update_height(self):
+        height = 0
+        for i in xrange(self._dp.get_items_count()):
+            height += self._dp.get_item_height(i)
+
+        self.set_content_height(height)
+
+    def _recreate_slots(self):
+        self._update_height()
+        for _, child in self.component.content.children:
+            self.component.content.delChild(child)
+            self._cp.pool_component(child)
+
+        self._cur_components.clear()
+        res = self._calc_visible_params()
+        if not res:
+            return
+        top_visible, bottom_visible, top_visible_height, _ = res
+        height = top_visible_height
+        for i in xrange(top_visible, bottom_visible + 1):
+            item_data = self._dp.get_item(i)
+            comp = self._cp.get_component(item_data)
+            comp.position = (0, height, 0.5)
+            self.component.content.addChild(comp)
+            self._cur_components[item_data.get_unique_id()] = comp
+            height += self._dp.get_item_height(i)
+
+    @property
+    def cur_selection(self):
+        return self._dp.find_item_by_id(self._cur_selection)
+
+
+class Pool:
+
+    def __init__(self):
+        self._objects = defaultdict(list)
+
+    def get_object(self, pool_id, creator):
+        if not self._objects[pool_id]:
+            return creator()
+        return self._objects[pool_id].pop()
+
+    def take_object(self, pool_id, obj):
+        self._objects[pool_id].append(obj)
+
+
+_pool = Pool()

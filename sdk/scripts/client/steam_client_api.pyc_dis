@@ -1,0 +1,188 @@
+# Embedded file name: ./client/steam_client_api.py
+import BigWorld
+import ResMgr
+from utils import Singlton
+from functools import partial
+from utils import ignoreError
+from ordereddict import OrderedDict
+STEAM_MODE = ResMgr.openSection('steam_config.xml') is not None
+MYGAMES_MODE = False
+if STEAM_MODE:
+    MYGAMES_MODE = ResMgr.openSection('mygames_config.xml') is not None
+    if MYGAMES_MODE:
+        print 'MYGAMES_MODE:', STEAM_MODE
+    else:
+        print 'STEAM_MODE:', STEAM_MODE
+api = None
+
+class EResult:
+    k_EResultOK = 1
+    k_EResultFail = 2
+
+
+if STEAM_MODE:
+    STEAM_UPDATE_TIME = 0.2
+    import SteamAPI
+
+    class _API(Singlton):
+        _last_ticket = None
+        _upd_id = None
+
+        def initialization(self):
+            self.mgr = SteamAPI.Manager()
+            self._validate_ticket_callback = None
+            self._callback_req_all_items = None
+            self._callback_req_preces = None
+            self._callback_txn = None
+            self._inventory = OrderedDict()
+
+            def errorHandler(sError):
+                print '[BWSteamAPI]:', sError
+
+            self.mgr.setErrorCallback(errorHandler)
+            self.mgr.setTicketCallback(self._onTicketCallback, errorHandler)
+            self.mgr.setInventoryPricesCallback(self._onPricesCallback, errorHandler)
+            self.mgr.setTXNCallback(self._onTXNCallback, errorHandler)
+            self.mgr.setInventoryFullItemsCallback(self._onRequestFullItems, errorHandler)
+            self.mgr.setInventoryReadyItemsCallback(self._onRequestReadyItems, errorHandler)
+            self._updateCallback()
+            return
+
+        def getSteamID(self):
+            return self.mgr.getSteamID()
+
+        def getPersonaName(self):
+            return self.mgr.getPersonaName()
+
+        def getLangCountry(self):
+            return self.mgr.getIPCountry()
+
+        @property
+        def isOverlayEnabled(self):
+            return self.mgr.isOverlayEnabled()
+
+        def getAuthTicket(self, validate_callback = None, create_new = True):
+            self._validate_ticket_callback = validate_callback
+            if create_new:
+                self.cancelAuthTicket()
+            if not self._last_ticket:
+                self._last_ticket = dict(ticket=None, ticket_id=None, enum_status=None)
+                ticket_id, ticket_hex_str = self.mgr.getAuthSessionTicket()
+                self._last_ticket['ticket'] = ticket_hex_str
+                self._last_ticket['ticket_id'] = ticket_id
+            elif not create_new and self._validate_ticket_callback:
+                if self._last_ticket['enum_status'] is not None:
+                    success = self._last_ticket['enum_status'] == EResult.k_EResultOK
+                    BigWorld.callback(0.01, partial(self._validate_ticket_callback, success))
+            return self._last_ticket['ticket']
+
+        @property
+        def steam_auth_ticket(self):
+            if self._last_ticket:
+                return self._last_ticket['ticket']
+            else:
+                return None
+
+        def cancelAuthTicket(self):
+            if self._last_ticket:
+                self.mgr.cancelAuthTicket(self._last_ticket['ticket_id'])
+                self._last_ticket = None
+            return
+
+        def fini(self):
+            if self._upd_id:
+                BigWorld.cancelCallback(self._upd_id)
+            self.cancelAuthTicket()
+            self._callback_req_all_items = None
+            self._callback_ch_items = None
+            self._callback_req_preces = None
+            self._callback_txn = None
+            self._inventory.clear()
+            return
+
+        def requestAllItems(self, callback = None, changed_callback = None):
+            if callback:
+                self._callback_req_all_items = callback
+            if changed_callback:
+                self._callback_ch_items = changed_callback
+            if not self.mgr.requestAllItems():
+                print '[BWSteamAPI] There is failed requestAllItems.'
+
+        def requestPrices(self, callback = None):
+            if callback:
+                self._callback_req_preces = callback
+            self.mgr.requestPrices()
+
+        def setTxnCallback(self, callback):
+            self._callback_txn = callback
+
+        @ignoreError
+        def _onPricesCallback(self, data):
+            currency, steam_prices = data
+            if self._callback_req_preces:
+                self._callback_req_preces(currency, steam_prices)
+
+        @ignoreError
+        def _onRequestFullItems(self, steam_items):
+            print '_onRequestAllItems', len(steam_items)
+            self._inventory.clear()
+            self._updateInventory(steam_items)
+
+        @ignoreError
+        def _onRequestReadyItems(self, steam_items):
+            print '_onRequestReadyItems', len(steam_items)
+            self._updateInventory(steam_items)
+            if self._callback_ch_items:
+                modiff_items = []
+                for itemDef, itemID, flags, quantity, removed in steam_items:
+                    d = {'item_type': itemDef,
+                     'count': quantity,
+                     'item_id': itemID}
+                    modiff_items.append(d)
+
+                self._callback_ch_items(modiff_items)
+
+        def _updateInventory(self, steam_items):
+            import ItemsUtils
+            for itemDef, itemID, flags, quantity, removed in steam_items:
+                if removed or quantity < 1:
+                    if itemID in self._inventory:
+                        del self._inventory[itemID]
+                    continue
+                bw_item = ItemsUtils.CreateItem(None, itemDef, itemID)
+                bw_item['steam_quanity'] = quantity
+                bw_item['creationTime'] = 0.0
+                self._inventory[itemID] = bw_item
+
+            if self._callback_req_all_items:
+                self._callback_req_all_items(self._inventory.values())
+            return
+
+        def _updateCallback(self):
+            self._upd_id = BigWorld.callback(STEAM_UPDATE_TIME, self._updateCallback)
+            self.mgr.runCallbacks()
+
+        def _onTicketCallback(self, data):
+            ticket_id, enum_status = data
+            print '_onTicketCallback', ticket_id, enum_status
+            if not self._last_ticket:
+                return
+            if self._last_ticket['ticket_id'] != ticket_id:
+                return
+            self._last_ticket['enum_status'] = enum_status
+            if self._validate_ticket_callback:
+                self._validate_ticket_callback(enum_status == EResult.k_EResultOK)
+
+        @ignoreError
+        def _onTXNCallback(self, data):
+            appId, orderID, b_uint8_autorized = data
+            print '_onTXNCallback', appId, orderID, b_uint8_autorized
+            if self._callback_txn:
+                self._callback_txn(appId, orderID, b_uint8_autorized)
+
+
+    api = _API()
+
+def onFiniApp():
+    if api:
+        api.fini()

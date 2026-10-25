@@ -1,0 +1,212 @@
+# Embedded file name: ./client/PerkUser.py
+import BigWorld
+import BWPersonality
+from perks_system import perks_parser
+from perks_system.common_perk_user import CommonPerkUser
+from Localization import lc
+from ChatChannelConfig import ChannelConsts
+import RestrictionsUtils
+from Math import Vector3
+from EffectData import EffectNames
+import ItemsUtils
+import traceback
+import utils_async
+from set_abil_utils import TrenUtil
+from utils import plog
+CHANNEL_CONSTS = ChannelConsts()
+DEBUG_MODE = False
+
+class PerkUser(CommonPerkUser):
+    __callbacks = []
+    _tren_place_progress = False
+    _trenoga_place_model = None
+    __loop_cid = 0
+    __abil_id = 0
+
+    def __init__(self):
+        CommonPerkUser.__init__(self)
+        self.__callbacks = list(PerkUser.__callbacks)
+        PerkUser.__callbacks[:] = []
+
+    def update_perks_mask(self, perks):
+        if self.perks != perks:
+            self.perks[:] = perks
+            for c in self.__callbacks:
+                c(self.perks)
+
+            self.on_perks_updated()
+
+    def take_perk(self, perk_id):
+        perks_parser.set_perk_by_id(perk_id, self.perks)
+        for c in self.__callbacks:
+            c(self.perks)
+
+        self.on_perks_updated()
+        self.cell.set_perk_by_id(perk_id)
+
+    def add_perk_changed_callback(self, callback):
+        if callback not in self.__callbacks:
+            self.__callbacks.append(callback)
+
+    def remove_perk_changed_callback(self, callback):
+        if callback in self.__callbacks:
+            self.__callbacks.remove(callback)
+
+    def send_perk_message(self, perk_id, success):
+        perk_name = lc('PerksSystem.name.id{0}'.format(perk_id))
+        local_name = 'Perks.messages.success' if success else 'Perks.messages.unsuccess'
+        message = lc(local_name).format(perk_name)
+        self.putMessage(CHANNEL_CONSTS.SYSTEM, message)
+
+    def perk_aura_changed(self, perk_ids, values):
+        BWPersonality.GUICore.update_aura_perks(perk_ids, values)
+
+    def start_use_abil(self, abil_id):
+        self.cell.start_use_abil2(abil_id)
+
+    @property
+    def tren_place_progress(self):
+        return self._tren_place_progress
+
+    def start_use_trenoga(self, abil_id, continue_use_cb):
+        """
+        \xd0\xbd\xd0\xb0\xd1\x87\xd0\xb0\xd1\x82\xd1\x8c \xd0\xb2\xd1\x8b\xd0\xb1\xd0\xbe\xd1\x80 \xd0\xbc\xd0\xb5\xd1\x81\xd1\x82\xd0\xb0 \xd1\x83\xd1\x81\xd1\x82\xd0\xb0\xd0\xbd\xd0\xbe\xd0\xb2\xd0\xba\xd0\xb8
+        """
+        self.__abil_id = abil_id
+        self.__continue_use_cb = continue_use_cb
+        self.stop_use_trenoga()
+        self._tren_place_progress = True
+
+        def on_load_callback(prereqs):
+            if self.isDestroyed:
+                return
+            if not self._tren_place_progress:
+                return
+            if self._trenoga_place_model:
+                return
+            model = prereqs.produce(0)
+            self.addModel(model)
+            self._trenoga_place_model = model
+            self.__loop()
+
+        utils_async.load_model(TrenUtil.INSTALLATION_MODEL_PATH, on_load_callback)
+        self.cancel_action_start(self.stop_use_trenoga)
+
+    def stop_use_trenoga(self):
+        self._tren_err_code = ItemsUtils.FAIL_TREN_PLACE
+        self._tren_position = None
+        if self._trenoga_place_model:
+            try:
+                self.delModel(self._trenoga_place_model)
+            except:
+                traceback.print_exc()
+
+            self._trenoga_place_model = None
+        if self.__loop_cid:
+            BigWorld.cancelCallback(self.__loop_cid)
+            self.__loop_cid = 0
+        if self._tren_place_progress:
+            self.cancel_action_clear()
+            self._tren_place_progress = False
+        return
+
+    __last_cam_dir = None
+    __last_cam_diff = None
+
+    def __loop(self):
+        if self.isDestroyed:
+            return
+        elif not self.canUse():
+            return self.stop_use_trenoga()
+        elif not self._tren_place_progress:
+            return False
+        else:
+            cam = BigWorld.camera()
+            src = cam.position
+            if not self.lookingaround or not self.__last_cam_dir:
+                src = cam.position
+                _dir = cam.direction
+                self.__last_cam_dir = _dir
+                self.__last_cam_diff = cam.position - self.position
+            else:
+                src = self.__last_cam_diff + self.position
+                _dir = self.__last_cam_dir
+            dist = TrenUtil.INSTALLATION_MAX_DIST_TRENOGA
+            if not self.isFPScamera:
+                dist += cam.pivotMaxDist
+            dest = src + _dir * dist
+            res = BigWorld.collide(self.spaceID, src, dest)
+            fw = Vector3(_dir)
+            fw[1] = 0
+            fw.normalise()
+            if not fw:
+                fw = Vector3(1, 0, 0)
+            self._tren_position = None
+            if res:
+                self._tren_position = res[0]
+            else:
+                dwn = Vector3(dest)
+                dwn.y = self.position.y - 0.2
+                res = BigWorld.collide(self.spaceID, dest, dwn)
+                if res:
+                    self._tren_position = res[0]
+            self._tren_err_code = self.__check_position(self._tren_position)
+            if not self._tren_position:
+                self._tren_position = self.position + fw * 0.9
+            self.__loop_cid = BigWorld.callback(0.001, self.__loop)
+            if self._trenoga_place_model:
+                self._trenoga_place_model.position = self._tren_position
+                if self._tren_err_code == ItemsUtils.FAIL_NO:
+                    self._trenoga_place_model.korpus_skinned = 'green'
+                else:
+                    self._trenoga_place_model.korpus_skinned = 'red'
+            return
+
+    def __check_position(self, pos):
+        if not pos:
+            return ItemsUtils.FAIL_TREN_PLACE
+        if BigWorld.waterCollide(pos + Vector3(0, 2, 0), pos - Vector3(0, 0.1, 0)):
+            return ItemsUtils.FAIL_TREN_PLACE
+        if self.isAffectedBy(EffectNames.Safe_Area):
+            return ItemsUtils.FAIL_TREN_PLACE
+        return ItemsUtils.FAIL_NO
+
+    def create_trenoga(self):
+        if DEBUG_MODE:
+            plog('[DEBUG] create_trenoga')
+        if self._tren_err_code != ItemsUtils.FAIL_NO:
+            self.ReportCodedMessage(self._tren_err_code)
+            return
+        if not self._tren_position:
+            return
+        if not self.__abil_id:
+            return
+        if not self.CheckRestriction(RestrictionsUtils.CHANNEL_ITEMS):
+            return
+        if self.isPlayerJump():
+            return
+        if self.__loop_cid:
+            BigWorld.cancelCallback(self.__loop_cid)
+            self.__loop_cid = 0
+        self.cell.create_trenoga2(self.__abil_id, self._tren_position)
+        self.stop_use_trenoga()
+
+    def onLeftMouseButton(self, isDown):
+        if not self._tren_place_progress:
+            return False
+        if isDown:
+            self.create_trenoga()
+        return True
+
+    def onRightMouseButton(self, isDown):
+        if not self._tren_place_progress:
+            return False
+        if isDown:
+            self.stop_use_trenoga()
+        return True
+
+    def on_created_trenoga2(self, entity_id):
+        if DEBUG_MODE:
+            plog('[DEBUG] on_created_trenoga2 %s entity_id=%s', self, entity_id)
+        if self.__continue_use_cb:
+            self.__continue_use_cb(entity_id)

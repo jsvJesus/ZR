@@ -1,0 +1,311 @@
+# Embedded file name: ./client/soGUI/StorehouseGUI/Tabletab.py
+import BigWorld
+import GUI
+from Helpers.PyGUI.PyGUIBase import PyGUIBase
+from soGUI.UtilsGUI.ScrollBar import ScrollBar
+from ShopItem import ShopItem
+from FilterStripe import FilterStripe
+import math
+import ShopUtils
+import ItemsUtils
+from Helpers.PyGUI import Utils
+from functools import partial
+
+class Tabletab(PyGUIBase):
+
+    def __init__(self, component, fly_component, mode):
+        self._cached_items = []
+        self._mode = mode
+        self._items = []
+        self._lock_take = False
+        component.script = self
+        PyGUIBase.__init__(self, component)
+        self.bin_click_callback = lambda amount, item, screen_pos: None
+        self.take_click_callback = lambda item_id: None
+        self.put_to_inventory_click_callback = lambda item_id, db_id: None
+        self.use_click_callback = lambda item_id: None
+        self.tab_error_callback = lambda error_code: None
+        self._setup_content(fly_component)
+        self._repositioned = False
+        self._tick_handler = None
+        self._currency = None
+        self._emergency_timer_handler = None
+        return
+
+    def _setup_content(self, fly_component):
+        base_comp = GUI.Window()
+        self.component.addChild(base_comp, 'scroll_base')
+        self._scroll_comp = GUI.Window()
+        self._scroll_comp.materialFX = 'SOLID'
+        self._scroll = ScrollBar(base_comp, self._scroll_comp, base_comp, True)
+        self._scroll.set_bar_size(0.0091, 0.17)
+        self._scroll.set_line_pos(0.97)
+        self._scroll.set_bar_limits(1, -0.9)
+        self._scroll.position_changed_callback = self._scroll_moved
+        comp = GUI.Window()
+        comp.materialFX = 'SOLID'
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.width, comp.height = (1.95, 0.065)
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.position = (1.0 - comp.width, 1, 0.3)
+        self._filter_stripe = FilterStripe(comp, self._mode == ShopUtils.STORE_MODE, self._mode == ShopUtils.SHOP_MODE)
+        self._filter_stripe.on_filter_changed = self._on_filter_changed
+        self.component.addChild(comp, 'filter_stripe')
+        comp = GUI.Simple('soGUI/frame/paint/black.dds')
+        comp.materialFX = 'BLEND'
+        comp.colour = (255, 255, 255, 200)
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.width, comp.height = (2, 2)
+        comp.position = (0, 0, 0.05)
+        comp.visible = False
+        self.component.addChild(comp, 'loadpane')
+        comp = GUI.Simple('soGUI/maps/loadingScreen/loadingCircle/loadingCircle.texanim')
+        comp.materialFX = 'BLEND'
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = (20, 20)
+        comp.position = (0, 0, 0.5)
+        self.component.loadpane.addChild(comp, 'loader')
+
+    def _on_filter_changed(self, filter_data):
+        self._clear_children()
+        self._create_children()
+
+    def set_items(self, items, currency = None):
+        if self._emergency_timer_handler:
+            BigWorld.cancelCallback(self._emergency_timer_handler)
+            self._emergency_timer_handler = None
+        self.component.loadpane.visible = False
+        if self._compare_items(self._items, items) and self._currency == currency:
+            return
+        else:
+            self._currency = currency
+            self._items = items[:]
+            self._clear_children()
+            if self.visible:
+                self._create_children()
+            self._filter_stripe.do_reposition(self._items)
+            return
+
+    def unlock_use_item(self, item_id):
+        for child_name, child in self._scroll_comp.children:
+            shop_item = child.script
+            if shop_item.item and shop_item.item['complexItemID'] == item_id:
+                shop_item.unlock_use()
+
+    def _compare_items(self, items1, items2):
+        if self._mode == ShopUtils.SHOP_MODE:
+            if len(items1) != len(items2):
+                return False
+            for itemA, itemB in zip(items1, items2):
+                if dict(itemA) != dict(itemB):
+                    return False
+
+            return True
+        if self._mode == ShopUtils.STORE_MODE:
+            value1 = set([ (item['complexItemID'], ItemsUtils.GetItemNumber(item)) for item in items1 ])
+            value2 = set([ (item['complexItemID'], ItemsUtils.GetItemNumber(item)) for item in items2 ])
+            return value1 == value2
+
+    def _clear_children(self):
+        for child_name, child in self._scroll_comp.children:
+            self._scroll_comp.delChild(child_name)
+
+    def _create_children(self):
+        if not self._repositioned:
+            return
+        if len(self._scroll_comp.children):
+            raise RuntimeError
+        self._size_data['scroll_disp'] = 0
+        prev_mode = self._scroll_comp.widthMode
+        self._scroll_comp.widthMode = 'PIXEL'
+        scroll_width = self._scroll_comp.width
+        self._scroll_comp.widthMode = prev_mode
+        self._size_data['left_margin'] = 0.19
+        self._size_data['horizontal_space'], vertical_space = (0.1, 0.1)
+        if self._mode == ShopUtils.SHOP_MODE:
+            self._size_data['columns'] = 8
+            size = 0.217
+            ratio = 1.6
+        elif self._mode == ShopUtils.STORE_MODE:
+            size = 0.146
+            self._size_data['columns'] = 12
+            ratio = 1.6
+        pixel_size = size * scroll_width * 0.5
+        self._size_data['row_height'] = pixel_size * (vertical_space + ratio)
+        self._size_data['comp_size'] = (pixel_size, pixel_size * ratio)
+        self._last_visible_rows = self._visible_rows()
+        self._filtered_items = [ item for item in self._items if self._filter_stripe.filter_item(item) ]
+        rows_count = int(math.ceil(len(self._filtered_items) / float(self._size_data['columns'])))
+        for row in xrange(rows_count):
+            if row not in self._last_visible_rows:
+                continue
+            if not self._create_row(row):
+                break
+
+        height = rows_count * self._size_data['row_height']
+        self._scroll_comp.height = height
+        self._scroll.do_reposition()
+
+    def _create_row(self, row):
+        for column in xrange(self._size_data['columns']):
+            item_index = column + row * self._size_data['columns']
+            if item_index >= len(self._filtered_items):
+                return False
+            item = self._filtered_items[item_index]
+
+            def create_item():
+                comp = GUI.Window('soGUI/frame/storehouse/slot_back.dds')
+                comp.materialFX = 'SOLID'
+                comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+                comp.width, comp.height = self._size_data['comp_size']
+                comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+                comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+                shop_item = ShopItem(comp, self._mode)
+                shop_item.bin_click_callback = self.bin_click_callback
+                shop_item.take_click_callback = self.take_click_callback
+                shop_item.put_to_inventory_click_callback = self.put_to_inventory_click_callback
+                shop_item.use_click_callback = self.use_click_callback
+                return shop_item
+
+            shop_item = self._cached_items.pop() if self._cached_items else create_item()
+            shop_item.initialize(item, self._currency)
+            shop_item.set_lock(self._lock_take)
+            x = self._size_data['left_margin'] * self._size_data['comp_size'][0] + column * self._size_data['comp_size'][0] * (self._size_data['horizontal_space'] + 1)
+            y = row * self._size_data['row_height']
+            shop_item.component.position = (x, y, 0.6)
+            self._scroll_comp.addChild(shop_item.component, 'slot' + str(item_index))
+            shop_item.do_reposition()
+
+        return True
+
+    def _destroy_row(self, row):
+        for column in xrange(self._size_data['columns']):
+            item_index = column + row * self._size_data['columns']
+            if item_index >= len(self._filtered_items):
+                return False
+            child = getattr(self._scroll_comp, 'slot' + str(item_index))
+            shop_item = child.script
+            self._cached_items.append(shop_item)
+            self._scroll_comp.delChild(child)
+
+        return True
+
+    def _visible_rows(self):
+        y1 = self._size_data['scroll_disp']
+        y2 = y1 - self._size_data['base_height']
+        height = self._size_data['row_height']
+        top_visible = int(-y1 / height)
+        bottom_visible = int(-y2 / height)
+        return set(xrange(top_visible, bottom_visible + 1))
+
+    def _scroll_moved(self, pixel_position):
+        self._size_data['scroll_disp'] = pixel_position
+        visible_rows = self._visible_rows()
+        diff = self._last_visible_rows ^ visible_rows
+        self._last_visible_rows = visible_rows
+        for row in diff:
+            if row in visible_rows:
+                self._on_row_shown(row)
+            else:
+                self._on_row_hidden(row)
+
+    def _on_row_shown(self, row):
+        self._create_row(row)
+
+    def _on_row_hidden(self, row):
+        self._destroy_row(row)
+
+    def show(self, lock_take = False):
+        self.component.visible = True
+        if self._lock_take != lock_take:
+            self._lock_take = lock_take
+            for _, comp in self._scroll_comp.children:
+                comp.script.set_lock(lock_take)
+
+        if self._items and not self._scroll_comp.children:
+            self._create_children()
+        self.component.loadpane.visible = True
+        self._start_tick()
+        if self._mode == ShopUtils.SHOP_MODE:
+            self._emergency_timer_handler = BigWorld.callback(20.0, self._on_emergency_timer)
+
+    def _on_emergency_timer(self):
+        self._emergency_timer_handler = None
+        if self._mode == ShopUtils.SHOP_MODE and self.visible:
+            self.tab_error_callback(ShopUtils.SHOPTAB_ERROR_TIMEOUT)
+        return
+
+    def set_premium_filter(self, timeout = 5):
+        if not self._mode == ShopUtils.SHOP_MODE:
+            raise AssertionError
+            raise timeout >= 0 or AssertionError
+            self._items or BigWorld.callback(0, partial(self.set_premium_filter, timeout - BigWorld.getTimeDelta()))
+            return
+        self._filter_stripe.set_premium_filter(self._items)
+
+    def hide(self):
+        if self._emergency_timer_handler:
+            BigWorld.cancelCallback(self._emergency_timer_handler)
+            self._emergency_timer_handler = None
+        self.component.visible = False
+        self._stop_tick()
+        return
+
+    def _start_tick(self):
+        self._stop_tick()
+        if self._mode != ShopUtils.SHOP_MODE:
+            return
+        self._tick()
+
+    def _stop_tick(self):
+        if self._tick_handler:
+            self._tick_handler = BigWorld.cancelCallback(self._tick_handler)
+            self._tick_handler = None
+        return
+
+    def _tick(self):
+        if not Utils.is_visible_in_hierarchy(self.component):
+            self._stop_tick()
+            return
+        for _, child in self._scroll_comp.children:
+            child.script.tick()
+
+        self._tick_handler = BigWorld.callback(1, self._tick)
+
+    @property
+    def visible(self):
+        return self.component.visible
+
+    def do_reposition(self):
+        self._repositioned = True
+        self._cached_items = []
+        comp = self.component.scroll_base
+        comp.materialFX = 'SOLID'
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'BOTTOM')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.position = (0, -1, 0.8)
+        comp.width, comp.height = (2, 1.87)
+        comp.heightMode = 'PIXEL'
+        comp_height = comp.height
+        self._filter_stripe.do_reposition(self._items)
+        self._scroll_comp.heightMode = 'PIXEL'
+        self._scroll_comp.height = 0
+        self._scroll.do_reposition()
+        self._size_data = {'row_height': None,
+         'scroll_disp': 0,
+         'base_height': comp_height,
+         'comp_size': None,
+         'left_margin': None,
+         'horizontal_space': None,
+         'columns': None}
+        self._clear_children()
+        self._create_children()
+        if self.visible:
+            self._start_tick()
+        return

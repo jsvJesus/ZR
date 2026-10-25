@@ -1,0 +1,96 @@
+# Embedded file name: ./common/achivments/deciders/killmob_decider.py
+import common_decider
+from achivments import achives_parser
+ET = achives_parser.EssenceTypes
+from hashlib import md5
+from Config.Damage import get_body_zone
+import traceback
+
+def decide(user, *args):
+
+    def validate_ach(ach_id):
+        return _validate_ach(ach_id, *args)
+
+    common_decider.decide(user, _ach_ids, get_col_name, validate_ach, 2)
+
+
+def filter_send_to_base(achmask, *args):
+    for ach_id in _ach_ids:
+        if achives_parser.get_bitvalue(ach_id, achmask):
+            continue
+        if _validate_ach(ach_id, *args):
+            return True
+
+    return False
+
+
+def _validate_ach(ach_id, mob_type, mob_subtype, weapon_item_type, health, space_name, body_zone, transform_id):
+    essence_params = achives_parser.get_achiv(ach_id)['essence']['params']
+    _mob_type, _mob_subtype, _, _weapon_item_type, _health, _space_name, _body_zone, _transform_ids = essence_params
+    if _transform_ids:
+        if transform_id not in _transform_ids:
+            return False
+    if _mob_type is not None and _mob_type != mob_type:
+        return False
+    elif _mob_subtype is not None and _mob_subtype != mob_subtype:
+        return False
+    elif _weapon_item_type is not None and _weapon_item_type != weapon_item_type:
+        return False
+    elif _health is not None and health > _health:
+        return False
+    elif _space_name is not None and _space_name != space_name:
+        return False
+    else:
+        if _body_zone is not None:
+            try:
+                _body_zone = get_body_zone(_body_zone)
+            except:
+                print 'killmob_decider (ERROR):', ach_id
+                traceback.print_stack()
+                traceback.print_exc()
+                return False
+
+            if _body_zone != body_zone:
+                return False
+        return True
+
+
+def get_colname_and_hashkey(ach_id):
+    essence = achives_parser.get_achiv(ach_id)['essence']
+    if not essence['id'] == ET.KillMob:
+        raise AssertionError
+        mob_type, mob_subtype, amount, weapon_type, health, space_name, body_zone, transforms = essence['params']
+        return amount in (0, 1, None) and (None, None)
+    else:
+        db_key = 'ess' + str(essence['id'])
+        db_sub_key = ''
+        if mob_type is not None:
+            db_sub_key += '_t' + str(mob_type)
+        if mob_subtype is not None:
+            db_sub_key += '_st' + mob_subtype
+        if weapon_type is not None:
+            db_sub_key += '_w' + str(weapon_type)
+        if health is not None:
+            db_sub_key += '_h' + str(int(health))
+        if space_name is not None:
+            db_sub_key += '_s' + space_name
+        if body_zone is not None:
+            db_sub_key += '_bz' + str(body_zone)
+        if transforms:
+            db_sub_key += '_tr'
+        if len(db_sub_key) > 10:
+            db_sub_key = md5(db_sub_key).hexdigest()[:9]
+        return (db_key + db_sub_key, (mob_type,
+          mob_subtype,
+          weapon_type,
+          health,
+          space_name,
+          body_zone,
+          transforms))
+
+
+def get_col_name(ach_id):
+    return get_colname_and_hashkey(ach_id)[0]
+
+
+_ach_ids = [ ach['id'] for ach in achives_parser.filter_achs_by_essence(ET.KillMob) ]

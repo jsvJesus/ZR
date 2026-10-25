@@ -1,0 +1,249 @@
+# Embedded file name: ./client/soGUI/DonateAuctionGUI/DetailWin.py
+import BigWorld
+import ScreenCreator
+from Helpers.PyGUI.PyGUIBase import PyGUIBase
+from Helpers.PyGUI.DraggableComponent import DraggableComponent
+from Localization import lc
+import BWPersonality
+import Codes
+import utils
+from client_utils import time_to_string
+import gui_jokes
+import Constants
+import colorCodes as cc
+from utils import groupNumber
+MAX_MONEY_VAL = 2147000000
+
+class DetailWin(PyGUIBase, DraggableComponent):
+    factoryString = 'soGUI.DonateAuctionScreen.DetailWin'
+
+    def __init__(self):
+        component = ScreenCreator.compile_info_component()
+        component.script = self
+        PyGUIBase.__init__(self, component)
+        DraggableComponent.__init__(self, True, True, True)
+        component.closeBox.script.onClick = self.hide
+        self._stake_button.script.onClick = self._on_stake
+        self._withdraw_button.script.onClick = self._on_withdraw
+        self.stake_callback = lambda base_name, stake_value: None
+        self.withdraw_callback = lambda base_name: None
+        self.base_data = None
+        self._base_detail = None
+        self._on_data_updated()
+        return
+
+    def handleMouseButtonEvent(self, comp, event):
+        return DraggableComponent.handleMouseButtonEvent(self, comp, event)
+
+    def tick(self):
+        self._update_time()
+
+    def _update_time(self):
+        if not self.base_data:
+            return
+        if self._has_owner:
+            self._time.text = lc('GUI.DonateBase.busy')
+        else:
+            int_time = max(0, int(self.base_data['sell_time'] - BWPersonality.gpd.server_time))
+            self._time.text = time_to_string(int_time)
+
+    def _on_withdraw(self):
+
+        def callback(event):
+            if gui_jokes.askUserYesNo.YES == event:
+                if withdraw_money + BigWorld.player().CreditNumber > MAX_MONEY_VAL:
+                    self._data_provider.systemMsgChat(lc('GUI.DonateBase.error_max_money').format(MAX_MONEY_VAL))
+                    return
+                self.withdraw_callback(self.base_data['name'])
+                self.hide()
+
+        self._number.script.activate(False)
+        withdraw_money = self._base_detail['short_data']['withdraw']
+        text = lc('GUI.DonateBase.confirm_withdraw').format(withdraw_money)
+        gui_jokes.askUserYesNo(lc('GUI.DonateBase.confirm_title'), text, callback)
+
+    def _on_stake(self):
+        int_value = self._number.script.getValue()
+        if not int_value:
+            self._data_provider.systemMsgChat(lc('GUI.DonateBase.error_zero'))
+            self._number.script.runErrorNotify()
+            return
+        if self._data_provider.money < int_value:
+            self._data_provider.systemMsgChat(lc('GUI.DonateBase.error_nomoney'))
+            self._number.script.runErrorNotify()
+            return
+        last_price = self.base_data['last_stake']['price']
+        if not last_price and int_value < Constants.AUCTION_MIN_STAKE:
+            self._data_provider.systemMsgChat(lc('GUI.DonateBase.error_minstake'))
+            self._number.script.runErrorNotify()
+            return
+        own_price = self._base_detail['own_stake']
+        if int_value - Constants.AUCTION_STEP < last_price - own_price:
+            self._data_provider.systemMsgChat(lc('GUI.DonateBase.error_notenough'))
+            self._number.script.runErrorNotify()
+            return
+
+        def callback(event):
+            if gui_jokes.askUserYesNo.YES == event:
+                self.stake_callback(self.base_data['name'], int_value)
+                self.hide()
+
+        if own_price:
+            if own_price + int_value > MAX_MONEY_VAL:
+                self._data_provider.systemMsgChat(lc('GUI.DonateBase.error_max_stake').format(MAX_MONEY_VAL))
+                self._number.script.runErrorNotify()
+                return
+            text = cc.inactive_xml + lc('GUI.DonateBase.confirm_up').format(cc.active_xml + groupNumber(int_value, sep="'") + cc.inactive_xml, cc.active_xml + groupNumber(own_price + int_value, sep="'") + cc.inactive_xml)
+        else:
+            text = cc.inactive_xml + lc('GUI.DonateBase.confirm_make').format(cc.active_xml + groupNumber(int_value, sep="'") + cc.inactive_xml)
+        self._number.script.activate(False)
+        gui_jokes.askUserYesNo(lc('GUI.DonateBase.confirm_title'), text, callback)
+
+    def _on_data_updated(self):
+
+        def pend():
+            self._dark_screen.visible = True
+            self._time.visible = False
+            self._stake1.visible = False
+            self._stake2.visible = False
+            self._stake_button.script.setDisabledState(True)
+            self._withdraw_button.script.setDisabledState(True)
+            self._number.visible = False
+            self._withdraw_pip.visible = False
+
+        def unpend():
+            self._dark_screen.visible = False
+            self._time.visible = True
+            self._stake1.visible = True
+            self._stake2.visible = True
+            color = cc.active_xml
+            text1 = '<font=RobotoCondensedRegular_16.font><alignment=left>' + color
+            text2 = '<font=RobotoCondensedRegular_16.font><alignment=right>' + color
+            code = self.base_data['last_stake']['code']
+            last_stake = self.base_data['last_stake']['price']
+            if self._has_owner:
+                self._stake1.script.setText(text1 + '-')
+                self._stake2.script.setText(text2 + '-')
+                self._stake_button.script.setDisabledState(True)
+                self._number.visible = False
+            else:
+                stakes = self._base_detail['history']
+                for stake in reversed(stakes):
+                    if stake['clan_name'] == BigWorld.player().clanName:
+                        sub_color = cc.highlighted_xml
+                    else:
+                        sub_color = color
+                    text1 += sub_color + stake['clan_name'].decode('utf8') + '\n'
+                    text2 += sub_color + utils.groupNumber(stake['price']) + '\n'
+
+                self._stake1.script.setText(text1)
+                self._stake2.script.setText(text2)
+                self._stake_button.script.setDisabledState(False)
+                self._number.visible = True
+            self._stake1.script.renderText()
+            self._stake2.script.renderText()
+            has_withdraw = bool(self._base_detail['short_data']['withdraw'])
+            self._withdraw_button.script.setDisabledState(not has_withdraw)
+            if code == Codes.AUCTION_STAKE_NONE:
+                self._stake_button.label.text = lc('GUI.DonateBase.make_stake')
+                money = Constants.AUCTION_MIN_STAKE if not last_stake else last_stake + Constants.AUCTION_STEP
+                self._number.script.setValue(str(money))
+            else:
+                self._stake_button.label.text = lc('GUI.DonateBase.up_stake')
+                money = last_stake - self._base_detail['own_stake'] + Constants.AUCTION_STEP
+                self._number.script.setValue(str(money))
+            if not self._data_provider.can_auction():
+                self._stake_button.script.setDisabledState(True)
+                self._withdraw_button.script.setDisabledState(True)
+                self._number.visible = False
+            self._withdraw_pip.visible = self._base_detail['short_data']['withdraw']
+            self._update_time()
+
+        if self.base_data:
+            self._title.text = lc('DonateBases.name.' + self.base_data['name'])
+        if self.pending:
+            pend()
+        else:
+            unpend()
+
+    def set_auction_detail4(self, base_long_data):
+        self.base_data = base_long_data['short_data']
+        self._base_detail = base_long_data
+        self._on_data_updated()
+
+    def set_base_data(self, base_data):
+        self.base_data = base_data
+        self._base_detail = None
+        self._data_provider.request_auction_detail1(self.base_data['name'])
+        self._on_data_updated()
+        return
+
+    def show(self):
+        if self.visible:
+            return
+        self.component.visible = True
+        self._update_time()
+
+    def hide(self):
+        if not self.visible:
+            return
+        self._number.script.activate(False)
+        self.component.visible = False
+
+    @property
+    def pending(self):
+        if not self.base_data:
+            return True
+        if not self._base_detail:
+            return True
+        if self.base_data['name'] != self._base_detail['short_data']['name']:
+            return True
+        return False
+
+    @property
+    def _has_owner(self):
+        return bool(self.base_data['clan_name'])
+
+    @property
+    def _title(self):
+        return self.component.title
+
+    @property
+    def _time(self):
+        return self.component.timevalue
+
+    @property
+    def _stake1(self):
+        return self.component.stakevalue1
+
+    @property
+    def _stake2(self):
+        return self.component.stakevalue2
+
+    @property
+    def _stake_button(self):
+        return self.component.stakebutton
+
+    @property
+    def _withdraw_button(self):
+        return self.component.withdrawbutton
+
+    @property
+    def _number(self):
+        return self.component.number
+
+    @property
+    def _data_provider(self):
+        return BigWorld.player()
+
+    @property
+    def _dark_screen(self):
+        return self.component.darkScreen
+
+    @property
+    def _withdraw_pip(self):
+        return self.component.withdraw_pip
+
+    @property
+    def visible(self):
+        return self.component.visible

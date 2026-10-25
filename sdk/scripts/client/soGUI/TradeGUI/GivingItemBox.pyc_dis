@@ -1,0 +1,308 @@
+# Embedded file name: ./client/soGUI/TradeGUI/GivingItemBox.py
+import GUI
+from TradeSlot import TradeSlot, number_input_validator
+from ItemBox import GoldMoneyItemBox
+from utils import pyFixedToNativePythonType as deepcopy
+from collections import namedtuple
+from Items import ItemsCatalog
+from soGUI.soButton import soButton
+import ItemsUtils
+from Localization import lc
+import msgbox_templates
+import Keys
+import Constants
+from gui_const import MESSAGEBOX
+import BigWorld
+
+class GivingTradeSlot(TradeSlot):
+    factoryString = 'soGUI.GivingTradeSlot'
+
+    def has_remove_context_action(self):
+        return True
+
+    def get_count_text(self):
+        if ItemsUtils.isStackedItemType(self.itemData['complexItemType']):
+            return str(self.itemData['count'])
+        else:
+            return ''
+
+
+DropFilter = namedtuple('DropFilter', 'type_set cat_set')
+
+class GivingItemBox(GoldMoneyItemBox):
+    factoryString = 'soGUI.GivingItemBox'
+
+    def __init__(self, trade_screen, component):
+        self._assortment = None
+        self._msg_box = None
+        GoldMoneyItemBox.__init__(self, component, Constants.GIVE_SIZE[0], Constants.GIVE_SIZE[1], trade_screen, lc('soTradeInterface.tradescreen.GIVEBOX_TITLE'))
+        return
+
+    @staticmethod
+    def create_content(component):
+        button_width = 101
+        offer_btn = soButton(GUI.Window(''))
+        cmp = offer_btn.component
+        cmp.verticalPositionMode = cmp.horizontalPositionMode = 'PIXEL'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'BOTTOM'
+        cmp.width = button_width
+        cmp.height = 29
+        cmp.position = (8, component.height - 4, 0.4)
+        offer_btn.initVSC('soGUI/elements/button_1.xml')
+        offer_btn.onBound()
+        cmp.label.text = lc('GUI.InterPlayerTrade.MAKE_OFFER_BUTTON_LABEL')
+        confirm_btn = soButton(GUI.Window(''))
+        cmp = confirm_btn.component
+        cmp.verticalPositionMode = cmp.horizontalPositionMode = 'PIXEL'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'BOTTOM'
+        cmp.width = button_width
+        cmp.height = 29
+        cmp.position = (8 + button_width, component.height - 4, 0.4)
+        confirm_btn.initVSC('soGUI/elements/button_1.xml')
+        confirm_btn.onBound()
+        cmp.label.text = lc('GUI.InterPlayerTrade.CONFIRM_BUTTON_LABEL')
+        cancel_btn = soButton(GUI.Window(''))
+        cmp = cancel_btn.component
+        cmp.verticalPositionMode = cmp.horizontalPositionMode = 'PIXEL'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.horizontalAnchor = 'RIGHT'
+        cmp.verticalAnchor = 'BOTTOM'
+        cmp.width = button_width
+        cmp.height = 29
+        cmp.position = (component.width - 8, component.height - 4, 0.4)
+        cancel_btn.initVSC('soGUI/elements/button_1.xml')
+        cancel_btn.onBound()
+        cmp.label.text = lc('GUI.InterPlayerTrade.CANCEL_BUTTON_LABEL')
+        return (offer_btn, confirm_btn, cancel_btn)
+
+    def setup_content(self):
+        GoldMoneyItemBox.setup_content(self)
+        self._offer_btn, self._confirm_btn, self._cancel_btn = GivingItemBox.create_content(self.component)
+        self._offer_btn.onClick = self._on_offer_click
+        self.component.frame.addChild(self._offer_btn.component)
+        self._confirm_btn.onClick = self._on_confirm_click
+        self.component.frame.addChild(self._confirm_btn.component, 'confirm_btn')
+        self._cancel_btn.onClick = self._on_cancel_click
+        self.component.frame.addChild(self._cancel_btn.component, 'cancel_btn')
+
+    def on_slot_remove_count(self, slot, count):
+        self.decrease_count(slot.itemData['complexItemID'], count)
+
+    def reset(self):
+        GoldMoneyItemBox.reset(self)
+        self._offer_btn.setDisabledState(False)
+        self._confirm_btn.setDisabledState(True)
+        self._cancel_btn.setDisabledState(True)
+        if self._msg_box:
+            self._msg_box.internalClose()
+            self._msg_box = None
+        return
+
+    def _on_offer_click(self):
+        if self._tradescreen.on_offer_click():
+            self._offer_btn.setDisabledState(True)
+            self._cancel_btn.setDisabledState(False)
+            self.lock(True)
+
+    def _on_confirm_click(self):
+        self._tradescreen.on_confirm_click()
+
+    def _on_cancel_click(self):
+        self._cancel_btn.setDisabledState(True)
+        self._offer_btn.setDisabledState(False)
+        self._confirm_btn.setDisabledState(True)
+        self.lock(False)
+        self._tradescreen.on_cancel_click()
+
+    def get_slot_class(self):
+        return GivingTradeSlot
+
+    def set_allowed_assortment(self, result, assortment):
+        self._assortment = assortment
+        if not result:
+            new_items = []
+            for item in self.items:
+                original_item = ItemsUtils.GetComplexItemByID(BigWorld.player(), item['complexItemID'])
+                if self.validate_item(original_item):
+                    new_items.append(self._compile_item_data(original_item, item['count']))
+
+            self.set_items(new_items)
+            self._on_cancel_click()
+
+    def allow_confirm(self, allow):
+        self._confirm_btn.setDisabledState(not allow)
+
+    def is_item_locked(self, item_id):
+        for citem in self.items:
+            if citem['complexItemID'] == item_id:
+                return True
+
+        return False
+
+    def on_items_updated(self):
+        self._tradescreen.on_giving_items_updated(self.items)
+
+    def on_inventory_dbl_click(self, item_data):
+        if not self.validate_item(item_data):
+            self._tradescreen.on_giving_filter_failed()
+            return
+        if not ItemsUtils.isStackedItemType(item_data['complexItemType']):
+            self.on_drop_items('soGUI.soInventorySlot2', [item_data])
+        else:
+            add_item_data = self._compile_item_data(item_data, 1)
+            ItemsUtils.SetItemNumber(add_item_data, 1)
+            self.add_item(add_item_data)
+
+    def _compile_item_data(self, inventory_item_data, count):
+        price, credits = self.calculate_item_price(inventory_item_data)
+        if not price and not credits:
+            return None
+        else:
+            result = deepcopy(inventory_item_data)
+            result['count'] = count
+            result['price'] = price
+            result['credits'] = credits
+            return result
+
+    def show(self):
+        GoldMoneyItemBox.show(self)
+        self._offer_btn.setDisabledState(False)
+
+    def add_item(self, item_data):
+        if ItemsUtils.isStackedItemType(item_data['complexItemType']):
+            return GoldMoneyItemBox.add_item(self, item_data)
+        try:
+            next((item for item in self.items if item['complexItemID'] == item_data['complexItemID']))
+            return False
+        except StopIteration:
+            return GoldMoneyItemBox.add_item(self, item_data)
+
+    def on_inventory_shift_click(self, item_data):
+        if not ItemsUtils.isStackedItemType(item_data['complexItemType']):
+            return
+
+        def add_number(event, data):
+            if event == MESSAGEBOX.EVENT_BTNPRESS:
+                number = ItemsUtils.GetItemNumber(item_data)
+                if data['btn'] == MESSAGEBOX.BTN_ALL:
+                    edit_box.setValue(str(number))
+                elif data['btn'] == MESSAGEBOX.BTN_OK:
+                    text = data['add_controls']['edit_box']
+                    if text.isdigit():
+                        count = min(int(text), number)
+                        if count > 0:
+                            add_item_data = self._compile_item_data(item_data, count)
+                            if not add_item_data:
+                                return
+                            ItemsUtils.SetItemNumber(add_item_data, count)
+                            self.add_item(add_item_data)
+                elif event == MESSAGEBOX.EVENT_CLOSE or event == MESSAGEBOX.EVENT_CLOSE_NONUSER:
+                    self._msg_box = None
+            return
+
+        if self._msg_box:
+            self._msg_box.internalClose()
+        self._msg_box = msgbox_templates.input_box_ok_all_cancel('Inventory.add_number_to_buy', lc('GUI.Inventory.BUY_CAPTION'), lc('GUI.Inventory.BUY_TEXT_REMOVE'), callback=add_number, default='1', input_validator=number_input_validator)
+        edit_box = self._msg_box.component.edit_edit_box.script
+
+        def intercept_input(event):
+            if event.key == Keys.KEY_F:
+                edit_box.setValue(str(ItemsUtils.GetItemNumber(item_data)))
+                return True
+            return False
+
+        edit_box.select([0, 0], [0, 1])
+        edit_box.keys_interceptor = intercept_input
+
+    def on_inventory_update(self):
+        if self._msg_box:
+            self._msg_box.internalClose()
+            self._msg_box = None
+        return
+
+    def validate_item(self, item_data):
+        """
+        \xd0\xbf\xd1\x80\xd0\xbe\xd0\xb2\xd0\xb5\xd1\x80\xd1\x8f\xd0\xb5\xd0\xbc \xd0\xb8\xd0\xbd\xd1\x82\xd0\xb5\xd1\x80\xd0\xb5\xd1\x81\xd0\xb5\xd0\xbd \xd0\xbb\xd0\xb8 \xd1\x82\xd0\xbe\xd1\x80\xd0\xb3\xd0\xbe\xd0\xb2\xd1\x86\xd1\x83 \xd0\xbf\xd1\x80\xd0\xb5\xd0\xb4\xd0\xbc\xd0\xb5\xd1\x82
+        """
+        price, credits = self.calculate_item_price(item_data)
+        if not price and not credits:
+            return False
+        item_type = item_data['complexItemType']
+        item_params = ItemsCatalog.GetItemParam(item_type)
+        if not ItemsUtils.is_item_sellable(item_data):
+            return False
+        inc_params = ItemsUtils.GetComplexItemInconstanParams(item_data)
+        if ItemsUtils.IsQuestItem(item_data, item_inconstant_param=inc_params):
+            return False
+        if ItemsUtils.IsItemBlockBySteam(item_data, BigWorld.player(), inc_params):
+            return False
+        barterable_condition = item_params.get('BarterableCondition', 0) * 0.01
+        if ItemsUtils.GetItemRating(item_data, inc_params=inc_params) < barterable_condition:
+            return False
+        goodness = ItemsUtils.GetItemGoodness(item_data, item_param=item_params, inc_param=inc_params)
+        for s in self._assortment['specs']:
+            if s['type_id'] == item_type:
+                if not s['condition'][0] <= goodness <= s['condition'][1]:
+                    return False
+                break
+
+        return True
+
+    def on_drop_items(self, source_factory_string, items_data):
+        items_data = map(self.apply_item_sell_filter, items_data)
+        if not self._assortment or source_factory_string != 'soGUI.soInventorySlot2':
+            return
+        if not all(map(self.validate_item, items_data)):
+            self._tradescreen.on_giving_filter_failed()
+            return
+        for item_data in items_data:
+            add_item_data = self._compile_item_data(item_data, ItemsUtils.GetItemNumber(item_data))
+            self.add_item(add_item_data)
+
+    def calculate_item_price(self, item_data):
+        spec = None
+        cat_data = None
+        margin = 0
+        item_type = item_data['complexItemType']
+        item_cat = ItemsCatalog.GetItemCategory(item_type)
+        for s in self._assortment['specs']:
+            if s['type_id'] == item_type:
+                spec = s
+                margin = spec['margin']
+                break
+        else:
+            for c_data in self._assortment['cats']:
+                if c_data['cat_id'] == item_cat:
+                    cat_data = c_data
+                    margin = cat_data['margin']
+                    break
+
+        if not spec and not cat_data:
+            return (0, 0)
+        else:
+            credits = spec and spec['credits'] or 0
+            return ItemsUtils.get_rated_price_and_credits(item_data, credits, margin=margin)
+
+    def apply_item_sell_filter(self, item):
+        try:
+            found_item = next((i for i in self.items if i['complexItemID'] == item['complexItemID']))
+        except StopIteration:
+            return item
+
+        if ItemsUtils.isStackedItemType(found_item['complexItemType']):
+            visible_count = ItemsUtils.GetItemNumber(item) - found_item['count']
+            if visible_count <= 0:
+                return None
+            visible_item = deepcopy(found_item)
+            ItemsUtils.SetItemNumber(visible_item, visible_count)
+            return visible_item
+        else:
+            return None
+            return None
+
+    def on_dbl_click(self, item_data):
+        self.remove_item(item_data['complexItemID'])

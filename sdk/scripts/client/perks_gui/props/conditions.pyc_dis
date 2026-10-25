@@ -1,0 +1,170 @@
+# Embedded file name: ./client/perks_gui/props/conditions.py
+import BigWorld
+from ui.panel import Panel
+from ui.text import Text, Align
+from ui.wrapped_text import WrappedText
+from ui.transform import clip_params, pixel_params
+from Localization import lc
+import colorCodes as cc
+from perks_system import perks_parser as pp
+from ..workplace.node import Condition
+from achivments import achives_parser as ap
+import QuestDispatcher as qd
+import rep_utils
+import Quest
+
+class CheckLine(Panel):
+
+    def __init__(self, component, name):
+        Panel.__init__(self, component, name)
+        self._text = WrappedText(self.component, 'text', size=16, align=Align.Left)
+        self._text.transform.set_clip_mode((0, 0, 1, 1), pixel_anchors=(24, 0, 0, 0))
+        self._check = Panel(self.component, 'check')
+        self._check.component.textureName = 'soGUI/frame/perks/check.dds'
+        self._check.component.materialFX = 'BLEND'
+        self._check.transform.set_pixel_mode((0, 0), (0, 0), (10, 9), pixel_pos=(4, 2))
+
+    def initialize(self, text, enabled):
+        self._text.set_text(text)
+        colour = (0, 255, 0, 255) if enabled else (65, 65, 65, 255)
+        self._check.component.colour = colour
+        return self._text.ratio_wrapped_height + 3
+
+
+_texts_pool = []
+_checklines_pool = []
+
+class Conditions(Panel):
+
+    def __init__(self, graph, node_by_id, component, name):
+        Panel.__init__(self, component, name)
+        self._id_counter = 0
+        self._graph = graph
+        self._node_by_id = node_by_id
+
+    def set_node(self, node, quest_state):
+        line_height = 22
+
+        def restore_color(component):
+            component.colour[3] = 255
+            component.visible = True
+            for _, child in component.children:
+                restore_color(child)
+
+        for _, child in self.component.children:
+            self.component.delChild(child)
+            restore_color(child)
+            if isinstance(child.script, Text):
+                _texts_pool.append(child.script)
+            elif isinstance(child.script, CheckLine):
+                _checklines_pool.append(child.script)
+            else:
+                raise RuntimeError
+
+        def append_text(height, text, color):
+            self._id_counter += 1
+            if _texts_pool:
+                t = _texts_pool.pop()
+                self.transform.set_child(t.transform, str(self._id_counter))
+            else:
+                t = Text(self.component, str(self._id_counter), size=16)
+                t.set_alignment(Align.Left, Align.Center)
+            t.component.visible = True
+            t.component.colour = (255, 255, 255, 255)
+            t.set_text(text)
+            t.set_color(color)
+            cpx = clip_params((0, 1))
+            cpy = pixel_params(0, 0, line_height, height)
+            t.transform.set_mixed_mode(cpx, cpy)
+            return t.transform.ratio_height
+
+        def append_checkline(height, text, enabled):
+            self._id_counter += 1
+            if _checklines_pool:
+                ch = _checklines_pool.pop()
+                self.transform.set_child(ch.transform, str(self._id_counter))
+            else:
+                ch = CheckLine(self.component, str(self._id_counter))
+                ch.transform.set_clip_mode((0, 0, 1, 0))
+            text_height = ch.initialize(text, enabled)
+            cpx = clip_params((0, 1))
+            cpy = pixel_params(0, 0, text_height, height)
+            ch.transform.set_mixed_mode(cpx, cpy)
+            return text_height
+
+        def append_perkline(height, node_id):
+            checknode = self._node_by_id[node_id]
+            enabled = checknode.condition == Condition.Bought
+            return (append_checkline(height, checknode.name, enabled), enabled)
+
+        def append_achline(height, ach_id):
+            achivment = ap.get_achiv(ach_id)
+            enabled = ach_id in self._user.achiv_ids
+            return (append_checkline(height, achivment['name'], enabled), enabled)
+
+        def append_questline(height, quest_id, group_id):
+            text = u'"{0}" {1} "{2}"'.format(qd.getQuestTitleByID(quest_id), lc('Perks.ui.props.fract'), rep_utils.get_name(group_id))
+            enabled = quest_state == Quest.STATE_CLOSED
+            return (append_checkline(height, text, enabled), enabled)
+
+        available = True
+        height = 0
+        parent_ids = self._graph.get_all_valid_parents(node.id, lambda n_id: n_id != pp.original_perk_id)
+        if parent_ids:
+            height += append_text(height, lc('Perks.ui.props.main_cond'), cc.inactive_rgba)
+            height += append_text(height, lc('Perks.ui.props.main_perk'), cc.active_rgba)
+            if node.and_dep:
+                for p_id in parent_ids:
+                    h, perk_enabled = append_perkline(height, p_id)
+                    height += h
+                    if not perk_enabled:
+                        available = False
+
+            else:
+                all_disabled = bool(parent_ids)
+                for i, p_id in enumerate(parent_ids):
+                    h, perk_enabled = append_perkline(height, p_id)
+                    height += h
+                    if perk_enabled:
+                        all_disabled = False
+                    if i < len(parent_ids) - 1:
+                        height += append_text(height, lc('Perks.ui.props.or'), cc.inactive_rgba)
+
+                if all_disabled:
+                    available = False
+        if node.addnode_id or node.achivs or node.quest:
+            height += append_text(height, lc('Perks.ui.props.aux_cond'), cc.inactive_rgba)
+            if node.addnode_id:
+                height += append_text(height, lc('Perks.ui.props.add_perk'), cc.active_rgba)
+                h, perk_enabled = append_perkline(height, node.addnode_id)
+                height += h
+                if not perk_enabled:
+                    available = False
+            achs_enabled = None
+            if node.achivs:
+                achs_enabled = True
+                height += append_text(height, lc('Perks.ui.props.achs'), cc.active_rgba)
+                for ach_id in node.achivs:
+                    h, ach_enabled = append_achline(height, ach_id)
+                    height += h
+                    if not ach_enabled:
+                        achs_enabled = False
+
+            quests_enabled = None
+            if node.quest:
+                if node.achivs:
+                    height += append_text(height, lc('Perks.ui.props.or'), cc.inactive_rgba)
+                height += append_text(height, lc('Perks.ui.props.quest'), cc.active_rgba)
+                h, quests_enabled = append_questline(height, *node.quest)
+                height += h
+            if achs_enabled is None and quests_enabled == False:
+                available = False
+            if quests_enabled is None and achs_enabled == False:
+                available = False
+            if quests_enabled is False and achs_enabled is False:
+                available = False
+        return (height, available)
+
+    @property
+    def _user(self):
+        return BigWorld.player()

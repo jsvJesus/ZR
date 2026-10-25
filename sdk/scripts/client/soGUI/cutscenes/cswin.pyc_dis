@@ -1,0 +1,348 @@
+# Embedded file name: ./client/soGUI/cutscenes/cswin.py
+import Keys
+from Localization import lc
+from functools import partial
+import os
+import pyson
+import BigWorld
+from math_bw import move_towards
+import GUI
+from Helpers.PyGUI.PyGUIBase import Interceptor
+from Helpers.BWCoroutine import BWMemberCoroutine, BWWaitForPeriod, BWWaitForCondition
+from utils import Listenable
+from soGUI.cutscenes.cs_utils import cutscenes_path
+import ResourceLoader
+from sounds_manager import playSound
+from skip_block import SkipBlock, EventType as SkipET
+from ui.button import Button
+from soGUI.soTextField import soTextField3
+import AudioMixer
+
+class EventType:
+    OnShow, OnClose = ((r, 'cswin') for r in range(2))
+
+
+class AuxAudio:
+
+    def __init__(self):
+        self._sounds = {}
+        self._remove_prefix = 'event:/'
+
+    def run(self, aux_audio):
+        for layer, audio in aux_audio.iteritems():
+            if layer in self._sounds:
+                self._sounds[layer].stop()
+            if audio.startswith(self._remove_prefix):
+                audio = audio[len(self._remove_prefix):]
+            sound = playSound(audio)
+            if sound:
+                self._sounds[layer] = sound
+
+    def stop(self):
+        for sound in self._sounds.itervalues():
+            sound.stop()
+
+        self._sounds = {}
+
+
+class Frame(object):
+
+    def __init__(self, parent_comp):
+        comp = GUI.Window()
+        comp.materialFX = 'BLEND'
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.position = (0, 0, 0.9)
+        self.component = comp
+        comp = GUI.Window('soGUI/frame/stuff/subtitle_pad.dds')
+        comp.wm, comp.hm = ('CLIP', 'CLIP')
+        comp.ha, comp.va = ('CENTER', 'BOTTOM')
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.width, comp.height = (2, 0.667)
+        comp.materialFX = 'BLEND'
+        comp.position = (0, -1, 0.5)
+        self.component.addChild(comp, 'gradient')
+        self._sound = None
+        self._alpha = None
+        self.alpha = 0
+        return
+
+    def set_frame(self, frame_data):
+        self.component.texture = frame_data['texture']
+        self.realign()
+        audio = frame_data.get('audio')
+        if self._sound:
+            self._sound.stop()
+            self._sound = None
+        if audio:
+            self._sound = playSound(audio[7:])
+            return self._sound and self._sound.duration or 0
+        else:
+            return 0
+
+    def realign(self):
+        comp = self.component
+        texture = comp.texture
+        if not texture:
+            return
+        screen_width, screen_height = BigWorld.screenSize()
+        screen_ratio = float(screen_width) / screen_height
+        texture_ratio = float(texture.width) / texture.height
+        if screen_ratio >= texture_ratio:
+            comp.height = screen_height
+            comp.width = comp.height * texture_ratio
+        else:
+            comp.width = screen_width
+            comp.height = comp.width / texture_ratio
+
+    def stop(self):
+        if self._sound:
+            self._sound.stop()
+            self._sound = None
+        return
+
+    @property
+    def alpha(self):
+        return self._alpha
+
+    @alpha.setter
+    def alpha(self, value):
+        if value == self._alpha:
+            return
+        self._alpha = value
+        comp_alpha = self._alpha * 255.0
+        self.component.colour[3] = comp_alpha
+        self.component.gradient.colour[3] = comp_alpha
+
+
+class CsWin(Interceptor, Listenable):
+
+    def __init__(self):
+        Listenable.__init__(self)
+        comp = GUI.Window('soGUI/frame/paint/black.dds')
+        comp.materialFX = 'BLEND'
+        comp.visible = False
+        comp.wm, comp.hm = ('CLIP', 'CLIP')
+        comp.width, comp.height = (2, 2)
+        comp.position = (0, 0, 1.0)
+        Interceptor.__init__(self, comp, interscept_keys=True)
+        comp = GUI.Simple('')
+        comp.position = (0, 0, 0.5)
+        comp.wm, comp.hm = ('CLIP', 'CLIP')
+        comp.width, comp.height = (2, 2)
+        self.component.addChild(comp, 'container')
+        self._ambient = None
+        self._frame = Frame(self.component)
+        self._aux_audio = AuxAudio()
+        self.component.addChild(self._frame.component, 'frame')
+        self._coroutine = None
+        self._complete_trigger = False
+        self._next_trigger = False
+        comp = GUI.Window('soGUI/frame/paint/white.dds')
+        comp.materialFX = 'BLEND'
+        comp.ha, comp.va = ('CENTER', 'BOTTOM')
+        comp.hpm, comp.vpm = ('CLIP', 'PIXEL')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.width = 500
+        comp.position = (0, 0, 0.5)
+        self._text = soTextField3(comp, width=comp.width, textWidth=comp.width, height=100, borderWidth=0, vOffset=0, hOffset=0, hScroll=False, vScroll=False)
+        self.component.container.addChild(comp)
+        comp = GUI.Window()
+        comp.ha, comp.va = ('RIGHT', 'BOTTOM')
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = (400, 200)
+        comp.position = (1, -1, 0.9)
+        self.component.container.addChild(comp)
+        self._skip_block = SkipBlock(comp)
+        self._skip_block.add_listener(self._on_skip_block_event)
+        btn = Button(self.component.container, 'btnnext', frame=True)
+        btn.set_visual('soGUI/frame/buttons/cutscenebutton.json')
+        btn.set_enabled(False)
+        btn.transform.set_base_resolution(None)
+        btn.transform.set_pixel_mode((0.5, 1), (0.5, 1), (140, 32), pixel_pos=(0, -20))
+        btn.on_click = self._on_next_click
+        self._next_btn = btn
+        return
+
+    def show(self, config):
+        if not self.component.visible:
+            self.notify_listeners(EventType.OnShow)
+            self.component.visible = True
+        self._stop()
+        self._next_btn.set_enabled(False)
+        self._coroutine = self._run_cutscene(config)
+        self._coroutine.run()
+
+    def _on_next_click(self):
+        self._next_btn.set_enabled(False)
+        self._next_trigger = True
+
+    @BWMemberCoroutine
+    def _run_cutscene(self, config):
+        AudioMixer.blend_volume_to(0, 'CUTSCENE', blend_time=2.0, bus_ids=AudioMixer.NO_UI_CUTSCENES_BUS_IDS)
+        self._frame.alpha = 0
+        self._complete_trigger = False
+        self._next_trigger = False
+        self._config_data = None
+        self.component.container.visible = False
+        self._next_btn.set_text(lc('CutscenesGui.next'))
+        self._skip_block.show()
+
+        def on_dds_loaded(frame_index, prereqs):
+            if not self._coroutine:
+                return
+            frames = self._config_data['frames']
+            frames[frame_index]['texture'] = prereqs.produce(0)
+            if len(frames) > frame_index + 1:
+                load_dds(frame_index + 1)
+
+        def load_dds(frame_index):
+            if not self._coroutine:
+                return
+            image_path = self._config_data['frames'][frame_index]['image']
+            image_path = image_path.replace('\\', '/')
+            ResourceLoader.asyncLoad([(ResourceLoader.TEXTURE, image_path)], partial(on_dds_loaded, frame_index))
+
+        def on_config_load(prereqs):
+            if not self._coroutine:
+                return
+            self._config_data = pyson.loads(prereqs.produce(0).asBinary)
+            load_dds(0)
+
+        config_path = os.path.join(cutscenes_path, config)
+        ResourceLoader.asyncLoad([(ResourceLoader.DATA_SECTION, config_path)], on_config_load)
+        alpha = 0
+        while alpha < 1:
+            yield BWWaitForPeriod(0)
+            alpha = move_towards(alpha, 1.0, BigWorld.getTimeDelta())
+            self.component.colour[3] = alpha * 255
+
+        if not self._config_data:
+            yield BWWaitForCondition(lambda : bool(self._config_data))
+
+        def is_frame_ready(frame_index):
+            return 'texture' in self._config_data['frames'][frame_index]
+
+        frames = self._config_data['frames']
+        settings = self._config_data.get('settings')
+        hex_color = None
+        fade_time = 0.0
+        font_size = None
+        if settings:
+            hex_color = settings.get('color')
+            if not settings.get('font'):
+                font_size = None
+                ambient = settings.get('ambient')
+                if ambient:
+                    self._ambient = playSound(ambient[7:])
+                fade_time = 'time' in settings and settings['time']
+        fade_factor = 1.0 / fade_time if fade_time > 0 else None
+        self.component.container.visible = True
+        for frame_index in range(len(frames)):
+            yield BWWaitForCondition(lambda : is_frame_ready(frame_index))
+            frame = frames[frame_index]
+            duration = self._frame.set_frame(frame)
+            self._next_btn.set_enabled(True)
+            self._next_trigger = False
+            self._aux_audio.run(frame.get('aux_audio', {}))
+            frame_font_size = frame.get('font')
+            font_name = 'RobotoCondensedRegular_{0}.font'.format(frame_font_size or font_size or 18)
+            self._text.height = 1000
+            text = lc('cutscenes.id' + str(frame['id']), default=u'')
+            text = '<font={0}><color={1}>'.format(font_name, hex_color) + text
+            self._text.setText(text, immidiate=True)
+            self._text.recalc_auto_height()
+            substrate = bool(frame.get('substrate'))
+            self._text.component.colour = (0, 0, 0, 72) if substrate else (0, 0, 0, 0)
+            is_last_frame = frame_index == len(frames) - 1
+            if is_last_frame:
+                self._next_btn.set_text(lc('GUI.continue'))
+            stop_time = BigWorld.time() + duration
+            if fade_factor:
+                alpha = 0
+                while alpha < 1 and not self._next_trigger:
+                    yield BWWaitForPeriod(0)
+                    alpha = move_towards(alpha, 1.0, BigWorld.getTimeDelta() * fade_factor)
+                    self._frame.alpha = alpha
+
+            else:
+                self._frame.alpha = 1.0
+            while stop_time > BigWorld.time() and not self._next_trigger:
+                yield BWWaitForPeriod(0)
+
+            if is_last_frame:
+                yield BWWaitForCondition(lambda : self._next_trigger)
+                self.component.container.visible = False
+            if fade_factor:
+                alpha = self._frame._alpha
+                while alpha > 0:
+                    yield BWWaitForPeriod(0)
+                    alpha = move_towards(alpha, 0, BigWorld.getTimeDelta() * fade_factor)
+                    self._frame.alpha = alpha
+
+            else:
+                self._frame.alpha = 0
+            if self._complete_trigger:
+                break
+
+        alpha = 1
+        while alpha > 0:
+            yield BWWaitForPeriod(0)
+            alpha = move_towards(alpha, 0, BigWorld.getTimeDelta())
+            self.component.colour[3] = alpha * 255
+
+        self._coroutine = None
+        self._stop()
+        self.close()
+        return
+
+    def _on_skip_block_event(self, event_type, data):
+        if event_type == SkipET.OnFullCircle:
+            self._complete_trigger = True
+            self._next_trigger = True
+            self._next_btn.set_enabled(False)
+
+    def handleKeyEvent(self, event):
+        if event.key == Keys.KEY_TAB:
+            return False
+        if event.key != Keys.KEY_SPACE or event.isRepeatedEvent():
+            return True
+        self._skip_block.run(event.isKeyDown())
+        return True
+
+    def _realign(self):
+        if not self.visible:
+            return
+        comp = self._text.component
+        comp.position[1] = BigWorld.screenHeight() - 80
+        comp.width = BigWorld.screenWidth() * 0.8
+        self._text.setTextWidth(comp.width)
+        self._text.width = comp.width
+        self._frame.realign()
+        self._next_btn.transform.apply_mode()
+
+    def _stop(self):
+        if self._coroutine:
+            self._coroutine.stop()
+            self._coroutine = None
+        if self._ambient:
+            self._ambient.stop()
+            self._ambient = None
+        AudioMixer.blend_volume_to(1, 'CUTSCENE', blend_time=2.0, bus_ids=AudioMixer.NO_UI_CUTSCENES_BUS_IDS)
+        self._frame.stop()
+        self._skip_block.hide()
+        self._aux_audio.stop()
+        return
+
+    def onParentSizeChanged(self, component):
+        self._realign()
+
+    @property
+    def visible(self):
+        return self.component.visible
+
+    def close(self):
+        self._stop()
+        if self.component.visible:
+            self.component.visible = False
+            self.notify_listeners(EventType.OnClose)

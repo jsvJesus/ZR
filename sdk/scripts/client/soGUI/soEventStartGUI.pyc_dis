@@ -1,0 +1,525 @@
+# Embedded file name: ./client/soGUI/soEventStartGUI.py
+import GUI
+import math
+import BigWorld
+import gui_jokes
+import colorCodes
+import ItemsUtils
+import traceback
+import BWPersonality
+from time import time
+import EventInWorldUtils
+from Localization import lc
+from functools import partial
+from Items import ItemsCatalog
+from BB_Viewer import BB_Viewer
+from soGUI.soButton import soButton
+from soGUI.soItemView import soItemSlot
+from soGUI.soTextField import soTextField2
+from soGUI.soTextField import soTextField3
+from colorCodes import tf3_text_color_gray
+from soGUI.GUIPositions import GUIPositions
+from soInventorySlot2 import soInventorySlot2
+from Helpers.PyGUI.PyGUIBase import PyGUIBase
+from soGUI.ComplexTextField import ComplexTextField
+from soGUI.soTextField import soTxtFieldPropsStructure
+from Helpers.PyGUI.DraggableComponent import DraggableComponent
+from soGUI.soReceiveItemsGUI import soReceiveItemsGUI
+
+class soEventStartGUI(soReceiveItemsGUI):
+    factoryString = 'soGUI.soEventStartGUI'
+
+    def __init__(self, component):
+        self.last_time = None
+        self.reward_list_window = None
+        self.__update_timer_id = None
+        self.__start_timer_id = None
+        self.__last_start_time = None
+        soReceiveItemsGUI.__init__(self, component)
+        self.available = False
+        return
+
+    def setupControls(self):
+        soReceiveItemsGUI.setupControls(self)
+        cmp = GUI.Text('')
+        cmp.horizontalPositionMode = 'CLIP'
+        cmp.verticalPositionMode = 'PIXEL'
+        cmp.horizontalAnchor = 'CENTER'
+        cmp.verticalAnchor = 'BOTTOM'
+        cmp.font = 'RobotoCondensedRegular_14.font'
+        cmp.colour = (146, 146, 146, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.position = (0, self.component.height - 92, 0.3)
+        cmp.text = lc('GUI.event_starter.event_cooldown').format('00:00:00')
+        self.component.wndFrame.addChild(cmp, 'cooldown_text')
+        cmp = GUI.Text('')
+        cmp.horizontalPositionMode = 'CLIP'
+        cmp.verticalPositionMode = 'PIXEL'
+        cmp.horizontalAnchor = 'CENTER'
+        cmp.verticalAnchor = 'BOTTOM'
+        cmp.font = 'RobotoCondensedRegular_14.font'
+        cmp.colour = (146, 146, 146, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.position = (0, self.component.height - 55, 0.3)
+        self.component.wndFrame.addChild(cmp, 'count_text')
+        btn = soButton(GUI.Window())
+        cmp = btn.component
+        btn.initVSC('soGUI/elements/button_1.xml')
+        cmp.horizontalPositionMode = 'CLIP'
+        cmp.verticalPositionMode = 'PIXEL'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.horizontalAnchor = 'CENTER'
+        cmp.verticalAnchor = 'BOTTOM'
+        cmp.label.font = 'RobotoCondensedRegular_16.font'
+        cmp.label.text = lc('GUI.event_starter.reward')
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.width = 131
+        cmp.height = 25
+        cmp.position = (0, self.component.height - 168, 0.1)
+        cmp.script.onClick = self.show_reward
+        self.component.addChild(cmp, 'button_reward')
+        btn.onBound()
+        btn = soButton(GUI.Window())
+        cmp = btn.component
+        btn.initVSC('soGUI/elements/button_1.xml')
+        cmp.horizontalPositionMode = 'CLIP'
+        cmp.verticalPositionMode = 'PIXEL'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.horizontalAnchor = 'CENTER'
+        cmp.verticalAnchor = 'BOTTOM'
+        cmp.label.font = 'RobotoCondensedRegular_16.font'
+        cmp.label.text = lc('GUI.event_starter.start')
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.width = 131
+        cmp.height = 25
+        cmp.position = (0, self.component.height - 17, 0.1)
+        cmp.script.setDisabledState(True)
+        cmp.script.onClick = self.start_event
+        self.component.addChild(cmp, 'button_start')
+        btn.onBound()
+        descr = '<alignment=center>' + tf3_text_color_gray + lc('GUI.event_starter.decriprion')
+        self.component.wndFrame.description.script.setText(descr)
+
+    def start_event(self):
+        if not self.current_event or self.current_event.isDestroyed:
+            return
+        if self.current_event.start_delay > 0:
+            self.component.button_start.script.setDisabledState(True)
+        self.current_event.cell.check_start()
+
+    def show_reward(self):
+        if not self.current_event or self.current_event.isDestroyed:
+            return
+        data = EventInWorldUtils.get_events_data(self.current_event.event_name)
+        if not data or not data.has_key('reward'):
+            return
+        count = 0
+        for key, value in data['reward'].items():
+            if key in ('sender', 'bank'):
+                continue
+            if not value['blackbox']:
+                continue
+            count += 1
+
+        if not count:
+            gui_jokes.askUserOk(lc('GUI.event_starter.reward'), lc('GUI.event_starter.reward_none'))
+            return
+        self.reward_list_window = EventRewardListWindow(GUI.Window(), data['reward'])
+        self.reward_list_window.show()
+
+    def update_positions(self):
+        soReceiveItemsGUI.update_positions(self)
+        self.component.button_start.position.y = self.component.height - 17
+        self.component.button_reward.position.y = self.component.height - 198
+        self.component.wndFrame.cooldown_text.position.y = self.component.height - 80
+        self.component.wndFrame.count_text.position.y = self.component.height - 50
+
+    def hide(self):
+        self.stop_update_timer()
+        if self.reward_list_window:
+            self.reward_list_window.hide()
+            self.reward_list_window = None
+        soReceiveItemsGUI.hide(self)
+        return
+
+    def update_start_timer(self):
+        if not self.__last_start_time:
+            return
+        if not self.current_event:
+            return
+        time_left = self.current_event.start_delay - (BigWorld.time() - self.__last_start_time)
+        self.component.wndFrame.cooldown_text.colour = (146, 146, 146, 255)
+        self.component.wndFrame.cooldown_text.text = lc('GUI.event_starter.start_timer').format(ItemsUtils.timeToStringSec(time_left))
+        if time_left > 0:
+            self.__start_timer_id = BigWorld.callback(1, self.update_start_timer)
+        else:
+            self.stop_start_timer(self.current_event)
+
+    def update_left_counter(self, event_starter):
+        if self.current_event != event_starter:
+            return
+        if self.current_event.starters_count > 1:
+            self.component.wndFrame.count_text.text = lc('GUI.event_starter.left_count').format(self.current_event.starters_left, self.current_event.starters_count)
+            self.component.wndFrame.count_text.colour = (146, 146, 146, 255)
+        if self.available and self.current_event.starters_left == 0:
+            self.component.button_start.script.setDisabledState(False)
+
+    def set_last_time(self):
+        self.stop_update_timer()
+        if not self.current_event or self.current_event.isDestroyed:
+            return
+        if self.__start_timer_id:
+            return
+        time_left = max(0, self.current_event.cooldown + BWPersonality.gpd.time_diff - time())
+        self.component.button_start.script.setDisabledState(True)
+        self.available = False
+        self.component.wndFrame.cooldown_text.colour = (146, 146, 146, 255)
+        self.component.wndFrame.cooldown_text.text = ''
+        if self.current_event.cooldown == -1:
+            self.component.wndFrame.cooldown_text.text = lc('GUI.event_starter.event_now')
+            return
+        if time_left == 0:
+            self.update_left_counter(self.current_event)
+            if self.remaining_items == 0 and (self.current_event.starters_left == 0 or self.current_event.starters_count == 1):
+                self.component.button_start.script.setDisabledState(False)
+            self.available = True
+            self.component.wndFrame.cooldown_text.text = lc('GUI.event_starter.event_available')
+            self.component.wndFrame.cooldown_text.colour = (0, 255, 0, 255)
+        else:
+            self.component.wndFrame.cooldown_text.text = lc('GUI.event_starter.event_cooldown').format(ItemsUtils.timeToStringSec(time_left))
+            self.__update_timer_id = BigWorld.callback(1, self.set_last_time)
+
+    def stop_update_timer(self):
+        if self.__update_timer_id:
+            BigWorld.cancelCallback(self.__update_timer_id)
+            self.__update_timer_id = None
+        return
+
+    def stop_start_timer(self, event_starter):
+        if event_starter != self.current_event:
+            return
+        else:
+            if self.__start_timer_id:
+                BigWorld.cancelCallback(self.__start_timer_id)
+                self.__start_timer_id = None
+            self.__last_start_time = None
+            self.set_last_time()
+            return
+
+    def start_start_timer(self):
+        self.__last_start_time = BigWorld.time()
+        self.update_start_timer()
+
+    def update(self, event_starter):
+        soReceiveItemsGUI.update(self, event_starter)
+        self.set_last_time()
+
+    def on_fail_start(self, event_starter):
+        if event_starter != self.current_event:
+            return
+        self.component.wndFrame.cooldown_text.colour = (255, 0, 0, 255)
+        self.component.wndFrame.cooldown_text.text = lc('GUI.event_starter.fail_text')
+
+
+class EventRewardListWindow(PyGUIBase, DraggableComponent):
+
+    def __init__(self, component, reward_data):
+        PyGUIBase.__init__(self, component)
+        DraggableComponent.__init__(self, True, True, True, xoffset=0, yoffset=0)
+        component.script = self
+        self.reward_data = reward_data
+        self.reward_info_window = None
+        self.setupRoot()
+        self.setupControls()
+        return
+
+    def setupRoot(self):
+        cmp = self.component
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'CLIP'
+        cmp.horizontalAnchor = 'CENTER'
+        cmp.verticalAnchor = 'CENTER'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.height = 500
+        cmp.width = 350
+        cmp.visible = False
+        cmp.textureName = ''
+        cmp.dragFocus = True
+        cmp.dropFocus = True
+        cmp.crossFocus = True
+        cmp.moveFocus = True
+        cmp.mouseButtonFocus = True
+        cmp.position = (0, 0, 0.5)
+        cmp.visible = True
+
+    def setupControls(self):
+        cmp = GUI.Frame2('soGUI/frame/basic_frame_no_footer.dds')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'CLIP'
+        cmp.widthMode = cmp.heightMode = 'CLIP'
+        cmp.horizontalAnchor = 'CENTER'
+        cmp.verticalAnchor = 'CENTER'
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.width = 2.0
+        cmp.height = 2.0
+        cmp.position = (0, 0, 1.2)
+        self.component.addChild(cmp, 'wndFrame')
+        cmp = GUI.Text('')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.font = 'RobotoCondensedRegular_16.font'
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.position = (18, 6, 0.5)
+        cmp.text = lc('GUI.event_starter.reward')
+        self.component.wndFrame.addChild(cmp, 'titleLabel')
+        closeBox = soButton(GUI.Window())
+        cmp = closeBox.component
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.width = 18
+        cmp.height = 18
+        cmp.position = (self.component.width - 26, 6, 0.3)
+        cmp.script.onClick = self.hide
+        closeBox.initVSC('soGUI/elements/closeBox.xml')
+        closeBox.onBound()
+        closeBox.setVisualState('normal')
+        self.component.addChild(cmp, 'closeBox')
+        rewards = []
+        for key, value in self.reward_data.items():
+            if key in ('sender', 'bank'):
+                continue
+            if not self.reward_data[key]['blackbox']:
+                continue
+            rewards.append((key, self.reward_data[key]['blackbox']))
+
+        rewards.sort(key=lambda x: x[0])
+        index = 0
+        for index, (rank, bb_name) in enumerate(rewards):
+            cmp = RewardItem(GUI.Window(), rank, bb_name).component
+            cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+            cmp.horizontalAnchor = 'LEFT'
+            cmp.verticalAnchor = 'TOP'
+            cmp.colour = (175, 166, 112, 255)
+            cmp.materialFX = 'BLEND'
+            cmp.position = (10, 38 + 71 * index, 0.3)
+            cmp.width = 350
+            cmp.height = 64
+            self.component.addChild(cmp, 'frame_rank_{0}'.format(index))
+
+        txt = soTextField2(GUI.Window(), soTxtFieldPropsStructure(height=200, width=self.component.width - 20, vScroll=False, textureless=True))
+        cmp = txt.component
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.colour = (146, 146, 146, 255)
+        cmp.position = (10, 38 + 71 * (index + 1), 0.5)
+        txt.setText(colorCodes.gray_text + lc('GUI.event_starter.description'))
+        self.component.wndFrame.addChild(cmp, 'description')
+
+    def on_icon_rank_click(self, rank, bb_name):
+        if self.reward_info_window:
+            self.reward_info_window.hide()
+        if rank == u'other':
+            reward_text = lc('GUI.event_starter.reward_text_other')
+        else:
+            reward_text = lc('GUI.event_starter.reward_text').format(rank)
+        self.reward_info_window = RewardInfo(GUI.Window(), bb_name, reward_text)
+        self.reward_info_window.show()
+        return False
+
+    def handleMouseButtonEvent(self, comp, event):
+        return DraggableComponent.handleMouseButtonEvent(self, comp, event)
+
+    def show(self):
+        if self.component.parent is None:
+            BWPersonality.GUICore.worldLayer.addChild(self.component, 'eventReward')
+        self.component.visible = True
+        return
+
+    def hide(self):
+        self.component.visible = False
+        if self.reward_info_window:
+            self.reward_info_window.hide()
+            self.reward_info_window = None
+        if self.component.parent:
+            BWPersonality.GUICore.worldLayer.delChild('eventReward')
+        return
+
+
+class RewardItem(PyGUIBase):
+
+    def __init__(self, component, rank, bb_name):
+        PyGUIBase.__init__(self, component)
+        component.script = self
+        cmp = self.component
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'CLIP'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.height = 64
+        cmp.width = 350
+        self.rank = rank
+        self.blackbox = bb_name
+        self.component.focus = True
+        self.component.mouseButtonFocus = True
+        self.component.moveFocus = True
+        self.component.crossFocus = True
+        cmp = GUI.Frame2('soGUI/items/cell.dds')
+        cmp.verticalPositionMode = cmp.horizontalPositionMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.width = 64
+        cmp.height = 64
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.position = (0, 0, 0.9)
+        cmp.visible = True
+        self.component.addChild(cmp, 'frameCmp')
+        icon_path = EventInWorldUtils.get_reward_icon(rank)
+        cmp = GUI.Simple(icon_path)
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.width = 64
+        cmp.height = 64
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.position = (0, 0, 0.3)
+        cmp.visible = True
+        self.component.addChild(cmp, 'icon_rank')
+        if self.rank == u'other':
+            reward_text = lc('GUI.event_starter.reward_text_other')
+        else:
+            reward_text = lc('GUI.event_starter.reward_text').format(self.rank)
+        cmp = GUI.Text(reward_text)
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.font = 'RobotoCondensedRegular_16.font'
+        cmp.colour = (192, 127, 50, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.visible = True
+        cmp.position = (74, 0, 0.3)
+        self.component.addChild(cmp, 'label_reward')
+
+    def handleMouseButtonEvent(self, comp, event):
+        if event.isKeyDown():
+            self.component.parent.script.on_icon_rank_click(self.rank, self.blackbox)
+        return True
+
+
+class RewardInfo(PyGUIBase, DraggableComponent):
+
+    def __init__(self, component, bb_name, title_name):
+        PyGUIBase.__init__(self, component)
+        DraggableComponent.__init__(self, True, True, True, xoffset=0, yoffset=0)
+        component.script = self
+        self.blackbox = bb_name
+        self.title_name = title_name
+        self.setupRoot()
+        self.setupControls()
+
+    def setupRoot(self):
+        cmp = self.component
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'CLIP'
+        cmp.horizontalAnchor = 'CENTER'
+        cmp.verticalAnchor = 'CENTER'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.height = 700
+        cmp.width = 600
+        cmp.visible = False
+        cmp.textureName = ''
+        cmp.dragFocus = True
+        cmp.dropFocus = True
+        cmp.crossFocus = True
+        cmp.moveFocus = True
+        cmp.mouseButtonFocus = True
+        cmp.position = (0, 0, 0.5)
+        cmp.visible = True
+
+    def setupControls(self):
+        cmp = GUI.Frame2('soGUI/frame/basic_frame_no_footer.dds')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'CLIP'
+        cmp.widthMode = cmp.heightMode = 'CLIP'
+        cmp.horizontalAnchor = 'CENTER'
+        cmp.verticalAnchor = 'CENTER'
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.width = 2.0
+        cmp.height = 2.0
+        cmp.position = (0, 0, 1.2)
+        self.component.addChild(cmp, 'wndFrame')
+        cmp = GUI.Text('')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.font = 'RobotoCondensedRegular_16.font'
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.position = (18, 6, 0.5)
+        cmp.text = self.title_name
+        self.component.wndFrame.addChild(cmp, 'titleLabel')
+        closeBox = soButton(GUI.Window())
+        cmp = closeBox.component
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.width = 18
+        cmp.height = 18
+        cmp.position = (self.component.width - 26, 6, 0.3)
+        cmp.script.onClick = self.hide
+        closeBox.initVSC('soGUI/elements/closeBox.xml')
+        closeBox.onBound()
+        closeBox.setVisualState('normal')
+        self.component.addChild(cmp, 'closeBox')
+        txt = ComplexTextField(self.component.width - 20, self.component.height - 40, self.component)
+        cmp = txt.component
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.position = (10, 38, 1.0)
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        self.component.addChild(cmp, 'bb')
+        txt.setText('', self.blackbox)
+
+    def onBound(self):
+        pass
+
+    def disp(self):
+        return 0
+
+    def text_height(self):
+        return 0
+
+    def show(self):
+        if self.component.parent is None:
+            BWPersonality.GUICore.worldLayer.addChild(self.component, 'eventRewardInfo')
+        self.component.visible = True
+        return
+
+    def hide(self):
+        self.component.visible = False
+        if self.component.parent:
+            BWPersonality.GUICore.worldLayer.delChild('eventRewardInfo')
+
+    def handleMouseButtonEvent(self, comp, event):
+        return DraggableComponent.handleMouseButtonEvent(self, comp, event)

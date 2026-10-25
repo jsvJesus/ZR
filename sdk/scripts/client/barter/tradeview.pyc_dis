@@ -1,0 +1,125 @@
+# Embedded file name: ./client/barter/tradeview.py
+import BWPersonality
+import BigWorld
+import GUI
+from Localization import lc
+from soGUI.soItemView import soItemView
+from gui_const import ITSLOT
+import ItemsUtils
+from barter.container import EventType as ContET, LockType
+from Codes import BadActions as BA
+from ChatChannelConfig import CHANNEL_CONSTS
+from Helpers.BWCoroutine import BWMemberCoroutine, BWWaitForPeriod
+from barter.tradeview_slot import NonInteractableSlot, InteractableSlot, shader_speed
+from Constants import MESSAGE_TYPES as MT
+
+class TradeView(soItemView):
+
+    def __init__(self, container, interactable):
+        comp = GUI.Window()
+        self._interactable = interactable
+        if self._interactable:
+            slot_class = InteractableSlot
+            events_handler = self._on_slot_handle
+        else:
+            slot_class = NonInteractableSlot
+            events_handler = lambda *args: None
+        soItemView.__init__(self, comp, slot_class, slot_eventsHandler=events_handler, rows=3, cols=7, rowWidth=7, hScroll=False, vScroll=False, borderWidth=0)
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('LEFT', 'TOP')
+        comp.materialFX = 'BLEND'
+        self.onBound()
+        self.setRestrictingComponent(None)
+        self.setItems(None)
+        if self._interactable:
+            self.set_multiselectable()
+        self._coroutine = None
+        self._sequence = []
+        self._container = container
+        self._container.add_listener(self._on_container_event)
+        return
+
+    @BWMemberCoroutine
+    def _twinkling_coroutine(self):
+        while self._sequence:
+            event_type, data = self._sequence.pop(0)
+            if event_type == ContET.OnAdded:
+                self.items.extend(data['items'])
+                self._applyItems()
+                for i in range(len(self.items) - len(data['items']), len(self.items)):
+                    comp = getattr(self.component, 'slot' + str(i))
+                    comp.script.blink((0, 255, 0, 150))
+
+                yield BWWaitForPeriod(shader_speed)
+            elif event_type == ContET.OnRemoved:
+                for i in range(len(self.items)):
+                    if self.items[i]['complexItemID'] in data['item_ids']:
+                        comp = getattr(self.component, 'slot' + str(i))
+                        comp.script.blink((255, 0, 0, 150))
+
+                yield BWWaitForPeriod(shader_speed)
+                for i in range(len(self.items) - 1, -1, -1):
+                    if self.items[i]['complexItemID'] in data['item_ids']:
+                        del self.items[i]
+
+                self._applyItems()
+
+        self._coroutine = None
+        return
+
+    def _on_container_event(self, event_type, data):
+        if self._interactable:
+            if event_type in (ContET.OnAdded, ContET.OnRemoved, ContET.OnCleared):
+                self._sync_content()
+        elif event_type in (ContET.OnAdded, ContET.OnRemoved):
+            if len(self._sequence) >= 3:
+                self._sync_content()
+            self._sequence.append((event_type, data))
+            if self._coroutine is None:
+                self._coroutine = self._twinkling_coroutine()
+                self._coroutine.run()
+        elif event_type == ContET.OnCleared:
+            self._sync_content()
+        return
+
+    def _sync_content(self):
+        del self._sequence[:]
+        if self._coroutine:
+            self._coroutine.stop()
+            self._coroutine = None
+        self.setItems(list(self._container.items))
+        return
+
+    def on_show(self):
+        self._sync_content()
+
+    def on_inventory_drop(self, slot):
+        item_ids = slot.get_multiselection()
+        if self._container.locked == LockType.Null:
+            self._container.remove_items(item_ids)
+
+    def _on_slot_handle(self, event, data):
+        if event == ITSLOT.SLOTEVENT_DROP:
+            slot = data[1]
+            if slot.factoryString != 'soGUI.soInventorySlot2':
+                return True
+            item_ids = slot.get_multiselection()
+            p = BigWorld.player()
+            items = ItemsUtils.get_multiple_items_by_ids(p, item_ids)
+            bad_action = self._container.can_add_items(items)
+            if bad_action:
+                if bad_action == BA.NOT_TRADABLE:
+                    p.putMessage(CHANNEL_CONSTS.ITEMS, lc('ItemHolder.isnotTradeable_msg'))
+                elif bad_action == BA.NOT_MOVABLE:
+                    p.putMessage(CHANNEL_CONSTS.SYSTEM, lc('Inventory.client.PERSONAL_ITEM'))
+                else:
+                    p.putMessage(CHANNEL_CONSTS.SYSTEM, lc('Barter.message.cant'))
+            else:
+                free_space = self._container.get_free_space()
+                if free_space <= 0:
+                    p.putMessage(CHANNEL_CONSTS.SYSTEM, lc('Barter.message.limit'))
+                elif free_space < len(items):
+                    items = items[:free_space]
+                    BWPersonality.gpd.sendHightMessage(lc('soTradeInterface.tradescreen.BADACTION'), MT.PERSONAL)
+                self._container.add_items(items)
+        return True

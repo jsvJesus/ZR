@@ -1,0 +1,135 @@
+# Embedded file name: ./client/CrossingCarriage.py
+import BigWorld
+import CrossingCommon
+from Helpers.Caps import CAP_INTERACT
+from Math import Vector3
+from Math import MatrixProduct
+from Math import Matrix
+import sounds_manager as sounds
+from soGUI.soInworldMarkers import soInworldMarker
+from Localization import lc
+
+class SimplySmoothFilter(object):
+
+    def __init__(self, entity):
+        self._filter = BigWorld.PythonFilter()
+        entity.filter = self._filter
+        self._filter.resetFilter = self._reset
+        self._filter.inputFilter = self._input
+        self._filter.outputFilter = self._output
+        self._pos = Vector3(entity.position)
+        self._real_pos = Vector3(entity.position)
+        self._prev_real_pos = Vector3(self._real_pos)
+        self._rotation = Vector3(entity.yaw, entity.pitch, entity.roll)
+        self._speed = 0
+        self._high_speed = False
+        self.on_high_speed_change_callback = None
+        return
+
+    def _reset(self, time):
+        self._real_pos = Vector3(self._pos)
+
+    def _input(self, time, space_id, vehicle_id, pos, pos_error, rotation):
+        self._pos = pos
+        self._pos_error = pos_error
+        self._rotation = rotation
+
+    def _output(self, time):
+        coef = BigWorld.getTimeDelta()
+        coef = min(coef, 1.0)
+        self._real_pos = self._real_pos + (self._pos - self._real_pos) * coef
+        prev_speed = self._speed
+        self._speed = self._real_pos.distTo(self._prev_real_pos) / coef
+        if prev_speed < 0.6 and self._speed >= 0.6:
+            if not self._high_speed and self.on_high_speed_change_callback:
+                self.on_high_speed_change_callback(True)
+            self._high_speed = True
+        if prev_speed > 0.4 and self._speed <= 0.4:
+            if self._high_speed and self.on_high_speed_change_callback:
+                self.on_high_speed_change_callback(False)
+            self._high_speed = False
+        self._prev_real_pos = Vector3(self._real_pos)
+        return (self._real_pos, self._rotation, Vector3())
+
+    @property
+    def is_moving(self):
+        return self._speed > 0.4
+
+
+class CrossingCarriage(BigWorld.Entity):
+    DISABLE_MARK = False
+
+    def __init__(self):
+        BigWorld.Entity.__init__(self)
+        self.targetCaps = [CAP_INTERACT]
+        self._next_interaction_time = 0
+        self._sound = None
+        return
+
+    @property
+    def model_path(self):
+        return CrossingCommon.CROSSING_CARRIAGE_MODELS[self.modelSelect]
+
+    def get_interaction_dist(self):
+        return 4.0
+
+    def get_target_mark(self, distance):
+        if distance > self.get_interaction_dist():
+            return None
+        else:
+            return soInworldMarker.MARKER_USE
+
+    def get_mark_name(self):
+        return lc('CrossingCarriage.MARK_NAME')
+
+    def get_mark_height(self):
+        return -1.1
+
+    def prerequisites(self):
+        return [self.model_path]
+
+    def onEnterWorld(self, prereqs):
+        self.model = prereqs[self.model_path]
+        self._ssf = SimplySmoothFilter(self)
+        self._ssf.on_high_speed_change_callback = self._on_high_speed_change
+
+    def _on_high_speed_change(self, high_speed):
+        if high_speed and not self._sound:
+            self._sound = sounds.getSound('transport/trolley/movement', model=self.model)
+        if self._sound:
+            if high_speed:
+                self._sound.play()
+            else:
+                self._sound.stop()
+
+    def onLeaveWorld(self):
+        self.model = None
+        self._ssf.on_high_speed_change_callback = None
+        self._ssf = None
+        if self._sound:
+            self._sound.releaseSound()
+            self._sound = None
+        return
+
+    def canLeaveUser(self, user):
+        return not self._ssf.is_moving
+
+    def get_seat_node(self, passanger_id):
+        node = self.model.node('SEAT')
+        self.model.forceDraw()
+        ent_matrix = self.matrix
+        ent_matrix.notModel = True
+        m = Matrix(ent_matrix)
+        m.invert()
+        m.preMultiply(node.lastWorldTransform)
+        mprod = MatrixProduct()
+        mprod.a = m
+        mprod.b = ent_matrix
+        return mprod
+
+    def interact(self, interactor):
+        if interactor.in_transport:
+            return
+        if BigWorld.time() >= self._next_interaction_time:
+            self._next_interaction_time = BigWorld.time() + 1.0
+            self.cell.request_interaction()

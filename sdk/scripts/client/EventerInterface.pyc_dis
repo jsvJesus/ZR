@@ -1,0 +1,256 @@
+# Embedded file name: ./client/EventerInterface.py
+import BigWorld
+import traceback
+import BWPersonality
+import EventInWorldUtils
+import ChatChannelConfig
+from Localization import lc
+import sounds_manager as sounds
+import Config.DungeonsConfig as DC
+from client_utils import colored_chat_msg
+from Helpers.BWCoroutine import BWCoroutine, BWWaitForPeriod
+CHANNEL_CONSTS = ChatChannelConfig.ChannelConsts()
+import open_world_events_config as owe_config
+import compound_quest_utils
+from utils import PY
+from NPCs import NPCs
+from Constants import MESSAGE_TYPES as MT
+from Subtitles import Subtitles
+IN_WORLD, IN_DANGEROUS, IN_PVPINSTROOM = xrange(3)
+
+class EventerInterface(object):
+
+    def __init__(self):
+        self.event_current_music = None
+        self._dung_timer_end = 0
+        return
+
+    def stop_event_sounds(self):
+        if self.event_current_music:
+            self.event_current_music.stop()
+            self.event_current_music = None
+            return True
+        else:
+            return False
+
+    def play_event_music(self, music_path):
+        if self.inPVPinstance:
+            return
+        self.stop_event_sounds()
+        self.event_current_music = sounds.getSound(music_path, is_music=True)
+        if self.event_current_music:
+            self.event_current_music.play()
+
+    def onLeaveWorld(self):
+        self.stop_event_sounds()
+
+    def onSpaceEnteredDung(self):
+        self._stop_timer_text()
+
+    def on_event_start(self, event_id):
+        if not self.inPVPinstance:
+            sound = EventInWorldUtils.get_start_sound(event_id)
+            sounds.playSound(sound)
+            self.play_event_music('music/volcano_event/timer')
+            BWPersonality.music._stopMusicTheme()
+        self.show_event_gui()
+        message = EventInWorldUtils.get_start_message(event_id)
+        if message:
+            BWPersonality.gpd.sendHightMessage(message, MT.DUNGEON)
+
+    def on_enter_in_event(self, cooldown):
+        if cooldown == -1:
+            return
+        self.set_event_cooldown(cooldown)
+        self.show_event_gui()
+        if not self.inPVPinstance:
+            BWPersonality.music._stopMusicTheme()
+
+    def on_event_safe_time(self, cooldown):
+        self.play_event_music('music/volcano_event/idle')
+        if self.event_current_music:
+            self.event_current_music.play()
+        self.set_event_cooldown(cooldown)
+
+    def show_event_gui(self):
+        BWPersonality.GUICore.showEventGUI()
+
+    def hide_event_gui(self):
+        if self.stop_event_sounds():
+            self.startSpaceSounds()
+        BWPersonality.GUICore.showEventGUI(doShow=False)
+        BWPersonality.GUICore.showEventTimerGUI(doShow=False)
+        if self._dung_timer_end:
+
+            def update_timer():
+                self.update_event_mobs(0, 0, 0, 0)
+                BWPersonality.GUICore.eventDataSection['saved_time'] = self._dung_timer_end
+                BWPersonality.GUICore.showEventGUI()
+                if BWPersonality.GUICore.eventGUI:
+                    BWPersonality.GUICore.eventGUI.update_cooldown()
+
+            BigWorld.callback(5.0, update_timer)
+
+    def on_change_event_phase(self, phase, event_id):
+        if phase <= 0:
+            self.update_event_mobs(0, 0, 0, 0)
+            return
+        if not self.inPVPinstance:
+            sound = EventInWorldUtils.get_phase_sound(event_id, phase)
+            sounds.playSound(sound)
+            self.play_event_music('music/volcano_event/mobs')
+        BWPersonality.GUICore.showEventGUI()
+        message = EventInWorldUtils.get_phase_message(event_id, phase)
+        if message:
+            BWPersonality.gpd.sendHightMessage(message, MT.DUNGEON)
+
+    def on_owe_info_updated(self, code, int_list, str_list):
+
+        def _putMessage():
+            if str_list and str_list[0]:
+                msg = lc(str_list[0])
+                self.putMessage(CHANNEL_CONSTS.SYSTEM, msg)
+
+        if code == owe_config.ENTER_AREA:
+            _putMessage()
+        elif code == owe_config.EVENT_WIN:
+            _putMessage()
+        elif code == owe_config.EVENT_FAIL:
+            _putMessage()
+        if self.isInWorld:
+            BWPersonality.GUICore.scholar_controller.update_owe_info(code, int_list, str_list)
+
+    def set_owe_info(self, owe_info):
+        """\xd1\x81 \xd1\x81\xd0\xb5\xd1\x80\xd0\xb2\xd0\xb5\xd1\x80\xd0\xb0 \xd0\xbd\xd0\xbe\xd0\xb2\xd1\x8b\xd0\xb5 \xd0\xb4\xd0\xb0\xd0\xbd\xd0\xbd\xd1\x8b\xd0\xb5 \xd0\xbf\xd0\xbe OpenWorldEvent"""
+        owe_info = PY(owe_info)
+        owe_info['metadata'] = (self.id,)
+        if self.isInWorld:
+            BWPersonality.GUICore.scholar_controller.set_owe_info(owe_info)
+
+    def update_event_mobs(self, count, all_mobs, killed, table_position, phase = 0):
+        BWPersonality.GUICore.eventDataSection['mob_count'] = count
+        BWPersonality.GUICore.eventDataSection['mob_all'] = all_mobs
+        BWPersonality.GUICore.eventDataSection['killed'] = killed
+        BWPersonality.GUICore.eventDataSection['table_position'] = table_position
+        BWPersonality.GUICore.eventDataSection['phase'] = phase
+        if BWPersonality.GUICore.eventGUI:
+            BWPersonality.GUICore.eventGUI.update_count()
+
+    def set_event_cooldown(self, cooldown):
+        BWPersonality.GUICore.eventDataSection['saved_time'] = BWPersonality.gpd.time_diff + cooldown
+        if BWPersonality.GUICore.eventGUI:
+            BWPersonality.GUICore.eventGUI.update_cooldown()
+
+    def on_event_win(self, time, event_mode, event_id):
+        if event_mode == IN_PVPINSTROOM:
+            return
+        sounds.playSound(EventInWorldUtils.get_event_sound(event_id, 'sound_win'))
+        self.play_event_music('music/volcano_event/idle')
+        msg = EventInWorldUtils.get_win_message(event_id)
+        BWPersonality.GUICore.showEventTimerGUI(time=time, is_win=True, event_mode=event_mode, custom_message=msg)
+
+    def on_event_fail(self, time, event_mode, event_id):
+        if event_mode == IN_PVPINSTROOM:
+            return
+        sounds.playSound(EventInWorldUtils.get_event_sound(event_id, 'sound_fail'))
+        self.play_event_music('music/volcano_event/idle')
+        msg = EventInWorldUtils.get_fail_message(event_id)
+        BWPersonality.GUICore.showEventTimerGUI(time=time, is_win=False, event_mode=event_mode, custom_message=msg)
+
+    def on_event_lost_target(self, ent_id, all_count, killed):
+        target = BigWorld.entities.get(ent_id)
+        if target:
+            message = lc('Codes.EVENT_CONST.NAME_LOST').format(target.getName(), killed, all_count)
+        else:
+            message = lc('Codes.EVENT_CONST.NO_NAME_LOST').format(killed, all_count)
+        BWPersonality.gpd.sendHightMessageTimed(message, 10, MT.FAIL)
+        message = colored_chat_msg(message, '#FF0000')
+        self.putMessage(CHANNEL_CONSTS.SYSTEM, message)
+
+    def event_add_boss(self):
+        self.play_event_music('music/volcano_event/boss')
+
+    def show_dungeon_message(self, show_time, color, local_text, sound):
+        print '[ZZZ] show_dungeon_message', [show_time,
+         color,
+         local_text,
+         sound]
+        text = lc(local_text)
+        BWPersonality.gpd.sendHightMessageTimed(text, show_time, MT.DUNGEON)
+        self.putMessage(CHANNEL_CONSTS.SYSTEM, text)
+        if sound:
+            sounds.playSound(sound)
+
+    def send_dungeon_timer(self, timer_end):
+        if not timer_end:
+            self._dung_timer_end = 0
+            self.hide_event_gui()
+            self.box_hide_gui()
+            self.on_heli_gui_visible_changed(False)
+            return
+        self._dung_timer_end = BWPersonality.gpd.time_diff + timer_end
+        BWPersonality.GUICore.eventDataSection['saved_time'] = self._dung_timer_end
+        self.update_event_mobs(0, 0, 0, 0)
+        BWPersonality.GUICore.showEventGUI()
+        if BWPersonality.GUICore.eventGUI:
+            BWPersonality.GUICore.eventGUI.update_cooldown()
+        sounds.playSound('environment/events/countdown')
+
+    def on_dungeon_fail(self, dungeon_id):
+        self._stop_timer_text()
+        conf = DC.get_config(dungeon_id)
+        fail_msg = conf.get('fail_msg')
+        if fail_msg:
+            text = lc(fail_msg)
+            second = conf.get('fail_msg_time', 30)
+            self._dung_timer_text = self._show_dungeoun_timer_text(self, text, second, MT.FAIL)
+            self._dung_timer_text.run()
+        if conf.get('fail_sound'):
+            sounds.playSound(conf['fail_sound'])
+
+    def on_dungeon_win(self, dungeon_id):
+        self._stop_timer_text()
+        self.send_dungeon_timer(0)
+        conf = DC.get_config(dungeon_id)
+        win_msg = conf['win_msg']
+        if win_msg:
+            text = lc(win_msg)
+            second = conf.get('win_msg_time', 30)
+            self._dung_timer_text = self._show_dungeoun_timer_text(self, text, second, MT.WIN)
+            self._dung_timer_text.run()
+        if conf.get('win_sound'):
+            sounds.playSound(conf['win_sound'])
+
+    def _stop_timer_text(self):
+        if getattr(self, '_dung_timer_text', None):
+            try:
+                self._dung_timer_text.stop()
+            except:
+                traceback.print_exc()
+
+        self._dung_timer_text = None
+        BWPersonality.gpd.sendHightMessageTimed('', 0.0)
+        return
+
+    @BWCoroutine
+    def _show_dungeoun_timer_text(self, text, second, message_type = MT.DUNGEON):
+        for i in xrange(int(second) / 10):
+            if self.isDestroyed:
+                raise StopIteration
+            formated_text = text.format(second - i * 10)
+            if not i:
+                self.putMessage(CHANNEL_CONSTS.SYSTEM, formated_text)
+            BWPersonality.gpd.sendHightMessageTimed(formated_text, 12.0, message_type)
+            yield BWWaitForPeriod(10.0)
+
+    def receive_compound_message(self, scenario_index, state_id):
+        message = compound_quest_utils.get_space_message(scenario_index, state_id)
+        if message:
+            Subtitles.play(self, message)
+            sounds.playSound(message)
+
+    def show_compound_marks(self, space_id, marks):
+        self.marks_data.add_compound_marks(space_id, marks)
+
+    def delete_compound_marks(self, space_id, marks):
+        self.marks_data.remove_compound_marks(space_id, marks)

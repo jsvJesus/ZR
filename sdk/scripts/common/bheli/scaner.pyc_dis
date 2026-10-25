@@ -1,0 +1,114 @@
+# Embedded file name: ./common/bheli/scaner.py
+from random import random
+from math import tan, sqrt
+import BigWorld
+from Config.Damage import SourceTypes, DamageTypes, BODY_ZONES
+from utils_bw import collide
+from random import choice
+import math_bw
+from bheli.battleheli_utils import shoot_target_height, disperse_angle
+
+class Scaner(object):
+
+    def __init__(self, heli):
+        self._heli = heli
+        self._body_zones = (BODY_ZONES.HEAD,
+         BODY_ZONES.TORSO,
+         BODY_ZONES.FOREARM,
+         BODY_ZONES.ARM,
+         BODY_ZONES.FACE,
+         BODY_ZONES.LEG_UPPER,
+         BODY_ZONES.LEG_LOWER)
+
+    def destroyScaner(self):
+        self._heli = None
+        return
+
+    def stop_see(self, entity_id):
+        if entity_id in self._target_ids:
+            self._target_ids.remove(entity_id)
+
+    def start_see(self, entity_id):
+        if BigWorld.entities.get(entity_id).__class__.__name__ not in ('Avatar', 'Creature'):
+            return
+        if entity_id not in self._target_ids:
+            self._target_ids.append(entity_id)
+
+    def tick(self):
+        potential_targets = []
+        for i in xrange(len(self._target_ids) - 1, -1, -1):
+            entity = BigWorld.entities.get(self._target_ids[i])
+            if not entity or entity.isDestroyed or entity.is_dead() or getattr(entity, 'mobNoAggr'):
+                self.stop_see(self._target_ids[i])
+                continue
+            sqr_dist_to_heli = entity.position.distSqrTo(self._position)
+            potential_targets.append([entity,
+             sqr_dist_to_heli,
+             None,
+             None])
+
+        if not potential_targets:
+            return
+        else:
+            potential_targets.sort(key=lambda x: x[1])
+            aim_target = None
+            for i in xrange(len(potential_targets)):
+                entity = potential_targets[i][0]
+                if entity.__class__.__name__ != 'Avatar':
+                    continue
+                collide_res = bool(collide(self._space_id, self._position, entity.position + (0, shoot_target_height, 0)))
+                potential_targets[i][3] = collide_res
+                if collide_res:
+                    continue
+                aim_target = entity
+                break
+
+            if not aim_target:
+                return
+            for i in xrange(len(potential_targets)):
+                entity = potential_targets[i][0]
+                sqr_dist_to_target = entity.position.distSqrTo(aim_target.position)
+                potential_targets[i][2] = sqr_dist_to_target
+
+            potential_targets.sort(key=lambda x: x[2])
+            shot_target = None
+            to_aim_target = aim_target.position - self._position
+            for entity, dist_sqr_to_heli, _, collide_res in potential_targets:
+                if collide_res is None:
+                    collide_res = bool(collide(self._space_id, self._position, entity.position + (0, shoot_target_height, 0)))
+                if collide_res:
+                    continue
+                to_entity = entity.position - self._position
+                entity_angle = math_bw.angle_between_vectors(to_aim_target, to_entity)
+                if entity_angle > disperse_angle:
+                    continue
+                distance = sqrt(dist_sqr_to_heli)
+                chance = 1.0 / (distance * tan(disperse_angle) * 2)
+                if random() > chance:
+                    continue
+                shot_target = entity
+                break
+
+            if shot_target:
+                source_data = {'mailbox': None,
+                 'type': SourceTypes.HELICOPTER,
+                 'subtype': []}
+                damage_data = {'type': DamageTypes.BULLET,
+                 'value': 10,
+                 'penetration': 100,
+                 'flags': 0}
+                body_zones = [choice(self._body_zones)]
+                shot_target.damage(source_data, damage_data, body_zones, 0, 0)
+            return aim_target
+
+    @property
+    def _target_ids(self):
+        return self._heli._target_ids
+
+    @property
+    def _position(self):
+        return self._heli.position
+
+    @property
+    def _space_id(self):
+        return self._heli.spaceID

@@ -1,0 +1,249 @@
+# Embedded file name: ./client/NPCAnimations.py
+import random
+import BigWorld
+import ResMgr
+import Durations
+import NPCLoadUtils
+from time import time
+from Gestures import Gestures
+from functools import partial
+from Items import ItemsCatalog
+import traceback
+ADDITIONAL_ANIM_TIME = 5.0
+
+class NPCAnimations(Gestures):
+
+    def __init__(self):
+        Gestures.__init__(self)
+        self._additional_action = None
+        self._additional_callback = None
+        self._additional_callback_next = None
+        self.__saved_animation = None
+        return
+
+    def get_animations(self):
+        return NPCLoadUtils.get_anim_data(self.npcActions)
+
+    def get_animation_data(self, index):
+        animations = self.get_animations()
+        if not animations or len(animations) <= index:
+            return
+        return animations[index]
+
+    def stop_all_animations(self, force = False, callback = None, play_out = True):
+        if self._current_action:
+            try:
+                self.model.action(self._current_action).stop()
+            except:
+                print 'error for', self, repr(self._current_action)
+                traceback.print_exc()
+
+            self._current_action = None
+        if self._action_callback:
+            BigWorld.cancelCallback(self._action_callback)
+            self._action_callback = None
+        if self._additional_callback:
+            BigWorld.cancelCallback(self._additional_callback)
+            self._additional_callback = None
+        if self._additional_callback_next:
+            BigWorld.cancelCallback(self._additional_callback_next)
+            self._additional_callback_next = None
+        if self._additional_action:
+            self.model.action(self._additional_action).stop()
+            self._additional_action = None
+        if self._stopped_action and not force:
+            stop_act = self.model.action(self._stopped_action)
+            self.playAnimation(stop_act, stop_act.duration, callback)
+        elif callback:
+            callback()
+        self._stopped_action = None
+        return
+
+    def onDeadChange(self):
+        pass
+
+    def onEnterWorld(self):
+        self.updadtePlayNpcAnimation()
+
+    def onPostModelChange(self):
+        self.updadtePlayNpcAnimation()
+
+    def updadtePlayNpcAnimation(self):
+        data = self.get_animation_data(self.playedAnimationIndexList - 1)
+        if data:
+            self.enable_tracker = data.get('enable_tracker', 1)
+        self.playAnimationByIDInList(self.playedAnimationIndexList, first_play=True)
+
+    def onLeaveWorld(self):
+        Gestures.onLeaveWorld(self)
+        if self._additional_callback:
+            BigWorld.cancelCallback(self._additional_callback)
+            self._additional_callback = None
+        if self._additional_callback_next:
+            BigWorld.cancelCallback(self._additional_callback_next)
+            self._additional_callback_next = None
+        return
+
+    def playAdditionalAnim(self):
+        if self.isDestroyed or self.dialog_actions:
+            return
+        elif self.isDisableDialogs:
+            return
+        else:
+            if self._additional_callback:
+                BigWorld.cancelCallback(self._additional_callback)
+                self._additional_callback = None
+            if self._additional_callback_next:
+                BigWorld.cancelCallback(self._additional_callback_next)
+                self._additional_callback_next = None
+            if self._additional_action:
+                self.model.action(self._additional_action).stop()
+                self._additional_action = None
+            data = self.get_animation_data(self.playedAnimationIndexList - 1)
+            if not data:
+                return
+            elif not data.get('additional_animations'):
+                return
+            anim_name = random.choice(data.get('additional_animations'))
+            callback = None
+            time_ = random.uniform(0, ADDITIONAL_ANIM_TIME)
+            duration = time_ + data.get('additional_cooldown', ADDITIONAL_ANIM_TIME)
+            if isinstance(anim_name, str) or isinstance(anim_name, unicode):
+                try:
+                    self._additional_action = anim_name
+                    act = self.model.action(self._additional_action)
+                except Exception as e:
+                    self._additional_action = None
+                    print 'Error NPC AditionalAction', self, self.npcActions
+                    print e
+
+                if self._additional_action:
+                    callback = partial(self.playAnimation, act)
+                    duration += act.duration
+            elif isinstance(anim_name, int):
+                item_duration = Durations.GetItemUseDuration(self, anim_name)
+                item_params = ItemsCatalog.GetItemParam(anim_name)
+                if item_params:
+                    item_duration = item_params.get('Action_use_time', item_duration)
+                    callback = partial(self.drawUsingItemAnimation, anim_name, item_duration)
+                    duration += item_duration
+            if callback:
+                self._additional_callback = BigWorld.callback(time_, callback)
+            self._additional_callback_next = BigWorld.callback(duration, self.playAdditionalAnim)
+            return
+
+    def playAnimationByIDInList(self, index, force_loop = False, first_play = False):
+        if self.isDisableDialogs:
+            return
+        if index:
+            data = self.get_animation_data(self.playedAnimationIndexList - 1)
+            if not data:
+                return
+            lock_track_head = data.get('disable_tracker_head', False)
+            lock_track_torso = data.get('disable_tracker_torso', False)
+            lock_track_foot = data.get('disable_tracker_foot', False)
+            if not data.get('enable_tracker', 1):
+                lock_track_head = True
+                lock_track_torso = True
+                lock_track_foot = True
+            self.pushTrackerLockByName('NPCAnimations:playAnimationByIDInList', 'Belly-or-Right', lock_track_head=lock_track_head, lock_track_torso=lock_track_torso, lock_track_foot=lock_track_foot, print_error=False)
+            self.updateHandControl()
+            if isinstance(data['Animations'], list):
+                self.play_set_animations(data['Animations'], force_loop)
+            else:
+                self.play_one_animation(data['Animations'])
+                if first_play:
+                    self.__saved_animation = data['Animations']
+            if self.model:
+                if not data.get('calcBoundingBox', 0):
+                    self.model.isCalcBoundBoxFromNodes = self.dead
+                data.get('additional_animations') and self.playAdditionalAnim()
+        else:
+            self.popTrackerLock('NPCAnimations:playAnimationByIDInList')
+            self.updateHandControl()
+            self.stopUsingItemAnimation(True)
+
+            def onEnd():
+                self.updateBlendNodeByImpacting(only_factor=True)
+                self.onEndUseAnimation()
+
+            self.stop_all_animations(callback=onEnd)
+
+    def stopUsingItemAnimation(self, force = False):
+        if self.isDestroyed:
+            return
+        elif not self.model:
+            return
+        elif self.npcSuit:
+            return
+        else:
+            self.stopAnimation()
+            self.popTrackerLock('drawUsingItemAnimation')
+            if self.is_dead():
+                return
+            try:
+                self.model.ThrowRight = None
+                self.model.ThrowLeft = None
+            except Exception as e:
+                print 'ERROR NPCModel', self.id, self.position, self
+                print self.model, self.model.sources
+                traceback.print_exc()
+
+            if self._current_action and not force:
+                self.playAnimation(self.model.action(self._current_action))
+            return
+
+    def play_one_animation(self, anim_name):
+        if self.isDestroyed:
+            return
+        elif self.isDisableDialogs:
+            return
+        else:
+            self._current_action = anim_name
+            if self._action_callback:
+                BigWorld.cancelCallback(self._action_callback)
+                self._action_callback = None
+            if self._current_action:
+                try:
+                    self.playAnimation(self.model.action(self._current_action))
+                except Exception as e:
+                    print 'Error NPCAnimations', self, self.position, (self.npcActions, self._current_action)
+                    print '   ', e
+
+            return
+
+    def set_playedAnimationIndexList(self, old_value):
+        pass
+
+    def playRandomAnimation(self):
+        pass
+
+    def check_saved_animations(self, section):
+        if self.__saved_animation:
+            if section is None:
+                section = ResMgr.DataSection('saved_action_queue')
+            s_action = section.createSection('action')
+            s_action.writeString('name', self.__saved_animation)
+            s_action.writeFloat('finish', -1)
+            s_action.writeInt('firstFrame', -1)
+            s_action.writeInt('lastFrame', -1)
+            s_action.writeInt('frameRate', -1)
+            s_action.writeFloat('passed', 100)
+            s_action.writeFloat('played', 100)
+            s_action.writeFloat('lastPlayed', 100)
+            s_action.writeBool('promoteMotion', False)
+        self.__saved_animation = None
+        return section
+
+    def play_fearful_anim_on_client(self):
+        """
+        NPC \xd0\xb7\xd0\xb0\xd0\xb1\xd0\xb8\xd0\xbb\xd1\x81\xd1\x8f \xd0\xbd\xd0\xb0 \xd0\xb2\xd1\x80\xd0\xb5\xd0\xbc\xd1\x8f \xd0\xb2 \xd0\xb0\xd0\xbd\xd0\xb8\xd0\xbc\xd0\xb0\xd1\x86\xd0\xb8\xd1\x8e \xd1\x81\xd1\x82\xd1\x80\xd0\xb0\xd1\x85\xd0\xb0
+        """
+        animations = self.get_animations()
+        if not animations:
+            return
+        data = animations[0]
+        fearful_anim_name = data.get('fearful_anim_name')
+        if not fearful_anim_name:
+            return
+        self.play_one_animation(fearful_anim_name)

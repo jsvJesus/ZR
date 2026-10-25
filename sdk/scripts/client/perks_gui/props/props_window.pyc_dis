@@ -1,0 +1,176 @@
+# Embedded file name: ./client/perks_gui/props/props_window.py
+import BigWorld
+from ui.panel import Panel
+from ui.wrapped_text import WrappedText
+from ui.text import Align
+from ui.transform import clip_params, pixel_params
+import colorCodes as CC
+from Localization import lc
+from ui.button import Button
+from chars_panel import CharsPanel
+import sounds_manager as sm
+from ..workplace.node import Condition
+from conditions import Conditions
+from fader import Fader
+from tiler import Tiler
+
+class PropsWindow(Panel):
+
+    def __init__(self, component, graph, node_by_id, name, depth = 0.5):
+        Panel.__init__(self, component, name, depth=depth)
+        self._node = None
+        self._cur_buy_node = None
+        self.on_perk_take_callback = lambda node, callback: None
+        self._cur_listen_quest = [None, None]
+        clip_mode = (0.05, 0, 0.95, 0)
+        button_height = 50
+        self._cap_text = WrappedText(self.component, 'caption', size=18)
+        self._cap_text.transform.set_clip_mode(clip_mode)
+        self._info_text = WrappedText(self.component, 'infodatalabel', size=16, align=Align.Left)
+        self._info_text.set_line_space(22)
+        self._info_text.transform.set_clip_mode(clip_mode)
+        self._conditions = Conditions(graph, node_by_id, self.component, 'conditions')
+        self._conditions.transform.set_clip_mode(clip_mode)
+        self._desc_text = WrappedText(self.component, 'desc', size=16, align=Align.Left)
+        self._desc_text.transform.set_clip_mode(clip_mode)
+        self._desc_text.set_line_space(22)
+        self._desc_text.set_color(CC.inactive_hex)
+        self._chars = CharsPanel(self.component, 'chars')
+        self._chars.transform.set_clip_mode(clip_mode)
+        self._buy_button = Button(self.component, 'takebutton')
+        self._buy_button.component.materialFX = 'BLEND'
+        self._buy_button.set_text(lc('Perks.ui.props.buy_button'))
+        self._buy_button.set_visual('soGUI/frame/buttons/buyperkbutton.json')
+        cpx = clip_params((0, 1))
+        cpy = pixel_params(1, 1, button_height)
+        self._buy_button.transform.set_mixed_mode(cpx, cpy)
+        self._buy_button.on_click = self._on_buy_click
+        self._fader = Fader(self.component)
+        self._tiler = Tiler(self.component)
+        self._subscribed_quest_id = None
+        self.change_interseption(intercept_moving=True, intercept_buttons=True, interscept_keys=True)
+        self.transform.set_clip_mode(clip_mode)
+        return
+
+    def _update_content(self):
+        if not self._node:
+            self._listen_quest(None)
+            self._fader.hide()
+            return
+        else:
+            self._listen_quest(self._node.quest and self._node.quest[0])
+            self._fader.show()
+            cpx = clip_params((0.1, 0.9))
+            height = 32
+            self._cap_text.set_text(self._node.name)
+            text_height = self._cap_text.ratio_wrapped_height
+            y_params = pixel_params(0, 0, text_height, pixel_pos=height)
+            self._cap_text.transform.set_mixed_mode(cpx, y_params)
+            height += 26
+            category = lc('Perks.branch.b{0}'.format(self._node.branch))
+            text = u'{inactive}{cat}: {active}{0}\n{inactive}{lev}: {active}{1}\n{inactive}{cost}: {active}{2}'.format(category, self._node.level, self._node.cost, inactive=CC.inactive_hex, active=CC.active_hex, cat=lc('Perks.ui.props.category'), lev=lc('Perks.ui.props.level'), cost=lc('Perks.ui.props.cost'))
+            self._info_text.set_text(text)
+            text_height = self._info_text.ratio_wrapped_height
+            height += self._cap_text.transform.ratio_height
+            cpy = pixel_params(0, 0, text_height, pixel_pos=height)
+            self._info_text.transform.set_mixed_mode(cpx, cpy)
+            height += self._info_text.transform.ratio_height
+            quest_state = None
+            if self._node.quest and self._node.quest[0] == self._cur_listen_quest[0]:
+                quest_state = self._cur_listen_quest[1]
+            unscaled_height, conditions_available = self._conditions.set_node(self._node, quest_state)
+            cpy = pixel_params(0, 0, unscaled_height, pixel_pos=height)
+            self._conditions.transform.set_mixed_mode(cpx, cpy)
+            height += 18
+            self._desc_text.set_text(self._node.description)
+            text_height = self._desc_text.ratio_wrapped_height
+            height += self._conditions.transform.ratio_height
+            cpy = pixel_params(0, 0, text_height, pixel_pos=height)
+            self._desc_text.transform.set_mixed_mode(cpx, cpy)
+            height += 18
+            ignore_local_actions = self._node.id == self._cur_buy_node
+            unscaled_height = self._chars.set_node(self._node, ignore_local_actions)
+            height += self._desc_text.transform.ratio_height
+            cpy = pixel_params(0, 0, unscaled_height, pixel_pos=height)
+            self._chars.transform.set_mixed_mode(cpx, cpy)
+
+            def buy_avaiable():
+                if self._node.cost is None:
+                    return False
+                elif self._node.condition != Condition.Enabled:
+                    return False
+                elif self._cur_buy_node:
+                    return False
+                elif self._get_free_perks_foo() < self._node.cost:
+                    return False
+                elif not conditions_available:
+                    return False
+                else:
+                    return True
+
+            self._buy_button.set_enabled(buy_avaiable())
+            height += self._chars.transform.ratio_height + self._buy_button.transform.ratio_height + 32
+            cpx = clip_params((0.75, 1), (0, -18))
+            cpy = pixel_params(0, 0, height, pixel_pos=110)
+            self.transform.set_mixed_mode(cpx, cpy)
+            return
+
+    def _update_button_available(self):
+        pass
+
+    def _on_buy_click(self):
+
+        def callback():
+            self._cur_buy_node = None
+            BigWorld.callback(0, self._update_content)
+            return
+
+        sm.playSound('ui/perks/upgrade')
+        self.on_perk_take_callback(self._node, callback)
+        self._cur_buy_node = self._node.id
+        self._update_content()
+
+    def set_node(self, node, force = False):
+        self._node = node
+        if force:
+            self._on_buy_click()
+        else:
+            self._update_content()
+
+    def on_show(self, get_free_perks_foo):
+        self._get_free_perks_foo = get_free_perks_foo
+        self._update_content()
+
+    def on_hide(self):
+        self._listen_quest(None)
+        return
+
+    def on_perks_updated(self):
+        self._update_content()
+
+    def on_exp_updated(self):
+        self._update_content()
+
+    def on_size_changed(self):
+        self._update_content()
+        self._tiler.update()
+
+    def set_dev_mode(self, mode):
+        pass
+
+    def _listen_quest(self, quest_id):
+        if self._cur_listen_quest[0] == quest_id:
+            return
+        else:
+            if self._cur_listen_quest[0]:
+                BigWorld.player().unregister_quest_listener(self)
+            self._cur_listen_quest[0] = quest_id
+            self._cur_listen_quest[1] = None
+            if self._cur_listen_quest[0]:
+                BigWorld.player().register_quest_listener(self, [self._cur_listen_quest[0]])
+            return
+
+    def on_quest_state_changed(self, quest_id, state):
+        if self._cur_listen_quest[0] == quest_id and self._cur_listen_quest[1] != state:
+            self._cur_listen_quest[1] = state
+            self._update_content()

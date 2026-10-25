@@ -1,0 +1,414 @@
+# Embedded file name: ./client/weapon_reload_scripts/reload_base_script.py
+import BigWorld
+import time
+import BWPersonality
+import Math, math
+from Math import Matrix, Vector3
+import traceback
+from Items import ItemsCatalog
+from utils import ignoreError
+from utils_bw import not_safe_animation_callback
+import SFXer
+import FX
+import reload_sounds_sfx
+from functools import partial
+
+def _set_visible_magazine_from_model(model, visible = True):
+    if not model:
+        return
+    att = model.node('HP_magazine').attachments
+    if att:
+        att[0].visible = visible
+
+
+class BaseWeaponReloader(object):
+    anim_name = ''
+    ammo_or_magazine_item = None
+    _canceled = False
+    _subscribe = True
+    reload_data = None
+    is_launcher_script = False
+    _prev_magaz_type = 0
+    _new_magaz_type = 0
+    _prev_ammo_type = 0
+    _prev_magaz_id = 0
+    _new_magazine_model = None
+    _unjamm_mode = False
+
+    def __init__(self, player, onComplete, onInsetAmmoCallback = None, ammo_or_magazine_item = None, reload_speed = 1.0):
+        self.player = player
+        self._onInsetAmmoCallback = onInsetAmmoCallback
+        self._onComplete = onComplete
+        self.reload_speed = reload_speed
+        self.ammo_or_magazine_item = ammo_or_magazine_item
+        prev_magaz = self.player.active_weapon.getMagazine()
+        self._prev_magaz_type = prev_magaz.getItemType() if prev_magaz else 0
+        self._prev_ammo_type = self.player.active_weapon.getLastAmmoType()
+        if ammo_or_magazine_item and 'complexItemType' in dict(ammo_or_magazine_item):
+            self._new_ammo_type = ammo_or_magazine_item['complexItemType']
+            self._new_magaz_type = ammo_or_magazine_item['complexItemType']
+        if ammo_or_magazine_item and 'itemType' in dict(ammo_or_magazine_item):
+            self._new_ammo_type = ammo_or_magazine_item['itemType']
+            self._new_magaz_type = ammo_or_magazine_item['itemType']
+
+    @property
+    def isDestroyed(self):
+        if self._canceled:
+            return True
+        if not self.player:
+            return True
+        if self.player.isDestroyed:
+            return True
+        return False
+
+    def isBoltAnimation(self):
+        return False
+
+    def unsubscribeCues(self):
+        if not self.player:
+            return
+        elif not self.player.model:
+            return
+        else:
+            self._onInsetAmmoCallback = None
+            self._onComplete = None
+            if not self._subscribe:
+                return
+            self._subscribe = False
+            for cue_name in reload_sounds_sfx.CUE_RELOAD_SETTINGS.keys():
+                try:
+                    self.player.model.cue(cue_name, None)
+                except:
+                    traceback.print_exc()
+
+            return
+
+    def subscribeCues(self, anim_name = None):
+        if not self.player:
+            return
+        if not self.player.model:
+            return
+        self._subscribe = True
+        for cue_name in reload_sounds_sfx.CUE_RELOAD_SETTINGS.keys():
+            try:
+                self.player.model.cue(cue_name, lambda cue_name = cue_name: self.playSfxOrSound(cue_name))
+            except:
+                traceback.print_exc()
+
+    def updateActiveWeapon(self):
+        try:
+            if self.player.active_weapon and not self._unjamm_mode:
+                if self.player.active_weapon.isBuiltinMagazine():
+                    self.player.active_weapon.updateAmmoTypeBuiltinMagazine()
+                elif not self._canceled:
+                    self.player.active_weapon.updateMagazineModelByItem(self.ammo_or_magazine_item, True)
+        except:
+            print 'ERROR FOR:', self, self.player
+            traceback.print_stack()
+            traceback.print_exc()
+
+    def onFini(self, silence = False):
+        if not self.player:
+            return
+        elif self.player.isDestroyed:
+            return
+        else:
+            if not silence:
+                self.updateActiveWeapon()
+            if self._canceled:
+                return
+            try:
+                if self._onComplete:
+                    self._onComplete()
+            except:
+                traceback.print_stack()
+                traceback.print_exc()
+
+            try:
+                if hasattr(self.player, 'eyes_controller'):
+                    self.player.eyes_controller.track_bone(None)
+            except:
+                traceback.print_exc()
+
+            self.unsubscribeCues()
+            self.player = None
+            self._onInsetAmmoCallback = None
+            self._onComplete = None
+            return
+
+    def _cueMagazineGunToHand(self):
+        if self._canceled:
+            return
+        _set_visible_magazine_from_model(self.player.model.Rhand, False)
+        if self.player.model.Lhand:
+            self.player.model.Lhand.visible = True
+        self.playSfxOrSound('MagazineGunToHandSYS')
+
+    def _cueMagazineHandToPocket(self):
+        if self._canceled:
+            return
+        else:
+            self.player.model.Lhand = None
+            self.player.model.Lhand = self._new_magazine_model
+            if self._new_magazine_model:
+                self.player.model.Lhand.visible = False
+            if not self._unjamm_mode:
+                self.player.active_weapon.updateMagazineModelByItem(self.ammo_or_magazine_item)
+            self.playSfxOrSound('MagazineHandToPocketSYS')
+            self._prev_magaz_id = 0
+            return
+
+    def _cueMagazinePocketToHand(self):
+        if self._canceled:
+            return
+        if not self.player:
+            return
+        if self.player.isDestroyed:
+            return
+        if not self._unjamm_mode:
+            self.player.active_weapon.updateMagazineModelByItem(self.ammo_or_magazine_item)
+        if self.player.model.Lhand:
+            self.player.model.Lhand.visible = True
+        else:
+            try:
+                self.player.model.Lhand = self._new_magazine_model
+                if self._new_magazine_model:
+                    self.player.model.Lhand.visible = True
+            except:
+                print 'ERROR:', self, self.anim_name
+                traceback.print_exc()
+
+        self.playSfxOrSound('MagazinePocketToHandSYS')
+
+    def _cueMagazineHandToGun(self):
+        if self._canceled:
+            return
+        if not self.player:
+            return
+        _set_visible_magazine_from_model(self.player.model.Rhand, True)
+        if self.player.model.Rhand and self.player.model.Rhand.magazine:
+            self.player.model.Rhand.magazine.visible = True
+        if self.player.model.Lhand:
+            self.player.model.Lhand.visible = False
+        self.playSfxOrSound('MagazineHandToGunSYS')
+
+    def _cueBoltOpen(self):
+        self.playSfxOrSound('BoltOpen')
+
+    def _cueBoltClose(self):
+        self.playSfxOrSound('BoltClose')
+
+    def gettt(self):
+        dt = time.time() - self.__xxxxxtart
+        return '[%.2f  fr=%.1f]' % (dt, float(dt * self._tmp_fr_rate))
+
+    def returnHand(self, player, right = True, blend_time = None):
+        if self._canceled:
+            return
+        if not player or player.isDestroyed:
+            return
+        if not self.player:
+            print '[WARNING] returnHand. not self.player', self
+        if right:
+            player.blendHandOffset(player.model.Rhand, player.right_weapon_prov, 0, 1, player.TO_TRACKER_HAND_DELAY)
+            player._weapon_to_attached = 'Right'
+        else:
+            player.blendHandOffset(player.model.Lhand, player.left_weapon_prov, 0, 1, player.TO_TRACKER_HAND_DELAY)
+            player._weapon_to_attached = 'Left'
+        player._HandControl__reload_weapon_osn_anmation = False
+        player._HandControl__check(blend_time=blend_time)
+
+    def _onEndAnimationRealod(self):
+        self.onFini()
+
+    def createCue(self):
+        self.player.model.cue('MagazineGunToHandSYS', self._cueMagazineGunToHand)
+        self.player.model.cue('MagazineHandToPocketSYS', self._cueMagazineHandToPocket)
+        self.player.model.cue('MagazinePocketToHandSYS', self._cueMagazinePocketToHand)
+        self.player.model.cue('MagazineHandToGunSYS', self._cueMagazineHandToGun)
+        self.player.model.cue('BoltOpen', self._cueBoltOpen)
+        self.player.model.cue('BoltClose', self._cueBoltClose)
+
+    def unjamm(self, anim_name):
+        self._unjamm_mode = True
+        duration = self.play(anim_name)
+        return duration
+
+    def play(self, anim_name):
+        """\xd0\xb7\xd0\xb0\xd0\xbf\xd1\x83\xd1\x81\xd0\xba \xd0\xb0\xd0\xbd\xd0\xb8\xd0\xbc\xd0\xb0\xd1\x86\xd0\xb8\xd0\xb8 \xd1\x80\xd0\xb0\xd1\x81\xd0\xba\xd0\xbb\xd0\xb8\xd0\xbd\xd0\xb8\xd0\xb2\xd0\xb0\xd0\xbd\xd0\xb8\xd1\x8f \xd0\xb8\xd0\xbb\xd0\xb8 \xd0\xbf\xd0\xb5\xd1\x80\xd0\xb5\xd0\xb7\xd0\xb0\xd1\x80\xd1\x8f\xd0\xb4\xd0\xba\xd0\xb8 (\xd1\x81\xd0\xbc\xd0\xb5\xd0\xbd\xd1\x8b \xd0\xbc\xd0\xb0\xd0\xb3\xd0\xb0\xd0\xb7\xd0\xb8\xd0\xbd\xd0\xb0)"""
+        self.anim_name = anim_name
+        self.__xxxxxtart = time.time()
+        try:
+            action = self.player.model.action(self.anim_name)
+        except:
+            print 'ERROR: anim_name: %r' % self.anim_name
+            print 'self.player', self.player
+            if self.player == BigWorld.player() and self.player.isAdminAccess():
+                BWPersonality.gpd.sendHightMessage(u'\u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d \u044d\u043a\u0448\u043d:%r' % anim_name)
+            traceback.print_exc()
+            self.onFini()
+            return False
+
+        new_frame_rate = self.reload_speed * action.frameRate
+        self._tmp_fr_rate = new_frame_rate
+        self._tmp_fr_first = action.firstFrame
+        self.createCue()
+        duration = action.duration / self.reload_speed
+        delay = duration - 0.2
+        BigWorld.callback(delay, partial(self.returnHand, self.player))
+        prev_magaz = self.player.active_weapon.getMagazine()
+        if prev_magaz and prev_magaz._subitem:
+            self._prev_magaz_id = prev_magaz.getID()
+        magazine_model = self.player.active_weapon.createTmpMagazineModel()
+        if self._unjamm_mode:
+            if magazine_model:
+                self.player.model.Lhand = magazine_model
+                self.player.model.Lhand.visible = False
+                self._new_magazine_model = self.player.active_weapon.createTmpMagazineModel()
+        else:
+            new_magazine_model = self.player.active_weapon.createTmpMagazineModel(self.ammo_or_magazine_item)
+            self._new_magazine_model = new_magazine_model
+            if not magazine_model:
+                print 'reloadWeapon: empty model magazine', self.player.active_weapon
+            if magazine_model:
+                self.player.model.Lhand = magazine_model
+                self.player.model.Lhand.visible = False
+
+        def off_hand_track():
+            if not self.player:
+                return
+            else:
+                self.player.nodeInfoL.AttachedProviders = (None, self.player.TO_TRACKER_HAND_DELAY)
+                self.player.nodeInfoR.AttachedProviders = (None, self.player.TO_TRACKER_HAND_DELAY)
+                return
+
+        BigWorld.callback(0.2, off_hand_track)
+        copy_model = self.player.active_weapon.createCopyModelWeapon()
+        self.player.model.Rhand = copy_model
+        copy_model.testAnimateFromTpose = True
+        copy_model.disableAnimatedHPClamp = True
+        if getattr(self.player, 'right_weapon_prov', None):
+            self.player.blendHandOffset(copy_model, self.player.right_weapon_prov, 1, 0, self.player.TO_TRACKER_HAND_DELAY)
+        self.player.active_weapon.setVisibleModel(copy_model)
+        self.player.model.forceDraw()
+        action(0, self._onEndAnimationRealod, 0, action.firstFrame, action.lastFrame, new_frame_rate)
+        weapon_action = None
+        try:
+            weapon_action = copy_model.action(anim_name)
+        except ValueError:
+            pass
+        except Exception:
+            traceback.print_exc()
+
+        if weapon_action:
+            new_frame_rate_weapon = weapon_action.frameRate * self.reload_speed
+            weapon_action(0, None, 0, weapon_action.firstFrame, weapon_action.lastFrame, new_frame_rate_weapon)
+        try:
+            if hasattr(self.player, 'eyes_controller'):
+                self.player.eyes_controller.track_bone(copy_model.node('HP_magazine'))
+        except ValueError:
+            pass
+        except:
+            traceback.print_exc()
+
+        return duration
+
+    def getMagazineIDForCancelReload(self):
+        return self._prev_magaz_id
+
+    def cancelReload(self, smooth = True):
+        self._canceled = True
+        if not self.player:
+            return
+        else:
+            self.unsubscribeCues()
+            if self.player.model and self.anim_name:
+                try:
+                    self.player.model.action(self.anim_name).stop()
+                except:
+                    print 'self.anim_name:', self.anim_name
+                    traceback.print_exc()
+
+            try:
+                self.player.model.Lhand = None
+            except:
+                traceback.print_exc()
+
+            self.player.onCanceledReloadWeapon(smooth=smooth)
+            self.onFini()
+            self.player = None
+            return
+
+    def onAvatarDestroyed(self):
+        self._canceled = True
+        self.onFini = lambda *w: 0
+        self.player = None
+        return
+
+    def playSfxOrSound(self, cue_name):
+        if not self.player:
+            return
+        elif not self.player.active_weapon:
+            return
+        elif cue_name not in reload_sounds_sfx.CUE_RELOAD_SETTINGS:
+            print 'not found cue_name', repr(cue_name), self, repr(self.anim_name), self.player
+            return
+        else:
+            cue_config = reload_sounds_sfx.CUE_RELOAD_SETTINGS[cue_name]
+            item_param = None
+            if cue_config['item'] == 'weapon':
+                item_param = self.player.active_weapon.getParam()
+            elif cue_config['item'] == 'prev_magaz':
+                if self._prev_magaz_type:
+                    item_param = ItemsCatalog[self._prev_magaz_type]
+            elif cue_config['item'] == 'new_magaz':
+                if self._new_magaz_type:
+                    item_param = ItemsCatalog[self._new_magaz_type]
+            elif cue_config['item'] == 'prev_ammo':
+                if self._prev_ammo_type:
+                    item_param = ItemsCatalog[self._prev_ammo_type]
+            elif cue_config['item'] == 'new_ammo':
+                if self._new_magaz_type:
+                    item_param = ItemsCatalog[self._new_magaz_type]
+            if not item_param:
+                return
+            if 'weapon' == cue_config['target']:
+                target_model = self.player.active_weapon._getVisibleWeapon().getModel()
+            elif 'player' == cue_config['target']:
+                target_model = self.player.model
+            sfx_item_key = cue_config.get('sfx_item_key')
+            if sfx_item_key:
+                sfx_item_path = item_param.get(sfx_item_key)
+                if sfx_item_path:
+                    FX.bufferedOneShotEffect(sfx_item_path, target_model)
+            soundPath = item_param.get('soundPath')
+            if not soundPath:
+                return
+            sfx_path = None
+            sfx_param = reload_sounds_sfx.CUE_CONFIGS.get(soundPath)
+            if sfx_param:
+                cue_event = sfx_param.get(cue_name)
+                sfx_path = cue_event.get('sfx')
+            sound_event = soundPath + '/' + cue_name
+            if not self.player:
+                print 'WARNING not player', cue_name, self, self.player
+                return
+            elif not self.player.active_weapon:
+                print 'WARNING not active_weapon', cue_name, self, self.player, self.player.active_weapon
+                return
+            if sfx_path:
+                FX.bufferedOneShotEffect(sfx_path, target_model)
+            if cue_config.get('playsound'):
+                sound_model = getattr(self.player, 'right_hand_model_sound_node', None)
+                if not sound_model or not sound_model.inWorld:
+                    self.player.right_hand_model_sound_node = BigWorld.Model('')
+                    self.player.model.node('RightHand').attach(self.player.right_hand_model_sound_node)
+                    sound_model = self.player.right_hand_model_sound_node
+                self.player.active_weapon.playSound(sound_event.lower(), sound_model)
+            return
+
+
+class BaseWeaponManualReloader(BaseWeaponReloader):
+
+    def updateActiveWeapon(self):
+        pass

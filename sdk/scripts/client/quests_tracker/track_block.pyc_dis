@@ -1,0 +1,304 @@
+# Embedded file name: ./client/quests_tracker/track_block.py
+import Quest
+from math_bw import smooth_damp
+import BigWorld
+import QuestDispatcher as qd
+import GUI
+from soGUI.soButton import soButton
+from utils import Listenable, Tickable
+from journal.quests_tab2.content.sub_content import SubContent
+from journal.quests_tab2.content.quest_tf import QuestTF
+from Helpers.PyGUI.PyGUIBase import PyGUIBase
+from Helpers.PyGUI import Utils
+
+class EventType:
+    OnCloseRequest, OnSizeChanged, OnCollapseChanged, OnBadState = (('questtstrackblock', r) for r in xrange(4))
+
+
+class CloseButton(soButton):
+
+    def __init__(self, component):
+        soButton.__init__(self, component)
+        self.hover_callback = lambda : None
+        self.is_hover = False
+
+    def handleMouseEnterEvent(self, comp):
+        result = soButton.handleMouseEnterEvent(self, comp)
+        self.is_hover = True
+        self.hover_callback()
+        return result
+
+    def handleMouseLeaveEvent(self, comp):
+        result = soButton.handleMouseLeaveEvent(self, comp)
+        self.is_hover = False
+        self.hover_callback()
+        return result
+
+
+class TrackBlock(Listenable, Tickable, PyGUIBase):
+    width = 270
+    side_margins = 18
+    top_margin = 12
+    bottom_margin1 = 0
+    bottom_margin2 = 14
+    title_height = 23
+
+    def __init__(self, quest_id, collapsed):
+        Listenable.__init__(self)
+        Tickable.__init__(self)
+        self._velocity = 0.0
+        self._collapsed = collapsed
+        comp = GUI.MaskableWindow('soGUI/frame/minimap/fade_que.dds')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width = TrackBlock.width
+        top = 3
+        comp.mapping = ((0, top),
+         (0, 0),
+         (1, 0),
+         (1, top))
+        PyGUIBase.__init__(self, comp)
+        self.component.script = self
+        self.quest_id = quest_id
+        self._is_hover = False
+        self.component.crossFocus = True
+        comp = GUI.Window('soGUI/frame/paint/black.dds')
+        comp.materialFX = 'SOLID'
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = TrackBlock.width, TrackBlock.title_height
+        comp.position = (0, 2, 0.5)
+        self.component.addChild(comp, 'title')
+        title_comp = comp
+        if not qd.get_main(quest_id):
+            priority = qd.get_priority(quest_id)
+            priority_image = 'soGUI/frame/journal/priorities_pics/cast{0}.dds'.format(priority)
+            comp = GUI.Window(priority_image)
+            comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+            comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+            comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+            comp.width, comp.height = (8, 8)
+            comp.position = (7, 10, 0.2)
+            title_comp.addChild(comp, 'priority')
+        comp = GUI.Text(qd.getQuestTitleByID(quest_id))
+        comp.font = 'RobotoCondensedRegular_18.font'
+        comp.colour = (180, 180, 180, 255)
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = TrackBlock.width, title_comp.height
+        comp.position = (14, 0, 0.4)
+        title_comp.addChild(comp, 'titletext')
+        self._title_text = comp
+        comp = GUI.Window('soGUI/frame/paint/black.dds')
+        comp.materialFX = 'BLEND'
+        comp.colour = (255, 255, 255, 150)
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width = TrackBlock.width
+        comp.position = (0, title_comp.height + title_comp.position[1], 0.4)
+        self.component.addChild(comp, 'content')
+        content_comp = comp
+        self._tf = QuestTF(TrackBlock.width - TrackBlock.side_margins * 2, show_map=False)
+        comp = self._tf.component
+        comp.position = (TrackBlock.side_margins, TrackBlock.top_margin, 0.5)
+        comp.height = 0
+        comp.visible = False
+        self.component.content.addChild(comp, 'description')
+        self._tf.on_size_changed_callback = self._on_sub_size_changed
+        comp = GUI.Window()
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = content_comp.width - 2 * TrackBlock.side_margins, content_comp.height
+        comp.position = (TrackBlock.side_margins, TrackBlock.top_margin, 0.5)
+        comp.visible = False
+        content_comp.addChild(comp, 'subcontent')
+        self._sub_content = SubContent(comp)
+        self._sub_content.on_size_changed_callback = self._on_sub_size_changed
+        comp = GUI.Window()
+        btn = CloseButton(comp)
+        btn.hover_callback = self._update_close_visible
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('RIGHT', 'TOP')
+        comp.width, comp.height = (16, 16)
+        comp.position = (self.component.width - 4, 6, 0.2)
+        comp.visible = False
+        self.component.addChild(comp, 'closeBox')
+        btn.onBound()
+        btn.onClick = self._on_close_click
+        btn.initVSC('soGUI/elements/quest_closeBox.xml')
+        comp = GUI.Window()
+        btn = CloseButton(comp)
+        btn.hover_callback = self._update_close_visible
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('RIGHT', 'TOP')
+        comp.width, comp.height = (18, 18)
+        comp.position = (self.component.width - 20, 4, 0.2)
+        comp.visible = False
+        self.component.addChild(comp, 'collapseBox')
+        btn.onBound()
+        btn.onClick = self._on_collapse_click
+        self._sub_content.set_quests(None)
+        self._user.get_active_subs_and_params0(quest_id, self._on_got_subs)
+        self.component.height = TrackBlock.title_height
+        self._update_btn()
+        self._update_size()
+        return
+
+    def _update_btn(self):
+        btn = self.component.collapseBox.script
+        if self._collapsed:
+            btn.initVSC('soGUI/elements/quest_view_arrow_down.xml')
+        else:
+            btn.initVSC('soGUI/elements/quest_view_arrow_up.xml')
+
+    def _on_collapse_click(self):
+        self._collapsed = not self._collapsed
+        self._update_btn()
+        self._update_size()
+        data = {'quest_id': self.quest_id,
+         'collapsed': self._collapsed}
+        self.notify_listeners(EventType.OnCollapseChanged, data)
+
+    @property
+    def desired_height(self):
+        return self._desired_height
+
+    @desired_height.setter
+    def desired_height(self, value):
+        self._desired_height = value
+        self.start_tick()
+
+    def on_tick(self):
+        self.height, self._velocity = smooth_damp(self.height, self._desired_height, self._velocity, 0.1, 10000000000.0, BigWorld.getTimeDelta())
+        if abs(self.height - self._desired_height) < 0.01 or abs(self._velocity) < 0.001:
+            self.height = self._desired_height
+            self._velocity = 0.0
+
+    def can_tick(self):
+        if not Utils.is_visible_in_hierarchy(self.component):
+            return False
+        if self._desired_height == self.height:
+            return False
+        return True
+
+    @property
+    def height(self):
+        return self.component.height
+
+    @height.setter
+    def height(self, value):
+        if self.height == value:
+            return
+        self.component.height = value
+        data = {'block': self}
+        self.notify_listeners(EventType.OnSizeChanged, data)
+
+    def handleMouseEnterEvent(self, comp):
+        self._is_hover = True
+        result = PyGUIBase.handleMouseEnterEvent(self, comp)
+        self._update_close_visible()
+        return result
+
+    def handleMouseLeaveEvent(self, comp):
+        self._is_hover = False
+        result = PyGUIBase.handleMouseLeaveEvent(self, comp)
+        self._update_close_visible()
+        return result
+
+    def _update_close_visible(self):
+        visible = self._is_hover or self.component.closeBox.script.is_hover or self.component.collapseBox.script.is_hover
+        self.component.closeBox.visible = visible
+        self.component.collapseBox.visible = visible
+
+    def _on_sub_size_changed(self):
+        self._update_size()
+
+    def _update_size(self):
+        self.component.content.subcontent.visible = False
+        self.component.content.description.visible = False
+        height = self.component.title.height
+        if not self._collapsed:
+            if self._sub_content.component.height > 0:
+                self.component.content.subcontent.visible = True
+                sub_comp = self.component.content.subcontent
+                self.component.content.height = sub_comp.height + sub_comp.position[1] + TrackBlock.bottom_margin1
+            elif self._tf.component.height > 0:
+                self.component.content.description.visible = True
+                desc_comp = self.component.content.description
+                self.component.content.height = desc_comp.height + desc_comp.position[1] + TrackBlock.bottom_margin2
+            else:
+                self.component.content.height = 0
+            height += self.component.content.height
+        max_height = 500
+        if height > max_height:
+            height = max_height
+            self._sub_content.maskable = True
+        else:
+            height = max(height, TrackBlock.title_height)
+            self._sub_content.maskable = False
+        self.desired_height = height
+
+    def _on_got_subs(self, base_state, sub_states, data_ints, known_groups):
+        if base_state['state'] not in (Quest.STATE_OPENED, Quest.STATE_ONTEST):
+            data = {'block': self}
+            self.notify_listeners(EventType.OnBadState, data)
+            return
+        else:
+            known_groups = known_groups['known']
+            quest_data = {}
+            for quest_state in sub_states + [base_state]:
+                quest_data[quest_state['id']] = {'id': quest_state['id'],
+                 'state': quest_state['state']}
+
+            for q_id, d_int in data_ints:
+                if 'int' in quest_data[q_id]:
+                    if isinstance(quest_data[q_id]['int'], int):
+                        quest_data[q_id]['int'] = [quest_data[q_id]['int']]
+                    quest_data[q_id]['int'].append(d_int)
+                else:
+                    quest_data[q_id]['int'] = d_int
+
+            if sub_states:
+                quest_datas = []
+                for ss in sub_states:
+                    quest_datas.append(quest_data[ss['id']])
+
+                self._sub_content.set_quests(quest_datas, show_maps=False)
+            else:
+                self._sub_content.set_quests(None)
+                self._tf.set_quest(quest_data[base_state['id']])
+                self._update_size()
+            return
+
+    def on_quest_state_event(self, quest_id, prev_state, state):
+        parent_id = qd.get_parent_by_id(quest_id)
+        self._user.get_active_subs_and_params0(parent_id, self._on_got_subs)
+        self._update_size()
+
+    def on_quest_internal_event(self, quest_id, int_data):
+        quest_data = {'id': quest_id,
+         'int': int_data}
+        self._sub_content.update_quests(quest_data)
+        if self._tf.quest_id == quest_id:
+            self._tf.update_quest(quest_data)
+        self._update_size()
+
+    def on_release(self):
+        Listenable.on_release(self)
+        self._sub_content.on_hide()
+        self._tf.on_pool()
+
+    def _on_close_click(self):
+        data = {'block': self}
+        self.notify_listeners(EventType.OnCloseRequest, data)
+
+    @property
+    def _user(self):
+        return BigWorld.player()

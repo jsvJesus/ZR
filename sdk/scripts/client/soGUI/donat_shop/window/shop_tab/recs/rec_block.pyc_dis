@@ -1,0 +1,172 @@
+# Embedded file name: ./client/soGUI/donat_shop/window/shop_tab/recs/rec_block.py
+import BigWorld
+import GUI
+from recs import Recs
+from soGUI.donat_shop.window.win_ui.scroll_content import ScrollPart
+from ui.text import Text
+from Localization import lc
+from rec_itemblock import RecItemBlock
+from days_itemblock import DaysItemBlock, EventType as DaysET
+from soGUI.donat_shop.models.shop_model import EventType as ModelET
+import colorCodes as cc
+from Helpers.PyGUI.PyGUIBase import Interceptor
+
+class RecBlock(ScrollPart):
+
+    def __init__(self, component, shop_model, bin_model):
+        ScrollPart.__init__(self)
+        self.component = component
+        self.component.script = self
+        self._shop_model = shop_model
+        self._shop_model.add_listener(self._on_shopmodel_event)
+        self._load_screen_callback = None
+
+        def create_default_comp():
+            comp = GUI.Window()
+            comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+            comp.ha, comp.va = ('LEFT', 'BOTTOM')
+            comp.materialFX = 'BLEND'
+            comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+            self.component.addChild(comp)
+            return comp
+
+        rec_comp = create_default_comp()
+        self._recs = Recs(rec_comp, shop_model, bin_model)
+        self._pops = RecItemBlock(create_default_comp(), shop_model, bin_model, False)
+        self._days = DaysItemBlock(create_default_comp(), shop_model, bin_model)
+        self._days.add_listener(self._on_daysitemblock_event)
+        self._cons = RecItemBlock(create_default_comp(), shop_model, bin_model, False)
+        comp = create_default_comp()
+        comp.textureName = 'soGUI/frame/paint/black.dds'
+        comp.colour = (255, 255, 255, 150)
+        Interceptor(comp)
+        self._load_days_comp = comp
+        comp = GUI.Simple('soGUI/maps/loadingScreen/loadingCircle/loadingCircle.texanim')
+        comp.materialFX = 'BLEND'
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = comp.texture.width, comp.texture.height
+        comp.position = (0, 0, 0.1)
+        self._load_days_comp.addChild(comp)
+        t = Text(self.component, 't_recs', 24, text=lc('DonatShop.window.shop.rectitle'))
+        t.set_color(cc.inactive_rgba)
+        t.transform.set_base_resolution(None)
+        t = Text(self.component, 't_pops', 24)
+        t.set_color(cc.inactive_rgba)
+        t.transform.set_base_resolution(None)
+        t = Text(self.component, 't_cons', 24, text=lc('DonatShop.window.shop.consums'))
+        t.set_color(cc.inactive_rgba)
+        t.transform.set_base_resolution(None)
+        return
+
+    def on_show(self):
+        self._recs.on_show()
+        self._days.on_show()
+        self._update_pos_days()
+
+    def _cancel_load_screen(self):
+        if self._load_screen_callback:
+            BigWorld.cancelCallback(self._load_screen_callback)
+            self._load_screen_callback = None
+        self._load_days_comp.visible = False
+        return
+
+    def on_scoll_visible_changed(self, visible):
+        ScrollPart.on_scoll_visible_changed(self, visible)
+        self._recs.on_just_visible()
+
+    def on_hide(self):
+        self._recs.on_hide()
+        self._days.on_hide()
+        self._cancel_load_screen()
+
+    def on_tick(self):
+        self._recs.on_tick()
+        self._pops.on_tick()
+        self._days.on_tick()
+        self._cons.on_tick()
+
+    def _update_pos_days(self):
+        self._cancel_load_screen()
+        need_load_screen = False
+        if self._days.ready:
+            if not self._days.component.visible or self._pops.component.visible:
+                need_load_screen = True
+            self._days.component.visible = True
+            self._pops.component.visible = False
+            self.component.t_pops.script.set_text(lc('DonatShop.window.shop.days'))
+        else:
+            if self._days.component.visible or not self._pops.component.visible:
+                need_load_screen = True
+            self._days.component.visible = False
+            self._pops.component.visible = True
+            self.component.t_pops.script.set_text(lc('DonatShop.window.shop.hit'))
+        if need_load_screen:
+            self._load_days_comp.visible = True
+            self._load_screen_callback = BigWorld.callback(1.0, self._cancel_load_screen)
+        else:
+            self._load_days_comp.visible = False
+
+    def _on_daysitemblock_event(self, event_type, data):
+        if event_type == DaysET.OnReadyChanged:
+            self._update_pos_days()
+
+    def _on_shopmodel_event(self, event_type, data):
+        if event_type == ModelET.OnRec:
+            item_types = self._shop_model.consumables
+            self._cons.set_item_types(item_types)
+            item_types = self._shop_model.pops
+            self._pops.set_item_types(item_types)
+
+    def align_content(self):
+        recs_max_ratio = 1.01
+        view_max_ratio = 1.46
+        view_min_ratio = 0.985
+        top_margin = 0.1
+        min_space = 8
+        height = self.component.height * (1 - top_margin)
+        top_margin_pix = self.component.height * top_margin
+        recs_width = height * recs_max_ratio
+        pops_width = height * view_max_ratio
+        cons_width = height * view_max_ratio
+        cons_cols = 3
+        pops_cols = 3
+
+        def total_width():
+            return recs_width + pops_width + cons_width + min_space * 2
+
+        if total_width() > self.component.width:
+            cons_width = height * view_min_ratio
+            cons_cols = 2
+            if total_width() > self.component.width:
+                pops_width = height * view_min_ratio
+                pops_cols = 2
+                if total_width() > self.component.width:
+                    recs_width = self.component.width - pops_width - cons_width - min_space * 2
+        space = (self.component.width - pops_width - cons_width - recs_width) / 2.0
+        pos_x = 0
+        comp = self._recs.component
+        comp.width, comp.height = recs_width, height
+        comp.position = (pos_x, self.component.height, 0.5)
+        self.component.t_recs.script.transform.set_pixel_mode((0.5, 0), (0, 0), (comp.width, top_margin_pix), (comp.position[0] + comp.width / 2, 0))
+        pos_x += comp.width + space
+        comp = self._pops.component
+        comp.width, comp.height = pops_width, height
+        comp.position = (pos_x, self.component.height, 0.5)
+        self.component.t_pops.script.transform.set_pixel_mode((0, 0), (0, 0), (comp.width, top_margin_pix), (comp.position[0], 0))
+        comp = self._days.component
+        comp.width, comp.height = pops_width, height
+        comp.position = (pos_x, self.component.height, 0.5)
+        comp = self._load_days_comp
+        comp.width, comp.height = pops_width, height
+        comp.position = (pos_x, self.component.height, 0.4)
+        pos_x += comp.width + space
+        comp = self._cons.component
+        comp.width, comp.height = cons_width, height
+        comp.position = (pos_x, self.component.height, 0.5)
+        self.component.t_cons.script.transform.set_pixel_mode((0, 0), (0, 0), (comp.width, top_margin_pix), (comp.position[0], 0))
+        width1 = self._pops.align_content(pops_cols)
+        self._days.align_content(pops_cols)
+        width0 = self._cons.align_content(cons_cols)
+        self._recs.align_content((width0 + width1) / 2)

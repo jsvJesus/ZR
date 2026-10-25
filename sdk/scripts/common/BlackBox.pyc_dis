@@ -1,0 +1,314 @@
+# Embedded file name: ./common/BlackBox.py
+from RandomItems import RandomItems
+import BigWorld
+import ResMgr
+import json
+import time
+if BigWorld.component != 'devtools':
+    import ItemsUtils
+from Localization import lc, get_user_localization
+from utils import PY
+from ChatChannelConfig import ChannelConsts
+from black_box_path import _BOXES
+from collections import defaultdict
+CHANNEL_CONSTS = ChannelConsts()
+available_articles = set()
+_bb_to_garant_article = defaultdict(dict)
+_article_data = {}
+
+def _read_bb(path, server_only = False):
+    res = {}
+    if server_only and BigWorld.component in ('client', 'editor'):
+        return res
+    else:
+        py_data_section = ResMgr.openSection(path)
+        if py_data_section is None:
+            raise ValueError('error open %r' % path)
+        data = json.loads(py_data_section.asBinary, encoding='utf-8')
+        for bb_info in data:
+            name = bb_info['Name']
+            if name in res:
+                print 'duplicate', path, repr(name)
+                raise ValueError('duplicate %r %r' % (path, name))
+            res[name] = bb_info
+            for i, group in enumerate(bb_info.get('groups', [])):
+                article = group.get('article')
+                if article:
+                    if article in available_articles:
+                        print 'BlackBox (ERROR): article duplication', article, name, 'gr:%s' % i
+                        raise RuntimeError
+                    available_articles.add(article)
+                    _bb_to_garant_article[name][article] = group['garant']
+                    _article_data[article] = {'garant': group['garant'],
+                     'bbname': name,
+                     'group_index': i}
+                for item in group.get('items', []):
+                    article = item.get('article')
+                    if article:
+                        if article in available_articles:
+                            print 'BlackBox (ERROR): article duplication', article, name, 'item:%s' % item
+                            raise RuntimeError
+                        _bb_to_garant_article[name][article] = item['garant']
+                        available_articles.add(article)
+                        _article_data[article] = {'garant': item['garant'],
+                         'bbname': name}
+
+        return res
+
+
+_BOXES_DATA = {}
+for container_name, (path, server_only) in _BOXES.items():
+    _BOXES_DATA[container_name] = _read_bb(path, server_only)
+
+param_parts_data = _read_bb('scripts/server_data/param_part_black_box.json', server_only=True)
+for bb_name, articles in _bb_to_garant_article.iteritems():
+    if len(articles) != 1:
+        print 'BlackBox (ERROR): multiple articles', bb_name, articles.keys()
+        raise RuntimeError
+    for article, garant_value in articles.iteritems():
+        if garant_value >= 255:
+            print 'BlackBox (ERROR): large garant value', bb_name, article, garant_value
+            raise RuntimeError
+
+if len(available_articles) > 300:
+    print 'BlackBox (ERROR): articles limit'
+    raise RuntimeError
+
+def get_article_data(article):
+    return _article_data[article]
+
+
+def get_article_garant(article):
+    return _article_data[article]['garant']
+
+
+def get_article_bbname(article):
+    return _article_data[article]['bbname']
+
+
+def has_bb_garant(bb_name):
+    return bool(_bb_to_garant_article.get(bb_name))
+
+
+def get_bb_article(bb_name):
+    data = _bb_to_garant_article.get(bb_name)
+    if not data:
+        return None
+    else:
+        raise len(data) == 1 or AssertionError
+        return data.items()[0]
+
+
+def get_container_names():
+    return _BOXES.keys()
+
+
+def get_blackboxes(container_name):
+    return _BOXES_DATA[container_name].keys()
+
+
+def readBoxInfo(name, container_name = 'Blackboxes'):
+    try:
+        bb_data = _BOXES_DATA[container_name]
+        return bb_data[name]
+    except KeyError:
+        print "BlackBox (ERROR): can't find item %r  %r" % (container_name, name)
+        raise
+
+
+def readCreatureInfo(name):
+    return readBoxInfo(name, container_name='Creature Loot')
+
+
+def readDisassemblesInfo(name):
+    return readBoxInfo(name, container_name='Disassembles')
+
+
+def readRepairInfo(name):
+    return readBoxInfo(name, container_name='RepairBox')
+
+
+def readParamPartInfo(name):
+    return param_parts_data[name]
+
+
+def readShopAttaches(name):
+    return readBoxInfo(name, container_name='ShopAttaches')
+
+
+class BlackBox:
+    CATEGORY_NAME = 'BLACKBOX'
+
+    def __init__(self, name, container_name = 'Blackboxes'):
+        self._name = name
+        self._data = readBoxInfo(name, container_name)
+
+    def getExp(self):
+        return self._data.get('exp', 0)
+
+    def get_last_generated_items(self):
+        return self._last_generated_items
+
+    def getAllItemsType(self):
+        """ \xd1\x81\xd0\xbf\xd0\xb8\xd1\x81\xd0\xbe\xd0\xba \xd1\x83\xd0\xbd\xd0\xb8\xd0\xba\xd0\xb0\xd0\xbb\xd1\x8c\xd0\xbd\xd1\x8b\xd1\x85 complexItemType \xd0\xb2 \xd1\x8d\xd1\x82\xd0\xbe\xd0\xbc \xd0\xb1\xd0\xb1\xd0\xbe\xd0\xba\xd1\x81\xd0\xb5
+        """
+        out = set()
+        for box_groups in self._data['groups']:
+            for entry in box_groups['items']:
+                out.add(int(entry['itemID']))
+
+        return out
+
+    def getMaxPossibleItems(self):
+        maxCount = 0
+        box_groups = self._data['groups']
+        for gr in box_groups:
+            maxCount += int(gr['rangeTo'])
+
+        return maxCount
+
+    def openBlackBox(self, player_perks = None, force_articles = None, worked_garants = None):
+        box_groups = self._data['groups']
+        r = RandomItems(box_groups, self._name, self._data.get('quest_items'), self._data.get('stories'))
+        chance = self.getServerChanceMultiplier()
+        items, quest_items, story_items = r.getRandomItems(chance, player_perks=player_perks, force_articles=force_articles, worked_garants=worked_garants)
+        return (items, quest_items, story_items)
+
+    def getServerChanceMultiplier(self):
+        if hasattr(BigWorld, 'globalData'):
+            chance_data = BigWorld.globalData['blackbox_config_holiday']
+        else:
+            chance_data = {'start_time': 0,
+             'end_time': 0,
+             'data': []}
+        cur_time = time.time()
+        if not chance_data['start_time'] <= cur_time <= chance_data['end_time']:
+            return 1
+        chance = 1
+        for bb_conf in chance_data['data']:
+            if bb_conf['bb_name'].upper() == self.CATEGORY_NAME and chance == 1 or bb_conf['bb_name'] == self._name:
+                chance = bb_conf['group_chance_multiplier']
+
+        return chance
+
+    def fill_character_with_content(self, character, comment, target, donat_end_time = 0):
+        import items_creator
+        create_attaches = not self._data.get('noShopAttaches', False)
+        items, quest_items, _ = self.openBlackBox()
+        items_dict = {}
+        for itm in items:
+            item_type = int(itm['itemID'])
+            items_dict[item_type] = {'count': items_dict.get(item_type, {'count': 0})['count'] + itm['itemCount'],
+             'qualityDistribution': itm['qualityDistribution']}
+
+        for item_type, item_data in items_dict.items():
+            itemCount = item_data['count']
+            item_condition_ratio = ItemsUtils.get_random_condition_ratio(item_type, item_data['qualityDistribution'])
+            kargs = {'quality': item_condition_ratio,
+             'donat_end_time': donat_end_time,
+             'create_attaches': create_attaches}
+            for complex_item in items_creator.create_real_items(character, item_type, itemCount, **kargs):
+                character.add_complex_item(complex_item, comment=comment, target=target)
+
+        import casandraSender
+        character.AddExperience(self.getExp(), casandraSender.EXP_CODE.BLACK_BOX_FILL)
+        self._last_generated_items = items
+
+    def generate_complex_items(self, character, donat_end_time = 0, force_articles = None, worked_garants = None):
+        import items_creator
+        create_attaches = not self._data.get('noShopAttaches', False)
+        result = []
+        for item_data in self.openBlackBox(force_articles=force_articles, worked_garants=worked_garants)[0]:
+            item_type = int(item_data['itemID'])
+            item_count = int(item_data['itemCount'])
+            item_condition_ratio = ItemsUtils.get_random_condition_ratio(item_type, item_data['qualityDistribution'])
+            kargs = {'quality': item_condition_ratio,
+             'donat_end_time': donat_end_time,
+             'create_attaches': create_attaches}
+            result.extend(items_creator.create_real_items(character, item_type, item_count, **kargs))
+
+        return result
+
+    def force_garant(self, article):
+        raise NotImplementedError
+
+    def get_garants(self):
+        return _bb_to_garant_article.get(self._name, {})
+
+    def merge_items(self, items):
+        if len(items) <= 1:
+            return
+        unique_items = {}
+        for i in range(len(items) - 1, -1, -1):
+            item = items[i]
+            item_type = item['itemID']
+            if not ItemsUtils.isStackedItemType(item_type):
+                continue
+            key = (item_type, item.get('qualityDistribution'))
+            if key in unique_items:
+                unique_items[key]['itemCount'] += item['itemCount']
+                del items[i]
+            else:
+                unique_items[key] = item
+
+
+class CreatureBox(BlackBox):
+
+    def __init__(self, name):
+        self._name = name
+        self._data = readCreatureInfo(name)
+        self.CATEGORY_NAME = 'CREATURE'
+
+    def openBlackBoxByType(self, open_type, player_perks = None, additional_cycles = 0, uniq_mobid = '', force_articles = None, worked_garants = None):
+        box_groups = self._data['groups']
+        r = RandomItems(box_groups, self._name, self._data.get('quest_items', None), self._data.get('stories'), self._data.get('event_items'))
+        server_chance_mult = self.getServerChanceMultiplier()
+        items, quest_items, story_items, event_items = r.getRandomByTypeAndAttr(open_type, player_perks, additional_cycles, server_chance_mult=server_chance_mult, uniq_mobid=uniq_mobid, force_articles=force_articles, worked_garants=worked_garants)
+        self.merge_items(items)
+        self.merge_items(event_items)
+        exp = self.getExp()
+        return (items,
+         exp,
+         quest_items,
+         story_items,
+         event_items)
+
+
+class DisassemblesBox(BlackBox):
+
+    def __init__(self, name):
+        self._name = name
+        self._data = readDisassemblesInfo(name)
+        self.CATEGORY_NAME = 'DISASSEMBLES'
+
+
+class AnomalyBox(BlackBox):
+
+    def __init__(self, name):
+        self._name = name
+        self._data = readBoxInfo(name, 'Anomaly Loot')
+        self.CATEGORY_NAME = 'ANOMALY'
+
+
+class RepairBox(BlackBox):
+
+    def __init__(self, name):
+        self._name = name
+        self._data = readRepairInfo(name)
+        self.CATEGORY_NAME = 'REPAIR'
+
+    def fill_character_with_content(self, *w, **kw):
+        return False
+
+
+class ShopattachesBox(BlackBox):
+
+    def __init__(self, name):
+        self._name = name
+        self._data = readShopAttaches(name)
+        self.CATEGORY_NAME = 'SHOPATTACHES'
+
+
+if __name__ == '__main__':
+    cb = CreatureBox('default')
+    print cb.openBlackBox()

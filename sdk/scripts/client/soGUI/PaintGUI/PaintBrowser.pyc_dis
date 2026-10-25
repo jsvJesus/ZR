@@ -1,0 +1,301 @@
+# Embedded file name: ./client/soGUI/PaintGUI/PaintBrowser.py
+import GUI
+import Keys
+from Helpers.PyGUI.PyGUIBase import PyGUIBase
+from Helpers.PyGUI.DraggableComponent import DraggableComponent
+from soGUI.UtilsGUI.ScrollBar import ScrollBar
+from soGUI.UtilsGUI.PaintButton import PaintButton
+import os
+import traceback
+from soGUI.UtilsGUI.TextScaler import TextScaler
+from Localization import lc
+DEBUG = False
+FILTERS = set(['.dds',
+ '.bmp',
+ '.tga',
+ '.jpg',
+ '.png',
+ '.hdr',
+ '.pfm',
+ '.dib',
+ '.ppm'])
+
+class LineItem(PyGUIBase):
+
+    def __init__(self, component, item):
+        PyGUIBase.__init__(self, component)
+        self.component.script = self
+        self.component.mouseButtonFocus = True
+        self.on_select = lambda line_item: None
+        self.on_dbl_click = lambda line_item: None
+        self._item = item
+        self._setup_content()
+        self.selected = False
+
+    def _setup_content(self):
+        comp = GUI.Text(self._item['item'])
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.width, comp.height = (2, 2)
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'CENTER')
+        comp.position = (-0.6, 0, 0.4)
+        self.component.addChild(comp, 'text')
+        self._ts = TextScaler(comp, 'RobotoCondensedRegular_16')
+        if not self._item['is_file']:
+            comp = GUI.Simple('soGUI/frame/paint/folder.dds')
+            self.component.addChild(comp, 'folder_image')
+            comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'CENTER')
+            comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+            comp.heightMode = 'CLIP'
+            comp.height = 1.2
+            comp.filterType = 'LINEAR'
+            comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+            comp.width = comp.height
+            comp.position = (-0.8, 0, 0.5)
+
+    def do_reposition(self):
+        self._ts.do_reposition()
+
+    def handleMouseButtonEvent(self, comp, event):
+        if event.isKeyDown() and event.key == Keys.KEY_LEFTMOUSE:
+            if self.selected:
+                self.on_dbl_click(self)
+            else:
+                self.selected = True
+                self.on_select(self)
+        return True
+
+    @property
+    def selected(self):
+        return self._selected
+
+    @selected.setter
+    def selected(self, value):
+        self._selected = value
+        if self.component.children:
+            self.component.text.colour = (255,
+             255,
+             255,
+             255 if value else 170)
+
+    @property
+    def text(self):
+        return self.component.text.text
+
+
+class PaintBrowser(PyGUIBase, DraggableComponent):
+
+    def __init__(self, component):
+        component.moveFocus = True
+        component.visible = False
+        PyGUIBase.__init__(self, component)
+        DraggableComponent.__init__(self, True, True, True)
+        self._callback = None
+        self.component.script = self
+        self._setup_content()
+        self._items = []
+        self.path = None
+        return
+
+    def _setup_content(self):
+        self._texts = []
+        base_comp = GUI.Window('soGUI/frame/paint/yellow.dds') if DEBUG else GUI.Window()
+        self.component.addChild(base_comp, 'scroll_comp')
+        self._scroll_comp = GUI.Window('soGUI/frame/paint/blue.dds') if DEBUG else GUI.Window()
+        self._scroll_comp.materialFX = 'SOLID'
+        self._scroll = ScrollBar(base_comp, self._scroll_comp, base_comp, True)
+        comp = GUI.Text()
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.position = (-0.5, 0.93, 0.5)
+        comp.colour = (255, 255, 255, 170)
+        self.component.addChild(comp, 'path_text')
+        self._texts.append(TextScaler(comp, 'RobotoCondensedRegular_16'))
+        self._path_text = comp
+        btn_width = 0.6
+        btn_height = 0.12
+        btn_vertical_pos = -0.95
+        btn_space = 0.04
+        comp = GUI.Window()
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.width, comp.height = btn_width, btn_height
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.horizontalAnchor, comp.verticalAnchor = ('RIGHT', 'BOTTOM')
+        comp.position = (-btn_space, btn_vertical_pos, 0.5)
+        self._open_button = PaintButton(comp, visual_state='soGUI/frame/paint/paintButton3.xml')
+        self._open_button.text = lc('PaintScreen.browser.OPEN')
+        self._open_button.enabled = False
+        self._open_button.on_click = self._on_open_click
+        self._texts.append(self._open_button)
+        self.component.addChild(comp, 'open_button')
+        comp = GUI.Window()
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.width, comp.height = btn_width, btn_height
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'BOTTOM')
+        comp.position = (btn_space, btn_vertical_pos, 0.5)
+        cancel_button = PaintButton(comp, visual_state='soGUI/frame/paint/paintButton3.xml')
+        cancel_button.text = lc('PaintScreen.browser.CANCEL')
+        cancel_button.on_click = self.hide
+        self._texts.append(cancel_button)
+        self.component.addChild(comp, 'cancel_button')
+        comp = GUI.Window()
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.width, comp.height = (0.3, 0.1)
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.position = (-0.9, 0.94, 0.5)
+        self._back_button = PaintButton(comp, visual_state='soGUI/frame/paint/paintButton3.xml')
+        self._back_button.text = '<<'
+        self._back_button.enabled = False
+        self._back_button.on_click = self._on_back_click
+        self.component.addChild(comp, 'back_button')
+
+    def do_reposition(self):
+        comp = self.component.scroll_comp
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.width, comp.height = (2, 1.5)
+        self._set_items(self._items)
+        self.onBound()
+        for text in self._texts:
+            text.do_reposition()
+
+        for text in self._line_items:
+            text.do_reposition()
+
+    def handleMouseButtonEvent(self, comp, event):
+        return DraggableComponent.handleMouseButtonEvent(self, comp, event)
+
+    def show(self, callback):
+        """ callback(path) """
+        self._callback = callback
+        if self.component.visible:
+            return
+        else:
+            self.component.visible = True
+            if self.path is None:
+                self._apply_path('')
+            return
+
+    def hide(self):
+        if self._callback:
+            self._callback(None)
+        if not self.component.visible:
+            return
+        else:
+            self.component.visible = False
+            return
+
+    def _on_item_selected(self, line_item):
+        if self.selected_item:
+            self.selected_item.selected = False
+        self.selected_item = line_item
+
+    def _windows_logical_discs(self):
+        import string
+        logical_discs = []
+        for d in string.ascii_uppercase:
+            disk_name = u'%s:\\' % d
+            if os.path.exists(disk_name):
+                logical_discs.append({'item': disk_name,
+                 'is_file': False,
+                 'full_path': disk_name})
+
+        return logical_discs
+
+    def _apply_path(self, path):
+        try:
+            if path:
+                items = self._filter_dirs(path)
+                self._set_items(items)
+            else:
+                self._set_items(self._windows_logical_discs())
+        except:
+            traceback.print_exc()
+        else:
+            self.path = path
+
+    def _on_dbl_click(self, line_item):
+        full_path = os.path.join(self.path, line_item.text)
+        if os.path.isdir(full_path):
+            self._apply_path(full_path)
+        else:
+            self._callback(full_path)
+            self._callback = None
+            self.hide()
+        return
+
+    def _on_back_click(self):
+        prev_path = self.path
+        cur_path = os.path.abspath(os.path.join(self.path, os.pardir))
+        self._apply_path('' if cur_path == prev_path else cur_path)
+
+    def _on_open_click(self):
+        self._on_dbl_click(self.selected_item)
+
+    def _filter_dirs(self, path):
+        items = []
+        for item in os.listdir(path):
+            full_path = os.path.join(path, item)
+            is_file = not os.path.isdir(full_path)
+            if is_file and os.path.splitext(item)[1] not in FILTERS:
+                continue
+            items.append({'item': item,
+             'is_file': is_file,
+             'full_path': full_path})
+
+        def need_sort(item):
+            return (1 if item['is_file'] else 0, item['item'])
+
+        return sorted(items, key=need_sort)
+
+    def _set_items(self, items):
+        self._line_items = []
+        self.selected_item = None
+        self._items = items
+        for _, child in self._scroll_comp.children:
+            self._scroll_comp.delChild(child)
+
+        self.component.heightMode = 'PIXEL'
+        space = self.component.height / 16
+        for i, item in enumerate(items):
+            comp = GUI.Window('soGUI/frame/paint/blue.dds') if DEBUG else GUI.Window()
+            comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'PIXEL')
+            comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+            comp.position = (-1, space * i, 0.5)
+            comp.colour = (255, 255, 255, 170)
+            comp.widthMode, comp.heightMode = ('CLIP', 'PIXEL')
+            comp.width, comp.height = 1.7, space
+            line_item = LineItem(comp, item)
+            line_item.on_select = self._on_item_selected
+            line_item.on_dbl_click = self._on_dbl_click
+            self._line_items.append(line_item)
+            line_item.do_reposition()
+            self._scroll_comp.addChild(comp)
+
+        height = space * len(items)
+        self._scroll_comp.heightMode = 'PIXEL'
+        self._scroll_comp.height = height
+        self._scroll.do_reposition()
+        return
+
+    @property
+    def selected_item(self):
+        return self._selected_item
+
+    @selected_item.setter
+    def selected_item(self, value):
+        self._selected_item = value
+        self._open_button.enabled = bool(value)
+
+    @property
+    def path(self):
+        return self._path
+
+    @path.setter
+    def path(self, value):
+        self._path = value
+        if value:
+            self._path_text.text = value
+        self._path_text.visible = bool(value)
+        self._back_button.enabled = bool(value)

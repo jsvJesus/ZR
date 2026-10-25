@@ -1,0 +1,231 @@
+# Embedded file name: ./client/clanboard_gui/recruit/recruit_tab.py
+import Clan
+import BigWorld
+import GUI
+from Localization import lc
+from ..tab import Tab
+from soGUI.soButton import soButton
+from publish_win import PublishWin, PublishEventType as PublishET
+from respond_win import RespondWin
+from load_model import LoadModel, EventType as LoadET, State as LoadState
+from data_model import DataModel
+from pos_model import PosModel, EventType as PosET
+from filter_model import FilterModel, EventType as FilterET
+from page_view import PageView, EventType as ViewET, BlockEventType as BlockET
+from navigation_view import NavigationView, EventType as NavET
+from Helpers.PyGUI.PyGUIBase import Interceptor
+import gui_jokes
+from filter_view import FilterView
+
+class RecruitTab(Tab):
+
+    def __init__(self, component):
+        Tab.__init__(self, component)
+        self._publish_win = None
+        self._respond_win = None
+        self._filter_model = FilterModel()
+        self._load_model = LoadModel()
+        self._load_model.add_listener(self._on_load_model_event)
+        self._data_model = DataModel()
+        self._pos_model = PosModel()
+        self._pos_model.add_listener(self._on_pos_model_event)
+        comp = GUI.Window('soGUI/frame/paint/black.dds')
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.wm, comp.hm = ('CLIP', 'CLIP')
+        comp.width, comp.height = (2, 2)
+        comp.materialFX = 'BLEND'
+        comp.colour = (255, 255, 255, 100)
+        comp.position = (0, 0, 0.1)
+        comp.visible = True
+        self.component.addChild(comp, 'loadpane')
+        Interceptor(comp)
+        comp = GUI.Simple('soGUI/frame/journal/load_anim/load_pips')
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = comp.texture.width, comp.texture.height
+        comp.position = (0, 0, 0.1)
+        self.component.loadpane.addChild(comp)
+        comp = GUI.Window()
+        comp.hpm, comp.vpm = ('CLIP', 'PIXEL')
+        comp.ha, comp.va = ('CENTER', 'TOP')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.position = (0, 0, 0.9)
+        self.component.addChild(comp)
+        self._page_view = PageView(comp, self._data_model)
+        self._page_view.add_listener(self._on_pageview_event)
+        comp = GUI.Window()
+        comp.hpm, comp.vpm = ('CLIP', 'PIXEL')
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.wm, comp.hm = ('CLIP', 'PIXEL')
+        comp.width, comp.height = (2, 32)
+        comp.position = (0, 0, 0.5)
+        self.component.addChild(comp)
+        self._navigation_view = NavigationView(comp, self._pos_model, self._load_model)
+        self._navigation_view.add_listener(self._on_navigation_view_event)
+        comp = GUI.Window()
+        comp.hpm, comp.vpm = ('PIXEL', 'CLIP')
+        comp.ha, comp.va = ('RIGHT', 'CENTER')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = (186, 25)
+        btn = soButton(comp)
+        btn.onClick = self._on_publish_click
+        btn.initVSC('soGUI/elements/button_1.xml')
+        comp.label.font = 'RobotoCondensedRegular_16.font'
+        comp.label.text = lc('clan_win.Recruit.Publish')
+        btn.onBound()
+        self._navigation_view.component.addChild(comp, 'publish')
+        comp = GUI.Window()
+        self._navigation_view.component.addChild(comp)
+        self._filter_view = FilterView(self.component, comp, self._filter_model)
+        return
+
+    def _default_start_load(self):
+        self._start_load(self._pos_model.index, self._pos_model.size)
+
+    def _start_load(self, index, size):
+        filters = {'sort': self._filter_model.sort,
+         'level': self._filter_model.level,
+         'ftext': self._filter_model.filter_text.lower().encode('utf8')}
+        self._load_model.load(index, size, filters)
+
+    def _on_publish_win_event(self, event_type, data):
+        if event_type == PublishET.OnRespondRequested:
+            self.publish_win.hide()
+            self.respond_win.show(data['clan_id'])
+        elif event_type in (PublishET.OnPublishRequested, PublishET.OnEditRequested):
+            self.publish_win.hide()
+            self.respond_win.hide()
+            p = BigWorld.player()
+            if event_type == PublishET.OnPublishRequested:
+                cost_points = Clan.COST_RECR_PUBLISH_POINTS
+                delegate = p.base.publish_recruitment0
+            elif event_type == PublishET.OnEditRequested:
+                cost_points = Clan.COST_RECR_EDIT_POINTS
+                delegate = p.base.edit_recruitment0
+            if p.clanpoints < cost_points:
+                gui_jokes.askUserOk(u'', lc('clan_win.Recruit.Nopoints'))
+            elif not p.clanID or not p.checkClanRights(Clan.FLAG_CAN_RECRUT):
+                gui_jokes.askUserOk(u'', lc('clan_win.Recruit.Norights'))
+            else:
+                message, player_level = data['message'], data['player_level']
+                delegate(message, player_level)
+                self._default_start_load()
+
+    def _on_navigation_view_event(self, event_type, data):
+        if event_type == NavET.OnNextRequested:
+            index = self._pos_model.index + self._pos_model.size
+            self._pos_model.set_index(index)
+            self._default_start_load()
+        elif event_type == NavET.OnPrevRequested:
+            index = self._pos_model.index - self._pos_model.size
+            self._pos_model.set_index(index)
+            self._default_start_load()
+        elif event_type == NavET.OnStartRequested:
+            self._pos_model.set_index(0)
+            self._default_start_load()
+        elif event_type == NavET.OnEndRequested:
+            index = self._pos_model.total - self._pos_model.size
+            self._pos_model.set_index(index)
+            self._start_load(-1, self._pos_model.size)
+
+    def _on_pageview_event(self, event_type, data):
+        if event_type == ViewET.OnSizeChanged:
+            self._pos_model.set_size(self._page_view.size)
+        elif event_type == ViewET.OnInvestigateRequested:
+            if self._respond_win:
+                self._respond_win.hide()
+            self.publish_win.show_investigate(data['clan_id'], data['clan_level'], data['clan_name'], data['player_level'], data['icon_id'])
+        elif event_type == BlockET.OnDelRequested:
+            BigWorld.player().base.del_recr_publishment0()
+            self._default_start_load()
+        elif event_type == BlockET.OnEditRequested:
+            p = BigWorld.player()
+            self.publish_win.show_edit(p.clanID, p.clan_level, p.clanName, p.clanEmblemID, data['player_level'])
+
+    def _on_filter_model_event(self, event_type, data):
+        if event_type == FilterET.OnFilterChangedDelayed:
+            self._pos_model.set_index(0)
+            self._default_start_load()
+
+    def _on_pos_model_event(self, event_type, data):
+        if event_type == PosET.OnSizeChanged:
+            if self._load_model.state != LoadState.Stopped:
+                self._default_start_load()
+
+    def _on_load_model_event(self, event_type, data):
+        if event_type == LoadET.OnStateChanged:
+            self.component.loadpane.visible = self._load_model.state == LoadState.Loading
+        elif event_type == LoadET.OnGotPage:
+            self._data_model.set_page(data['page'])
+            self._pos_model.set_index(data['start_index'])
+            self._pos_model.set_total(data['total'])
+
+    def _on_publish_click(self):
+
+        def callback(event):
+            if event == gui_jokes.askUserYesNo.YES:
+                p = BigWorld.player()
+                if self._respond_win:
+                    self._respond_win.hide()
+                self.publish_win.show_publish(p.clan_level, p.clanName, p.clanEmblemID)
+
+        text = lc('clan_win.Recruit.Confirm').format(Clan.COST_RECR_PUBLISH_POINTS)
+        gui_jokes.askUserYesNo(u'', text, callback)
+
+    @property
+    def publish_win(self):
+        if not self._publish_win:
+            self._publish_win = PublishWin()
+            self._publish_win.component.position[2] = 0.2
+            self._publish_win.add_listener(self._on_publish_win_event)
+            self.component.addChild(self._publish_win.component)
+        return self._publish_win
+
+    @property
+    def respond_win(self):
+        if not self._respond_win:
+            self._respond_win = RespondWin()
+            self._respond_win.component.position[2] = 0.2
+            self.component.addChild(self._respond_win.component)
+        return self._respond_win
+
+    def on_show(self):
+        Tab.on_show(self)
+        self._pos_model.set_size(self._page_view.size)
+        self._default_start_load()
+        self._navigation_view.on_show()
+        self._filter_model.add_listener(self._on_filter_model_event)
+        self._filter_view.on_show()
+        p = BigWorld.player()
+        can_publish = p.clanID and p.checkClanRights(Clan.FLAG_CAN_RECRUT)
+        self._navigation_view.component.publish.script.setDisabledState(not can_publish)
+
+    def on_hide(self):
+        Tab.on_hide(self)
+        if self._publish_win:
+            self._publish_win.hide()
+        if self._respond_win:
+            self._respond_win.hide()
+        self._load_model.stop()
+        self._filter_model.remove_listener(self._on_filter_model_event)
+        self._filter_view.on_hide()
+
+    def do_reposition(self):
+        Tab.do_reposition(self)
+        mode = (self.component.wm, self.component.hm)
+        self.component.wm, self.component.hm = ('PIXEL', 'PIXEL')
+        width, height = self.component.width, self.component.height
+        self.component.wm, self.component.hm = mode
+        comp = self._navigation_view.component.publish
+        comp.position = (width - 16, 0, 0.5)
+        top, bottom = (40, 80)
+        comp = self._page_view.component
+        comp.width, comp.height = width, height - top - bottom
+        comp.position[1] = top
+        self._page_view.do_reposition()
+        comp = self._navigation_view.component
+        comp.position[1] = height - 58
+        self._navigation_view.do_reposition()
+        self._filter_view.do_reposition()

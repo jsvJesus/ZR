@@ -1,0 +1,284 @@
+# Embedded file name: ./client/soGUI/login/login_win.py
+import Keys
+import BigWorld
+from utils import Destructable
+import BWPersonality
+import GUI
+from authentication.auth_client import EventType as AuthET, authcl as auth
+from authorize_win import AuthorizeWin, EventType as AuthWinET, LoginType
+from code_win import Code2faWin, EventType as CodeWinET
+from servwin.servers_win import ServersWin, EventType as ServWinET
+from notify_win import NotifyWin, EventType as NotifyET
+from tooltip import TextTooltip
+from Localization import lc
+from myname import MyName
+from Helpers.PyGUI.PyGUIBase import Interceptor
+from Helpers.BWCoroutine import BWMemberCoroutine, BWWaitForPeriod, BWWaitForCondition, BWCoroutineTimeoutException
+
+class LoadChannels:
+    Connect, = range(1)
+
+
+class LoginWin(Destructable):
+
+    def __init__(self, high_layer):
+        Destructable.__init__(self)
+        self._invisible_channels = set()
+        comp = GUI.Window()
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.position = (0, 0, 0.4)
+        comp.wm, comp.hm = ('CLIP', 'CLIP')
+        comp.width, comp.height = (2, 2)
+        comp.visible = False
+        self.component = comp
+        comp = GUI.Simple(u'')
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.position = (0, 0, 0.5)
+        comp.wm, comp.hm = ('CLIP', 'CLIP')
+        comp.width, comp.height = (2, 2)
+        self.component.addChild(comp, 'bcomp')
+        comp = GUI.Window()
+        comp.hpm, comp.vpm = ('CLIP', 'PIXEL')
+        comp.ha, comp.va = ('CENTER', 'TOP')
+        comp.position = (0, 0, 1)
+        comp.wm, comp.hm = ('CLIP', 'PIXEL')
+        comp.width, comp.height = 2, BigWorld.screenHeight()
+        self.component.bcomp.addChild(comp, 'interceptor')
+        Interceptor(comp, interscept_keys=True)
+        self._has_ticked = False
+        self.component.bcomp.addChild(TextTooltip('LoginWin').component)
+        self._notify_win = NotifyWin()
+        self._notify_win.add_listener(self._on_notify_event)
+        self.component.bcomp.addChild(self._notify_win.component)
+        self._authorize_win = AuthorizeWin(self._notify_win)
+        self._authorize_win.add_listener(self._on_authwin_event)
+        self.component.bcomp.addChild(self._authorize_win.component)
+        self._servers_win = ServersWin()
+        self._servers_win.add_listener(self._on_serverswin_event)
+        self.component.bcomp.addChild(self._servers_win.component)
+        self._code_win = Code2faWin()
+        self._code_win.add_listener(self._on_codewin_event)
+        self.component.bcomp.addChild(self._code_win.component)
+        self._myname = MyName()
+        high_layer.addChild(self._myname.component)
+        BWPersonality.game.addListener('onStateChanged', self._on_connect_state_changed)
+        auth.add_listener(self._on_auth_event)
+
+    @BWMemberCoroutine
+    def run_autologin(self, sysargs):
+        yield BWWaitForPeriod(0)
+        self.show()
+        login_type = int(sysargs[2])
+        data = {'login_type': login_type}
+        if login_type == LoginType.COMMON:
+            login, password, server_uid = sysargs[3], sysargs[4], sysargs[5]
+            data['login'] = login
+            data['password'] = password
+        else:
+            server_uid = sysargs[3]
+        self._on_authwin_event(AuthWinET.OnLoginRequest, data)
+        yield BWWaitForPeriod(0)
+        yield BWWaitForPeriod(0)
+        try:
+            yield BWWaitForCondition(lambda : self._servers_win.visible, 5.0, 0)
+        except BWCoroutineTimeoutException:
+            raise
+
+        yield BWWaitForPeriod(0)
+        BWPersonality.game.connect_from_auth(server_uid)
+        yield BWWaitForPeriod(0)
+        yield BWWaitForPeriod(0)
+        if BWPersonality.GUICore._web_browser:
+            BWPersonality.GUICore._web_browser.hide()
+        while True:
+            if hasattr(BigWorld, 'nologin_until'):
+                del BigWorld.nologin_until
+            if getattr(BigWorld.player(), 'dummy', None) and not BWPersonality.GUICore.connectionWindow and getattr(BigWorld.player(), 'characterList', None):
+                break
+            yield BWWaitForPeriod(0)
+
+        BWPersonality.GUICore.loginFlash.account_actions.play_game(None)
+        if BWPersonality.GUICore._web_browser:
+            BWPersonality.GUICore._web_browser.hide()
+        return
+
+    def _on_authwin_event(self, event_type, data):
+        if event_type == AuthWinET.OnLoginRequest:
+            login_type = data['login_type']
+            if login_type in (LoginType.STEAM, LoginType.VK_PLAY):
+                auth.authenticationSteamMygames()
+            elif login_type == LoginType.COMMON:
+                auth.authenticationLoginPasw(data['login'], data['password'])
+            else:
+                auth.authenticationButton(data['account_type'])
+
+    def _on_notify_event(self, event_type, data):
+        if event_type == NotifyET.OnAny:
+            self.show()
+        if event_type == NotifyET.OnNone:
+            if not self._servers_win.visible and not self._authorize_win.visible and not self._code_win.visible:
+                BigWorld.callback(0, self.hide)
+
+    def _on_codewin_event(self, event_type, data):
+        if event_type == CodeWinET.OnExitRequest:
+            self._code_win.hide()
+            auth.logout()
+        elif event_type == CodeWinET.OnCodeEntered:
+            code = data
+            auth.enter2faCode(code)
+        elif event_type == CodeWinET.OnNewCodeRequest:
+            auth.resend2faCode()
+        elif event_type == CodeWinET.ToggleAlt:
+            auth.change2faType()
+
+    def _on_serverswin_event(self, event_type, data):
+        if event_type == ServWinET.OnBackRequest:
+            auth.logout()
+        elif event_type == ServWinET.OnConnectRequest:
+            BWPersonality.game.connect_from_auth(data['uid'])
+        elif event_type == ServWinET.OnMasterRequest:
+            BWPersonality.game.connect_masterpasw(data['login'], data['password'], data['uid'])
+
+    def _on_auth_event(self, event_type, data):
+        if event_type == AuthET.OnStartConnect:
+            self._authorize_win.set_load(True, LoadChannels.Connect)
+        elif event_type == AuthET.onRequired2faCode:
+            self._authorize_win.set_load(False, LoadChannels.Connect)
+            self._authorize_win.hide()
+            self._servers_win.hide()
+            self._myname.show(auth.icon_path, auth.visible_name_mask, True)
+            self._code_win.show(data)
+            self._update_invisibility()
+        elif event_type == AuthET.OnConnect:
+            self._authorize_win.set_load(False, LoadChannels.Connect)
+            self._authorize_win.hide()
+            self._code_win.hide()
+            self._servers_win.show()
+            self._myname.show(auth.icon_path, auth.visible_name_mask, auth.isOTP2FA)
+            self._update_invisibility()
+        elif event_type == AuthET.OnDisconnect:
+            self._authorize_win.set_load(False, LoadChannels.Connect)
+            self._authorize_win.show()
+            self._servers_win.hide()
+            self._code_win.hide()
+            self._myname.hide()
+            self._update_invisibility()
+        elif event_type == AuthET.OnErrorConnect:
+            text = lc('LoginWin.notify.message.' + data['msg'])
+            self._notify_win.show_ok(text)
+        elif event_type == AuthET.OnError2fa:
+            self._code_win.on_error()
+            text = lc('LoginWin.notify.message.' + data['msg'])
+            self._notify_win.show_ok(text)
+        elif event_type == AuthET.OnServersInfoUpdate:
+            self._servers_win.update_data(data['servers'])
+        elif event_type == AuthET.OnBan:
+            self._notify_win.show_ban(data['pub_reason'], data['ban_time_left'])
+
+    def _update_myname_position(self):
+        if self.component.visible:
+            self._myname.component.position[0] = BigWorld.screenWidth() - 240
+        else:
+            self._myname.component.position[0] = BigWorld.screenWidth() - 540
+
+    def _update_interceptor(self):
+        comp = self.component.bcomp.interceptor
+        margin = 48
+        comp.position[1] = margin
+        comp.height = BigWorld.screenHeight() - margin
+
+    def show(self):
+        if not self.component.visible:
+            self.component.visible = True
+            self._servers_win.update_data(auth.servers_list)
+            if auth.status_is_online:
+                self._authorize_win.hide()
+                self._servers_win.show()
+                self._myname.show(auth.icon_path, auth.visible_name_mask, auth.isOTP2FA)
+            else:
+                self._authorize_win.show()
+                self._servers_win.hide()
+                self._myname.hide()
+                if auth.status_is_wait:
+                    self._authorize_win.set_load(True, LoadChannels.Connect)
+            self._update_myname_position()
+            self._update_interceptor()
+            BWPersonality.register_key_event_interceptor(self._key_interceptions, True)
+        self._update_invisibility()
+
+    def _key_interceptions(self, event):
+        if event.key != Keys.KEY_ESCAPE:
+            return False
+        if self._invisible_channels:
+            return False
+        if not self._servers_win.visible:
+            return False
+        return True
+
+    def _update_invisibility(self):
+        if self._invisible_channels:
+            self.component.bcomp.visible = False
+            self._myname.make_invisible(True)
+        else:
+            self.component.bcomp.visible = True
+            self._myname.make_invisible(False)
+
+    def make_invisible(self, invisible, channel = None):
+        if invisible:
+            self._invisible_channels.add(channel)
+        elif channel in self._invisible_channels:
+            self._invisible_channels.remove(channel)
+        self._update_invisibility()
+
+    def hide(self):
+        if self.component.visible:
+            self._authorize_win.hide()
+            self._servers_win.hide()
+            self._notify_win.close_all()
+            self.component.visible = False
+            self._update_myname_position()
+        BWPersonality.unregister_key_event_interceptor(self._key_interceptions)
+
+    def _on_connect_state_changed(self, state, prev_state, lc_message):
+        print 'Login: connect changed', (prev_state, state)
+        GConstants = BWPersonality.Game.Constants
+        if state == GConstants.STATE_ONLINE:
+            self._check_connect()
+        else:
+            self._has_ticked = False
+            if state == GConstants.STATE_CONNECTING:
+                self._servers_win.set_load(True, LoadChannels.Connect)
+            elif state == GConstants.STATE_OFFLINE:
+                self._servers_win.set_load(False, LoadChannels.Connect)
+                from soGUI.StorehouseGUI.ItemsPendWin import ItemsPendWin
+                ItemsPendWin.on_disconnect()
+            self.show()
+            if lc_message:
+                self._notify_win.show_ok(lc_message)
+
+    def _check_connect(self):
+        if BWPersonality.game.state == BWPersonality.Game.Constants.STATE_ONLINE and self._has_ticked:
+            self._has_ticked = False
+            self._servers_win.set_load(False, LoadChannels.Connect)
+            self.hide()
+
+    def doReposition(self):
+        self._update_myname_position()
+        self._update_interceptor()
+
+    def on_release(self):
+        BWPersonality.game.removeListener('onStateChanged', self._on_connect_state_changed)
+        auth.remove_listener(self._on_auth_event)
+        self._myname.component.parent.delChild(self._myname.component)
+        self._notify_win.close_all()
+
+    def on_end_wait_ticket(self):
+        print 'Login: got ticket'
+        self._has_ticked = True
+        self._check_connect()
+
+    def on_fail_logon(self, lc_message, show_support_link):
+        print 'Login: fail logon'
+        self._notify_win.show_ok(lc_message, show_support_link)

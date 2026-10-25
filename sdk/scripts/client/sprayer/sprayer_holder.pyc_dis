@@ -1,0 +1,157 @@
+# Embedded file name: ./client/sprayer/sprayer_holder.py
+import BigWorld
+import BWPersonality
+import traceback
+from cloud import Cloud
+from collections import deque
+import ResourceLoader
+from functools import partial
+SPRAYER_CHECK_TIME = 0.3
+
+class SprayerHolder:
+
+    def __init__(self):
+        self._spayer_clouds = deque()
+        self._spayer_tid = 0
+        self._sprayer_particle_name = None
+        self._sprayer_particle_dict = {}
+        self._particles_node = None
+        self._attached_sprayer_particle = None
+        self._particles_rate = []
+        self._particles_off_cid = 0
+        self._particles_off2_cid = 0
+        self._particles_rate_downgraded = True
+        return
+
+    def get_weapon_sprayer_particle(self):
+        sprayer_particle_name = self.active_weapon.getParam().get('sprayer_particle', 'particles/event/test_spray.xml')
+        return self._sprayer_particle_dict.get(sprayer_particle_name)
+
+    def spawn_spray(self, weapon_in_water, shot_directions, shot_number = 1, time_per_shot = 0):
+        if not shot_directions:
+            return
+        ammo_type = self.active_weapon.getAmmoType()
+        if self.offline_mode or ammo_type == 0:
+            ammo_type = 602008
+        point = self.get_firing_point()[1]
+        shot_direction = shot_directions[0]
+        if shot_number > 1:
+            for cl in self._spayer_clouds:
+                cl.addImpulse()
+
+        cloud = Cloud(self, point, shot_direction, ammo_type)
+        self._spayer_clouds.appendleft(cloud)
+        if not self._spayer_tid:
+            self._spayer_tid = BigWorld.callback(SPRAYER_CHECK_TIME, self._updateClouds)
+        self._run_particles_sprayer()
+
+    def create_spray_particles(self):
+        if not self.active_weapon:
+            BigWorld.callback(0.5, self.create_spray_particles)
+            return
+        sprayer_particle_name = self.active_weapon.getParam().get('sprayer_particle', 'particles/event/test_spray.xml')
+        if sprayer_particle_name in self._sprayer_particle_dict:
+            return
+
+        def on_load(prereqs):
+            if self.isDestroyed:
+                return
+            self._sprayer_particle_dict[sprayer_particle_name] = prereqs.produce(0)
+
+        ResourceLoader.asyncLoad([(ResourceLoader.PARTICLE, sprayer_particle_name)], on_load)
+
+    def _run_particles_sprayer(self):
+        _sprayer_particle = self.get_weapon_sprayer_particle()
+        if not _sprayer_particle:
+            print '[ERROR] Failed _run_particles_sprayer', self, self.active_weapon
+            return
+        else:
+
+            def off():
+                self._particles_off_cid = 0
+                if not len(self._particles_rate):
+                    n = 10
+                    tmp = []
+                    for i in xrange(n):
+                        try:
+                            system = _sprayer_particle.system(i)
+                            tmp.append(system.actions[0].rate)
+                            system.actions[0].rate = 0
+                        except:
+                            break
+
+                    self._particles_rate = self._particles_rate or tmp
+                self._particles_rate_downgraded = True
+
+                def off2():
+                    self._particles_off2_cid = 0
+                    self._detach_particles()
+
+                self._particles_off2_cid = BigWorld.callback(2, off2)
+
+            if self._particles_off_cid:
+                BigWorld.cancelCallback(self._particles_off_cid)
+            if self._particles_off2_cid:
+                BigWorld.cancelCallback(self._particles_off2_cid)
+            if self._particles_node is None:
+                self._attach_particles(_sprayer_particle)
+                _sprayer_particle.clear()
+                _sprayer_particle.force(1)
+            if self._particles_rate_downgraded and self._particles_rate:
+                for i, rate in enumerate(self._particles_rate):
+                    system = _sprayer_particle.system(i)
+                    system.actions[0].rate = rate
+
+                self._particles_rate_downgraded = False
+            self._particles_off_cid = BigWorld.callback(0.5, off)
+            return
+
+    def _attach_particles(self, sprayer_particle):
+        if self._particles_node is None:
+            node = self.active_weapon_model.node('HP_effect')
+            try:
+                node.attach(sprayer_particle)
+            except:
+                print '[ERROR] Failed attach particles', self, sprayer_particle
+                traceback.print_exc()
+            else:
+                self._particles_node = node
+                self._attached_sprayer_particle = sprayer_particle
+
+        return
+
+    def _detach_particles(self):
+        if self._particles_node is not None:
+            try:
+                self._particles_node.detach(self._attached_sprayer_particle)
+            except:
+                print '[ERROR] Failed detach particles', self, self._attached_sprayer_particle
+                traceback.print_exc()
+
+            self._particles_node = None
+            self._attached_sprayer_particle = None
+        return
+
+    def onLeaveWorld(self):
+        for c in self._spayer_clouds:
+            c.onDestroy()
+
+        self._spayer_clouds.clear()
+        if self._spayer_tid:
+            BigWorld.cancelCallback(self._spayer_tid)
+        self._detach_particles()
+        for _sprayer_particle in self._sprayer_particle_dict.values():
+            _sprayer_particle.clear()
+
+        self._sprayer_particle_dict.clear()
+
+    def _updateClouds(self):
+        self._spayer_tid = 0
+        for i in xrange(len(self._spayer_clouds) - 1, -1, -1):
+            life = self._spayer_clouds[i].updateLife()
+            if not life:
+                self._spayer_clouds[i].onDestroy()
+                del self._spayer_clouds[i]
+
+        if self._spayer_clouds:
+            self._spayer_tid = BigWorld.callback(SPRAYER_CHECK_TIME, self._updateClouds)

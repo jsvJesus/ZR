@@ -1,0 +1,120 @@
+# Embedded file name: ./client/Party/party_gui.py
+import BigWorld
+import BWPersonality
+import gui_creator
+from party_common import MemberStatus as S, PARTY_MEMBERS_LIMIT
+from Settings import Settings
+from soGUI.health_bar.party_health_bar import PartyHealthBar
+
+class PartyGUI:
+
+    def __init__(self):
+        self._component = gui_creator.create_party_gui()
+        BWPersonality.GUICore.worldLayer.addChild(self._component, 'party_gui')
+
+    def change_leader(self, entity_id):
+        for _, child in self._component.children:
+            status = S.Leader if entity_id == child.script.member_data['id'] else S.Combatant
+            child.script.set_status(status)
+
+        BWPersonality.GUICore.set_hb_leader_mark(entity_id == BigWorld.player().id)
+
+    def create_party(self, this, others):
+        self._component.visible = True
+        for other in others:
+            self._create_member_gui(other)
+
+        BWPersonality.GUICore.set_hb_leader_mark(this['status'] == S.Leader)
+        self._tick()
+
+    def _create_member_gui(self, member_data):
+        index = self._get_new_member_index()
+        member_gui = PartyHealthBar(member_data, index)
+        position = Settings().getSetting('party_gui_' + str(member_gui.index))
+        member_gui.component.position = position and tuple(position) or (0, 100 + index * 50, 0.9)
+        member_gui.stop_dragging_callback = self._member_stop_dragging
+        self._component.addChild(member_gui.component)
+
+    def reset_position(self):
+        """ \xd1\x81\xd0\xb1\xd1\x80\xd0\xb0\xd1\x81\xd1\x8b\xd0\xb2\xd0\xb0\xd0\xb5\xd1\x82 \xd1\x81\xd0\xbe\xd1\x85\xd1\x80\xd0\xb0\xd0\xbd\xd1\x91\xd0\xbd\xd0\xbd\xd1\x8b\xd0\xb5 \xd0\xbf\xd0\xbe\xd0\xbb\xd0\xbe\xd0\xb6\xd0\xb5\xd0\xbd\xd0\xb8\xd1\x8f \xd0\xbe\xd0\xba\xd0\xbe\xd0\xbd """
+        for _, child in self._component.children:
+            child.position = (0, 100 + child.script.index * 50, 0.9)
+            self._member_stop_dragging(child.script)
+
+    def _member_stop_dragging(self, member_gui):
+        Settings().setSetting('party_gui_' + str(member_gui.index), list(member_gui.component.position))
+
+    def _get_new_member_index(self):
+        indices = set()
+        for _, child in self._component.children:
+            indices.add(child.script.index)
+
+        for i in xrange(PARTY_MEMBERS_LIMIT):
+            if i not in indices:
+                return i
+
+        raise RuntimeError
+
+    def _tick(self):
+        if not self._component.visible:
+            return
+        for _, child in self._component.children:
+            child.script.tick()
+
+        BigWorld.callback(1.0, self._tick)
+
+    def destroy_party(self):
+        self._component.visible = False
+        for child_name, child in self._component.children:
+            child.script.destroy()
+            self._component.delChild(child_name)
+
+        BWPersonality.GUICore.set_hb_leader_mark(False)
+
+    def add_member(self, member_data):
+        self._create_member_gui(member_data)
+
+    def remove_member(self, entity_id):
+        for child_name, child in self._component.children:
+            if child.script.member_data['id'] == entity_id:
+                child.script.destroy()
+                self._component.delChild(child_name)
+                break
+
+    def has_member(self, entity_name):
+        for _, child in self._component.children:
+            if child.script.member_data['name'] == entity_name:
+                return True
+
+        return False
+
+    def get_members_ids(self):
+        ids = []
+        for _, child in self._component.children:
+            ids.append(child.script.member_data['id'])
+
+        return ids
+
+    def get_members(self):
+        return [ child.script.member_data for _, child in self._component.children ]
+
+    def update_party_effects3(self, member_id, effect_ids):
+        member = self._get_member_gui_by_id(member_id)
+        if member:
+            member.update_effects(effect_ids)
+
+    def update_party_hpst3(self, member_id, health, stamina):
+        member = self._get_member_gui_by_id(member_id)
+        if member:
+            member.update_hpst(health, stamina)
+
+    def _get_member_gui_by_id(self, member_id):
+        return next((m.script for _, m in self._component.children if m.script.member_data['id'] == member_id), None)
+
+    def show_bufs(self, show):
+        for _, child in self._component.children:
+            child.script.show_bufs(show)
+
+    @property
+    def visible(self):
+        return self._component.visible

@@ -1,0 +1,173 @@
+# Embedded file name: ./client/soGUI/scholar/scholar_view.py
+import ItemsUtils
+import GUI
+from Helpers.PyGUI.PyGUIBase import DragWin
+from scholar_model import EventType as ModelET
+from Localization import lc
+import colorCodes as cc
+from scholar_bar import ScholarBar
+from time import time
+from utils import Tickable
+from Helpers.PyGUI import Utils
+from heliutils.gui.heliinterface import Button
+from open_world_events_config import CONFIG_DATA
+from soGUI.health_bar.scholar_health_bar import ScholarHealthBar
+
+class ScholarView(DragWin, Tickable):
+
+    def __init__(self, model):
+        Tickable.__init__(self)
+        self._width = 240
+        comp = GUI.Window()
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = self._width, 200
+        comp.ha, comp.va = ('LEFT', 'TOP')
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.position = (200, 200, 0.5)
+        comp.visible = False
+        DragWin.__init__(self, comp)
+        self._model = model
+        self._model.add_listener(self._on_model_event)
+        self._header_height = 30
+        self._collapsed = False
+        btn = Button(self.component, self._header_height)
+        btn.component.position = (0, 0, 0.5)
+        self.component.addChild(btn.component, 'button')
+        btn.onClick = self._on_collapse_click
+        btn.onBound()
+        comp = GUI.Window('soGUI/frame/paint/black.dds')
+        comp.materialFX = 'BLEND'
+        comp.wm, comp.hm = ('CLIP', 'PIXEL')
+        comp.ha, comp.va = ('CENTER', 'TOP')
+        comp.hpm, comp.vpm = ('CLIP', 'PIXEL')
+        comp.width, comp.height = (2, 100)
+        comp.colour = (255, 255, 255, 200)
+        comp.position = (0, self._header_height, 0.9)
+        self.component.addChild(comp, 'back')
+        pos_y = 26
+        comp = GUI.Text(u'', 'RobotoCondensedRegular_18.font')
+        comp.hpm, comp.vpm = ('CLIP', 'PIXEL')
+        comp.ha, comp.va = ('CENTER', 'BOTTOM')
+        comp.position = (0, pos_y, 0.9)
+        comp.colour = cc.active_rgba
+        self.component.back.addChild(comp, 'title')
+        pos_y += 36
+        comp = GUI.Text(u'', 'RobotoCondensedRegular_28.font')
+        comp.hpm, comp.vpm = ('CLIP', 'PIXEL')
+        comp.ha, comp.va = ('CENTER', 'BOTTOM')
+        comp.position = (0, pos_y, 0.9)
+        comp.colour = cc.active_rgba
+        self.component.back.addChild(comp, 'timer')
+        pos_y += 18
+        comp = GUI.Text(lc('world_event.ui.toending'), 'RobotoCondensedRegular_18.font')
+        comp.hpm, comp.vpm = ('CLIP', 'PIXEL')
+        comp.ha, comp.va = ('CENTER', 'BOTTOM')
+        comp.position = (0, pos_y, 0.9)
+        comp.colour = cc.inactive_rgba
+        self.component.back.addChild(comp)
+        pos_y += 26
+        comp = GUI.Text(lc('world_event.ui.progress'), 'RobotoCondensedRegular_18.font')
+        comp.hpm, comp.vpm = ('CLIP', 'PIXEL')
+        comp.ha, comp.va = ('CENTER', 'BOTTOM')
+        comp.position = (0, pos_y, 0.9)
+        comp.colour = cc.active_rgba
+        self.component.back.addChild(comp)
+        pos_y += 38
+        comp = GUI.Window('soGUI/frame/paint/white.dds')
+        comp.ha, comp.va = ('CENTER', 'BOTTOM')
+        comp.hpm, comp.vpm = ('CLIP', 'PIXEL')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = (208, 20)
+        comp.position = (0, pos_y, 0.9)
+        self.component.back.addChild(comp)
+        self._bar = ScholarBar(comp)
+        pos_y += 8
+        self.component.height = pos_y
+        self._npc_lines_pos_y = pos_y
+        self._npc_lines = []
+
+    def _on_collapse_click(self):
+        self._collapsed = not self._collapsed
+        self._update_collapse()
+
+    def _update_collapse(self):
+        comp = self.component
+        if self._collapsed:
+            comp.width, comp.height = self._header_height, self._header_height
+        else:
+            comp.width, comp.height = self._width, self.component.back.height + self._header_height
+        self.restrictPosition()
+
+    def _on_model_event(self, event_type, data):
+        if event_type == ModelET.OnInfoSet:
+            title_local_key = CONFIG_DATA[self._model.event_name].get('window_title', '')
+            self.component.back.title.text = lc('world_event.windowtitle.{0}'.format(title_local_key))
+            self._update_time()
+            self._update_progress()
+            self._rebuild_npc_lines()
+        elif event_type == ModelET.OnProgressChanged:
+            self._update_progress()
+        elif event_type == ModelET.OnNpcAppended:
+            self._rebuild_npc_lines()
+        elif event_type == ModelET.OnNpcChanged:
+            entity_id = data['entity_id']
+            line = next((l for l in self._npc_lines if l.entity_id == entity_id))
+            line.update_ratio(data['ratio'])
+
+    def _update_time(self):
+        time_left = max(self._model.time_end - time(), 0)
+        self.component.back.timer.text = ItemsUtils.timeToStringSec(time_left)
+
+    def _rebuild_npc_lines(self):
+        while len(self._npc_lines) < len(self._model.npcs):
+            hbar = ScholarHealthBar()
+            self._npc_lines.append(hbar)
+            comp = hbar.component
+            comp.position = (-1, 0, 0.5)
+            self.component.back.addChild(comp)
+            hbar.show()
+
+        line_space = 8
+        pos_y = self._npc_lines_pos_y + 8
+        index = -1
+        for index in range(len(self._model.npcs)):
+            info = self._model.npcs[index]
+            line = self._npc_lines[index]
+            line.component.position[1] = pos_y
+            line.component.visible = True
+            line.set_info(info)
+            pos_y += line.component.height + line_space
+
+        for i in range(index + 1, len(self._npc_lines)):
+            self._npc_lines[i].component.visible = False
+
+        self.component.back.height = pos_y + 4
+        self.component.height = self.component.back.height + self._header_height
+        self._update_collapse()
+
+    def _update_progress(self):
+        self._bar.set_value(self._model.progress)
+
+    def on_tick(self):
+        self._update_time()
+        for line in self._npc_lines:
+            if line.component.visible:
+                line.on_tick()
+
+    def can_tick(self):
+        return Utils.is_visible_in_hierarchy(self.component)
+
+    def show(self):
+        if not self.visible:
+            self.component.visible = True
+            self.start_tick()
+            self._update_collapse()
+
+    def hide(self):
+        if self.visible:
+            self.component.visible = False
+            self.stop_tick()
+
+    @property
+    def visible(self):
+        return self.component.visible

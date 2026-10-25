@@ -1,0 +1,122 @@
+# Embedded file name: ./client/soGUI/DialogGUI/HistoryLog.py
+import GUI
+import DialogsLocalization as DL
+from Helpers.PyGUI.PyGUIBase import PyGUIBase
+from soGUI.soTextField import soTextField2, soTxtFieldPropsStructure
+import colorCodes
+from Localization import lc
+from NPCs import NPCs
+from Helpers.BWCoroutine import BWMemberCoroutine, BWWaitForCoroutine
+from AsyncLoader import AsyncLoader
+import Constants
+from client_utils import colorise_text2
+import AdditionalNPCParameters as AP
+import autoquest_parser
+import DialogsLocalization
+import BigWorld
+WORK_DIALOGS = set((Constants.SUGEST_WORK_DIALOG_ID,
+ Constants.OPEN_WORK_DIALOG_ID,
+ Constants.TEST_WORK_DIALOG_ID,
+ Constants.CLOSED_WORK_DIALOG_ID,
+ Constants.AUTOQUESTS_LIMIT_DIALOG_ID,
+ Constants.FAILED_WORKD_DIALOG_ID,
+ Constants.AUTOQUESTS_LIMIT2_DIALOG_ID))
+
+class HistoryLog(PyGUIBase):
+
+    def __init__(self, component):
+        PyGUIBase.__init__(self, component)
+        component.script = self
+        self._setup_content()
+        self._text = u''
+        self._visible = False
+        self._last_holder = None
+        self._last_npc_phrase = None
+        self._async_loader = AsyncLoader()
+        self._async_loader.need_break = lambda : not self._visible
+        return
+
+    def _setup_content(self):
+        self.component.widthMode, self.component.heightMode = ('PIXEL', 'PIXEL')
+        width = self.component.width - 32
+        height = self.component.height - 48
+        txt = soTextField2(GUI.Window(), soTxtFieldPropsStructure(autoSize=False, borderWidth=0, autoScroll=False, width=width, height=height, hideScroll=True, font='RobotoCondensedRegular_16.font'))
+        self.component.addChild(txt.component, 'text')
+
+    def on_show(self):
+        self._visible = True
+        self._text = u''
+        self.component.text.script.setText(u'')
+        self.component.text.script.scrollToTop()
+
+    def on_hide(self):
+        self._last_holder = None
+        self._visible = False
+        self._last_npc_phrase = None
+        return
+
+    @BWMemberCoroutine
+    def append_line(self, dialog_id, random_dialog_requester):
+        old_history = self._text.replace(colorCodes.dialog_last_text, colorCodes.dialog_text, 1)
+        if dialog_id == Constants.NO_RADIO_DIALOG_ID:
+            text = lc('Dialogs.Interface.PSHSH')
+        elif dialog_id == Constants.SUGEST_WORK_DIALOG_ID:
+            npc_id = AP.get_npc_id_by_name(self._last_holder)
+            yield BWWaitForCoroutine(self._async_loader.generate_autotext(npc_id))
+            text = self._async_loader.text
+        elif dialog_id == Constants.AUTOQUESTS_LIMIT_DIALOG_ID:
+            text = lc('Dialogs.Interface.AutoquestsLimit')
+        elif dialog_id == Constants.AUTOQUESTS_LIMIT2_DIALOG_ID:
+            text = lc('Dialogs.Interface.AutoquestsLimit2')
+        elif dialog_id == Constants.FAILED_WORKD_DIALOG_ID:
+            text = lc('Dialogs.Interface.FailedAutoQuest')
+        elif dialog_id in (Constants.OPEN_WORK_DIALOG_ID, Constants.TEST_WORK_DIALOG_ID, Constants.CLOSED_WORK_DIALOG_ID):
+            nature = AP.get(self._last_holder, 'nature')
+            if dialog_id == Constants.OPEN_WORK_DIALOG_ID:
+                key = 'dialogs_opened'
+            elif dialog_id == Constants.TEST_WORK_DIALOG_ID:
+                key = 'dialogs_ontest'
+            elif dialog_id == Constants.CLOSED_WORK_DIALOG_ID:
+                key = 'dialogs_closed'
+            replica_id = autoquest_parser.get_random_nature_replica_id(nature, key, 'texts')
+            text = DialogsLocalization.get_auto_text(replica_id)
+        else:
+            text = DL.get_text(dialog_id)
+        yield BWWaitForCoroutine(self._async_loader.replace_text(text))
+        text = self._async_loader.text
+        if dialog_id == Constants.NO_RADIO_DIALOG_ID:
+            holder_name = lc('Dialogs.Interface.Radio')
+        elif dialog_id in WORK_DIALOGS:
+            holder_name = NPCs.getName(self._last_holder)
+        else:
+            last_holder = DL.get_holder(dialog_id)
+            if last_holder == 'PK_stop':
+                interlocutor = BigWorld.entities.get(BigWorld.player().last_interlocutor_id)
+                if interlocutor:
+                    last_holder = getattr(interlocutor, 'npcName', None) or last_holder
+            self._last_holder = last_holder
+            holder_name = NPCs.getName(self._last_holder)
+        npc_phrase_start = u'{npc_color}{npc}: '.format(npc_color=colorCodes.dialog_npc_name, npc=holder_name)
+        npc_phrase = u''
+        if text:
+            self._last_npc_phrase = u'{phrase_color}{text}\n\n'.format(phrase_color=colorCodes.dialog_last_text, text=text)
+            npc_phrase = npc_phrase_start + colorise_text2(self._last_npc_phrase)
+        player_phrase = u''
+        if dialog_id in WORK_DIALOGS:
+            if dialog_id in (Constants.AUTOQUESTS_LIMIT_DIALOG_ID, Constants.AUTOQUESTS_LIMIT2_DIALOG_ID, Constants.FAILED_WORKD_DIALOG_ID):
+                title = None
+            else:
+                title = random_dialog_requester(dialog_id)
+        elif dialog_id == Constants.NO_RADIO_DIALOG_ID:
+            title = None
+        else:
+            title = DL.get_long_title(dialog_id)
+        if title:
+            player_phrase = u'{player_color}{player}: {phrase_color}{text}\n\n'.format(player_color=colorCodes.dialog_self_name, player=lc('PlayerAvatar.client.STRING_2743_56'), phrase_color=colorCodes.dialog_text, text=title)
+        total_history = old_history
+        if player_phrase or npc_phrase:
+            total_history += player_phrase + npc_phrase
+        self.component.text.script.setText(total_history)
+        self.component.text.script.scrollToEnd()
+        self._text = total_history
+        return

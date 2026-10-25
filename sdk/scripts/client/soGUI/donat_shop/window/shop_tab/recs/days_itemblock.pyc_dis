@@ -1,0 +1,76 @@
+# Embedded file name: ./client/soGUI/donat_shop/window/shop_tab/recs/days_itemblock.py
+import BigWorld
+import BWPersonality
+from utils import Listenable
+from rec_itemblock import RecItemBlock
+from soGUI.donat_shop.models.model import EventType as ModelET
+from sys import float_info
+float_max = float_info.max
+
+class EventType:
+    OnReadyChanged, = ((r, 'daysitemblock') for r in range(1))
+
+
+class DaysItemBlock(RecItemBlock, Listenable):
+
+    def __init__(self, component, shop_model, bin_model):
+        Listenable.__init__(self)
+        RecItemBlock.__init__(self, component, shop_model, bin_model, True)
+        self._recompile_callback = None
+        self._shop_mode = shop_model
+        self._shop_model.add_listener(self._on_shopmodel_event)
+        self.component.colour = (255, 100, 100, 255)
+        self.component.materialFX = 'SOLID'
+        self._ready = False
+        return
+
+    def on_show(self):
+        self._recompile()
+
+    def on_hide(self):
+        self._cancel_recompile_callback()
+
+    def _on_shopmodel_event(self, event_type, data):
+        if event_type == ModelET.OnItems:
+            self._recompile()
+
+    def _cancel_recompile_callback(self):
+        if self._recompile_callback:
+            BigWorld.cancelCallback(self._recompile_callback)
+            self._recompile_callback = None
+        return
+
+    def _recompile(self):
+        self._cancel_recompile_callback()
+        discount_items = []
+        cur_time = BWPersonality.gpd.server_time
+        next_change_time = float_max
+        for item in self._shop_model.items:
+            item_type = item['item_type']
+            if not self._shop_model.is_valid(item_type):
+                continue
+            if not item['promo_top']:
+                continue
+            if not item['promo_discount'] or item['promo_cost'] == item['original_cost']:
+                continue
+            if item['promo_time_start'] > cur_time:
+                next_change_time = min(item['promo_time_start'] - cur_time, next_change_time)
+            elif item['promo_time_end'] > cur_time:
+                discount_items.append(item['item_type'])
+                next_change_time = min(item['promo_time_end'] - cur_time, next_change_time)
+
+        if next_change_time < float_max:
+            self._recompile_callback = BigWorld.callback(next_change_time + 0.5, self._recompile)
+        self.set_item_types(discount_items)
+        self.ready = len(discount_items) >= 6
+
+    @property
+    def ready(self):
+        return self._ready
+
+    @ready.setter
+    def ready(self, value):
+        if value == self._ready:
+            return
+        self._ready = value
+        self.notify_listeners(EventType.OnReadyChanged)

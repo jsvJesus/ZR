@@ -1,0 +1,97 @@
+# Embedded file name: ./client/DeadBird.py
+import BigWorld
+import ResourceLoader
+from Math import Matrix, Vector3
+from draw_utils_extend import LinesHolder
+import utils_bw
+DEBUG = False
+MODEL_PATH = 'characters/creatures/crow/crow_mob.model'
+
+class DeadBird:
+    LIFE_TIME = 1.5
+
+    def __init__(self, position, velocity, center, space_id, model = None):
+        velocity *= 30.0
+
+        def on_model_loaded(model):
+            self._model = model
+            self._model.position = position
+            BigWorld.addModel(self._model)
+            self._update_position()
+            self._tick()
+
+        if model:
+            on_model_loaded(model)
+        else:
+
+            def on_load(prereqs):
+                on_model_loaded(prereqs.produce(0))
+
+            ResourceLoader.asyncLoad([(ResourceLoader.MODEL, MODEL_PATH)], on_load)
+        self.collide_callback = None
+        self._life_time = 0.0
+        self._position = Vector3(position)
+        self._velocity = Vector3(velocity)
+        self._space_id = space_id
+        self._rotate_sign = -1.0 if (center - position).crossProduct(velocity)[1] > 0.0 else 1.0
+        self._lh = LinesHolder(max_lines=0) if DEBUG else None
+        return
+
+    def _tick(self):
+        if not self._model:
+            return
+        dtime = BigWorld.getTimeDelta()
+        self._position += self._velocity * dtime
+        rm = Matrix()
+        rm.setRotateY(self._rotate_sign * dtime)
+        self._velocity = rm.applyVector(self._velocity)
+        self._velocity[1] -= dtime * 4.0
+        self._velocity[0] *= 1.0 - dtime * 0.1
+        self._velocity[2] *= 1.0 - dtime * 0.1
+        self._update_position()
+        self._life_time += dtime
+        if self._life_time < self.LIFE_TIME:
+            BigWorld.callback(0, self._tick)
+            return
+        self._destroy()
+
+    def _destroy(self):
+        if self._model:
+            self._spawn_particle(self._model.position)
+            BigWorld.delModel(self._model)
+        self._model = None
+        if self._lh:
+            self._lh.clear()
+        self.collide_callback = None
+        return
+
+    def _spawn_particle(self, position):
+
+        def on_load(prereqs):
+
+            def destroy_particle():
+                BigWorld.delModel(m)
+
+            m = BigWorld.Model('')
+            ps = prereqs.produce(0)
+            BigWorld.addModel(m)
+            m.position = position
+            m.root.attach(ps)
+            ps.force()
+            BigWorld.callback(1, destroy_particle)
+
+        ResourceLoader.asyncLoad([(ResourceLoader.PARTICLE, 'particles/creature/crow_death.xml')], on_load)
+
+    def _update_position(self):
+        tm = Matrix()
+        tm.lookAt(self._position, self._velocity, (0, 1, 0))
+        tm.invert()
+        if self.collide_callback:
+            res = utils_bw.collideIgnoreNoVisible(self._space_id, self._model.position, self._position)
+            if res and res[0]:
+                self.collide_callback(res[0])
+                self._destroy()
+                return
+        if self._lh:
+            self._lh.continue_line(self._position)
+        self._model.setWorldTransform(tm)

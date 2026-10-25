@@ -1,0 +1,682 @@
+# Embedded file name: ./common/Config/Creatures/__init__.py
+import BigWorld
+import pyson
+import traceback
+from Config.Creatures.Constants import *
+from CommonConfig import MODELS_ROOT
+
+def get_type_config(mob_type):
+    return get_type_config.cache[mob_type]
+
+
+def _create_vulnerability_ammo_cache():
+    for mob_config in get_type_config.cache.values():
+        for sub_mob_index, sub_config in mob_config.items():
+            if type(sub_mob_index) != int:
+                continue
+            sub_config['vulnerability_ammo_cache'] = {}
+            for ammo_conf in sub_config['vulnerability_ammo']:
+                try:
+                    ammo_type = int(ammo_conf['ammo_type'])
+                    for bz_name, dmg_mult in ammo_conf['filter_multiplier'].items():
+                        bz_id = BODYNAME_TO_ZONE[bz_name]
+                        key = (ammo_type, bz_id)
+                        sub_config['vulnerability_ammo_cache'][key] = dmg_mult
+
+                except Exception as e:
+                    print 'error for', mob_config['__filename__']
+                    print ammo_conf
+                    raise e
+
+
+def load_and_cache_creatures(reload_clients = False):
+    from os import path
+    import ResMgr
+    from Config.Creatures import CommonConfig
+    import re
+    from math import radians
+    from Localization import lc
+    from Config.Creatures.Constants import BODYNAME_TO_ZONE
+    from Config.Damage import DamageTypes
+    import Colliders
+    if reload_clients:
+        for entity in BigWorld.entities.values():
+            if entity.__class__.__name__ == 'Avatar' and entity.hasWitness:
+                entity.ownClient.reload_creatures_config()
+
+    def _create_vulnerability_ammo_cache(mob_config):
+        mob_config['vulnerability_ammo_cache'] = {}
+        for ammo_conf in mob_config['vulnerability_ammo']:
+            try:
+                ammo_type = int(ammo_conf['ammo_type'])
+                for bz_name, dmg_mult in ammo_conf['filter_multiplier'].items():
+                    bz_id = BODYNAME_TO_ZONE[bz_name]
+                    key = (ammo_type, bz_id)
+                    mob_config['vulnerability_ammo_cache'][key] = dmg_mult
+
+            except Exception as e:
+                print 'error for', mob_config['__filename__']
+                print ammo_conf
+                raise e
+
+    caps_str_to_ind = {}
+    for entry in ResMgr.openSection('scripts/common/capabilities.xml').values():
+        if entry.name == 'state':
+            ind = entry.asInt
+            name = entry['name'].asString
+            caps_str_to_ind[name] = ind
+
+    replaces = ['targets_count',
+     'health_percent',
+     'state',
+     'health',
+     'is_dead',
+     'target_distance',
+     'state_time']
+
+    def parse_criteria(criteria_data):
+
+        def get_replacement(key):
+            return "self.get_logic_param('{0}', for_state=for_state)".format(key)
+
+        def get_regex(key):
+            return '\\b{0}\\b'.format(key)
+
+        for key in replaces:
+            if key in criteria_data:
+                criteria_data = re.sub(get_regex(key), get_replacement(key), criteria_data)
+
+        return 'lambda self, for_state:({0})'.format(criteria_data)
+
+    def set_state_default(state_data, state_name_to_index, skill_name_to_index):
+
+        def set_default_value(key, value):
+            if key not in state_data:
+                state_data[key] = value
+
+        state_data.pop('editor_pos', None)
+        default_values = {'actions_random': False,
+         'persistent_effects': {},
+         'caps': [],
+         'change_state_timer': [],
+         'entering_actions': {},
+         'persistent_actions': [],
+         'pitch_param': None,
+         'roll_param': None,
+         'skills': {},
+         'movement_types': [],
+         'transitions': {},
+         'speed': {},
+         'model': ''}
+        for key, value in default_values.items():
+            set_default_value(key, value)
+
+        if 'transitions' in state_data:
+            new_transitions = {}
+            for k, v in state_data['transitions'].items():
+                new_transitions[state_name_to_index[k]] = v
+
+            state_data['transitions'] = new_transitions
+        if 'conditions' in state_data:
+            for i, cond in enumerate(state_data['conditions']):
+                if '__name__' not in cond:
+                    cond['__name__'] = 'conditions' + str(i)
+                if 'to_state' in cond:
+                    cond['to_state'] = state_name_to_index[cond['to_state']]
+                if 'criteria' in cond:
+                    cond['criteria'] = eval(parse_criteria(cond['criteria']))
+
+        if 'skills' in state_data:
+            new_skills = {}
+            for skill_name, skill_data in state_data['skills'].items():
+                if skill_name == 'TELEPORT' and not skill_data:
+                    skill_data = 0.0
+                new_skills[skill_name_to_index[skill_name]] = skill_data
+
+            state_data['skills'] = new_skills
+        if 'caps' in state_data:
+            state_data['caps'] = [ caps_str_to_ind[c] for c in state_data['caps'] ]
+        if 'persistent_effects' in state_data:
+            new_persistent_effects = {}
+            for key, value in state_data['persistent_effects'].items():
+                new_persistent_effects[int(key)] = value
+
+            state_data['persistent_effects'] = new_persistent_effects
+        if 'change_state_timer' in state_data and state_data['change_state_timer']:
+            state_data['change_state_timer'][1] = state_name_to_index[state_data['change_state_timer'][1]]
+        return
+
+    def set_wave_default(wave_data):
+
+        def set_default_value(key, value):
+            if key not in wave_data:
+                wave_data[key] = value
+
+        default_values = {'abilities': [],
+         'direct': None,
+         'sfx': None,
+         'effect_stack': 1,
+         'effect_chance': 1.0,
+         'effect_id': None}
+        for key, value in default_values.items():
+            set_default_value(key, value)
+
+        if 'body_zones' in wave_data:
+            wave_data['body_zones'] = [ BODYNAME_TO_ZONE[bz] for bz in wave_data['body_zones'] ]
+        if 'type' in wave_data:
+            wave_data['type'] = getattr(DamageTypes, wave_data['type'])
+        if wave_data['direct']:
+            if wave_data['direct']['YPR'] != 'auto':
+                wave_data['direct']['YPR'] = map(radians, wave_data['direct']['YPR'])
+            wave_data['direct']['angle'] = radians(wave_data['direct']['angle'])
+        return
+
+    def set_skill_default(skill_data):
+
+        def set_default_value(key, value):
+            if key not in skill_data:
+                skill_data[key] = value
+
+        default_values = {'penetrate_walls': False,
+         'heal_ratio': 0.0,
+         'trajectory': None,
+         'cooldown': None,
+         'stop_movement': 0.0,
+         'waves_damage': None,
+         'actions': []}
+        for key, value in default_values.items():
+            set_default_value(key, value)
+
+        if 'waves_damage' in skill_data and skill_data['waves_damage']:
+            for i, wd in enumerate(skill_data['waves_damage']):
+                if '__name__' not in wd:
+                    wd['__name__'] = 'waves_damage' + str(i)
+                set_wave_default(wd)
+
+        if 'tracker' in skill_data:
+            secondaryNodes = skill_data['tracker'].get('secondary_nodes', [])
+            for i in xrange(len(secondaryNodes)):
+                secondaryNodes[i] = (secondaryNodes[i][0], secondaryNodes[i][1])
+
+        return
+
+    def set_default(mob_config):
+
+        def set_default_value(key, value):
+            if key not in mob_config:
+                mob_config[key] = value
+
+        default_values = {'HITBOX_FIX': '',
+         'distance_use_target_filter': 0.0,
+         'endlive_animation': '',
+         'fly_corps_time': 5.0,
+         'cue_fall_node': [],
+         'aling_to_ground_smart': True,
+         'fall_sound': '',
+         'enemies': [],
+         'defence': {},
+         'stipple_distance': 0.0,
+         'permanent_stipple': False,
+         'health_without_pops': 1.0,
+         'decompose_fade_time': 5.0,
+         'tracker': {},
+         'attack_transport': 0,
+         'decompose_endlive_sfx': '',
+         'tints': [],
+         'butch_dye': [],
+         'recompose_sfx': '',
+         'leave_stipple_sfx': '',
+         'random_spots': {},
+         'cues_sounds': {},
+         'decompose_sfx': '',
+         'vulnerability_ammo': [],
+         'transport_hit_sfx': {},
+         'avatar_ignore': 0,
+         'cue_footstep_node': [],
+         'fly_corps_sfx': '',
+         'enter_stipple_sfx': '',
+         'vulnerability_ammo_cache': {},
+         'attack_objects': 0,
+         'attack_event_breakable': 1,
+         'attack_door': 0,
+         'self_effects': 0,
+         'ignore_premium_additional_cycles': False,
+         'sound_pitch': 0.0,
+         'sound_volume': 1.0,
+         'promenade_time': [10, 60],
+         'sturdiness': {},
+         'IdleSoundRadius': 2,
+         'DISABLE_CHECK_ESCAPE_STUCK': False,
+         'pitch_param': [-60, 60],
+         'collide_distance': 3.0,
+         'roll_param': [-30, 30],
+         'death_bleed': [],
+         'assist': None,
+         'melee_distance': 1.0,
+         'radius_model': 0.2,
+         'melee_height': 0.0,
+         'depth_idle': 1.0,
+         'actions': {},
+         'interaction_distance': 1.0,
+         'loot': '',
+         'hips_offset': [0, 0.1, 0],
+         'bleed_sfx': {},
+         'effect_hips': 'hips',
+         'return_move_speed': 20,
+         'return_distance': 0,
+         'bleed_effect_sfx': ''}
+        for key, value in default_values.items():
+            set_default_value(key, value)
+
+        if 'colliders' not in data:
+            config_path = 'characters/creatures/' + data['hitbox_path']
+            data['colliders'] = Colliders.get_colliders_cfg(config_path)
+        for key, value in data['defence'].items():
+            new_value = {}
+            for k, v in value.items():
+                new_value[getattr(DamageTypes, k)] = v
+
+            data['defence'][key] = new_value
+
+        secondaryNodes = data['tracker'].get('secondary_nodes', [])
+        for i in xrange(len(secondaryNodes)):
+            secondaryNodes[i] = (secondaryNodes[i][0], secondaryNodes[i][1])
+
+        return
+
+    config = {}
+    for mob_type, folder in CommonConfig.creature_type_to_folder.iteritems():
+        mob_config = {'__filename__': folder + '.pyson',
+         '__subtype_index_by_name__': {}}
+        sorted_data = [('default', None)]
+        section = ResMgr.openSection(path.join('scripts/common/data/Creatures', folder))
+        for file_name, subsection in section.items():
+            try:
+                if not file_name.endswith('.pyson'):
+                    continue
+                subtype = unicode(file_name[:-6])
+                try:
+                    data = pyson.loads(subsection.asBinary)
+                except:
+                    print 'Creatures (ERROR) parse file', repr([file_name, folder])
+                    raise
+
+                data['name'] = lc('Creatures.mob_{0}.sub_{1}').format(mob_type, subtype)
+                data['__name__'] = None
+                data['subtype_name'] = subtype
+                sorted_data.append((subtype, data))
+                set_default(data)
+                old_skills = sorted(data['skills'].items())
+                new_skills = {}
+                skill_name_to_index = {}
+                for i, (skill_name, skill_data) in enumerate(old_skills):
+                    skill_index = i + 1
+                    skill_name_to_index[skill_name] = skill_index
+                    skill_data['__name__'] = skill_name
+                    new_skills[skill_index] = skill_data
+                    set_skill_default(skill_data)
+
+                data['skills'] = new_skills
+                old_states = sorted(data['states'].items())
+                new_states = {}
+                state_name_to_index = {}
+                for i, (state_name, state_data) in enumerate(old_states):
+                    state_index = i + 1
+                    state_name_to_index[state_name] = state_index
+                    state_data['__name__'] = state_name
+                    new_states[state_index] = state_data
+
+                data['states'] = new_states
+                for state_data in new_states.values():
+                    set_state_default(state_data, state_name_to_index, skill_name_to_index)
+
+                if 'default_state' in data:
+                    data['default_state'] = state_name_to_index[data['default_state']]
+                if 'common_conditions' in data:
+                    for i, cc in enumerate(data['common_conditions']):
+                        if '__name__' not in cc:
+                            cc['__name__'] = 'common_conditions' + str(i)
+                        if 'to_state' in cc:
+                            cc['to_state'] = state_name_to_index[cc['to_state']]
+                        if 'criteria' in cc:
+                            cc['criteria'] = eval(parse_criteria(cc['criteria']))
+
+                if 'sturdiness' in data:
+                    for key, value in data['sturdiness'].items():
+                        new_value = {}
+                        for k, v in value.items():
+                            new_value[getattr(DamageTypes, k)] = v
+
+                        data['sturdiness'][key] = new_value
+
+                _create_vulnerability_ammo_cache(data)
+            except Exception as errr:
+                print 'load_and_cache_creatures err ', mob_type, folder, file_name, repr(errr)
+                traceback.print_stack()
+                traceback.print_exc()
+                print '\n\n'
+                raise errr
+
+        sorted_data.sort()
+        for index, (subtype, data) in enumerate(sorted_data):
+            mob_config[index] = data
+            mob_config['__subtype_index_by_name__'][subtype] = index
+
+        config[mob_type] = mob_config
+
+    get_type_config.cache = config
+    for mob_type, mob_data in get_type_config.cache.iteritems():
+        for sub_type, sub_data in mob_data.iteritems():
+            if sub_data and 'name' in sub_data:
+                sub_data['name'] = lc(sub_data['name'])
+
+    return
+
+
+load_and_cache_creatures()
+
+def get_config(mob_type, mob_level = KEYWORDS.DEFAULT_LEVEL):
+    mob_type_config = get_type_config(mob_type)
+    config = mob_type_config.get(mob_level)
+    if config:
+        return config
+    config = mob_type_config.get(get_subtype_index(mob_type, KEYWORDS.DEFAULT_LEVEL))
+    if config:
+        return config
+    for i in range(len(mob_type_config)):
+        config = mob_type_config.get(i)
+        if config:
+            return config
+
+
+def get_subtype_name(mob_type, subtype):
+    return get_config(mob_type, subtype)[SUBTYPE_NAME]
+
+
+def get_subtype_index(mob_type, subtype_name):
+    mob_type_config = get_type_config(mob_type)
+    try:
+        return mob_type_config[SUBTYPE_INDEX_BY_NAME][subtype_name]
+    except KeyError:
+        print 'Creatures config: get_subtype_index: no such subtype {0} for type {1}'.format(subtype_name, mob_type)
+        traceback.print_stack()
+        print
+        return None
+
+    return None
+
+
+def has_subtype(mob_type, subtype_name):
+    return subtype_name in get_type_config(mob_type)[SUBTYPE_INDEX_BY_NAME]
+
+
+def get_state_name(mob_type, mob_level, state_id):
+    config = get_config(mob_type, mob_level)
+    return config[STATES][state_id]['__name__']
+
+
+def get_mob_name(mob_type, mob_level):
+    return get_config(mob_type, mob_level)[NAME]
+
+
+def get_creatures_types():
+    return CommonConfig.creature_type_to_folder.keys()
+
+
+def get_mob_subtypes(mob_type):
+    mob_type_config = get_type_config(mob_type)
+    result = []
+    for i in mob_type_config.keys():
+        if isinstance(i, (int, long)):
+            result.append(i)
+
+    return result
+
+
+def get_type_by_name(mob_name):
+    for i in get_creatures_types():
+        if mob_name == get_mob_name(i, 'default'):
+            return i
+
+
+def get_subtype_by_name(mob_type, sub_type_name):
+    mob_type_config = get_type_config(mob_type)
+    creature_subtypes = get_mob_subtypes(mob_type)
+    for sub_type in creature_subtypes:
+        if sub_type_name == mob_type_config[sub_type][SUBTYPE_NAME]:
+            return sub_type
+
+
+def save_creature_config_in_file():
+    from Config.Damage import DamageTypes, BODY_ZONES
+    crt_types = get_creatures_types()
+    dict_creatures = {}
+    outfile_path = 'CREATURE_TABLE.csv'
+    table_string = '\xd0\xa3\xd1\x80\xd0\xbe\xd0\xb2\xd0\xb5\xd0\xbd\xd1\x8c \xd0\xb8\xd0\xb3\xd1\x80\xd0\xbe\xd0\xba\xd0\xb0:\t1\r'
+    table_string += '*\xd0\xa2\xd0\xb8\xd0\xbf \xd0\xbc\xd0\xbe\xd0\xb1\xd0\xb0*\t*\xd0\x9f\xd0\xbe\xd0\xb4\xd1\x82\xd0\xb8\xd0\xbf \xd0\xbc\xd0\xbe\xd0\xb1\xd0\xb0*\t*\xd0\x9d\xd0\xb0\xd0\xb8\xd0\xbc\xd0\xb5\xd0\xbd\xd0\xbe\xd0\xb2\xd0\xb0\xd0\xbd\xd0\xb8\xd0\xb5 \xd0\xbc\xd0\xbe\xd0\xb1\xd0\xb0*\t*\xd0\x97\xd0\xb4\xd0\xbe\xd1\x80\xd0\xbe\xd0\xb2\xd1\x8c\xd0\xb5*\t*loot box*\t'
+    table_string += '*agro_range*\t*lose_agro_range*\t*level*\t*experience*\t*karma*\t'
+    table_string += '*skill number*\t*damage value*\t*defence*\t'
+    table_string += '\r'
+    for crt_type in crt_types:
+        dict_creatures[crt_type] = {}
+        for subtype in get_type_config.cache[crt_type].keys():
+            if not isinstance(subtype, int):
+                continue
+            try:
+                mob_name = get_mob_name(crt_type, subtype).encode('utf-8')
+            except Exception:
+                continue
+
+            subtype_name = get_subtype_name(crt_type, subtype)
+            dict_creatures[crt_type][subtype] = subtype_name
+            params = []
+            params.append(crt_type)
+            params.append(subtype_name)
+            params.append(mob_name)
+            params.append(get_type_config.cache[crt_type][subtype][HEALTH])
+            params.append(get_type_config.cache[crt_type][subtype][LOOT] or 'None')
+            params.append(get_type_config.cache[crt_type][subtype][AGRO_RANGE])
+            params.append(get_type_config.cache[crt_type][subtype][LOSE_AGRO_RANGE])
+            exp = get_type_config.cache[crt_type][subtype][EXPERIENCE]
+            level = get_type_config.cache[crt_type][subtype][COEF_LEVEL]
+            params.append(level)
+            clear_exp_string = '{2} * IF({0} - {1} < 0; 1; IF({0} - {1} < 10; 1; IF({0} - {1} <= 20; 0.4; IF({0} - {1} <= 30; 0.3; IF({0} - {1} <= 40; 0.2; 0.1)))))'.format('B1', level, exp).replace('.', ',')
+            karma = '=INT({0} / 5) '.format(clear_exp_string).replace('.', ',')
+            experience = '={0}'.format(clear_exp_string).replace('.', ',')
+            params.append(experience)
+            params.append(karma)
+            states = get_type_config.cache[crt_type][subtype][STATES]
+            used_skills = []
+            for state_id, state_data in states.items():
+                for skill_id, skill_weight in state_data.get('skills', {}).items():
+                    if skill_weight:
+                        used_skills.append(skill_id)
+
+            skills = get_type_config.cache[crt_type][subtype][SKILLS]
+            additional_string = ''
+            skill_flag = False
+            for skill_id in skills:
+                skill_name = skills[skill_id]['__name__']
+                if skill_id not in used_skills:
+                    continue
+                damage_value = [0, 0]
+                if skills[skill_id]['waves_damage']:
+                    for wave in skills[skill_id]['waves_damage']:
+                        if wave.get('direct'):
+                            try:
+                                damage_value[0] += wave['direct'].get('value_damage', [0, 0])[0]
+                                damage_value[1] += wave['direct'].get('value_damage', [0, 0])[1]
+                            except Exception as e:
+                                print mob_name, skill_name, wave['direct']
+                                raise e
+
+                        else:
+                            damage_value[0] += wave['value_damage'][0]
+                            damage_value[1] += wave['value_damage'][1]
+
+                elif skills[skill_id].get('direct'):
+                    damage_value[0] += skills[skill_id]['direct']['damage']['value'][0]
+                    damage_value[1] += skills[skill_id]['direct']['damage']['value'][1]
+                else:
+                    damage_value[0] += skills[skill_id]['damage']['value'][0]
+                    damage_value[1] += skills[skill_id]['damage']['value'][1]
+                if skill_flag:
+                    additional_string += '" "\t" "\t" "\t" "\t" "\t" "\t" "\t" "\t" "\t" "\t"{0}"\t"{1}"\t" "\r'.format(skill_name, damage_value)
+                else:
+                    skill_flag = True
+                    params.append(skill_name)
+                    params.append(damage_value)
+
+            if not used_skills:
+                params.append('-')
+                params.append('-')
+            defence = get_type_config.cache[crt_type][subtype][DEFENCE]
+            real_defence = {}
+            for body_zone_id in xrange(BODY_ZONES.NUM_BODY_ZONES):
+                body_zone = ZONE_TO_BODYNAME[body_zone_id]
+                zone_name = body_zone if body_zone in defence else 'default'
+                for damage_type_name in dir(DamageTypes):
+                    damage_type = getattr(DamageTypes, damage_type_name)
+                    if not damage_type:
+                        continue
+                    try:
+                        defence_value = defence[zone_name].get(damage_type, 0)
+                    except Exception as e:
+                        continue
+
+                    if not defence_value:
+                        continue
+                    if not real_defence.has_key(body_zone):
+                        real_defence[body_zone] = {}
+                    real_defence[body_zone][damage_type_name] = defence_value
+
+            params.append(real_defence)
+            table_string += '"{0}"\t"{1}"\t"{2}"\t"{3}"\t"{4}"\t"{5}"\t"{6}"\t"{7}"\t"{8}"\t"{9}"\t"{10}"\t"{11}"\t"{12}"\r'.format(*params)
+            table_string += additional_string
+
+    xf = open(outfile_path, 'w')
+    xf.write(table_string)
+    xf.close()
+    print dict_creatures
+
+
+def validate_configs():
+    from BlackBox import CreatureBox
+    import ResMgr
+    import sounds_manager
+    from SfxCatalog import Mat, SFX_HIT_CATALOG
+    error_data = ['']
+    model_cache = {}
+
+    def add_error(error_text, mob_type, sub_type, file_name):
+        try:
+            subtype_name = get_subtype_name(mob_type, sub_type)
+        except:
+            subtype_name = 'NOTFOUND:%s' % sub_type
+
+        error_data[0] += '{0} mob type: {1} {2} {3}\n'.format(error_text, mob_type, subtype_name, file_name)
+
+    def validate_sub_config(config, mob_type, sub_type, file_name, foot_sound_arr):
+        model_name = config['model']
+        if model_name not in model_cache:
+            model = None
+            try:
+                model = BigWorld.Model(str(MODELS_ROOT) + model_name)
+            except Exception as e:
+                add_error('error model: ' + model_name + ' : ' + str(e), mob_type, sub_type, file_name)
+
+            model_cache[model_name] = model
+        model = model_cache[model_name]
+        tints = config['tints']
+        if model:
+            for tint in filter(lambda t: bool(t), tints):
+                for tint_name, tint_value in tint.items():
+                    if not model.hasTint(tint_name, tint_value):
+                        add_error('bad tint: ' + model_name + ' ' + tint_name + ' ' + tint_value, mob_type, sub_type, file_name)
+
+        if 'undefined:' in config['name']:
+            add_error('localization ' + config['name'], mob_type, sub_type, file_name)
+        if config['loot']:
+            try:
+                CreatureBox(config['loot'])
+            except Exception as e:
+                add_error('error loot: ' + str(e), mob_type, sub_type, file_name)
+
+        sfxes = set([ c['sfx'] for c in config['death_bleed'] ])
+        for skill in config['skills'].values():
+            sfxes |= set([ s['sfx'] if not skill['waves_damage'] for s in [] if s['sfx'] ])
+
+        for material_name in config['bleed_sfx']:
+            material_id = Mat.get_material_id_by_name(material_name)
+            for sfx_data in SFX_HIT_CATALOG.values():
+                sfxes.add(sfx_data.get(material_id) or sfx_data[Mat.Default])
+
+        for sfx in sfxes:
+            if not ResMgr.openSection(sfx):
+                add_error('no sfx named ' + sfx, mob_type, sub_type, file_name)
+
+        sounds = set()
+        for action in config['actions'].values():
+            sounds |= set(action.get('sounds', set()))
+
+        for i in ['footsteps_sound', 'fall_sound']:
+            if not config[i]:
+                continue
+            for material_id, material_data in BigWorld.getMaterialKinds():
+                if material_data['sound'] is None:
+                    continue
+                sound = material_data['sound'].asString
+                if sound:
+                    foot_sound_arr.add(config[i] + '/' + sound)
+
+        for sound in sounds:
+            if not sounds_manager.getSound(sound):
+                add_error('sound not found: ' + sound, mob_type, sub_type, file_name)
+
+        if model:
+            actions = set()
+            for state in config['states'].values():
+                for pa in state['persistent_actions']:
+                    if pa not in config['actions']:
+                        add_error('action not defined: ' + pa, mob_type, sub_type, file_name)
+
+            for action in config['actions'].values():
+                model_actions = action.get('model_actions')
+                if model_actions:
+                    actions |= set(model_actions.get('actions', []))
+
+            for action in actions:
+                if not hasattr(model, action):
+                    add_error('action not found ' + action, mob_type, sub_type, file_name)
+
+        nodes = set()
+        if model:
+            nodes |= set([ col['nodeName'] for col in config['colliders'] ])
+            for node in nodes:
+                try:
+                    model.node(node)
+                except:
+                    add_error('node not found : ' + node, mob_type, sub_type, file_name)
+
+        return
+
+    for mob_type, type_config in get_type_config.cache.items():
+        foot_sound_arr = set()
+        file_name = type_config['__filename__']
+        for sub_type, sub_config in type_config.items():
+            if sub_type in ('__filename__', '__subtype_index_by_name__'):
+                continue
+            try:
+                if type_config['__subtype_index_by_name__']['default'] == sub_type:
+                    continue
+                validate_sub_config(sub_config, mob_type, sub_type, file_name, foot_sound_arr)
+            except Exception as e:
+                add_error('error sub_config: ' + str(e) + ' : ', mob_type, sub_type, type_config['__filename__'])
+                traceback.print_exc()
+
+        for sound in sorted(foot_sound_arr):
+            if not sounds_manager.getSound(sound):
+                add_error('sound not found: ' + sound, mob_type, '', file_name)
+
+    model_cache.clear()
+    return error_data[0]

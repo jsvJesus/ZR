@@ -1,0 +1,147 @@
+# Embedded file name: ./client/multi_model.py
+from functools import partial
+import time
+import BigWorld
+from Math import Matrix, Vector3
+
+class MultiModel:
+
+    def __init__(self, model_path):
+        self.model_path = model_path
+        self._size = 0
+        self._copy_matrix = {}
+        self._original_data = []
+        self._dirty = True
+        self.rm = BigWorld.RawModel(model_path)
+        self.rm.setTransform(Matrix())
+        sFormat, listPrimGroups, listIndexes, listVerticles, listUV2, listColors = self.rm.verticleData
+        self.has_uv2 = bool(listUV2 is not None)
+        self.has_colors = bool(listColors is not None)
+        self.sFormat = sFormat
+        if sFormat != 'xyznuvtb':
+            raise TypeError('unsupported vertex format %r' % sFormat)
+        BigWorld.addModel(self.rm)
+        self._count_verticles = 0
+        self._count_primitives = 0
+        self._count_mesh = 0
+        for startVertex, startIndex, nVerticles, nPrimitives in listPrimGroups:
+            self._count_verticles += nVerticles
+            self._count_primitives += nPrimitives
+            self._count_mesh += 1
+            original_mesh = {'indexes': [],
+             'vert_list': []}
+            original_mesh['vert_list'] = listVerticles[startVertex:startVertex + nVerticles]
+            indexes = listIndexes[startIndex:startIndex + nPrimitives * 3]
+            for index in indexes:
+                original_mesh['indexes'].append(index - startVertex)
+
+            self._original_data.append(original_mesh)
+
+        max_m = int(50000 / self._count_verticles)
+        max_m = max(max_m, 30)
+        max_m = min(max_m, 1000)
+        self.max_submodels = max_m
+        return
+
+    def _calc_mesh(self, vert_list, matrix):
+        res = []
+        for vert in vert_list:
+            vert = list(vert)
+            vert[0] = matrix.applyPoint(vert[0])
+            vert[1] = matrix.applyVector(vert[1])
+            vert[3] = matrix.applyVector(vert[3])
+            vert[4] = matrix.applyVector(vert[4])
+            for i in xrange(3):
+                self._bb_min[i] = min(self._bb_min[i], vert[0][i])
+                self._bb_max[i] = max(self._bb_max[i], vert[0][i])
+
+            res.append(vert)
+
+        return res
+
+    def canFitSubmodel(self):
+        return self.size() < self.max_submodels
+
+    def size(self):
+        return self._size
+        return len(self._copy_matrix)
+
+    def updateMesh(self):
+        if not self._dirty:
+            return
+        elif self._size <= 0:
+            return
+        else:
+            self.rm.recreateCopyModel()
+            return
+            self._bb_min = Vector3(-1, -1, -1)
+            self._bb_max = Vector3(1, 1, 1)
+            listPrimGroups = []
+            listIndexes = []
+            listVerticles = []
+            count = len(self._copy_matrix)
+            if not count:
+                return
+            for mesh_id, original_mesh in enumerate(self._original_data):
+                startVertex = len(listVerticles)
+                startIndex = len(listIndexes)
+                vert_list_in_mesh = len(original_mesh['vert_list'])
+                nVerticles = vert_list_in_mesh * count
+                nPrimitives = len(original_mesh['indexes']) * count / 3
+                for i, matrix in enumerate(self._copy_matrix.values()):
+                    listVerticles.extend(self._calc_mesh(original_mesh['vert_list'], matrix))
+                    for index in original_mesh['indexes']:
+                        listIndexes.append(index + startVertex + i * vert_list_in_mesh)
+
+                listPrimGroups.append([startVertex,
+                 startIndex,
+                 nVerticles,
+                 nPrimitives])
+
+            if self.has_uv2:
+                listUV2 = [ (0, 0) for _ in xrange(len(listVerticles)) ]
+            else:
+                listUV2 = None
+            if self.has_colors:
+                listColors = [ 0 for _ in xrange(len(listVerticles)) ]
+            else:
+                listColors = None
+            self.rm.verticleData = (self.sFormat,
+             listPrimGroups,
+             listIndexes,
+             listVerticles,
+             listUV2,
+             listColors)
+            self.rm.localBoundingBox = (self._bb_min, self._bb_max)
+            self.rm.localVisibilityBox = (self._bb_min, self._bb_max)
+            self._dirty = False
+            return
+
+    def add_copy(self, unical_id, matrix, update = False):
+        self.rm.addCopy(unical_id, matrix)
+        self._size += 1
+        self._dirty = True
+        if update:
+            self.updateMesh()
+
+    def del_copy(self, unical_id, update = False):
+        self.rm.delCopy(unical_id)
+        self._size -= 1
+        self._dirty = True
+        if update:
+            self.updateMesh()
+
+    def destroy(self):
+        if not self.rm:
+            return
+        else:
+            try:
+                BigWorld.delModel(self.rm)
+            except:
+                traceback.print_exc()
+
+            self.rm = None
+            self._original_data = None
+            self._copy_matrix = None
+            self._dirty = False
+            return

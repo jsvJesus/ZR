@@ -1,0 +1,216 @@
+# Embedded file name: ./common/TransportUtils.py
+import math
+from Math import Vector3
+
+def map_to_range(rotation_vector):
+
+    def map_to_range_scalar(rotation_scalar):
+        rotation_scalar = rotation_scalar % (2 * math.pi)
+        if rotation_scalar > math.pi:
+            return rotation_scalar - 2 * math.pi
+        return rotation_scalar
+
+    x = map_to_range_scalar(rotation_vector[0])
+    y = map_to_range_scalar(rotation_vector[1])
+    z = map_to_range_scalar(rotation_vector[2])
+    return Vector3(x, y, z)
+
+
+class Kinematic:
+
+    def __init__(self, position, velocity, orientation, rotation):
+        self.kposition = position
+        self.kvelocity = velocity
+        self.korientation = orientation
+        self.krotation = rotation
+
+    def update(self, steering, time):
+        self.kposition += self.kvelocity * time
+        self.kvelocity *= 0.999
+        self.kvelocity += steering.linear * time
+        self.korientation += self.krotation * time
+        self.krotation += steering.angular * time
+
+
+class SteeringOutput:
+
+    def __init__(self):
+        self.linear = Vector3()
+        self.angular = Vector3()
+
+
+class Align:
+
+    def __init__(self, character, target, max_angular_acceleration, max_rotation, slow_radius, time_to_target):
+        self._character = character
+        self._target = target
+        self.max_angular_acceleration = max_angular_acceleration
+        self.max_rotation = max_rotation
+        self.slow_radius = slow_radius
+        self.time_to_target = time_to_target
+
+    def get_steering(self):
+        steering = SteeringOutput()
+        if not self.slow_radius:
+            return steering
+        rotation = self._target.korientation - self._character.korientation
+        rotation = map_to_range(rotation)
+
+        def calc_target_rotation(rotation):
+            rotation_size = abs(rotation)
+            if rotation_size > self.slow_radius:
+                target_rotation = self.max_rotation
+            else:
+                target_rotation = self.max_rotation * rotation_size / self.slow_radius
+            if rotation_size != 0:
+                target_rotation *= rotation / rotation_size
+            return target_rotation
+
+        yaw, pitch, roll = rotation
+        target_rotation = Vector3(calc_target_rotation(yaw), calc_target_rotation(pitch), calc_target_rotation(roll))
+        steering.angular = target_rotation - self._character.krotation
+        steering.angular /= self.time_to_target
+
+        def calc_angular(angular):
+            angular_acceleration = abs(angular)
+            if angular_acceleration > self.max_angular_acceleration:
+                angular /= angular_acceleration
+                angular *= self.max_angular_acceleration
+            return angular
+
+        steering.angular = Vector3(calc_angular(steering.angular[0]), calc_angular(steering.angular[1]), calc_angular(steering.angular[2]))
+        return steering
+
+
+class AutoAlign(Align):
+
+    def __init__(self, character, target, max_angular_acceleration, max_rotation, slow_radius, time_to_target, auto_align, for_server):
+        Align.__init__(self, character, target, max_angular_acceleration, max_rotation, slow_radius, time_to_target)
+        self._auto_target = Kinematic(Vector3(), Vector3(), Vector3(), Vector3())
+        self._for_server = for_server
+        self._auto_align = Align(self._character, self._auto_target, 16, 4, 2, 0.1)
+        self.set_auto_mode(auto_align)
+
+    def get_steering(self):
+        if self._auto_mode:
+            v = Vector3(self._character.kvelocity)
+            speed = v.length
+            if speed <= 0.001:
+                return SteeringOutput()
+            v.normalise()
+            v *= 3.0
+            if self._for_server:
+                self._auto_target.korientation = Vector3(0, v.pitch, v.yaw)
+            else:
+                self._auto_target.korientation = Vector3(v.yaw, v.pitch, 0)
+            self._auto_align.max_angular_acceleration = speed * 4
+            self._auto_align.max_rotation = speed * 1
+            self._auto_align.slow_radius = speed * 1
+            self._auto_align.time_to_target = 0.1
+            return self._auto_align.get_steering()
+        else:
+            return Align.get_steering(self)
+
+    def set_auto_mode(self, auto_mode):
+        self._auto_mode = auto_mode
+
+
+class Arrive:
+
+    def __init__(self, character, target, max_acceleration, max_speed, slow_radius, time_to_target):
+        self._character = character
+        self._target = target
+        self.max_acceleration = float(max_acceleration)
+        self.max_speed = float(max_speed)
+        self.slow_radius = float(slow_radius)
+        self.time_to_target = time_to_target
+
+    def get_steering(self):
+        steering = SteeringOutput()
+        direction = self._target.kposition - self._character.kposition
+        distance = direction.length
+        if not self.slow_radius or distance > self.slow_radius:
+            target_speed = self.max_speed
+        else:
+            target_speed = self.max_speed * distance / self.slow_radius
+        target_velocity = Vector3(direction)
+        target_velocity.normalise()
+        target_velocity *= target_speed
+        steering.linear = target_velocity - self._character.kvelocity
+        steering.linear /= self.time_to_target
+        if steering.linear.length > self.max_acceleration:
+            steering.linear.normalise()
+            steering.linear *= self.max_acceleration
+        return steering
+
+
+class PointAsDictWrapper(object):
+
+    def __init__(self, item):
+        self._item_dict = isinstance(item, dict)
+        self._item = item
+
+    def __getattr__(self, attr):
+        if self._item_dict:
+            return self._get_dict_value(attr)
+        else:
+            return getattr(self._item, attr)
+
+    def __getitem__(self, key):
+        if self._item_dict:
+            return self._get_dict_value(key)
+        else:
+            return getattr(self._item, key)
+
+    def _get_dict_value(self, key):
+        value = self._item.get(key)
+        if value is None:
+            if key == 'position':
+                return self._item['matrix'].translation
+            if key == 'direction':
+                matrix = self._item['matrix']
+                return Vector3(matrix.roll, matrix.pitch, matrix.yaw)
+            raise RuntimeError
+        return value
+
+
+class Target(object, Kinematic):
+
+    def __init__(self, point):
+        self.point = PointAsDictWrapper(point)
+        self._position = Vector3(self.point.position)
+        self.korientation = Vector3(self.point.direction)
+        Kinematic.__init__(self, self._position, Vector3(), self.korientation, Vector3())
+
+    def next_point(self):
+        self._enter_callback_played = False
+        next_point = self._next_point(self.point)
+        self.point = PointAsDictWrapper(next_point)
+        if not self.point:
+            raise RuntimeError('Transport Simulator: (ERROR) next pont not found. Make sure all the point are loaded')
+        self.kposition = self.point.position
+        self.korientation = Vector3(self.point.direction)
+        return self.point
+
+    def _next_point(self, point):
+        raise NotImplementedError
+
+    def _update_position(self):
+        raise NotImplementedError
+
+    @property
+    def kposition(self):
+        return self._position
+
+    @kposition.setter
+    def kposition(self, value):
+        self._position = Vector3(value)
+        self._update_position()
+
+    @property
+    def radius(self):
+        return self.point.radius
+
+    def on_destroy(self):
+        self.point = None
+        return

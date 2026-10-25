@@ -1,0 +1,124 @@
+# Embedded file name: ./client/DungeonSoundNode.py
+import BigWorld
+from random import choice
+from sounds_manager import playSound
+import BWPersonality
+import Settings
+from utils import ignoreError
+from Subtitles import Subtitles
+from Helpers.Caps import CAP_EXCLUDE
+
+class DungeonSoundNode(BigWorld.Entity):
+    soundCallback = None
+
+    def __init__(self):
+        BigWorld.Entity.__init__(self)
+        self.lastSound = None
+        self.lastSoundName = ''
+        self.wasPlayed = False
+        self.callback_id = None
+        self.del_callback_id = None
+        self.targetCaps = [CAP_EXCLUDE]
+        if not (self.musicNode and not self.playFrequency):
+            raise AssertionError
+        return
+
+    def set_activated(self, old):
+        if self.callback_id:
+            BigWorld.cancelCallback(self.callback_id)
+            self.callback_id = None
+        if self.delay:
+            self.callback_id = BigWorld.callback(self.delay, self.on_change_acitivated)
+        else:
+            self.on_change_acitivated()
+        return
+
+    def on_change_acitivated(self):
+        if self.isDestroyed:
+            return
+        if self.activated:
+            self.playRandom()
+        else:
+            self.stopSound()
+
+    def repeat(self):
+        self.stopSound()
+        self.on_change_acitivated()
+
+    def realyStop(self):
+        if self.lastSound:
+            self.lastSound.stop()
+            self.lastSound = None
+        self.lastSoundName = ''
+        return
+
+    def stopSound(self):
+        if self.musicNode:
+            BWPersonality.music.pop_music_theme(self.id)
+            return
+        if self.lastSound:
+            if self.stop_sound_param:
+                self.lastSound.set_param(self.stop_sound_param, self.stop_sound_value)
+                self.del_callback_id = BigWorld.callback(10, self.realyStop)
+            else:
+                self.realyStop()
+
+    def onEnterWorld(self, prereq):
+        self.model = BigWorld.Model('')
+        self.soundCallback = None
+        Settings.Settings().addSfxChangeObserver(self)
+        self.on_change_acitivated()
+        return
+
+    def sfxVolumeChanged(self, volume):
+        self._update_volume()
+
+    @ignoreError
+    def _update_volume(self):
+        if not self.lastSound:
+            return
+        volume = Settings.Settings().getEnvironmentVolume()
+        self.lastSound.set_volume(volume)
+
+    def onLeaveWorld(self):
+        if self.soundCallback is not None:
+            BigWorld.cancelCallback(self.soundCallback)
+        if self.del_callback_id:
+            BigWorld.cancelCallback(self.del_callback_id)
+            self.del_callback_id = None
+        self.realyStop()
+        Settings.Settings().removeSfxChangeObserver(self)
+        self.model = None
+        return
+
+    def playRandom(self):
+        if len(self.sounds) == 0:
+            print 'No sounds to play for SoundNode at', self.position
+            return
+        else:
+            if self.del_callback_id:
+                BigWorld.cancelCallback(self.del_callback_id)
+            randomSnd = choice(self.sounds)
+            if self.playOnce and self.wasPlayed:
+                return
+            self.wasPlayed = True
+            if self.musicNode:
+                BWPersonality.music.push_music_theme(self.id, randomSnd)
+                return
+            if self.lastSound:
+                if self.lastSoundName != randomSnd:
+                    self.lastSound.stop()
+            if self.lastSoundName != randomSnd:
+                if self.lastSound:
+                    self.lastSound.releaseSound()
+                self.lastSound = playSound(randomSnd, self.model)
+                self.lastSoundName = randomSnd
+            else:
+                self.lastSound.play()
+                self._update_volume()
+            Subtitles.play(self, self.lastSoundName)
+            if self.soundCallback is not None:
+                BigWorld.cancelCallback(self.soundCallback)
+            if self.playFrequency > 0.0:
+                self.soundCallback = BigWorld.callback(self.playFrequency, self.playRandom)
+            return

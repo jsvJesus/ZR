@@ -1,0 +1,100 @@
+# Embedded file name: ./common/cloth_paint_utils.py
+from Items import ItemsCatalog
+import ItemsUtils
+import ItemCategories as IC
+from Localization import lc
+
+class PaintNotifyCode:
+    PAINT_OK = 1
+    ERR_NOT_FOUND_AVATAR = 100
+    ERR_NOT_CONSUMABLES_STORE = 101
+    ERR_NOT_CONSUMABLES_AVATAR = 102
+    ERR_NOT_MONEY = 103
+    ERR_NOT_VALID_DATA = 104
+    ERR_TUTOR_SPACE = 105
+    ERR_NOT_CONSUMABLES_STEAM_STORE = 106
+    ERR_GET_FROM_STEAM_STORE = 107
+
+    @staticmethod
+    def getname(msg_id):
+        for name in dir(PaintNotifyCode):
+            val = getattr(PaintNotifyCode, name, None)
+            if val == msg_id:
+                return name
+
+        return
+
+    @staticmethod
+    def textMsg(msg_id):
+        code_name = PaintNotifyCode.getname(msg_id)
+        return lc('Codes.PaintNotifyCode.%s' % code_name, default=u'error code: %s' % msg_id)
+
+
+def selectSeamItmesForConsume(steamitems, consumables):
+    need_type2count = {}
+    for e in consumables:
+        type_id = e['type_id']
+        need_type2count[type_id] = e['count'] + need_type2count.get(type_id, 0)
+
+    if not need_type2count:
+        raise ValueError
+    for type_id, count in need_type2count.items():
+        if count <= 0:
+            print 'need_type2count:', need_type2count
+            raise ValueError
+
+    to_steam = {}
+    for item in steamitems:
+        if item.get('state'):
+            continue
+        type_id = int(item['itemdefid'])
+        if type_id not in need_type2count:
+            continue
+        itemid = int(item['itemid'])
+        quantity = int(item['quantity'])
+        if need_type2count[type_id] > quantity:
+            to_steam[itemid] = (quantity, type_id)
+            need_type2count[type_id] -= quantity
+        else:
+            to_steam[itemid] = (need_type2count[type_id], type_id)
+            del need_type2count[type_id]
+
+    found_all = True
+    if need_type2count:
+        found_all = False
+    return (found_all, to_steam)
+
+
+def isPaintConsumablesType(item_type):
+    return item_type == ItemsCatalog.EVENT_TICKET['TypeID']
+
+
+def filterPaintConsumablesType(items_list):
+    info_dict = {}
+    for item in items_list:
+        if isPaintConsumablesType(item['complexItemType']):
+            type_id = item['complexItemType']
+            info_dict[type_id] = ItemsUtils.GetItemNumber(item) + info_dict.get(type_id, 0)
+
+    return ItemsUtils.consumed_dict_to_list(info_dict)
+
+
+def filterPaintOrEmblemItemsOrEquipped(carrying_items, equipped_armor):
+    equipped_ids = set([ item_data['itemID'] for item_data in equipped_armor.values() ])
+
+    def show_item_in_paint_screen(item):
+        item_id = item['complexItemID']
+        if item_id in equipped_ids:
+            return True
+        item_type = item['complexItemType']
+        item_class = ItemsCatalog.GetItemClass(item_type)
+        item_category = ItemsCatalog.GetItemCategory(item_type)
+        if item_class == ItemsCatalog.CLOTH and IC.is_subcategory(item_category, IC.CLOTHING):
+            return True
+        if item_class == ItemsCatalog.PART and IC.is_subcategory(item_category, IC.WEAPON):
+            return True
+        if item_class == ItemsCatalog.WEAPON and IC.is_subcategory(item_category, IC.WEAPON):
+            return True
+        return False
+
+    return filter(show_item_in_paint_screen, carrying_items)

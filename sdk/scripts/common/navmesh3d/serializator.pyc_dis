@@ -1,0 +1,170 @@
+# Embedded file name: ./common/navmesh3d/serializator.py
+import BigWorld
+from Math import Matrix, Vector3
+from collections import defaultdict
+import struct
+
+class Point:
+
+    def __init__(self, v, ids_generator):
+        self.id = ids_generator.next() if ids_generator else 0
+        self.v = v
+
+    @staticmethod
+    def deserialize(file):
+        data = file.read(struct.calcsize('ifff'))
+        data = struct.unpack('ifff', data)
+        p = Point(Vector3(data[1:]), None)
+        p.id = data[0]
+        return p
+
+    def serialize(self):
+        result = [self.id]
+        result.extend(self.v)
+        return ('ifff', result)
+
+
+class Triangle:
+
+    def __init__(self, p0, p1, p2, pp, n, ids_generator):
+        self.id = ids_generator.next() if ids_generator else 0
+        self.p0, self.p1, self.p2 = p0, p1, p2
+        self.points = (p0, p1, p2)
+        if not pp:
+            self.pp = Point((p0.v + p1.v + p2.v) * 0.3333, ids_generator)
+            u = n or self.p2.v - self.p1.v
+            v = self.p1.v - self.p0.v
+            n = v.crossProduct(u)
+            n.normalise()
+        self.n = n
+        self.neigbs = []
+        self.portals = []
+        self.costs = []
+
+    @staticmethod
+    def deserialize(file, points_provider):
+        data = file.read(struct.calcsize('iiiiiifff'))
+        tr_id, count, p0_id, p1_id, p2_id, pp_id, n0, n1, n2 = struct.unpack('iiiiiifff', data)
+        p0 = points_provider[p0_id]
+        p1 = points_provider[p1_id]
+        p2 = points_provider[p2_id]
+        pp = points_provider[pp_id]
+        tri = Triangle(p0, p1, p2, pp, Vector3((n0, n1, n2)), None)
+        tri.id = tr_id
+        fsize = struct.calcsize('ifii')
+        for i in range(count):
+            n, c, ps0_id, ps1_id = struct.unpack('ifii', file.read(fsize))
+            tri.neigbs.append(n)
+            tri.costs.append(c)
+            tri.portals.append((ps0_id, ps1_id))
+
+        return tri
+
+    def add_neigbour(self, nt, portal):
+        self.neigbs.append(nt.id)
+        self.costs.append(self.pp.v.distTo(nt.pp.v))
+        self.portals.append((portal[0].id, portal[1].id))
+
+    def serialize(self):
+        count = len(self.neigbs)
+        raise len(self.neigbs) == len(self.portals) == len(self.costs) or AssertionError
+        result = [self.id,
+         count,
+         self.p0.id,
+         self.p1.id,
+         self.p2.id,
+         self.pp.id]
+        result.extend(self.n)
+        for i in range(count):
+            result.extend((self.neigbs[i],
+             self.costs[i],
+             self.portals[i][0],
+             self.portals[i][1]))
+
+        return ('iiiiiifff' + 'ifii' * count, result)
+
+    @staticmethod
+    def get_portal(t0, t1):
+        if t0 is t1:
+            return None
+        else:
+            portals = []
+            for p0 in t0.points:
+                for p1 in t1.points:
+                    if p0.v == p1.v:
+                        portals.append(p0)
+                        if len(portals) == 2:
+                            return portals
+
+            return None
+
+
+def get_path_from_guid(guid):
+    if BigWorld.component in ('server', 'editor'):
+        return '../../../res/scripts/common/data/navmesh3d/{0}.nvm'.format(guid)
+    else:
+        return '../res/scripts/common/data/navmesh3d/{0}.nvm'.format(guid)
+
+
+def load_from_guid(guid):
+    path = get_path_from_guid(guid)
+    points = []
+    triangles = []
+    point_ids = {}
+    with open(path, 'rb') as f:
+        points_count = struct.unpack('i', f.read(4))[0]
+        for i in range(points_count):
+            point = Point.deserialize(f)
+            points.append(point)
+            point_ids[point.id] = point
+
+        tris_count = struct.unpack('i', f.read(4))[0]
+        for i in range(tris_count):
+            triangle = Triangle.deserialize(f, point_ids)
+            triangles.append(triangle)
+
+        data = f.read(struct.calcsize('ffffff'))
+        matrix_fields = struct.unpack('ffffff', data)
+        str_length = struct.unpack('I', f.read(4))[0]
+        model_path = f.read(str_length)
+    return (points, triangles, (matrix_fields, model_path))
+
+
+def serialize_mesh(model):
+    matrix = Matrix(model.matrix)
+    mesh_data = model.getMesh(model.sources[0])[0][0]
+    world_vertices = map(matrix.applyPoint, mesh_data['vertices'])
+    indices = mesh_data['indices']
+
+    def ids_generator():
+        index = 0
+        while True:
+            index += 1
+            yield index
+
+    _ids_generator = ids_generator()
+    point_to_triangles = defaultdict(list)
+    points = list()
+    triangles = list()
+    for i in range(0, len(indices), 3):
+        p0 = Point(world_vertices[indices[i]], _ids_generator)
+        p1 = Point(world_vertices[indices[i + 1]], _ids_generator)
+        p2 = Point(world_vertices[indices[i + 2]], _ids_generator)
+        t = Triangle(p0, p1, p2, None, None, _ids_generator)
+        t_points = (p0,
+         p1,
+         p2,
+         t.pp)
+        points.extend(t_points)
+        triangles.append(t)
+        for p in t_points:
+            point_to_triangles[tuple(p.v)].append(t)
+
+    for t in triangles:
+        for p in t.points:
+            for nt in point_to_triangles[tuple(p.v)]:
+                portal = Triangle.get_portal(t, nt)
+                if portal:
+                    t.add_neigbour(nt, portal)
+
+    return (points, triangles)

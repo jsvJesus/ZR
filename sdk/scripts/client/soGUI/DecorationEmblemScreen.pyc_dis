@@ -1,0 +1,143 @@
+# Embedded file name: ./client/soGUI/DecorationEmblemScreen.py
+import GUI
+import json
+import ResMgr
+import BigWorld
+import gui_jokes
+import UCManager
+import DyeConstant
+import StalkerModel
+import BWPersonality
+from Localization import lc
+from soGUI.soClanEmblemScreen import ClanEmblemScreen, ModelWindow
+from ClanDecoration import get_model_path, get_model_animation, get_model_offset
+section = ResMgr.openSection('scripts/common/EnumProps/ClanDecoration.json')
+CONFIG = json.loads(section.asBinary)['model_index']['values']
+
+class DecorationEmblemScreen(ClanEmblemScreen):
+    factoryString = 'soGUI.DecorationEmblemScreen'
+
+    def __init__(self, component):
+        self.current_uid = None
+        self.model_index = 0
+        self.model_path = ''
+        ClanEmblemScreen.__init__(self, component)
+        self.component.wndFrame.nameLabel.text = lc('GUI.ClanEmblems.CAPTION_DEC')
+        return
+
+    def onSaveIconBtnClick(self):
+        if not self.current_uid:
+            return
+
+        def _save_check(event):
+            if event == gui_jokes.askUserYesNo.YES:
+                if self.newEmblemID is not None:
+                    BigWorld.player().cell.setDecorationIconID(self.newEmblemID, self.current_uid)
+                    self.frame_change_image.setStatus(1)
+                    self.hide()
+            return
+
+        if self.newEmblemID == self.currentEmblemID or self.newEmblemID == -1:
+            gui_jokes.askUserOk(lc('GUI.ClanEmblems.BUY_CAPTION'), lc('GUI.ClanEmblems.NOT_SAVE'))
+            return
+        pl = BigWorld.player()
+        if not pl or not pl.__class__.__name__ == 'PlayerAvatar':
+            return
+        if self.newEmblemID == 0:
+            gui_jokes.askUserYesNo(lc('GUI.ClanEmblems.BUY_CAPTION'), lc('GUI.ClanEmblems.RESET_EMBLEM'), _save_check)
+            return
+        if pl.CreditNumber < self.get_cost_emblem():
+            gui_jokes.askUserOk(lc('colourItemWindow.ERROR'), lc('colourItemWindow.NOT_ENOUGH_MONEY'))
+            return
+        gui_jokes.askUserYesNo(lc('GUI.ClanEmblems.BUY_CAPTION'), lc('GUI.ClanEmblems.SAVE_EMBLEM_TEXT').format(self.get_cost_emblem()), _save_check)
+
+    def get_cost_emblem(self):
+        return DyeConstant.COST_CAPTURE_EMBLEM
+
+    def updateCurrentIcon(self):
+        if self.currentEmblemID:
+            UCManager.ucmanager.loadImg(self.currentEmblemID, self._drawIcon)
+        else:
+            self._drawIcon(self.currentEmblemID)
+
+    def add_render(self):
+        self._renderModel = DecorModelWindow(GUI.Window(), self)
+        self.component.addChild(self._renderModel.component, 'renderModel')
+        self.resetModels()
+
+    def resetModels(self):
+        if not self.model_path:
+            return
+        model_path = get_model_path(self.model_path, self.level)
+
+        def onLoadModel(model):
+            try:
+                model.flag_color = 'flag'
+            except Exception:
+                pass
+
+            self._renderModel.setModels(model)
+            self.onLoadModel(model)
+
+        BigWorld.fetchModel(model_path.encode('utf-8'), onLoadModel)
+
+    def _drawIcon(self, imgID, feedName = '', texture = None):
+        self.newEmblemID = imgID
+        if texture:
+            self.frame_change_image._drawIcon(imgID, feedName, texture)
+        else:
+            self.frame_change_image._drawIcon(None)
+            self.frame_change_image._drawIcon(imgID, feedName, texture)
+            self.newEmblemID = 0
+        BigWorld.wg = texture
+        StalkerModel.setFeed(self._renderModel._model, None, 'flag_color', 'DiffMapDecal', texture)
+        return
+
+    def updateMarkText(self):
+        pass
+
+    def show(self, uid = None, model_index = 0, emblemID = 0, level = 0):
+        if self.component.parent is None:
+            BWPersonality.GUICore.worldLayer.addChild(self.component, 'DecorationEmblemScreen')
+        self.component.visible = True
+        player = BigWorld.player()
+        self.current_uid = uid
+        self.model_index = model_index
+        self.model_path = next((model for index, model in CONFIG if index == self.model_index), None)
+        self.currentEmblemID = emblemID
+        self.level = level
+        self.resetModels()
+        self.updateMarkText()
+        player.base.getMyEmblems()
+        player.getConsumables()
+        BWPersonality.GUICore.setBestCursor()
+        self.frame_change_image.updatePlayerMoney(player.CreditNumber)
+        return
+
+    def hide(self):
+        self.component.visible = False
+        self._renderModel.hide()
+        self.frame_change_image.setStatus(1)
+        self.frame_change_image.unLockBtn()
+        BWPersonality.GUICore.setBestCursor()
+
+
+class DecorModelWindow(ModelWindow):
+
+    def __init__(self, component, parent):
+        ModelWindow.__init__(self, component)
+        self.parent = parent
+
+    def setModels(self, model):
+        self._model = model
+        self._model.zoomExtents(0, 0.35)
+        self._model.yaw = 0
+        try:
+            self._model.flag_color = 'flag'
+        except Exception:
+            pass
+
+        self._model.position = tuple(get_model_offset(self.parent.model_path, self.parent.level))
+        self._model.rotate(0.5, (1, 0, 0), (0, 0, 0))
+        self._model_renderer.models = [self._model]
+        self._model.yaw = 3.14

@@ -1,0 +1,154 @@
+# Embedded file name: ./client/clanboard_gui/map/map_view.py
+import GUI
+from map_loader import MapLoader, EventType as LoaderET
+from utils import Listenable
+from Helpers.PyGUI import PyGUIBase
+from scaler import Scaler, EventType as ScalerET
+from base_spot import BaseSpot, SpotEventType as SpotET
+from path_web import PathWeb, EventType as WebET
+
+class EventType:
+    OnStartLoad, OnStopLoad = ((r, 'ClanMapview') for r in range(2))
+
+
+class MapView(PyGUIBase, Listenable):
+
+    def __init__(self, component):
+        PyGUIBase.__init__(self, component)
+        Listenable.__init__(self)
+        self.component.script = self
+        self._active_spots = []
+        self._cached_spots = []
+        self._loader = MapLoader()
+        self._loader.add_listener(self._on_loader_event)
+        comp = GUI.Window()
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        self._scaler = Scaler(self.component, comp)
+        self._scaler.add_listener(self._on_scaler_event)
+        self._content_comp = comp
+        self._path_web = PathWeb()
+        self._content_comp.addChild(self._path_web.component)
+        self._path_web.add_listener(self._on_pathweb_event)
+
+    def on_show(self, space_name):
+        self._space_name = space_name
+        self._clear_bases()
+        self._path_web.hide()
+        self._path_web.clear_data()
+        self.notify_listeners(EventType.OnStartLoad)
+        self._loader.start_load(space_name)
+        self._scaler.clear()
+
+    def on_hide(self):
+        self._clear_bases()
+        self._path_web.hide()
+        self._path_web.clear_data()
+        self._space_name = None
+        self._loader.stop_load()
+        self._scaler.clear()
+        return
+
+    def show_cards(self):
+        visible = any((spot.desc_visible for spot in self._active_spots))
+        for spot in self._active_spots:
+            spot.desc_visible = not visible
+
+    def show_paths(self):
+        if self._path_web.visible:
+            self._path_web.hide()
+        else:
+            self._path_web.show()
+
+    def hide_all(self):
+        for spot in self._active_spots:
+            spot.desc_visible = False
+
+        self._path_web.hide()
+
+    def _clear_bases(self):
+        for spot in self._active_spots:
+            spot.hide()
+            self._cached_spots.append(spot)
+
+        self._active_spots[:] = []
+
+    def _create_base(self, base_data):
+        if self._cached_spots:
+            spot = self._cached_spots.pop()
+        else:
+            spot = BaseSpot(self._content_comp)
+            spot.add_listener(self._on_spot_event)
+            self._content_comp.addChild(spot.component)
+        self._active_spots.append(spot)
+        spot.initialize(base_data, self._scaler.bounds)
+        spot.show()
+        spot.clamp()
+        self._content_comp.reSort()
+
+    def _on_pathweb_event(self, event_type, data):
+        if event_type == WebET.OnOuterLinkUndefinedShown:
+            base_ids = data
+            self._loader.load_bases_owners(base_ids)
+
+    def _on_spot_event(self, event_type, data):
+        if event_type == SpotET.OnRequestData:
+            self._loader.load_spot(data['base_id'])
+        elif event_type == SpotET.OnRequestStop:
+            self._loader.stop_load_spot(data['base_id'])
+
+    def _on_scaler_event(self, event_type, data):
+        if event_type == ScalerET.OnScaleChanged:
+            for spot in self._active_spots:
+                spot.clamp()
+
+            self._content_comp.reSort()
+
+    def _on_loader_event(self, event_type, data):
+        if event_type == LoaderET.OnLoaded:
+            self.notify_listeners(EventType.OnStopLoad)
+            self._scaler.set_texture(self._space_name, data['texture'])
+            for base_data in data['bases']:
+                self._create_base(base_data)
+
+            self._path_web.set_data(data['bases'], self._scaler.bounds)
+        elif event_type == LoaderET.OnChangedOwner:
+            for spot in self._active_spots:
+                if spot.base_data['base_id'] == data['base_id']:
+                    base_data = dict(spot.base_data)
+                    base_data['owner'] = data['clan_id']
+                    was_visible = spot.desc_visible
+                    spot.initialize(base_data, self._scaler.bounds)
+                    spot.desc_visible = was_visible
+                    self._path_web.on_owner_changed(base_data)
+
+        elif event_type == LoaderET.OnChangedState:
+            for spot in self._active_spots:
+                if spot.base_data['base_id'] == data['base_id']:
+                    base_data = dict(spot.base_data)
+                    base_data['state'] = data['state_id']
+                    was_visible = spot.desc_visible
+                    spot.initialize(base_data, self._scaler.bounds)
+                    spot.desc_visible = was_visible
+
+        elif event_type == LoaderET.OnSpotsLoaded:
+            result_by_id = {}
+            for base_data in data:
+                result_by_id[base_data['base_id']] = base_data
+
+            for spot in self._active_spots:
+                base_data = result_by_id.get(spot.base_data['base_id'])
+                if base_data and spot.desc_visible:
+                    spot.set_desc(base_data)
+
+        elif event_type == LoaderET.OnOwnersLoaded:
+            bases_owners = data
+            self._path_web.update_bases_owners(bases_owners)
+
+    def do_reposition(self):
+        self._scaler.do_reposition()
+        for spot in self._active_spots:
+            spot.clamp()
+
+        self._content_comp.reSort()

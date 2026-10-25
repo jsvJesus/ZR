@@ -1,0 +1,55 @@
+# Embedded file name: ./client/gunpoints/GunPointBox.py
+import BWPersonality
+import BigWorld
+from HideModelUDO import HideModelUDO
+from Helpers.BWCoroutine import BWMemberCoroutine, BWWaitForCondition
+import Helpers.Caps
+from soGUI.soInworldMarkers import soInworldMarker
+from Localization import lc
+
+class GunPointBox:
+
+    def __init__(self, udo, space_id, owner_id):
+        self._udo = udo
+        self._owner_id = owner_id
+        self._space_id = space_id
+        self._entity_id = None
+        self._model = None
+        self._run_coroutine = self._initialize()
+        self._run_coroutine.run()
+        return
+
+    @BWMemberCoroutine
+    def _initialize(self):
+        yield BWWaitForCondition(lambda : hasattr(self._udo, 'modelSelect'), 30.0, 0)
+
+        def model_ready(model, item, model_path):
+            self._model = model
+            try:
+                self._entity_id = BigWorld.createEntity('EmptyEntity', self._space_id, 0, self._udo.position, self._udo.direction, {})
+            except:
+                self.destroy()
+
+        HideModelUDO.parse_model(self._udo, model_ready)
+        yield BWWaitForCondition(lambda : self._entity_id and BigWorld.entities.get(self._entity_id), 30.0, 0)
+        entity = BigWorld.entities.get(self._entity_id)
+        entity.addModel(self._model)
+        entity.targetCaps = entity.targetCaps + [Helpers.Caps.CAP_INTERACT]
+        entity.get_interaction_dist = lambda : 4
+        entity.get_target_mark = lambda dist: (soInworldMarker.MARKER_USE if dist <= entity.get_interaction_dist() else None)
+        entity.get_mark_name = lambda : lc('gunner.box')
+        entity.interact = self._interact
+        self._run_coroutine = None
+        return
+
+    def _interact(self, iteractor):
+        owner = BigWorld.entities[self._owner_id]
+        BWPersonality.GUICore.gunpoint_win.show(owner)
+
+    def destroy(self):
+        if self._run_coroutine:
+            self._run_coroutine.stop()
+        if self._entity_id:
+            entity = BigWorld.entities.get(self._entity_id)
+            if entity and not entity.isDestroyed:
+                BigWorld.destroyEntity(self._entity_id)

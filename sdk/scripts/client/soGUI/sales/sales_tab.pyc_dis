@@ -1,0 +1,158 @@
+# Embedded file name: ./client/soGUI/sales/sales_tab.py
+import BigWorld
+from Helpers.PyGUI.PyGUIBase import Interceptor
+import GUI
+from filters.filters import Filters
+from table.table import Table
+from table.line import ClickType
+from server import Server
+import BWPersonality
+from wins.winsmanager import WinsManager
+from Localization import lc
+import gui_jokes
+from Items import ItemsCatalog
+import ItemsUtils
+
+class SalesTab(Interceptor):
+
+    def __init__(self):
+        comp = GUI.Window()
+        Interceptor.__init__(self, comp, interscept_keys=True)
+        comp.script = self
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'BOTTOM')
+        comp.width, comp.height = (2, 2)
+        comp.position = (0, -1, 0.2)
+        comp.visible = False
+        comp.heightMode = 'PIXEL'
+        comp.height -= 56
+        filter_table_line = 382
+        sort_height = 40
+        page_height = 58
+        comp = GUI.Window()
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.horizontalAnchor, comp.verticalAnchor = ('RIGHT', 'TOP')
+        comp.widthMode, comp.heightMode = ('CLIP', 'PIXEL')
+        comp.width, comp.height = 2, sort_height
+        comp.position = (1, 1, 0.5)
+        comp.widthMode = 'PIXEL'
+        comp.width -= filter_table_line
+        self.component.addChild(comp, 'sortline')
+        comp = GUI.Window()
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.horizontalAnchor, comp.verticalAnchor = ('RIGHT', 'BOTTOM')
+        comp.widthMode, comp.heightMode = ('CLIP', 'PIXEL')
+        comp.width, comp.height = 2, page_height
+        comp.position = (1, -1, 0.5)
+        comp.widthMode = 'PIXEL'
+        comp.width -= filter_table_line
+        self.component.addChild(comp, 'pageline')
+        comp = GUI.Window()
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.horizontalAnchor, comp.verticalAnchor = ('RIGHT', 'BOTTOM')
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.width, comp.height = (2, 2)
+        comp.position = (1, -1, 0.5)
+        self.component.addChild(comp, 'table')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width -= filter_table_line
+        comp.height -= sort_height + page_height
+        comp.verticalPositionMode = 'PIXEL'
+        comp.position[1] -= page_height
+        self._table = Table(comp)
+        self._table.click_callback = self._on_table_click
+        comp = GUI.Window()
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'CLIP')
+        comp.width, comp.height = filter_table_line, 2
+        comp.position = (-1, 1, 0.5)
+        self.component.addChild(comp, 'filters')
+        self._filters = Filters(comp, self.component.sortline, self.component.pageline, self._table.columns_widths)
+        self._filters.data_changed_callback_delayed = self._on_filters_data_changed_delay
+        self._filters.data_changed_callback_immidiate = self._on_filters_data_changed_immidiate
+        comp = GUI.Window()
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.width, comp.height = (2, 2)
+        comp.position = (0, 0, 0)
+        self.component.addChild(comp)
+        self._winsmanager = WinsManager(comp)
+        self._winsmanager.buy_callback = self._on_buy_click
+        self._visible = False
+        self._server = Server()
+
+    def _on_buy_click(self, item_data):
+
+        def buy():
+            BigWorld.player().buyItemFromShop(item_data['sellerName'], item, price, item_data['BankName'])
+            self._winsmanager.close_win(item['complexItemID'])
+            self._filters.invalidate()
+
+        p = BigWorld.player()
+        price = item_data['price']
+        if p.CreditNumber < price:
+            ask = lc('tmplocal.strings.str13') % (p.CreditNumber, price)
+            gui_jokes.askUserOk(lc('Codes.ShopResponses.ERROR'), ask)
+            return
+        elif item_data['sellerName'] == p.name.encode('utf8'):
+            ask = lc('Codes.ShopResponses.FAIL_NO_BUY_SELF')
+            gui_jokes.askUserOk(lc('Codes.ShopResponses.ERROR'), ask)
+            return
+        else:
+            item = item_data['complexItem']
+            item_param = ItemsCatalog.GetItemParam(item['complexItemType'])
+            item_ttl = ItemsUtils.GetItemDestroyTime(item, item_param)
+            if item_ttl is not None and item_ttl < 60:
+
+                def ttl_callback(event):
+                    if event == gui_jokes.askUserYesNo.YES:
+                        buy()
+
+                ask = lc('Inventory.client.ItemlifeTimeIsOverOnBye')
+                gui_jokes.askUserYesNo(u'', ask, ttl_callback)
+            else:
+                buy()
+            return
+
+    def got_catalog_filtered2(self, request_id, index_range, total, result):
+        if not self._visible:
+            return
+        if self._server.check_data(request_id):
+            self._table.set_data(result)
+            self._filters.set_data(index_range, total)
+
+    def _on_table_click(self, click_type, item_data):
+        if click_type == ClickType.Item:
+            BWPersonality.GUICore.showItemInfo(item_data['complexItem'])
+        elif click_type == ClickType.Line:
+            self._winsmanager.create_window(item_data)
+
+    def _on_filters_data_changed_immidiate(self):
+        self._server.stop_request()
+        self._table.disable()
+
+    def _on_filters_data_changed_delay(self):
+        self._compile_data_and_request_server()
+
+    def show(self):
+        if not self._visible:
+            self._visible = True
+            self._table.disable()
+            self._compile_data_and_request_server()
+
+    def ready_to_close(self):
+        return not self._winsmanager.pop_top_window()
+
+    def _compile_data_and_request_server(self):
+        filter_data = self._filters.get_filter_data()
+        filter_data['rows'] = self._table.rows
+        self._server.request_data(filter_data)
+
+    def hide(self):
+        if self._visible:
+            self._filters.on_hide()
+            self._winsmanager.clear()
+            self._visible = False

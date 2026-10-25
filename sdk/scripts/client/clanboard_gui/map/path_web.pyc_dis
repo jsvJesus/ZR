@@ -1,0 +1,203 @@
+# Embedded file name: ./client/clanboard_gui/map/path_web.py
+import math
+from Math import Vector2
+from utils import Listenable
+import BigWorld
+import GUI
+from itertools import chain
+from base_to_capture_common.properties_loaders import BasesDataLoader
+config = BasesDataLoader.get_instance()
+
+class EventType:
+    OnOuterLinkUndefinedShown, = ((r, 'clan.pathweb') for r in range(1))
+
+
+class Link(object):
+
+    def __init__(self, data1, data2, bounds):
+        self._data1, self._data2 = data1, data2
+        self._bounds = bounds
+
+    def _get_homo_pos(self, pos):
+        min_x, min_y, max_x, max_y = self._bounds
+        width, height = max_x - min_x, max_y - min_y
+        x, y = pos
+        homo_x = float(x - min_x) / width
+        homo_y = float(y - min_y) / height
+        return (homo_x * 2 - 1, homo_y * 2 - 1)
+
+    def extend_out(self):
+        direction = Vector2(self._data2['position']) - Vector2(self._data1['position'])
+        min_x, min_y, max_x, max_y = self._bounds
+        width, height = max_x - min_x, max_y - min_y
+        diag = math.sqrt(width * width + height * height)
+        direction.normalise()
+        self._data2 = dict(self._data2)
+        self._data2['position'] = Vector2(self._data1['position']) + direction * diag
+
+    def has_base_id(self, base_id):
+        return base_id in (self._data1['base_id'], self._data2['base_id'])
+
+    @property
+    def owner_id(self):
+        if self._data1['owner'] and self._data1['owner'] == self._data2['owner']:
+            return self._data1['owner']
+        else:
+            return None
+
+    def update_owner(self, base_id, owner_id):
+        prev_owner = self.owner_id
+        if self._data1['base_id'] == base_id:
+            self._data1 = dict(self._data1)
+            self._data1['owner'] = owner_id
+        if self._data2['base_id'] == base_id:
+            self._data2 = dict(self._data2)
+            self._data2['owner'] = owner_id
+        return prev_owner != self.owner_id
+
+    def update_base(self, base_data):
+        prev_owner = self.owner_id
+        if self._data1['base_id'] == base_data['base_id']:
+            self._data1 = base_data
+        if self._data2['base_id'] == base_data['base_id']:
+            self._data2 = base_data
+        return prev_owner != self.owner_id
+
+    @property
+    def base2_id(self):
+        return self._data2['base_id']
+
+    @property
+    def pos1(self):
+        return self._get_homo_pos(self._data1['position'])
+
+    @property
+    def pos2(self):
+        return self._get_homo_pos(self._data2['position'])
+
+
+class PathWeb(Listenable):
+
+    def __init__(self):
+        Listenable.__init__(self)
+        self._links = []
+        self._outer_links = []
+        self.component = GUI.Simple(u'')
+
+        def create_gl(name, base_color):
+            gl = GUI.LineComponent('textures/default/alpha.dds')
+            gl.horizontalPositionMode, gl.verticalPositionMode = ('CLIP', 'CLIP')
+            gl.horizontalAnchor, gl.verticalAnchor = ('CENTER', 'CENTER')
+            gl.materialFX = 'SOLID'
+            gl.filterType = 'LINEAR'
+            gl.widthMode, gl.heightMode = ('CLIP', 'CLIP')
+            gl.width, gl.height = (2, 2)
+            gl.position = (0, 0, 0.6)
+            gl.baseColor = base_color
+            gl.fillColor = (0, 1, 0, 1)
+            gl.curveWidth = (0, 0, 0)
+            gl.minCurveSizeInPixels = 4
+            self.component.addChild(gl, name)
+            return gl
+
+        self._gl = create_gl('lines', (1, 1, 1, 0.5))
+        self._outer_gl = create_gl('outerlines', (1, 0.5, 0, 1))
+
+    @property
+    def visible(self):
+        return self.component.visible
+
+    def show(self):
+        self.component.visible = True
+
+    def set_data(self, bases, bounds):
+        invalid_outer_links = []
+        bases_cache = {}
+        for base_data in bases:
+            base_name = config.get_name(base_data['base_id'])
+            bases_cache[base_name] = base_data
+
+        created_names = set()
+        for base_data in bases:
+            base_name = config.get_name(base_data['base_id'])
+            for linked_name in config.get_links(base_name):
+                if linked_name in created_names:
+                    continue
+                linked_data = bases_cache.get(linked_name)
+                if linked_data:
+                    self._links.append(Link(base_data, linked_data, bounds))
+                else:
+                    outer_pos = config.get_outer_link_point(base_name, linked_name)
+                    if outer_pos:
+                        outer_linked_data = {'position': outer_pos,
+                         'owner': 0,
+                         'base_id': config.get_id(linked_name)}
+                        link = Link(base_data, outer_linked_data, bounds)
+                        link.extend_out()
+                        if base_data['owner'] and base_data['owner'] == BigWorld.player().clanID:
+                            invalid_outer_links.append(link)
+                        self._outer_links.append(link)
+
+            created_names.add(base_name)
+
+        shapes = []
+        for link in self._links:
+            shapes.append((link.pos1, link.pos2))
+
+        outer_shapes = []
+        for link in self._outer_links:
+            outer_shapes.append((link.pos1, link.pos2))
+
+        self._gl.setShapes(shapes)
+        self._outer_gl.setShapes(outer_shapes)
+        self._update_colors()
+        if invalid_outer_links:
+            base_ids = [ link.base2_id for link in invalid_outer_links ]
+            self.notify_listeners(EventType.OnOuterLinkUndefinedShown, base_ids)
+
+    def _update_colors(self):
+
+        def create_actives(links):
+            actives = []
+            for link in links:
+                if link.owner_id and link.owner_id == BigWorld.player().clanID:
+                    actives.append((0, 1))
+                else:
+                    actives.append((0, 0))
+
+            return actives
+
+        self._gl.setShapeActives(create_actives(self._links))
+        self._outer_gl.setShapeActives(create_actives(self._outer_links))
+
+    def update_bases_owners(self, bases_owners):
+        bases_changed = False
+        for owner_data in bases_owners:
+            for link in self._outer_links:
+                if link.has_base_id(owner_data['bid']):
+                    if link.update_owner(owner_data['bid'], owner_data['oid']):
+                        bases_changed = True
+
+        if bases_changed:
+            self._update_colors()
+
+    def on_owner_changed(self, data):
+        bases_changed = False
+        for link in chain(self._links, self._outer_links):
+            if link.has_base_id(data['base_id']):
+                if link.update_base(data):
+                    bases_changed = True
+
+        if bases_changed:
+            self._update_colors()
+
+    def hide(self):
+        self.component.visible = False
+
+    def clear_data(self):
+        del self._links[:]
+        del self._outer_links[:]
+        self._gl.setShapes([])
+        self._gl.setShapeActives([])
+        self._outer_gl.setShapes([])
+        self._outer_gl.setShapeActives([])

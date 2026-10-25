@@ -1,0 +1,134 @@
+# Embedded file name: ./client/CargoZone.py
+import Math
+import BigWorld
+import Helpers.Caps
+import ResourceLoader
+from Math import Matrix
+from Localization import lc
+from functools import partial
+from BoxStatus import BoxStatus
+from Constants import INTERACTION_DISTANCE
+
+class CargoZone(BigWorld.Entity):
+
+    def __init__(self):
+        BigWorld.Entity.__init__(self)
+        self.box_models = {}
+        self.name = lc(self.local_name)
+        self._model_path = 'models/entities/cargo/cargo.model'
+
+    def update_targetCaps(self):
+        self.targetCaps = [Helpers.Caps.CAP_INTERACT] if self.activated else []
+
+    def prerequisites(self):
+        if self._model_path:
+            return [self._model_path]
+        return []
+
+    def onEnterWorld(self, prereqs):
+        if self._model_path:
+            self.cargo_model = prereqs[self._model_path]
+            self.cargo_model.scale = self.get_scale()
+            self.cargo_model.newScaleTest = self.get_scale()
+            self.cargo_model.isObstacle = True
+            self.cargo_model.position = self.position - self.get_offset()
+            self.cargo_model.yaw = self.yaw
+            self.addModel(self.cargo_model)
+
+        def on_load(prereqs):
+            if self.isDestroyed:
+                return
+            self.model = prereqs.produce(0)
+            self.update_boxes()
+            self.model.visible = True
+
+        ResourceLoader.asyncLoad([(ResourceLoader.MODEL, 'models/bolvan/helpers/cube_1x1.model')], on_load)
+        self.update_targetCaps()
+
+    def onLeaveWorld(self):
+        for node_name in self.box_models:
+            if self.box_models[node_name]:
+                BigWorld.delModel(self.box_models[node_name])
+
+        self.box_models = {}
+        self.model = None
+        return
+
+    def get_offset(self):
+        p1, p2 = self.cargo_model.getMinMaxbounds
+        pos = (p2 - p1) / 2 + p1
+        pos *= self.scale
+        matr_t = Matrix()
+        matr_t.setTranslate(pos)
+        matr_r = Matrix()
+        matr_r.setRotateYPR((self.yaw, self.pitch, self.roll))
+        matr__t = Matrix()
+        matr__t.setTranslate(-pos)
+        new_matr = Matrix()
+        new_matr.preMultiply(matr_r)
+        new_matr.preMultiply(matr_t)
+        return new_matr.translation
+
+    def update_scale(self):
+        p1, p2 = self.cargo_model.getMinMaxbounds
+        scale = (p2 - p1) * 1.01
+        scale[1] += self.get_max_cargo_height()
+        self.model.newScaleTest = scale
+        self.model.scale = scale
+
+    def can_put_box_and_get_position(self, player_pos):
+        node = self.cargo_model.node('box_' + str(self.slots + 1))
+        if not self.activated or not node:
+            return (False, (0, 0, 0))
+        return (True, Math.Matrix(node).translation)
+
+    def get_max_cargo_height(self):
+        if not self.slots:
+            return 2
+        node_name = 'box_' + str(self.slots + 1)
+        node = self.cargo_model.node(node_name)
+        return Math.Matrix(node).translation[1] - self.position[1] + 2
+
+    def update_boxes(self):
+        self.cargo_model.forceDraw()
+
+        def on_load_box(node_name, m):
+            node = Matrix(self.cargo_model.node(node_name))
+            m.isObstacle = True
+            m.position = node.translation
+            m.yaw = node.yaw
+            self.box_models[node_name] = m
+            BigWorld.addModel(m)
+
+        for i in range(8):
+            node_name = 'box_' + str(i + 1)
+            if i < self.slots:
+                if not self.box_models.get(node_name):
+                    status = self.box_status_list[i]
+                    model_path = BoxStatus.get_model_by_type(self.box_type, status)
+                    BigWorld.fetchModel(model_path, partial(on_load_box, node_name))
+            elif self.box_models.get(node_name):
+                BigWorld.delModel(self.box_models[node_name])
+                self.box_models[node_name] = None
+
+        self.update_scale()
+        return
+
+    def interact(self, interactor):
+        print 'CargoZone::interact'
+
+    def set_activated(self, old_value):
+        self.update_targetCaps()
+
+    def set_slots(self, old_value):
+        print 'CargoZone::set_slots', self.slots
+
+    def set_box_status_list(self, old_value):
+        print 'CargoZone::set_slots'
+        self.update_boxes()
+
+    def get_scale(self):
+        return (self.scale, self.scale, self.scale)
+
+    def get_interaction_dist(self):
+        return INTERACTION_DISTANCE

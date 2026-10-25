@@ -1,0 +1,168 @@
+# Embedded file name: ./client/PostProcessing/radioactivity_postproc.py
+import BWPersonality
+from PostProcessing.RenderTargets import rt
+from PostProcessing import Effect
+from PostProcessing import BW_BLEND_SRCALPHA, BW_BLEND_INVSRCALPHA
+from PostProcessing.Phases import buildPhase
+from PostProcessing.Phases import buildBackBufferCopyPhase
+from PostProcessing.FilterKernels import straightTransfer4Tap
+import PostProcessing
+import BigWorld
+import random
+
+class _LinearBlend:
+
+    def __init__(self, step = 0.1):
+        self.curentValue_ = 0.0
+        self.valueTo_ = 0.0
+        self.accelerationStep_ = step
+
+    def setValueTo(self, val):
+        self.valueTo_ = val
+
+    def setCurrentValue(self, val):
+        self.curentValue_ = val
+
+    def getCurrentValue(self):
+        return self.curentValue_
+
+    def updateBlend(self, dtime):
+        deltavec = self.valueTo_ - self.curentValue_
+        self.curentValue_ = self.curentValue_ + deltavec * self.accelerationStep_
+
+
+class Radioactivity(object):
+    """
+    \xd0\x9f\xd0\xbe\xd1\x81\xd1\x82\xd1\x80\xd0\xbe\xd1\x86\xd0\xb5\xd1\x81\xd1\x81 \xd1\x8d\xd1\x84\xd0\xb5\xd0\xba\xd1\x82\xd0\xb0 \xd1\x80\xd0\xb0\xd0\xb4\xd0\xb8\xd0\xbe\xd0\xba\xd1\x82\xd0\xb8\xd0\xb2\xd0\xbd\xd0\xbe\xd1\x81\xd1\x82\xd0\xb8.
+    \xd0\x9c\xd0\xb5\xd0\xbd\xd1\x8f\xd0\xb5\xd1\x82\xd1\x81\xd1\x8f \xd0\xb2 \xd0\xb7\xd0\xb0\xd0\xb2\xd0\xb8\xd1\x81\xd0\xb8\xd0\xbc\xd0\xbe\xd1\x81\xd1\x82\xd0\xb8 \xd0\xbe\xd1\x82 \xd1\x81\xd1\x82\xd0\xb0\xd0\xba\xd0\xbe\xd0\xb2
+    """
+    instance = None
+    _tick_id = 0
+    _tick_id = 0
+    _tick_value = 0
+    _enabled = False
+    _hook = False
+
+    def __new__(cls, *w, **kw):
+        if cls.instance is None:
+            cls.instance = object.__new__(cls, *w, **kw)
+        return cls.instance
+
+    def __init__(self):
+        self.pp_effect_id = None
+        self._createPostEffect()
+        self.updateNoiseSacle()
+        self.grayAlpha = _LinearBlend()
+        self.noiseAlpha = _LinearBlend()
+        return
+
+    def _createPostEffect(self):
+        self.pp_effect_0 = Effect()
+        self.pp_effect_0.name = 'RadioactivityEff'
+        input_texture = 'backBufferCopy'
+        shader = 'shaders/post_processing/radioactivity.fx'
+        self.ph_copy = buildBackBufferCopyPhase(rt(input_texture))
+        self.ph_rad = buildPhase(input_texture, None, shader, straightTransfer4Tap, BW_BLEND_SRCALPHA, BW_BLEND_INVSRCALPHA)
+        self.ph_rad.name = 'radioactivity_phase'
+        self.ph_rad.material.noiseTexture = 'system/maps/post_processing/noise.texanim'
+        self.ph_rad.material.noiseThreshold = 0.16
+        self.pp_effect_0.phases = [self.ph_copy, self.ph_rad]
+        return
+
+    def fini(self):
+        self.disable()
+        BWPersonality.game.removeListener('onRecreateDevice', self.updateNoiseSacle)
+
+    def enable(self):
+        if self._enabled:
+            return
+        if not self._hook:
+            BWPersonality.game.addListener('onRecreateDevice', self.updateNoiseSacle)
+            self._hook = True
+        self._enabled = True
+        self.pp_effect_id = PostProcessing.addPPChainEffects(self.pp_effect_0, 999)
+        BigWorld.cancelCallback(self._tick_id)
+        self._tick()
+
+    def disable(self):
+        if not self._enabled:
+            return
+        self._enabled = False
+        PostProcessing.removePPChain(self.pp_effect_id)
+        BigWorld.cancelCallback(self._tick_id)
+
+    def updateNoiseSacle(self):
+        w, h = BigWorld.screenSize()
+        if w < 10:
+            w = 10
+        if h < 10:
+            h = 10
+        ar = w / float(h)
+        self.ph_rad.material.noiseScaleX = 2.9 * ar
+        self.ph_rad.material.noiseScaleY = 2.9
+
+    def onApplyAnyPostProc(self, effects_list):
+        """ \xd1\x85\xd1\x83\xd0\xba \xd0\xbd\xd0\xb0 PostProcessing.chain()"""
+        if effects_list is None:
+            return effects_list
+        else:
+            out = []
+            if effects_list is None:
+                return out
+            for e in effects_list:
+                if e.name != 'RadioactivityEff':
+                    out.append(e)
+
+            if self._enabled:
+                out.append(self.pp_effect_0)
+            return out
+
+    def _tick(self):
+        self._tick_id = BigWorld.callback(0.05, self._tick)
+        self.grayAlpha.updateBlend(0.05)
+        self.noiseAlpha.updateBlend(0.05)
+        self.ph_rad.material.grayAlpha = self.grayAlpha.getCurrentValue()
+        self.ph_rad.material.noiseAlpha = self.noiseAlpha.getCurrentValue()
+
+    def setStack(self, stack):
+        self._stack = stack
+        if stack < 10:
+            self.grayAlpha.setCurrentValue(0.0)
+            self.noiseAlpha.setCurrentValue(0.0)
+            return self.disable()
+        self.enable()
+        if stack >= 450:
+            grayAlpha = 1.0
+            noiseAlpha = 1.0
+        if stack >= 400:
+            grayAlpha = 0.9
+            noiseAlpha = 1.0
+        if stack >= 350:
+            grayAlpha = 0.8
+            noiseAlpha = 1.0
+        elif stack >= 300:
+            grayAlpha = 0.7
+            noiseAlpha = 0.9
+        elif stack >= 250:
+            grayAlpha = 0.6
+            noiseAlpha = 0.9
+        elif stack >= 200:
+            grayAlpha = 0.5
+            noiseAlpha = 0.9
+        elif stack >= 150:
+            grayAlpha = 0.3
+            noiseAlpha = 0.9
+        elif stack >= 100:
+            grayAlpha = 0.2
+            noiseAlpha = 0.85
+        elif stack >= 75:
+            grayAlpha = 0.1
+            noiseAlpha = 0.7
+        else:
+            grayAlpha = 0.0
+            noiseAlpha = 0.0
+        self.grayAlpha.setValueTo(grayAlpha)
+        self.noiseAlpha.setValueTo(noiseAlpha)
+
+
+radioactivity_posprocess = Radioactivity()

@@ -1,0 +1,251 @@
+# Embedded file name: ./client/sand_bag_optimize.py
+from functools import partial
+import time
+import BigWorld
+import Sandbag
+from Math import Matrix, Vector3
+from multi_model import MultiModel
+from utils_bw import IGNORE_MATERIAL
+info = {'wait_models': 0,
+ 'loaded_models': 0,
+ 'is_loading': False}
+_id_obstacle = {}
+_id_skbox = {}
+_id_multi = {}
+_id_box_config = {}
+_multi_models = {}
+_to_unite_buffer = {}
+_skeletonCollider = BigWorld.SkeletonCollider()
+
+def getTargetSandBag():
+    m = Matrix(BigWorld.target.source)
+    start = m.translation
+    dist = 100
+    dir_ = m.applyToAxis(2)
+    end = start + dir_ * dist
+    model_id = None
+    res = _getTargetSandBagBSP(start, end)
+    if res:
+        end, model_id = res
+        dist = (end - start).length
+    res = _getTargetSandBagSkeleton(start, dir_, dist)
+    if res:
+        return res
+    else:
+        return model_id
+
+
+def _getTargetSandBagSkeleton(start, dir_, dist):
+    res = _skeletonCollider.doDistanceCollide(start, dir_, dist)
+    if res > 0:
+        return int(_skeletonCollider.impactCollider.name)
+
+
+def _getTargetSandBagBSP(start, end):
+    res = BigWorld.collidePhysicalPyModels(start, end, [], IGNORE_MATERIAL)
+    if not res:
+        return
+    pos, model_id = res
+    if not model_id:
+        return
+    if model_id in _id_obstacle:
+        return (pos, model_id)
+
+
+def _createBoxAttachment(model):
+    box = BigWorld.BoxAttachment()
+    min_bounds, max_bounds = model.getMinMaxbounds
+    box.name = str(model.unical_id)
+    box.minBounds = min_bounds
+    box.maxBounds = max_bounds
+    model.root.attach(box)
+    _skeletonCollider.addCollider(box)
+    _id_skbox[model.unical_id] = box
+
+
+def _getMatrix(position, angles):
+    matrix = Matrix()
+    matrix_rot = Matrix()
+    matrix.setTranslate(position)
+    roll, pitch, yaw = angles
+    matrix_rot.setRotateYPR((yaw, pitch, roll))
+    matrix.preMultiply(matrix_rot)
+    return matrix
+
+
+def clear_all():
+    for lst in _multi_models.values():
+        for m in lst:
+            m.destroy()
+
+    _multi_models.clear()
+    for m in _id_obstacle.values():
+        BigWorld.delModel(m)
+
+    _id_obstacle.clear()
+    _id_multi.clear()
+    _id_box_config.clear()
+    _to_unite_buffer.clear()
+    _skeletonCollider.clearColliders()
+
+
+def _get_multi(model_path):
+    if model_path not in _multi_models:
+        _multi_models[model_path] = []
+    for multi in _multi_models[model_path]:
+        if multi.canFitSubmodel():
+            return multi
+
+    multi = MultiModel(model_path)
+    _multi_models[model_path].append(multi)
+    return multi
+
+
+def _add_to_multi(model_path, unical_id, matrix):
+    multi = _get_multi(model_path)
+    multi.add_copy(unical_id, matrix)
+    _id_multi[unical_id] = multi
+    return multi
+
+
+def add_block_manual(serv_id, boxID, position, angles, callback_on_load = None):
+
+    def onLoad(serv_id, unical_id, box, matrix, model, position, angles):
+        model.visible = True
+        if box['can_unite']:
+            _to_unite_buffer[unical_id] = (box, matrix, model)
+        if callback_on_load:
+            callback_on_load(serv_id, unical_id, box, matrix, model, position, angles)
+
+    _add_block(serv_id, boxID, position, angles, onLoad)
+
+
+def gluing():
+    """ \xd0\xbe\xd0\xb1\xd1\x8a\xd0\xb5\xd0\xb4\xd0\xb5\xd0\xbd\xd0\xb8\xd1\x82\xd1\x8c \xd1\x81\xd0\xb2\xd0\xbe\xd0\xb1\xd0\xbe\xd0\xb4\xd0\xbd\xd1\x8b\xd0\xb5 \xd0\xbc\xd0\xbe\xd0\xb4\xd0\xb5\xd0\xbb\xd0\xb8 \xd0\xb2 \xd0\xbe\xd0\xb4\xd0\xb8\xd0\xbd \xd0\xbc\xd0\xb5\xd1\x88
+    """
+    if isLoading():
+        return
+    size = len(_to_unite_buffer)
+    if size < 50:
+        return
+    multi_need_update = set()
+    for unical_id, (box, matrix, model) in _to_unite_buffer.items():
+        multi = _add_to_multi(box['model'], unical_id, matrix)
+        model.visible = False
+        multi_need_update.add(multi)
+
+    _to_unite_buffer.clear()
+    t = time.time()
+    for multi in multi_need_update:
+        multi.updateMesh()
+
+    print time.time() - t, '  %s  -> %s' % (size, len(multi_need_update))
+
+
+def _add_block(serv_id, boxID, position, angles, callback_on_load = None):
+    box = Sandbag.getBoxByID(boxID)
+    model_path = box['model']
+    matrix = _getMatrix(position, angles)
+
+    def onLoadModel(model):
+        BigWorld.addModel(model)
+        model.setWorldTransform(matrix)
+        unical_id = model.unical_id
+        _id_obstacle[unical_id] = model
+        _id_box_config[unical_id] = box
+        model.visible = True
+        if not box.get('no_physics'):
+            model.isObstacle = True
+        if box.get('tint'):
+            for dye, tint_name in box.get('tint').items():
+                setattr(model, dye, tint_name)
+
+        if box.get('animations'):
+            for action in box.get('animations'):
+                model.action(action)()
+
+        if box.get('can_unite'):
+            model.visible = False
+        else:
+            _createBoxAttachment(model)
+        if callback_on_load:
+            callback_on_load(serv_id, unical_id, box, matrix, model, position, angles)
+
+    BigWorld.fetchModel(model_path, onLoadModel)
+
+
+def delete_block(unical_id):
+    t = time.time()
+    conf = _id_box_config.pop(unical_id, None)
+    model = _id_obstacle.pop(unical_id)
+    BigWorld.delModel(model)
+    multi_model = None
+    if unical_id in _id_multi:
+        multi_model = _id_multi.pop(unical_id)
+        multi_model.del_copy(unical_id)
+        if not multi_model.size():
+            multi_model.destroy()
+            _multi_models[multi_model.model_path].remove(multi_model)
+        else:
+            multi_model.updateMesh()
+    boxID = conf['boxID'] if conf else '???'
+    skbox = _id_skbox.pop(unical_id, None)
+    if skbox:
+        _skeletonCollider.delCollider(skbox)
+    _to_unite_buffer.pop(unical_id, None)
+    return
+
+
+def isLoading():
+    return info['is_loading']
+
+
+def load_all(data, on_fetch_complete):
+    info['wait_models'] = 0
+    info['loaded_models'] = 0
+    info['is_loading'] = True
+    t = time.time()
+    print 'start load', len(data)
+    load_out_data = {}
+    serv_id_to_local = {}
+
+    def _on_load_one(serv_id, unical_id, box, matrix, model, position, angles):
+        info['loaded_models'] += 1
+        load_out_data[unical_id] = (position, angles, box['boxID'])
+        serv_id_to_local[serv_id] = unical_id
+        if box.get('can_unite'):
+            model_path = box['model']
+            _add_to_multi(model_path, unical_id, matrix)
+        if info['loaded_models'] == info['wait_models']:
+            print 'fetchModel done', info['loaded_models']
+            on_fetch_complete(load_out_data, serv_id_to_local)
+            _on_load_all_model()
+
+    if type(data) == dict:
+        for server_block_id, (position, angles, boxID) in data.items():
+            info['wait_models'] += 1
+            _add_block(server_block_id, boxID, position, angles, callback_on_load=_on_load_one)
+
+    else:
+        for position, angles, boxID in data:
+            info['wait_models'] += 1
+            _add_block(0, boxID, position, angles, callback_on_load=_on_load_one)
+
+    print 'add_block time:', time.time() - t
+
+
+def _on_load_all_model():
+    list_task = []
+    for lst in _multi_models.values():
+        list_task.extend(lst)
+
+    BigWorld.callback(1.3, partial(continue_update, list_task))
+
+
+def continue_update(list_task):
+    m = list_task.pop()
+    m.updateMesh()
+    if not list_task:
+        info['is_loading'] = False
+        return
+    BigWorld.callback(0.03, partial(continue_update, list_task))

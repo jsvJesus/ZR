@@ -1,0 +1,92 @@
+# Embedded file name: ./client/ContainerTrap.py
+"""
+from Localization import lc
+Created on 17.08.2010
+
+@author: muzhig
+"""
+import json
+import BigWorld
+from ItemHolder import ItemHolder
+from Helpers.Caps import CAP_CAN_OPEN_AND_EXPLORE
+from Lootable import Lootable
+import ItemsUtils
+import ResMgr
+import Math
+from Localization import lc
+from utils_bw import inRange
+import Constants
+from client_utils import readable_space_pos
+import ChatChannelConfig
+CHANNEL_CONSTS = ChatChannelConfig.ChannelConsts()
+section = ResMgr.openSection('scripts/common/EnumProps/Containers.json')
+CONFIG = json.loads(section.asBinary)['model_index']['values']
+
+class ContainerTrap(BigWorld.Entity, ItemHolder, Lootable):
+
+    def __init__(self):
+        self.targetCaps = [CAP_CAN_OPEN_AND_EXPLORE]
+        self._model_path = next((model for index, model in CONFIG if index == self.model_index), None)
+        self.filter = BigWorld.NoneFilter()
+        return
+
+    def __repr__(self):
+        if self.isDestroyed:
+            return 'ContainerTrap[%s]Destroyed' % self.id
+        return 'ContainerTrap[%s] at %s' % (self.id, readable_space_pos(self))
+
+    def prerequisites(self):
+        if self._model_path:
+            return [self._model_path]
+        return []
+
+    def onEnterWorld(self, prereqs):
+        if self._model_path:
+            scale = 1
+            self.model = prereqs[self._model_path]
+            self.model.isObstacle = True
+            self.model.visible = True
+            self.model.scale = (scale, scale, scale)
+            self.model.newScaleTest = (scale, scale, scale)
+        self.height = Math.Matrix(self.model.bounds).get(1, 1) if self.model else 1.0
+        if self.containerName:
+            self.name = self.containerName
+        else:
+            self.name = self.GetContainerName(self.model_index)
+
+    def GetContainerName(self, container_type):
+        poll_str = 'Container.Names.TYPE_' + str(container_type)
+        return lc(poll_str)
+
+    def set_CarryingItems(self, old_value):
+        if inRange(self, BigWorld.player(), Constants.INTERACTION_DISTANCE ** 2):
+            BigWorld.player().NeedToUpdateItemCache()
+        items, _ = BigWorld.player().filterItemsWithoutQuests(self.CarryingItems)
+        if not items:
+            BigWorld.player().NeedToCloseItemCache(self)
+
+    def onLeaveWorld(self):
+        if inRange(self, BigWorld.player(), Constants.INTERACTION_DISTANCE ** 2):
+            BigWorld.player().NeedToCloseItemCache(self)
+
+    def onOpen(self, player):
+        self.cell.onOpenContainer()
+        if not self.access_is_allowed:
+            player.putMessage(CHANNEL_CONSTS.ITEMS, lc('ServerClientMessages.ContainerTrap_open_ERROR'))
+            return False
+        return True
+
+    def onClose(self, player):
+        self.cell.onCloseContainer()
+
+    def get_hightlight(self, distance):
+        if distance > Constants.HILITE_MARKS_DISTANCE:
+            return None
+        else:
+            return True
+
+    def get_time_looting(self, open_type):
+        return 10
+
+    def get_looting_types(self):
+        return [Constants.TYPE_SEARCH, Constants.TYPE_LOOT_SEARCH]

@@ -1,0 +1,247 @@
+# Embedded file name: ./client/soGUI/donat_shop/shop_controller.py
+from Localization import lc
+import BWPersonality
+import BigWorld
+from window.shop_window import ShopWindow, EventType as ShopwindowET
+from models.shop_model import ShopModel, EventType as ShopET
+from models.store_model import StoreModel
+from models.model import EventType as ModelET
+from models.state_model import StateModel, EventType as StateET
+from models.bin_model import BinModel
+from window.tab_panel import TabType
+from StoreHouseConst import CODES
+from soGUI.donat_shop.window.auxwins.auxwins import Auxwins
+from soGUI.StorehouseGUI import ShopUtils
+from Settings import Settings
+from soGUI.StorehouseGUI.InfoWin import InfoWin
+
+class ShopController:
+
+    def __init__(self):
+        self._version = None
+        self._shop_model = None
+        self._store_model = None
+        self._bin_model = None
+        self._state_model = None
+        self._window = None
+        self._dirty_reposition = False
+        self._spec_mode_bin_trigger = None
+        return
+
+    def show_shop(self):
+        self.store_model.npc_name = None
+        self._show(TabType.Shop)
+        return
+
+    def show_store(self, npc_name = None):
+        self.store_model.npc_name = npc_name
+        self._show(TabType.Store)
+
+    def show_bin(self, fill_data = None, spec_mode = None):
+        self.store_model.npc_name = None
+        self._spec_mode_bin_trigger = spec_mode
+        self._show(TabType.Bin)
+        if fill_data:
+            BigWorld.player().getDonateShopCatalog()
+        self.bin_model.set_content(fill_data)
+        return
+
+    def _show(self, tab_type):
+        if not self._window:
+            self._window = ShopWindow(self.shop_model, self.store_model, self.bin_model, self.state_model)
+            self._window.add_listener(self._on_shopwindow_event)
+        if not self.visible:
+            self._window.show(tab_type)
+            BWPersonality.GUICore.onShowStoragehouse()
+            if tab_type != TabType.Store:
+                BigWorld.player().getStoreHouseItems()
+        if self._dirty_reposition:
+            self._dirty_reposition = False
+            self._window.do_reposition()
+
+    def set_shop_items(self, items, version, currency):
+        if self._version is None:
+            self._version = version
+        self.shop_model.set_items(items, currency)
+        if self._version is not None and self.visible:
+            Settings().setSetting('donat_catalog_version', self._version, flush=True)
+        return
+
+    def update_reccomendations(self, recom, popular, consumables, banner_id):
+        self.shop_model.update_reccomendations(recom, popular, consumables, banner_id)
+
+    def _invoke_item_pend_win(self):
+        pend_data = []
+        for item_type, item_data in self.bin_model._items.iteritems():
+            pend_data.append({'item_type': item_type,
+             'count': item_data['bincount']})
+
+        if pend_data:
+            BWPersonality.GUICore.on_item_payed(pend_data)
+            self.bin_model.clear()
+
+    def got_donate_notification(self, code):
+        if not self.visible:
+            if code in (CODES.BUY_DONATE_OK, CODES.BUY_STEAM_OK):
+                self._invoke_item_pend_win()
+                self.bin_model.clear()
+            return
+        else:
+            if code in (CODES.BUY_DONATE_OK, CODES.BUY_STEAM_OK):
+                self._invoke_item_pend_win()
+                self.state_model.complete_bin_request(True)
+                if self._spec_mode_bin_trigger == ShopUtils.SHOP_MODE_FACEMODIFICATION:
+                    Auxwins.show_ok_message(lc('StoreHouse.mainscreen.FACE_MODIFY_END'), self._window.hide)
+                elif self._spec_mode_bin_trigger == ShopUtils.SHOP_MODE_PAINTMODIFICATION:
+                    Auxwins.show_ok_message(lc('StoreHouse.mainscreen.PAINT_MODIFY_END'), self._window.hide)
+                self._spec_mode_bin_trigger = None
+            elif code == CODES.NOT_ENOUGH_PLATINA:
+                needed_platina = self._bin_model.total_cost - BigWorld.player().current_platina
+                Auxwins.show_ok_message(lc('StoreHouse.bin.NOT_ENOUGH_PLATINA').format(needed_platina))
+                self.state_model.complete_bin_request(False)
+            elif code == CODES.STEAM_AUTHORIZED:
+                self.state_model.complete_bin_request(True)
+            elif code == CODES.STEAM_NOTAUTHORIZED:
+                self.state_model.complete_bin_request(False)
+            elif code == CODES.PREMIUM_ERROR:
+                Auxwins.show_ok_message(lc('StoreHouse.store.NO_PREMIUM'))
+                self.state_model.complete_useitem_request()
+            elif code == CODES.PREMIUM_OK:
+                Auxwins.show_ok_message(lc('StoreHouse.store.OK_PREMIUM'))
+                self.state_model.complete_useitem_request()
+            elif code == CODES.BOOSTER_OK:
+                Auxwins.show_ok_message(lc('StoreHouse.store.OK_BOOSTER'))
+                self.state_model.complete_useitem_request()
+            elif code == CODES.TAKE_ITEM_TO_AVATAR_OK:
+                self.state_model.complete_takeitemtoavatar_request()
+            elif code == CODES.TAKE_STEAM_ITEM_OK:
+                self._wait_untill_fade_and_poll()
+            elif CODES.getText(code):
+                Auxwins.show_ok_message(CODES.getText(code))
+                if code == CODES.ERROR_FULL_COST_DIFFERENCE:
+                    self.state_model.complete_bin_request(False)
+            return
+
+    def _on_shopmodel_event(self, event_type, data):
+        if event_type == ShopET.OnCurrencyChanged:
+            Auxwins.show_load(False, StateET.OnSwitchCurrencyRequested)
+
+    def _wait_untill_fade_and_poll(self):
+        """ \xd0\xb4\xd0\xb5\xd0\xbb\xd0\xb0\xd0\xb5\xd0\xbc \xd0\xbf\xd0\xbe\xd1\x81\xd1\x82\xd0\xbe\xd1\x8f\xd0\xbd\xd0\xbd\xd0\xbe \xd0\xb7\xd0\xb0\xd0\xbf\xd1\x80\xd0\xbe\xd1\x81\xd1\x8b, \xd0\xbf\xd0\xbe\xd0\xba\xd0\xb0 \xd0\xbd\xd0\xb5 \xd0\xbe\xd0\xb1\xd0\xbd\xd0\xbe\xd0\xb2\xd0\xb8\xd1\x82\xd1\x81\xd1\x8f \xd1\x81\xd0\xba\xd0\xbb\xd0\xb0\xd0\xb4 (\xd0\xb0 \xd1\x82\xd0\xbe \xd0\xb7\xd0\xb0\xd0\xbb\xd0\xb8\xd0\xbf\xd0\xbd\xd0\xb5\xd1\x82) """
+        if hasattr(self, '_poll_callback'):
+            BigWorld.cancelCallback(self._poll_callback)
+            del self._poll_callback
+        if not self.visible:
+            return
+        if not Auxwins.has_load():
+            return
+        BigWorld.player().getStoreHouseItems()
+        self._poll_callback = BigWorld.callback(2, self._wait_untill_fade_and_poll)
+
+    def set_premium_filter(self):
+        if self._window and self._window.visible:
+            self._window.scroll_to_premiums()
+
+    def _on_storemodel_event(self, event_type, data):
+        if event_type == ModelET.OnItems:
+            Auxwins.show_load(False, StateET.OnTakeItemRequested)
+            Auxwins.show_load(False, StateET.OnTakeAllRequested)
+            Auxwins.show_load(False, StateET.OnTakeItemToAvatarRequested)
+
+    def _on_statemodel_event(self, event_type, data):
+        if event_type == StateET.OnBinBuyRequested:
+            Auxwins.show_load(True, StateET.OnBinBuyRequested)
+        elif event_type == StateET.OnUseItemRequested:
+            Auxwins.show_load(True, StateET.OnUseItemRequested)
+        elif event_type == StateET.OnBinBuyCompleted:
+            if data['success']:
+                self._invoke_item_pend_win()
+                self.bin_model.clear()
+            Auxwins.show_load(False, StateET.OnBinBuyRequested)
+        elif event_type == StateET.OnUseItemCompleted:
+            Auxwins.show_load(False, StateET.OnUseItemRequested)
+        elif event_type == StateET.OnSwitchCurrencyRequested:
+            Auxwins.show_load(True, StateET.OnSwitchCurrencyRequested)
+        elif event_type == StateET.OnTakeItemToAvatarRequested:
+            Auxwins.show_load(True, StateET.OnTakeItemToAvatarRequested)
+        elif event_type == StateET.OnTakeItemRequested:
+            Auxwins.show_load(True, StateET.OnTakeItemRequested)
+        elif event_type == StateET.OnTakeAllRequested:
+            Auxwins.show_load(True, StateET.OnTakeAllRequested)
+        elif event_type == StateET.OnCompleteTakeItemToAvatarRequested:
+            Auxwins.show_load(False, StateET.OnTakeItemToAvatarRequested)
+            Auxwins.show_ok_message(lc('StoreHouse.store.OK_TAKEITEM'))
+
+    def _on_shopwindow_event(self, event_type, data):
+        if event_type == ShopwindowET.OnShopVisible:
+            BigWorld.player().getDonateShopCatalog()
+            if self._version is not None:
+                Settings().setSetting('donat_catalog_version', self._version, flush=True)
+            BWPersonality.GUICore.loginFlash.account_actions.set_shop_notification_count(0)
+        elif event_type == ShopwindowET.OnStoreVisible:
+            BigWorld.player().getStoreHouseItems()
+        return
+
+    def set_store_items(self, items):
+        self.store_model.set_items(items)
+
+    def set_store_item_count(self, count):
+        self.store_model.set_total_count(count)
+
+    def update_money(self, *args, **kargs):
+        if self._shop_model:
+            self._shop_model.on_money_changed()
+
+    def doReposition(self):
+        if self._window:
+            if self._window.visible:
+                self._window.do_reposition()
+            else:
+                self._dirty_reposition = True
+
+    @property
+    def visible(self):
+        return self._window and self._window.visible
+
+    def handle_esc(self):
+        if Auxwins.handle_esc():
+            return
+        if InfoWin.instance and InfoWin.instance.visible:
+            InfoWin.instance.hide()
+            return
+        if self._window.handle_esc():
+            return
+        self.hide()
+
+    def hide(self):
+        if self.visible:
+            self._window.hide()
+            self._spec_mode_bin_trigger = None
+        return
+
+    @property
+    def shop_model(self):
+        if not self._shop_model:
+            self._shop_model = ShopModel()
+            self._shop_model.add_listener(self._on_shopmodel_event)
+        return self._shop_model
+
+    @property
+    def store_model(self):
+        if not self._store_model:
+            self._store_model = StoreModel()
+            self._store_model.add_listener(self._on_storemodel_event)
+        return self._store_model
+
+    @property
+    def state_model(self):
+        if not self._state_model:
+            self._state_model = StateModel()
+            self._state_model.add_listener(self._on_statemodel_event)
+        return self._state_model
+
+    @property
+    def bin_model(self):
+        if not self._bin_model:
+            self._bin_model = BinModel(self.shop_model)
+        return self._bin_model

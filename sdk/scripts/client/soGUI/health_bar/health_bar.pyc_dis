@@ -1,0 +1,299 @@
+# Embedded file name: ./client/soGUI/health_bar/health_bar.py
+from Localization import lc
+import BWPersonality
+from Helpers.PyGUI import Utils
+import BigWorld
+import colorCodes as cc
+from math_bw import lerp, clamp, smooth_damp
+import GUI
+from Helpers.PyGUI.PyGUIBase import DragWin
+from Helpers.BWCoroutine import BWMemberCoroutine, BWWaitForPeriod
+from Party.party_utils import NameColors as NC
+from CharacterUtils import CharacterConst
+from Keys import KEY_RIGHTMOUSE
+from Helpers.PyGUI.PyGUIBase import Interceptor
+
+class Leader(Interceptor):
+
+    def handleMouseEnterEvent(self, comp):
+        if BWPersonality.GUICore.toolTip:
+            BWPersonality.GUICore.toolTip.hide()
+        BWPersonality.GUICore.showToolTip(cc.active_xml + lc('extendedGUI.RootWindow.healthleader'))
+        return Interceptor.handleMouseEnterEvent(self, comp)
+
+    def handleMouseLeaveEvent(self, comp):
+        if BWPersonality.GUICore.toolTip:
+            BWPersonality.GUICore.toolTip.hide()
+        return Interceptor.handleMouseLeaveEvent(self, comp)
+
+
+class HealthBar(DragWin):
+
+    def __init__(self):
+        comp = GUI.Window()
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.ha, comp.va = ('LEFT', 'TOP')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.visible = False
+        comp.width, comp.height = (0, 0)
+        DragWin.__init__(self, comp)
+        comp = GUI.Text(u'', 'RobotoCondensedShadow_18.font')
+        comp.colour = cc.active_rgba
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('LEFT', 'TOP')
+        self.component.addChild(comp, 'name')
+        comp = GUI.Window('soGUI/frame/healthbar/hpbar_back.dds')
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('LEFT', 'TOP')
+        comp.materialFX = 'BLEND'
+        self.component.addChild(comp, 'hpbarback')
+        comp = GUI.Simple('soGUI/frame/healthbar/hpbar_dam.dds')
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.wm, comp.hm = ('CLIP', 'CLIP')
+        comp.ha, comp.va = ('LEFT', 'CENTER')
+        comp.materialFX = 'BLEND'
+        comp.width, comp.height = (2, 2)
+        comp.position = (-1, 0, 0.5)
+        self.component.hpbarback.addChild(comp, 'hpbardam')
+        self._hpbardam = comp
+        comp = GUI.Simple('soGUI/frame/healthbar/hpbar.dds')
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.wm, comp.hm = ('CLIP', 'CLIP')
+        comp.ha, comp.va = ('LEFT', 'CENTER')
+        comp.materialFX = 'BLEND'
+        comp.width, comp.height = (2, 2)
+        comp.position = (-1, 0, 0.3)
+        self.component.hpbarback.addChild(comp, 'healthbar')
+        self._healthbar = comp
+        comp = GUI.Window('soGUI/frame/healthbar/st_back.dds')
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('LEFT', 'TOP')
+        comp.materialFX = 'BLEND'
+        self.component.addChild(comp, 'spbarback')
+        comp = GUI.Window('soGUI/frame/healthbar/st.dds')
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.wm, comp.hm = ('CLIP', 'CLIP')
+        comp.ha, comp.va = ('LEFT', 'CENTER')
+        comp.materialFX = 'BLEND'
+        comp.width, comp.height = (2, 2)
+        comp.position = (-1, 0, 0.5)
+        self.component.spbarback.addChild(comp, 'spbar')
+        self._spbar = comp
+        comp = GUI.Window('soGUI/frame/healthbar/leader.dds')
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('RIGHT', 'TOP')
+        comp.materialFX = 'BLEND'
+        comp.width, comp.height = comp.texture.width, comp.texture.height
+        comp.position = (0, 0, 0.4)
+        comp.visible = False
+        self.component.addChild(comp, 'leader')
+        Leader(comp)
+        self._inited = False
+        self._hp_velocity = 0
+        self._hpdam_velocity = 0
+        self._sp_velocity = 0
+        self._coroutine = None
+        self._hp_max = None
+        self._hp_value = None
+        self._sp_max = None
+        self._sp_value = None
+        self._name = None
+        return
+
+    @property
+    def is_leader(self):
+        return self.component.leader.visible
+
+    @is_leader.setter
+    def is_leader(self, value):
+        self.component.leader.visible = value
+
+    def _check_init(self):
+        if self.component.visible and not self._inited and all((elem is not None for elem in (self.hp_max,
+         self.sp_max,
+         self.hp_value,
+         self.sp_value))):
+            self._inited = True
+            self._on_init()
+
+    def _on_init(self):
+        self._do_reposition()
+        self._healthbar.width = 0
+        self._hpbardam.width = 0
+        self._spbar.width = 0
+        self._check_coroutine()
+
+    @property
+    def hp_max(self):
+        return self._hp_max
+
+    @hp_max.setter
+    def hp_max(self, value):
+        if self._hp_max == value:
+            return
+        self._hp_max = value
+        if self._inited:
+            self._on_hp_changed()
+            self._do_reposition()
+        else:
+            self._check_init()
+
+    @property
+    def hp_value(self):
+        return self._hp_value
+
+    @hp_value.setter
+    def hp_value(self, value):
+        if self._hp_value == value:
+            return
+        self._hp_value = value
+        if self._inited:
+            self._on_hp_changed()
+            self._check_coroutine()
+        else:
+            self._check_init()
+
+    def _on_hp_changed(self):
+        pass
+
+    @property
+    def sp_max(self):
+        return self._sp_max
+
+    @sp_max.setter
+    def sp_max(self, value):
+        if self._sp_max == value:
+            return
+        self._sp_max = value
+        if self._inited:
+            self._do_reposition()
+        else:
+            self._check_init()
+
+    @property
+    def sp_value(self):
+        return self._sp_value
+
+    @sp_value.setter
+    def sp_value(self, value):
+        if self._sp_value == value:
+            return
+        self._sp_value = value
+        if self._inited:
+            self._check_coroutine()
+        else:
+            self._check_init()
+
+    def _check_coroutine(self):
+        needed_hpwidth = self._calc_needed_hp_width()
+        needed_spwidth = self._calc_needed_sp_width()
+        if needed_hpwidth is None or needed_spwidth is None:
+            run_coroutine = False
+        elif self._healthbar.width == needed_hpwidth and self._hpbardam.width == needed_hpwidth and self._spbar.width == needed_spwidth:
+            run_coroutine = False
+        else:
+            run_coroutine = True
+        if run_coroutine:
+            if not self._coroutine:
+                self._coroutine = self._align_values_coroutine()
+                self._coroutine.run()
+        elif self._coroutine:
+            self._coroutine.stop()
+            self._coroutine = None
+        return
+
+    def _calc_needed_hp_width(self):
+        if not self.hp_max:
+            return None
+        else:
+            return self.hp_value / self.hp_max * 2
+
+    def _calc_needed_sp_width(self):
+        if not self.sp_max:
+            return None
+        else:
+            return self.sp_value / self.sp_max * 2
+
+    @BWMemberCoroutine
+    def _align_values_coroutine(self):
+        while True:
+            needed_hpwidth = self._calc_needed_hp_width()
+            needed_spwidth = self._calc_needed_sp_width()
+            self._healthbar.width, self._hp_velocity = smooth_damp(self._healthbar.width, needed_hpwidth, self._hp_velocity, 0.1, 10000000000.0, BigWorld.getTimeDelta())
+            self._hpbardam.width, self._hpdam_velocity = smooth_damp(self._hpbardam.width, needed_hpwidth, self._hpdam_velocity, 0.5, 10000000000.0, BigWorld.getTimeDelta())
+            self._spbar.width, self._sp_velocity = smooth_damp(self._spbar.width, needed_spwidth, self._sp_velocity, 0.5, 10000000000.0, BigWorld.getTimeDelta())
+            if self._healthbar.width == needed_hpwidth and self._hpbardam.width == needed_hpwidth and self._spbar.width == needed_spwidth or abs(self._hp_velocity) < 0.001 and abs(self._hpdam_velocity) < 0.001 and abs(self._sp_velocity) < 0.001 or not self.component or not Utils.is_visible_in_hierarchy(self.component):
+                self._healthbar.width = needed_hpwidth
+                self._hpbardam.width = needed_hpwidth
+                self._spbar.width = needed_spwidth
+                break
+            yield BWWaitForPeriod(0)
+
+        self._coroutine = None
+        return
+
+    def _reset_values(self):
+        self._hp_velocity = 0
+        self._hpdam_velocity = 0
+        self._sp_velocity = 0
+        self._inited = False
+        self.hp_max, self.sp_max, self.hp_value, self.sp_value = (None, None, None, None)
+        self.name = None
+        self.is_leader = False
+        if self._coroutine:
+            self._coroutine.stop()
+            self._coroutine = None
+        return
+
+    def show(self):
+        self.component.visible = True
+        self._reset_values()
+
+    def hide(self):
+        self.component.visible = False
+        self._reset_values()
+
+    @property
+    def name(self):
+        return self._name
+
+    @name.setter
+    def name(self, value):
+        if self._name == value:
+            return
+        self._name = value
+        if value:
+            self.component.name.visible = True
+            self.component.name.text = value
+        else:
+            self.component.name.visible = False
+
+    def apply_name_color(self, is_near, karma, argflag):
+        if not is_near:
+            colour = NC.UNKNOWN
+        elif karma >= CharacterConst.PK_KARMA_PER_AGGR:
+            colour = NC.PK
+        elif argflag:
+            colour = NC.AGR
+        else:
+            colour = NC.DEFAULT
+        self.component.name.colour = colour
+
+    def handleMouseButtonEvent(self, comp, event):
+        DragWin.handleMouseButtonEvent(self, comp, event)
+        if event.isMouseButton() and not event.isKeyDown() and event.key == KEY_RIGHTMOUSE:
+            self.on_context_menu()
+        return True
+
+    def on_context_menu(self):
+        pass
+
+    def _do_reposition(self):
+        ratio = pow(clamp(max(self.hp_max - 275.0, 0) / 213.0), 0.5)
+        hp_stretch = lerp(1.0, 1.27, ratio)
+        ratio = pow(clamp(max(self.sp_max - 200.0, 0) / 209.0), 0.5)
+        sp_stretch = lerp(1.0, 1.14, ratio)
+        return (hp_stretch, sp_stretch)

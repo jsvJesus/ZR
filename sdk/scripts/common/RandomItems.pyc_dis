@@ -1,0 +1,304 @@
+# Embedded file name: ./common/RandomItems.py
+import BigWorld
+import random
+from Items import ItemsCatalog
+from perks_system import perks_parser
+import Constants
+import traceback
+
+class RandomItems:
+
+    def __init__(self, groups, name = '', quest_items = None, stories = None, event_items = None):
+        self.groups = groups
+        self.quest_items = quest_items
+        self.stories = stories
+        self.event_items = event_items
+        self.name = name
+
+    def _parse_triangle_condition(self, item):
+        try:
+            result = (int(item.get('MIN', 100)), int(item.get('AVER', 100)), int(item.get('MAX', 100)))
+        except:
+            print 'RandomItems: bad item', item
+            traceback.print_exc()
+            traceback.print_stack()
+            result = (100, 100, 100)
+
+        return result
+
+    def _add_group_to_result(self, result, group, force_articles, worked_garants):
+        if group.get('items'):
+            triangle_condition = (group.get('MIN', 100), group.get('AVER', 100), group.get('MAX', 100))
+
+            def apply_item(item, triangle_condition):
+                if 'itemID' in item:
+                    self._add_item_to_result(result, item, triangle_condition)
+                else:
+                    from BlackBox import BlackBox
+                    sub_bb = BlackBox(item['blackbox'], item['container'])
+                    sub_items = sub_bb.openBlackBox()[0]
+                    for sub_item in sub_items:
+                        item_id = int(sub_item['itemID'])
+                        result.append({'itemID': item_id,
+                         'itemCount': sub_item['itemCount'],
+                         'qualityDistribution': sub_item['qualityDistribution'],
+                         'sub_bb': item['blackbox']})
+
+            if force_articles:
+                for item in group['items']:
+                    if item.get('article') in force_articles:
+                        apply_item(item, triangle_condition)
+
+            else:
+                chance_random = random.random() * 100.0
+                chance_sum = 0
+                for item in group['items']:
+                    chance_sum += float(item['dropChance'])
+                    if chance_random <= chance_sum:
+                        if worked_garants is not None:
+                            garant_article = item.get('article')
+                            if garant_article:
+                                worked_garants.add(item.get('article'))
+                        apply_item(item, triangle_condition)
+                        break
+
+        if group.get('groups'):
+            raise NotImplementedError
+        return
+
+    def get_subgroup(self, subgroup_name):
+        raise NotImplementedError
+
+    def _add_item_to_result(self, result, item, triangle_condition):
+        count = random.randint(int(item['rangeFrom']), int(item['rangeTo']))
+        if count > 0:
+            if 'itemID' in item:
+                item_type = int(item['itemID'])
+                item_triangle_condition = self._parse_triangle_condition(item)
+                item_class = ItemsCatalog.GetItemClass(item_type)
+                cond_classes = [ItemsCatalog.WEAPON,
+                 ItemsCatalog.CLOTH,
+                 ItemsCatalog.GADGET,
+                 ItemsCatalog.ARTIFACT]
+                if item_class in cond_classes and item_triangle_condition == (-1, -1, -1):
+                    if triangle_condition == (-1, -1, -1):
+                        import traceback
+                        traceback.print_stack()
+                        print 'DESIGNER BLACKBOX ERROR', self.name, 'no config for item', item_type
+                    else:
+                        item_triangle_condition = triangle_condition
+                result.append({'itemID': item_type,
+                 'itemCount': count,
+                 'qualityDistribution': item_triangle_condition})
+
+    def _add_groups_to_result(self, result, groups, force_articles, worked_garants, chance_multiplier = 1, player_perks = None):
+        for group in groups:
+            if force_articles:
+                group_article = group.get('article')
+                if group_article and group_article in force_articles:
+                    self._add_group_to_result(result, group, None, None)
+                else:
+                    self._add_group_to_result(result, group, force_articles, None)
+            else:
+                cycle_group_count = random.randint(int(group['rangeFrom']), int(group['rangeTo']))
+                group_chance = group['chance']
+                perk_name = group.get('perk_name')
+                if player_perks and perk_name:
+                    group_chance += perks_parser.get_perk_action_val('CHANCE_GROUP_PERK_NAME', player_perks, perk_name=perk_name)
+                group_chance *= chance_multiplier
+                for _ in xrange(cycle_group_count):
+                    random_result = random.random() * 100 <= group_chance
+                    if random_result:
+                        self._add_group_to_result(result, group, force_articles, worked_garants)
+
+        return
+
+    def getRandomItems(self, chance_multiplier = 1, additional_cycles = 0, player_perks = None, force_articles = None, worked_garants = None):
+        """ chance_multiplier - \xd0\xbc\xd0\xbd\xd0\xbe\xd0\xb6\xd0\xb8\xd1\x82\xd0\xb5\xd0\xbb\xd1\x8c \xd1\x88\xd0\xb0\xd0\xbd\xd1\x81\xd0\xbe\xd0\xb2 \xd0\xb2\xd1\x8b\xd0\xbf\xd0\xb0\xd0\xb4\xd0\xb5\xd0\xbd\xd0\xb8\xd1\x8f \xd0\xb3\xd1\x80\xd1\x83\xd0\xbf\xd0\xbf
+                additional_cycles - \xd0\xb8\xd0\xb7\xd0\xbc\xd0\xb5\xd0\xbd\xd1\x8f\xd0\xb5\xd1\x82\xd1\x81\xd1\x8f \xd0\xba\xd0\xbe\xd0\xbb\xd0\xb8\xd1\x87\xd0\xb5\xd1\x81\xd1\x82\xd0\xb2\xd0\xbe \xd0\xb1\xd1\x80\xd0\xbe\xd1\x81\xd0\xba\xd0\xbe\xd0\xb2 \xd0\xb3\xd1\x80\xd1\x83\xd0\xbf\xd0\xbf
+        """
+        result = []
+        result_for_quests = {}
+        result_stories = []
+        if not self.groups and not self.quest_items and not self.stories and not self.event_items:
+            return (result, result_for_quests, result_stories)
+        self._add_groups_to_result(result, self.groups, force_articles, worked_garants, chance_multiplier, player_perks=player_perks)
+        if self.quest_items:
+            for item in self.quest_items:
+                count = random.randint(int(item['rangeFrom']), int(item['rangeTo'])) + additional_cycles
+                dropped_count = 0
+                for c in xrange(count):
+                    is_dropped = random.uniform(0.0, 100.0)
+                    if is_dropped <= float(str.strip(str(item['dropChance']))) * chance_multiplier:
+                        dropped_count += 1
+
+                if not result_for_quests.has_key(item['questID']):
+                    result_for_quests[item['questID']] = []
+                if not dropped_count:
+                    continue
+                result_for_quests[item['questID']].append({'itemID': item['itemID'],
+                 'itemCount': dropped_count})
+
+        if self.stories:
+            for story in self.stories:
+                is_dropped = random.uniform(0.0, 100.0)
+                if is_dropped <= float(str.strip(str(story['dropChance']))) * chance_multiplier:
+                    result_stories.append(story['storyId'])
+
+            if result_stories:
+                result_stories = [random.choice(result_stories)]
+        return (result, result_for_quests, result_stories)
+
+    def getRandomByTypeAndAttr(self, open_type = '', player_perks = None, additional_cycles = 0, server_chance_mult = 1.0, uniq_mobid = '', force_articles = None, worked_garants = None):
+        result_items = []
+        result_quests = {}
+        result_stories = []
+        result_events = []
+        if self.groups is None:
+            return (result_items,
+             result_quests,
+             result_stories,
+             result_events)
+        else:
+            if isinstance(open_type, str):
+                open_type = open_type.decode('utf-8')
+
+            def getSummaryChance(data, number):
+                _sum = 0.0
+                for it, d in enumerate(data):
+                    _sum += float(d['dropChance'])
+                    if it == number:
+                        break
+
+                return _sum
+
+            for group in self.groups:
+                group_type = group.get('open_type')
+                if group_type and (not open_type or open_type.strip().lower() != group_type.strip().lower()):
+                    continue
+                group_chance = group['chance']
+                perk_name = group.get('perk_name')
+                if player_perks and perk_name:
+                    if group_type == Constants.TYPE_SEARCH:
+                        group_chance += perks_parser.get_perk_action_val('CHANCE_GROUP_PERK_NAME_SEARCH', player_perks, perk_name=perk_name)
+                    elif group_type == Constants.TYPE_BUTCH:
+                        group_chance += perks_parser.get_perk_action_val('CHANCE_GROUP_PERK_NAME_BUTCH', player_perks, perk_name=perk_name)
+                group_chance *= server_chance_mult
+                if force_articles:
+                    total_cycles = 1
+                else:
+                    total_cycles = random.randint(int(group['rangeFrom']), int(group['rangeTo'])) + additional_cycles
+                for c in xrange(total_cycles):
+                    randomGroup = random.uniform(0.0, 100.0)
+                    items_force_articles = None
+                    rand_result = randomGroup <= group_chance
+                    if force_articles:
+                        if 'article' in group and group['article'] in force_articles:
+                            rand_result = True
+                            items_force_articles = None
+                        else:
+                            items_force_articles = force_articles
+                    if rand_result:
+                        if worked_garants is not None and 'article' in group:
+                            worked_garants.add(group['article'])
+                        items = group['items']
+                        if len(items) == 0 or not items[0].has_key('itemID'):
+                            continue
+                        item = items[0]
+                        randomItem = random.uniform(0.0, 100.0)
+                        if items_force_articles:
+                            if 'article' in item:
+                                rand_result = item['article'] in items_force_articles
+                            else:
+                                rand_result = randomItem <= item['dropChance']
+                            if rand_result:
+                                countItem = random.randint(int(item['rangeFrom']), int(item['rangeTo']))
+                                if countItem > 0:
+                                    attrib_value = item['itemID']
+                                    try:
+                                        attrib_value = int(attrib_value)
+                                    except:
+                                        pass
+
+                                    item_triangle_condition = self._parse_triangle_condition(item)
+                                    if item_triangle_condition == (-1, -1, -1):
+                                        print 'RandomItems (ERROR): bad item condition', item, self.name
+                                        traceback.print_stack()
+                                        continue
+                                    result_items.append({'itemID': attrib_value,
+                                     'itemCount': countItem,
+                                     'qualityDistribution': item_triangle_condition})
+                                worked_garants is not None and 'article' in item and worked_garants.add(item['article'])
+                        else:
+                            for it, item in enumerate(items):
+                                if it == 0:
+                                    continue
+                                if items_force_articles:
+                                    if 'article' in item:
+                                        rand_result = item['article'] in items_force_articles
+                                    else:
+                                        rand_result = randomItem > getSummaryChance(items, it - 1) and randomItem <= getSummaryChance(items, it)
+                                    if rand_result:
+                                        countItem = random.randint(item['rangeFrom'], item['rangeTo'])
+                                        if countItem > 0:
+                                            item_triangle_condition = self._parse_triangle_condition(item)
+                                            if item_triangle_condition == (-1, -1, -1):
+                                                print 'RandomItems (ERROR): bad item condition', item, self.name
+                                                traceback.print_stack()
+                                                continue
+                                            result_items.append({'itemID': int(item['itemID']),
+                                             'itemCount': countItem,
+                                             'qualityDistribution': item_triangle_condition})
+                                        worked_garants is not None and 'article' in item and worked_garants.add(item['article'])
+                                    break
+
+            if self.quest_items:
+                for item in self.quest_items:
+                    mob_id = item.get('mob_id', '')
+                    if mob_id and mob_id != uniq_mobid:
+                        continue
+                    count = random.randint(item['rangeFrom'], item['rangeTo'])
+                    dropped_count = 0
+                    dropChance = item['dropChance']
+                    perk_name = item.get('perk_name_q')
+                    if player_perks and perk_name:
+                        if open_type == Constants.TYPE_SEARCH:
+                            dropChance += perks_parser.get_perk_action_val('CHANCE_GROUP_PERK_NAME_SEARCH', player_perks, perk_name=perk_name)
+                        elif open_type == Constants.TYPE_BUTCH:
+                            dropChance += perks_parser.get_perk_action_val('CHANCE_GROUP_PERK_NAME_BUTCH', player_perks, perk_name=perk_name)
+                    for c in xrange(count):
+                        is_dropped = random.uniform(0.0, 100.0)
+                        if is_dropped <= dropChance * server_chance_mult:
+                            dropped_count += 1
+
+                    if not result_quests.has_key(item['questID']):
+                        result_quests[item['questID']] = []
+                    if not dropped_count:
+                        continue
+                    result_quests[item['questID']].append({'itemID': item['itemID'],
+                     'itemCount': dropped_count})
+
+            if self.stories:
+                for story in self.stories:
+                    is_dropped = random.uniform(0.0, 100.0)
+                    if is_dropped <= story['dropChance'] * server_chance_mult:
+                        result_stories.append(story['storyId'])
+
+            if self.event_items:
+                current_events = BigWorld.globalData.get('active_events_global_key', None)
+                if current_events:
+                    for i in xrange(1 + additional_cycles):
+                        for item in self.event_items:
+                            if item['event'] not in current_events:
+                                continue
+                            if random.uniform(0.0, 100.0) > item['dropChance'] * server_chance_mult:
+                                continue
+                            count = random.randint(item['rangeFrom'], item['rangeTo'])
+                            if count:
+                                result_events.append({'itemID': item['itemID'],
+                                 'itemCount': count})
+
+            return (result_items,
+             result_quests,
+             result_stories,
+             result_events)

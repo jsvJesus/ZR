@@ -1,0 +1,103 @@
+# Embedded file name: ./client/PostProcessing/creature_fadeout.py
+"""
+\xd0\x9f\xd0\xbb\xd0\xb0\xd0\xb2\xd0\xbd\xd0\xbe\xd0\xb5 \xd0\xb8\xd1\x81\xd1\x87\xd0\xb5\xd0\xb7\xd0\xbd\xd0\xbe\xd0\xb2\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5 \xd0\xbc\xd0\xbe\xd0\xb4\xd0\xb5\xd0\xbb\xd0\xb5\xd0\xb9 \xd0\xbc\xd0\xbe\xd0\xb1\xd0\xbe\xd0\xb2
+
+"""
+import BigWorld
+import traceback
+import PostProcessing
+from Math import *
+from PostProcessing.D3DEnums import *
+from PostProcessing.Phases import buildPhase
+shader = 'shaders/post_processing/creature_fadeout.fx'
+
+class ModelFaderEff(object):
+    instance = None
+
+    def __new__(cls, *w, **kw):
+        if cls.instance is None:
+            cls.instance = object.__new__(cls, *w, **kw)
+        return cls.instance
+
+    def __init__(self):
+        self._pp_effect_id = None
+        self._models = {}
+        self._createPostEffect()
+        return
+
+    def _createPostEffect(self):
+        self._main_rt = BigWorld.RenderTarget('creature_fadeout_rt', 0, 0)
+        self._depth_rt = BigWorld.RenderTarget('creature_fadeout_depth_rt', 0, 0)
+        self._main_rt.depthMap = self._depth_rt
+        self._ef = PostProcessing.Effect('CreatureFading')
+        self._phase = buildPhase(self._main_rt.texture, None, shader, srcBlend=BW_BLEND_SRCALPHA, destBlend=BW_BLEND_INVSRCALPHA)
+        self._phase.material.inputTextureDepth = self._depth_rt.texture
+        self._phase.writeAlphaChannel = False
+        self._ef.phases = [self._phase]
+        self._ef.preTickDebug = self._tick
+        self._ef.preDrawDebug = self._draw
+        return
+
+    def _draw(self):
+        alphas = [ [0,
+         0,
+         0,
+         0] for x in range(64) ]
+        for model, info in self._models.items():
+            draw_id = model.modelDrawID
+            if draw_id > -1:
+                index = draw_id // 4
+                subindex = draw_id % 4
+                alphas[index][subindex] = (info['delay'] - info['live']) / info['delay']
+
+        self._phase.material.alphaValues = [ tuple(v) for v in alphas ]
+
+    def _tick(self, dtime):
+        if not self._models:
+            BigWorld.callback(0.0001, self._checkModelAndDisable)
+            return
+        for model, info in self._models.items():
+            info['live'] += dtime
+            if info['live'] > info['delay']:
+                self._onEndModel(model)
+
+    def _checkModelAndDisable(self):
+        if not self._models:
+            self.disable()
+
+    def _onEndModel(self, model):
+        try:
+            model.renderTarget = None
+            info = self._models.pop(model, None)
+            if not info:
+                return
+            if info['callb']:
+                info['callb'](model)
+        except Exception as e:
+            traceback.print_exc()
+
+        return
+
+    def enable(self, model, on_end_callback = None, delay = 0.9):
+        if not self._pp_effect_id:
+            self._pp_effect_id = PostProcessing.addPPChainEffects(self._ef, 90)
+        model.renderTarget = self._main_rt
+        self._models[model] = dict(live=0, delay=delay, callb=on_end_callback)
+
+    def disable(self):
+        if self._pp_effect_id:
+            PostProcessing.removePPChain(self._pp_effect_id)
+            self._pp_effect_id = None
+        for model in self._models.keys():
+            self._onEndModel(model)
+
+        return
+
+    def cancelModel(self, model):
+        if model:
+            model.renderTarget = None
+            self._models.pop(model, None)
+        return
+
+
+creature_fader = ModelFaderEff()

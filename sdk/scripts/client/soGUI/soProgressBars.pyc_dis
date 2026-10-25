@@ -1,0 +1,526 @@
+# Embedded file name: ./client/soGUI/soProgressBars.py
+import BigWorld
+import GUI
+import BWPersonality
+import traceback
+import Localization
+from soGUI.soTextField import soTextField3
+from soGUI.soTextField import soTextField2
+from soGUI.soTextField import soTxtFieldPropsStructure
+from Helpers.PyGUI.PyGUIBase import PyGUIBase
+from Helpers.BWCoroutine import BWMemberCoroutine, BWWaitForPeriod
+import ResMgr
+import AudioMixer
+import sounds_manager
+from random import randint
+from utils import plog
+from ui.panel import Panel
+from ui.wrapped_text import WrappedText
+EVENT_START = 0
+EVENT_FINISH = 1
+EVENT_CANCEL = 2
+EVENT_TIMEOUT = 3
+TYPE_SPACE = 0
+TYPE_DUMMY = 1
+LOADING_SCREENS = 'scripts/client/soGUI/data/LoadingScreens.xml'
+HINT_WIDTH_RATIO = 0.5
+
+class soIProgressBar(PyGUIBase):
+    factoryString = 'soGUI.soIProgressBar'
+
+    def __init__(self, component):
+        PyGUIBase.__init__(self, component)
+
+    def setMinMax(self, min, max):
+        pass
+
+    def setProgress(self, value):
+        pass
+
+    def reset(self, value):
+        pass
+
+    def addMessage(self, text):
+        pass
+
+    def appendMessage(self, text):
+        pass
+
+
+class soAppStartProgressBar(soIProgressBar):
+    factoryString = 'soGUI.soAppStartProgressBar'
+
+    def __init__(self, component):
+        soIProgressBar.__init__(self, component)
+        self.min = 0.0
+        self.max = 1.0
+        self.msgs = ''
+        self.finnished = False
+
+    def setMinMax(self, min, max):
+        self.min = min
+        self.max = max
+
+    def setProgress(self, value):
+        range = self.max - self.min
+        value = self.min + value * range
+        self.component.bar.fillbar.clipper.value = value
+
+    def start(self):
+        GUI.addRoot(self.component)
+
+    def cancel(self):
+        pass
+
+    def stop(self):
+        GUI.delRoot(self.component)
+
+    def reset(self, value):
+        self.component.bar.fillbar.clipper.reset()
+
+    def onLoad(self, section):
+        soIProgressBar.onLoad(self, section)
+
+    def onBound(self):
+        soIProgressBar.onBound(self)
+        self.component.position = (0, 0, 0.0)
+        self.start()
+
+
+class soSpaceProgressBar(soIProgressBar):
+    factoryString = 'soGUI.soSpaceProgressBar'
+    _hints = None
+    ASPECT_RATIO = 1.777777777777778
+
+    def __init__(self, component):
+        soIProgressBar.__init__(self, component)
+        component.script = self
+        self.min = 0.0
+        self.max = 1.0
+        self.msgs = ''
+        self.distance = 0
+        self.timeOut = 5
+        self.finished = False
+        self.canceled = False
+        self.timedOut = False
+        self.spaceTextures = {}
+        self.spaceName = 'unknown'
+        self.waitForReset = False
+        self.initTextureMap()
+        self.setupRoot()
+        self.setupContent()
+
+    def setupRoot(self):
+        cmp = self.component
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'CLIP'
+        cmp.widthMode = cmp.heightMode = 'CLIP'
+        cmp.horizontalAnchor = cmp.verticalAnchor = 'CENTER'
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.width = cmp.height = 2.0
+        cmp.position = (0.0, 0.0, 0.0)
+        cmp.visible = False
+        BWPersonality.GUICore.ingameLoaderLayer.addChild(cmp, 'spaceLoader')
+
+    def setupContent(self):
+        sw, sh = BigWorld.screenSize()
+        cmp = GUI.Simple('soGUI/white.dds')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'CLIP'
+        cmp.verticalAnchor = 'CENTER'
+        cmp.horizontalAnchor = 'CENTER'
+        cmp.widthMode = cmp.heightMode = 'CLIP'
+        cmp.colour = (0, 0, 0, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.width = 2.0
+        cmp.height = 2.0
+        cmp.position = (0.0, 0.0, 0.6)
+        self.component.addChild(cmp, 'blackStripes')
+        cmp = GUI.Window()
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'CLIP'
+        cmp.verticalAnchor = 'CENTER'
+        cmp.horizontalAnchor = 'CENTER'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.width = sh * 2
+        cmp.height = sh
+        cmp.position = (0.0, 0.0, 0.5)
+        cmp.textureName = ''
+        cmp.filterType = 'LINEAR'
+        self.component.addChild(cmp, 'ldrBack')
+        cmp = GUI.Window()
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'CLIP'
+        cmp.verticalAnchor = 'CENTER'
+        cmp.horizontalAnchor = 'CENTER'
+        cmp.widthMode = cmp.heightMode = 'CLIP'
+        cmp.colour = (255, 255, 255, 40)
+        cmp.materialFX = 'BLEND'
+        cmp.width = 2
+        cmp.height = 2
+        cmp.position = (0.0, 0.0, 0.5)
+        cmp.textureName = 'textures/misc/other/white_noise/loading_noise.texanim'
+        cmp.filterType = 'LINEAR'
+        self.component.addChild(cmp, 'ldrMask')
+        cmp = GUI.Window()
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'CLIP'
+        cmp.verticalAnchor = 'CENTER'
+        cmp.horizontalAnchor = 'CENTER'
+        cmp.widthMode = cmp.heightMode = 'CLIP'
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.height = cmp.width = 2
+        cmp.position = (0.0, 0.0, 0.5)
+        cmp.textureName = 'soGUI/loading_screens/loading_mask.dds'
+        cmp.filterType = 'LINEAR'
+        self.component.addChild(cmp, 'ldrMask1')
+        sW, sH = BigWorld.screenSize()
+        cmp = GUI.Simple('soGUI/maps/loadingScreen/loadingCircle/loadingCircle.texanim')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.horizontalAnchor = 'RIGHT'
+        cmp.verticalAnchor = 'BOTTOM'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.height = 41
+        cmp.width = 41
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.position = (sW - 64, sH - 64, 0.0)
+        self.component.addChild(cmp, 'ldrAnim')
+        self._border_w = 64
+        text_width = BigWorld.screenWidth() * HINT_WIDTH_RATIO
+        min_height = 100
+        self._panel_hint_bg = Panel(self.component, 'panel_hint_bg')
+        self._panel_hint_bg.transform.set_base_resolution(None)
+        self._panel_hint_bg.transform.set_pixel_mode((0.5, 1), (0.5, 1), (text_width, min_height))
+        self.hint_tf = WrappedText(self._panel_hint_bg.component, 'hint_tf', size=20)
+        self.hint_tf.transform.set_base_resolution(None)
+        self.hint_tf.set_unscalable()
+        self.hint_tf.transform.set_clip_mode((0, 0, 1, 1), pixel_anchors=(self._border_w,
+         self._border_w,
+         -self._border_w,
+         -self._border_w))
+        return
+
+    def addMessage(self, text):
+        self.hint_tf.set_text(text)
+        text_width = BigWorld.screenWidth() * HINT_WIDTH_RATIO
+        text_height = self.hint_tf.wrapped_height + self._border_w * 2
+        self._panel_hint_bg.transform.set_pixel_mode((0.5, 1), (0.5, 1), (text_width, text_height))
+        self._panel_hint_bg.transform.apply_mode()
+
+    def doReposition(self):
+        sW, sH = BigWorld.screenSize()
+        self._panel_hint_bg.transform.apply_mode()
+        self.component.ldrAnim.position = (sW - 64, sH - 64, 0.0)
+        self.component.ldrBack.width = sH * 2
+        self.component.ldrBack.height = sH
+        self.component.position = (0, 0, 0.0)
+
+    def initTextureMap(self):
+        xmlData = ResMgr.openSection(LOADING_SCREENS)
+        spaces = xmlData.values()
+        for space in spaces:
+            self.spaceTextures[space.readString('name')] = space.readStrings('path')
+
+    def setMinMax(self, min, max):
+        self.min = min
+        self.max = max
+
+    def setProgress(self, value):
+        range = self.max - self.min
+        value = self.min + value * range
+
+    def reset(self, value = None):
+        pass
+
+    def appendMessage(self, text):
+        pass
+
+    __progressChecker_coro = None
+
+    def show(self):
+        if self.__progressChecker_coro:
+            self.__progressChecker_coro.stop()
+        AudioMixer.blend_volume_to(0.001, 'LOAD_SPACE', blend_time=3.0)
+        BigWorld.worldDrawEnabled(False)
+        self.component.visible = True
+        self.__progressChecker_coro = self.progressChecker()
+        self.__progressChecker_coro.run()
+        if not self._hints:
+            self._hints = self._hintGenerator()
+            self._hints.run()
+        self.doReposition()
+        self.component.moveFocus = True
+        self.component.crossFocus = True
+        self.component.dropFocus = True
+        self.component.dragFocus = True
+        self.component.mouseButtonFocus = True
+        self.component.focus = True
+        try:
+            BigWorld.player().onShowLoadprogress()
+        except:
+            traceback.print_exc()
+
+    @BWMemberCoroutine
+    def _hintGenerator(self):
+        while True:
+            self.addMessage(BWPersonality.GUICore.hintFeeder.getHint())
+            yield BWWaitForPeriod(15.0)
+
+    def testShow(self):
+        self.component.visible = True
+        self.addMessage(BWPersonality.GUICore.hintFeeder.getHint())
+        self.doReposition()
+
+    def hide(self):
+        AudioMixer.blend_volume_to(1.0, 'LOAD_SPACE', blend_time=3.0)
+        BigWorld.worldDrawEnabled(True)
+        self.component.visible = False
+        BWPersonality.GUICore.screenUnFade(True)
+        self.clearLoadScreen()
+        player = BigWorld.player()
+        try:
+            if player:
+                player.onHideLoadprogress()
+        except:
+            traceback.print_exc()
+
+        self.component.moveFocus = False
+        self.component.crossFocus = False
+        self.component.dropFocus = False
+        self.component.dragFocus = False
+        self.component.mouseButtonFocus = False
+        self.component.focus = False
+        if self._hints:
+            self._hints.stop()
+            self._hints = None
+        return
+
+    def setTimeout(self, timeOut):
+        self.timeOut = timeOut
+
+    def setDistance(self, dst):
+        self.distance = dst
+
+    def setWaitMode(self, doWait = False):
+        self.waitForReset = doWait
+
+    def setSpaceName(self, spaceName):
+        texturePath = ''
+        if not self.spaceTextures.has_key(spaceName):
+            spaceName = 'unknown'
+        index = randint(0, len(self.spaceTextures[spaceName]) - 1)
+        texturePath = self.spaceTextures[spaceName][index]
+        self.component.ldrBack.textureName = texturePath
+
+    def clearLoadScreen(self):
+        self.component.ldrBack.textureName = ''
+
+    def cancel(self):
+        self.canceled = True
+        self.hide()
+        BWPersonality.GUICore.loaderGUIEvent(EVENT_CANCEL, (TYPE_SPACE, self.spaceName))
+
+    @BWMemberCoroutine
+    def progressChecker(self):
+        plog('progressChecker distance=%s, timeout=%s, spaceName=%s, waitForReset=%s' % (self.distance,
+         self.timeOut,
+         self.spaceName,
+         self.waitForReset))
+        startTime = BigWorld.time()
+        self.finished = False
+        self.timedOut = False
+        self.canceled = False
+        self.reset()
+        lastStatus = 0.0
+        if self.waitForReset:
+            while BigWorld.spaceLoadStatus(self.distance) == 1.0:
+                yield BWWaitForPeriod(0.05)
+
+        while not self.finished:
+            if not self.canceled:
+                if not self.timedOut:
+                    yield BWWaitForPeriod(0.05)
+                    status = BigWorld.spaceLoadStatus(self.distance)
+                    finished = status >= 0.999
+                    timedOut = BigWorld.time() - startTime > self.timeOut
+                    if timedOut:
+                        self.timedOut = True
+                        BWPersonality.GUICore.loaderGUIEvent(EVENT_TIMEOUT, (TYPE_SPACE, self.spaceName))
+                    self.finished = finished and True
+                    BWPersonality.GUICore.loaderGUIEvent(EVENT_FINISH, (TYPE_SPACE, self.spaceName))
+                    self.setProgress(1.0)
+                lastStatus < status and self.setProgress(status)
+                lastStatus = status
+
+        plog('progressChecker finished=%s, timedOut=%s, canceled=%s' % (self.finished, self.timedOut, self.canceled))
+        self.hide()
+        self.__progressChecker_coro = None
+        return
+
+    def handleKeyEvent(self, event):
+        return True
+
+    def handleMouseEvent(self, comp, event):
+        return True
+
+    def handleMouseButtonEvent(self, comp, event):
+        return True
+
+
+class soDummyProgressBar(soIProgressBar):
+    factoryString = 'soGUI.soDummyProgressBar'
+    LOADING_SCREEN_MAP = {'unknown': 'soGUI/maps/Misc/loading_screen.dds',
+     'default': 'soGUI/maps/Misc/loading_screen.dds',
+     'random': ''}
+    RANDOM_SCREEN_LIST = []
+    ASPECT_RATIO = 1.777777777777778
+
+    def __init__(self, component):
+        soIProgressBar.__init__(self, component)
+        component.script = self
+        self.min = 0.0
+        self.max = 1.0
+        self.msgs = ''
+        self.distance = 0
+        self.timeOut = 5
+        self.finished = False
+        self.canceled = False
+        self.timedOut = False
+        self.spaceName = 'unknown'
+        self.setupRoot()
+        self.setupContent()
+
+    def setupRoot(self):
+        cmp = self.component
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'CLIP'
+        cmp.widthMode = cmp.heightMode = 'CLIP'
+        cmp.horizontalAnchor = cmp.verticalAnchor = 'CENTER'
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.width = cmp.height = 2.0
+        cmp.position = (0.0, 0.0, 0.0)
+        cmp.visible = False
+        cmp.moveFocus = True
+        cmp.crossFocus = True
+        cmp.dropFocus = True
+        cmp.dragFocus = True
+        cmp.mouseButtonFocus = True
+        BWPersonality.GUICore.generalLayer.addChild(cmp, 'dummyLoader')
+
+    def setupContent(self):
+        sw, sh = BigWorld.screenSize()
+        cmp = GUI.Simple('soGUI/white.dds')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'CLIP'
+        cmp.verticalAnchor = 'CENTER'
+        cmp.horizontalAnchor = 'CENTER'
+        cmp.widthMode = cmp.heightMode = 'CLIP'
+        cmp.colour = (0, 0, 0, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.width = 2.0
+        cmp.height = 2.0
+        cmp.position = (0.0, 0.0, 0.6)
+        self.component.addChild(cmp, 'blackStripes')
+        cmp = GUI.Window()
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'CLIP'
+        cmp.verticalAnchor = 'CENTER'
+        cmp.horizontalAnchor = 'CENTER'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.width = sh * 2
+        cmp.height = sh
+        cmp.position = (0.0, 0.0, 0.5)
+        cmp.textureName = ''
+        self.component.addChild(cmp, 'ldrBack')
+        cmp = GUI.Window()
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'CLIP'
+        cmp.verticalAnchor = 'CENTER'
+        cmp.horizontalAnchor = 'CENTER'
+        cmp.widthMode = cmp.heightMode = 'CLIP'
+        cmp.colour = (255, 255, 255, 40)
+        cmp.materialFX = 'BLEND'
+        cmp.width = 2
+        cmp.height = 2
+        cmp.position = (0.0, 0.0, 0.5)
+        cmp.textureName = 'textures/misc/other/white_noise/loading_noise.texanim'
+        cmp.filterType = 'LINEAR'
+        self.component.addChild(cmp, 'ldrMask')
+        cmp = GUI.Window()
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'CLIP'
+        cmp.verticalAnchor = 'CENTER'
+        cmp.horizontalAnchor = 'CENTER'
+        cmp.widthMode = cmp.heightMode = 'CLIP'
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.height = cmp.width = 2
+        cmp.position = (0.0, 0.0, 0.5)
+        cmp.textureName = 'soGUI/loading_screens/loading_mask.dds'
+        cmp.filterType = 'LINEAR'
+        self.component.addChild(cmp, 'ldrMask1')
+        sW, sH = BigWorld.screenSize()
+        cmp = GUI.Simple('soGUI/maps/loadingScreen/loadingCircle/loadingCircle.texanim')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.horizontalAnchor = 'RIGHT'
+        cmp.verticalAnchor = 'BOTTOM'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.height = 41
+        cmp.width = 41
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.position = (sW - 64, sH - 64, 0.0)
+        self.component.addChild(cmp, 'ldrAnim')
+
+    def setMinMax(self, min, max):
+        self.min = min
+        self.max = max
+
+    def setProgress(self, value):
+        range = self.max - self.min
+        value = self.min + value * range
+
+    def reset(self, value = None):
+        pass
+
+    def addMessage(self, text):
+        pass
+
+    def appendMessage(self, text):
+        pass
+
+    def show(self):
+        BigWorld.worldDrawEnabled(False)
+        self.component.visible = True
+        self.doReposition()
+
+    def hide(self):
+        BigWorld.worldDrawEnabled(True)
+        self.component.visible = False
+
+    def setTimeout(self, timeOut):
+        self.timeOut = timeOut
+
+    def setDistance(self, dst):
+        self.distance = dst
+
+    def setSpaceName(self, spaceName):
+        if spaceName == 'random':
+            self.spaceName = 'random'
+            index = randint(0, len(self.RANDOM_SCREEN_LIST) - 1)
+            self.component.ldrBack.textureName = self.RANDOM_SCREEN_LIST[index]
+            return
+        if self.LOADING_SCREEN_MAP.has_key(spaceName):
+            self.spaceName = spaceName
+            self.component.ldrBack.textureName = self.LOADING_SCREEN_MAP[spaceName]
+        else:
+            self.spaceName = 'unknown'
+            self.component.ldrBack.textureName = self.LOADING_SCREEN_MAP[self.spaceName]
+
+    def cancel(self):
+        self.canceled = True
+        self.hide()
+
+    def doReposition(self):
+        sW, sH = BigWorld.screenSize()
+        self.component.ldrAnim.position = (sW - 64, sH - 64, 0.0)
+        self.component.ldrBack.width = sH * 2
+        self.component.ldrBack.height = sH

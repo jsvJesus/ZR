@@ -1,0 +1,359 @@
+# Embedded file name: ./client/soGUI/login/authorize_win.py
+import Keys
+import BWPersonality
+from functools import partial
+import GUI
+import BigWorld
+from Localization import lc, get_restore_password_url
+from soGUI.UtilsGUI.PaintButton import PaintButton
+from toggle import Toggle, State
+from base_win import BaseWin
+from auth_common import ACCOUNT_TYPE as AT
+from edit_box import EditBox, EventType as EditBoxET
+MAX_TEXT_LENGTH = 40
+RED_COLOUR = (176, 0, 9, 255)
+
+class EventType:
+    OnLoginRequest, = ((r, 'AuthorizeWin') for r in range(1))
+
+
+class LoginType:
+    NONE, COMMON, GOOGLE, YANDEX, VK, OK, MAIL, VK_PLAY, STEAM = range(9)
+
+
+_login_data = {LoginType.COMMON: {'btn_text': 'LoginWin.login.login'},
+ LoginType.GOOGLE: {'pic': 'soGUI/frame/loginwin/google.dds',
+                    'ac_type': AT.GOOGLE},
+ LoginType.YANDEX: {'pic': 'soGUI/frame/loginwin/yandex.dds',
+                    'ac_type': AT.YANDEX},
+ LoginType.VK: {'pic': 'soGUI/frame/loginwin/vk.dds',
+                'ac_type': AT.VK},
+ LoginType.OK: {'pic': 'soGUI/frame/loginwin/odnoklass.dds',
+                'ac_type': AT.OK},
+ LoginType.MAIL: {'pic': 'soGUI/frame/loginwin/mail.dds',
+                  'ac_type': AT.MAILRU},
+ LoginType.VK_PLAY: {'pic': 'soGUI/frame/loginwin/vkplay.dds',
+                     'btn_text': 'LoginWin.login.loginvkplay'},
+ LoginType.STEAM: {'pic': 'soGUI/frame/loginwin/steam.dds',
+                   'btn_text': 'LoginWin.login.loginsteam'}}
+_base_buttons = [LoginType.GOOGLE,
+ LoginType.YANDEX,
+ LoginType.VK,
+ LoginType.OK,
+ LoginType.MAIL]
+
+class AuthorizeWin(BaseWin):
+
+    def __init__(self, notify_win):
+        BaseWin.__init__(self)
+        self._notify_win = notify_win
+        self._errors = [None, None]
+        self._last_login_shown = False
+        self._clear_text_callback = None
+        self._update_login_enable()
+        return
+
+    def _create_content(self, margin, center_width):
+        pos_y = BaseWin._create_content(self, margin, center_width, lc('LoginWin.login.caption'))
+        grayish_color = (160, 160, 160, 255)
+        dark_color = (55, 55, 55, 255)
+        line_height = 2
+        pos_y += 26
+        comp = GUI.Window()
+        comp.ha, comp.va = ('CENTER', 'TOP')
+        comp.hpm, comp.vpm = ('CLIP', 'PIXEL')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = center_width, 40
+        comp.position = (0, pos_y, 0.5)
+        self.component.addChild(comp)
+        self._login_box = EditBox(comp, input_validator=self._login_validator, placeholder=lc('LoginWin.login.loginph'))
+        self._login_box.add_listener(self._on_editbox_event)
+        self._login_box.onTab = self._on_login_tab
+        pos_y += comp.height
+        pos_y += 10
+        comp = GUI.Window()
+        comp.ha, comp.va = ('CENTER', 'TOP')
+        comp.hpm, comp.vpm = ('CLIP', 'PIXEL')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = center_width, 40
+        comp.position = (0, pos_y, 0.5)
+        self.component.addChild(comp)
+        self._password_box = EditBox(comp, mask_char='*', input_validator=self._password_validator, placeholder=lc('LoginWin.login.passph'))
+        self._password_box.add_listener(self._on_editbox_event)
+        pos_y += comp.height
+        pos_y += 18
+        comp = GUI.Text(lc('LoginWin.login.or'), 'RobotoCondensedRegular_18.font')
+        comp.colour = (146, 146, 146, 255)
+        comp.hpm, comp.vpm = ('CLIP', 'PIXEL')
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.position = (0, pos_y, 0.5)
+        self.component.addChild(comp)
+        pos_y += line_height
+        text_size = comp.stringDimensions(comp.text)[0]
+        line_size = (self.component.width - 2 * margin - text_size) / 2 - 8
+        comp = GUI.Window('soGUI/frame/paint/white.dds')
+        comp.colour = dark_color
+        comp.materialFX = 'SOLID'
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('LEFT', 'TOP')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = line_size, line_height
+        comp.position = (margin, pos_y, 0.5)
+        self.component.addChild(comp)
+        comp = GUI.Window('soGUI/frame/paint/white.dds')
+        comp.colour = dark_color
+        comp.materialFX = 'SOLID'
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('RIGHT', 'TOP')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = line_size, line_height
+        comp.position = (self.component.width - margin, pos_y, 0.5)
+        self.component.addChild(comp)
+        pos_y += 20
+        button_size = 40
+        count = len(_base_buttons)
+        button_space = (center_width - count * button_size) / (count - 1)
+        x_disp = button_space + button_size
+        for i, login_type in enumerate(_base_buttons):
+            comp = GUI.Window()
+            comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+            comp.ha, comp.va = ('LEFT', 'TOP')
+            comp.materialFX = 'BLEND'
+            comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+            comp.width, comp.height = button_size, button_size
+            comp.position = (margin + i * x_disp, pos_y, 0.5)
+            button = PaintButton(comp, visual_state='soGUI/frame/loginwin/loginwinImageButton.xml')
+            button.image = _login_data[login_type]['pic']
+            button.on_click = partial(self._on_login_click, login_type)
+            button.do_reposition()
+            self.component.addChild(comp)
+
+        pos_y += comp.height
+        spec_login_type = LoginType.NONE
+        if BigWorld.auth.is_enable_steam_button:
+            spec_login_type = LoginType.STEAM
+        elif BigWorld.auth.is_enable_mygames_button:
+            spec_login_type = LoginType.VK_PLAY
+        if spec_login_type:
+            pos_y += 20
+            comp = GUI.Window()
+            comp.materialFX = 'BLEND'
+            comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+            comp.ha, comp.va = ('CENTER', 'TOP')
+            comp.hpm, comp.vpm = ('CLIP', 'PIXEL')
+            comp.width, comp.height = center_width, button_size
+            comp.position = (0, pos_y, 0.5)
+            button = PaintButton(comp, visual_state='soGUI/frame/loginwin/loginwinImageButton.xml')
+            button.on_click = partial(self._on_login_click, spec_login_type)
+            button.do_reposition()
+            self.component.addChild(comp, 'specbtn')
+            comp = GUI.Window(_login_data[spec_login_type]['pic'])
+            comp.hpm, comp.vpm = ('PIXEL', 'CLIP')
+            comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+            comp.ha, comp.va = ('CENTER', 'CENTER')
+            comp.position = (button_size * 0.5, 0, 0.5)
+            comp.colour = grayish_color
+            comp.width, comp.height = comp.texture.width, comp.texture.height
+            self.component.specbtn.addChild(comp)
+            comp = GUI.Text(lc(_login_data[spec_login_type]['btn_text']), 'RobotoCondensedRegular_24.font')
+            comp.hpm, comp.vpm = ('PIXEL', 'CLIP')
+            comp.ha, comp.va = ('CENTER', 'CENTER')
+            comp.colour = grayish_color
+            comp.position = ((self.component.specbtn.width - button_size) * 0.5 + button_size, 0, 0.5)
+            self.component.specbtn.addChild(comp)
+            pos_y += self.component.specbtn.height
+        pos_y += 20
+        comp = GUI.Window('soGUI/frame/paint/white.dds')
+        comp.colour = dark_color
+        comp.materialFX = 'SOLID'
+        comp.hpm, comp.vpm = ('CLIP', 'PIXEL')
+        comp.ha, comp.va = ('CENTER', 'TOP')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = center_width, line_height
+        comp.position = (0, pos_y, 0.5)
+        self.component.addChild(comp)
+        pos_y += comp.height
+        pos_y += 20
+        self._toggle = Toggle()
+        self._toggle.on_state_changed = self._on_remember_toggled
+        comp = self._toggle.component
+        comp.position = (margin, pos_y, 0.5)
+        self.component.addChild(comp, 'toggle')
+        comp = GUI.Text(lc('LoginWin.login.remember'), 'RobotoCondensedRegular_18.font')
+        comp.colour = RED_COLOUR
+        comp.ha, comp.va = ('LEFT', 'CENTER')
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        pos_x = self.component.toggle.width + self.component.toggle.position[0] + 16
+        comp.position = (pos_x, pos_y + self.component.toggle.height * 0.5, 0.5)
+        self.component.addChild(comp)
+        pos_y += self.component.toggle.height
+        pos_y += 20
+        btn_text = lc(_login_data[LoginType.COMMON]['btn_text'])
+        self._login_btn, pos_y = self._create_button(pos_y, center_width, btn_text)
+        self._login_btn.on_click = partial(self._on_login_click, LoginType.COMMON)
+        pos_y += 16
+        comp = GUI.Window()
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('LEFT', 'TOP')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = center_width, 24
+        comp.position = (margin, pos_y, 0.5)
+        self.component.addChild(comp)
+        btn = PaintButton(comp, visual_state='soGUI/frame/loginwin/loginwinLineButton.xml')
+        btn.text = lc('LoginWin.login.register')
+        btn.on_click = self._on_register_click
+        btn.do_reposition()
+        pos_y += comp.height
+        pos_y += 8
+        comp = GUI.Window()
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('LEFT', 'TOP')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = center_width, 24
+        comp.position = (margin, pos_y, 0.5)
+        self.component.addChild(comp)
+        btn = PaintButton(comp, visual_state='soGUI/frame/loginwin/loginwinLineButton.xml')
+        btn.text = lc('LoginWin.login.forgot')
+        btn.on_click = self._on_password_click
+        btn.do_reposition()
+        pos_y += comp.height
+        pos_y += 8
+        comp = GUI.Text(u'', 'RobotoCondensedRegular_18.font')
+        comp.colour = RED_COLOUR
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('LEFT', 'TOP')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = center_width, 24
+        comp.position = (margin, pos_y, 0.5)
+        self.component.addChild(comp)
+        self._error_text = comp
+        pos_y += comp.height
+        pos_y += 32
+        return pos_y
+
+    def _login_validator(self, new_str, whole_text, offset):
+        result = self._text_validator(new_str, whole_text, offset)
+        if not result:
+            self._show_error_text(lc('LoginWin.login.badlogin'))
+        return result
+
+    def _password_validator(self, new_str, whole_text, offset):
+        result = self._text_validator(new_str, whole_text, offset)
+        if not result:
+            self._show_error_text(lc('LoginWin.login.badpassword'))
+        return result
+
+    def _text_validator(self, new_str, whole_text, offset):
+        try:
+            result = str(new_str + whole_text)
+        except:
+            return False
+
+        return len(result) <= MAX_TEXT_LENGTH
+
+    def _on_login_tab(self):
+        self._password_box.activate(True)
+
+    def _on_key_event(self, event):
+        if event.isKeyDown():
+            if event.key == Keys.KEY_CAPSLOCK:
+                self._check_caps_influence()
+            elif event.key in (Keys.KEY_RETURN, Keys.KEY_NUMPADENTER):
+                if self._login_btn.enabled and not self._notify_win.has_any() and not self.has_load():
+                    self._on_login_click(LoginType.COMMON)
+        return False
+
+    def _check_caps_influence(self):
+        self._errors[0] = lc('LoginWin.login.caps') if BigWorld.isCapsLockOn() else None
+        self._update_error_text()
+        return
+
+    def on_show(self):
+        BaseWin.on_show(self)
+        BWPersonality.register_key_event_interceptor(self._on_key_event, high_priority=True)
+        self._check_caps_influence()
+        state = State.On if BigWorld.auth.save_enable else State.Off
+        self._toggle.set_state(state, animated=False, notify=False)
+        self._cancel_callback_and_clear_text()
+        if not self._last_login_shown:
+            self._last_login_shown = True
+            if BigWorld.auth.last_login:
+                self._login_box.setValue(BigWorld.auth.last_login)
+
+    def _on_remember_toggled(self, state):
+        BigWorld.auth.save_enable = state == State.On
+
+    def on_hide(self):
+        BWPersonality.unregister_key_event_interceptor(self._on_key_event)
+        self._cancel_callback_and_clear_text()
+        self._toggle.on_hide()
+        self._deactivate_edits()
+
+    def _deactivate_edits(self):
+        self._login_box.activate(False)
+        self._password_box.activate(False)
+
+    def _on_load_cancel_click(self):
+        BigWorld.auth.logout()
+
+    def _provide_cancel_comp_example(self):
+        return self._login_btn.component
+
+    def _on_editbox_event(self, event_type, data):
+        if event_type == EditBoxET.OnEmptyChanged:
+            self._update_login_enable()
+
+    def _update_error_text(self):
+        self._error_text.text = self._errors[1] or self._errors[0] or u''
+
+    def _show_error_text(self, text):
+        self._errors[1] = text
+        self._update_error_text()
+        if self._clear_text_callback:
+            BigWorld.cancelCallback(self._clear_text_callback)
+        self._clear_text_callback = BigWorld.callback(3.0, self._cancel_callback_and_clear_text)
+
+    def _cancel_callback_and_clear_text(self):
+        self._errors[1] = None
+        self._update_error_text()
+        if self._clear_text_callback:
+            BigWorld.cancelCallback(self._clear_text_callback)
+            self._clear_text_callback = None
+        return
+
+    def _update_login_enable(self):
+        enabled = False
+        login = self._login_box.text_value
+        password = self._password_box.text_value
+        if login and password:
+            try:
+                str(login)
+                str(password)
+                if len(login) <= MAX_TEXT_LENGTH and len(password) <= MAX_TEXT_LENGTH:
+                    enabled = True
+            except:
+                pass
+
+        self._login_btn.enabled = enabled
+
+    def _on_password_click(self):
+        self._deactivate_edits()
+        BWPersonality.GUICore.showWebEmbdeded(True, get_restore_password_url())
+
+    def _on_register_click(self):
+        self._deactivate_edits()
+        BigWorld.auth.showRegisterWindow()
+
+    def _on_login_click(self, login_type):
+        self._deactivate_edits()
+        data = {'login_type': login_type}
+        if login_type == LoginType.COMMON:
+            data['login'] = self._login_box.text_value
+            data['password'] = self._password_box.text_value
+        elif login_type in (LoginType.GOOGLE,
+         LoginType.YANDEX,
+         LoginType.VK,
+         LoginType.OK,
+         LoginType.MAIL):
+            data['account_type'] = _login_data[login_type]['ac_type']
+        self.notify_listeners(EventType.OnLoginRequest, data)

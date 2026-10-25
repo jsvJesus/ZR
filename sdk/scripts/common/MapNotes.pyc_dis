@@ -1,0 +1,148 @@
+# Embedded file name: ./common/MapNotes.py
+import struct
+import BigWorld
+import os
+import ResMgr
+import pyson
+from Math import Vector3
+import json
+
+class MapNotes:
+    MOB, NPC, PLANTS, FIREPLACE, DANGER, WARNING, RADIOACTIVE, ANOMALY, FLAG1, FLAG2, CROSS, WEAPON, FAVORITE = xrange(13)
+    WHITE, RED, YELLOW, GREEN = xrange(4)
+    colors = {WHITE: (255, 255, 255, 255),
+     RED: (202, 101, 101, 255),
+     YELLOW: (202, 196, 101, 255),
+     GREEN: (124, 177, 103, 255)}
+
+    @staticmethod
+    def pack(mark_type, mark_color):
+        values = (0,
+         mark_color,
+         0,
+         mark_type)
+        bytes_str = ''.join((chr(b) for b in values))
+        return struct.unpack('>i', bytes_str)[0]
+
+    @staticmethod
+    def unpack(markvalue):
+        bytes_data = struct.pack('>i', markvalue)
+        values = [ ord(b) for b in bytes_data ]
+        mark_type, color = values[3], values[1]
+        return (mark_type, color)
+
+    _marks_path = 'soGUI/frame/map'
+    _data = {MOB: 'mark_mob.dds',
+     NPC: 'mark_npc.dds',
+     PLANTS: 'mark_plants.dds',
+     FIREPLACE: 'mark_fireplace.dds',
+     DANGER: 'mark_dangerous.dds',
+     WARNING: 'mark_warning.dds',
+     RADIOACTIVE: 'mark_radioactive.dds',
+     ANOMALY: 'mark_anomaly.dds',
+     FLAG1: 'mark_flag1.dds',
+     FLAG2: 'mark_flag2.dds',
+     CROSS: 'mark_cross.dds',
+     WEAPON: 'mark_weapon.dds',
+     FAVORITE: 'mark_favourite.dds'}
+    ignore_npc_spaces = set(['outlands_cave',
+     'outlands_apartments',
+     'outlands_airport_apartments',
+     'laboratory',
+     'volcano_event',
+     'inst_black_forest_filtration',
+     'event_new_year_lighthouse',
+     'pvp_dm_gok',
+     'city_lubech_apartments'])
+    for mark_type in _data.keys():
+        _data[mark_type] = os.path.join(_marks_path, _data[mark_type])
+
+    @staticmethod
+    def get_path(mark_type):
+        return MapNotes._data[mark_type]
+
+    @staticmethod
+    def get_all_types():
+        return list(xrange(len(MapNotes._data)))
+
+
+_ctriggers_by_space = {}
+
+def get_space_ctriggers(space_name):
+    if space_name not in _ctriggers_by_space:
+        _ctriggers_by_space[space_name] = _parse_ctriggers(space_name)
+    return _ctriggers_by_space[space_name]
+
+
+def get_ctrigger_data(ctrigger_id):
+    return _ctriggers_params.get(ctrigger_id)
+
+
+def _parse_ctriggers(space_name):
+    path = os.path.join(space_name, 'ctriggers.pyson')
+    ds = ResMgr.openSection(path)
+    if ds is None:
+        return []
+    else:
+        ctriggers = []
+        data = pyson.loads(ds.asBinary)
+        for chunk_name, chunk_data in data.items():
+            for ctrigger_data in chunk_data:
+                ctriggers.append(ctrigger_data['id'])
+                _ctriggers_params[ctrigger_data['id']] = {'space_name': space_name,
+                 'position': Vector3(ctrigger_data['pos'][0], 0, ctrigger_data['pos'][2]),
+                 'key': ctrigger_data['key']}
+
+        ctriggers.sort()
+        for i, ct_id in enumerate(ctriggers):
+            _ctriggers_params[ct_id]['index'] = i
+
+        return ctriggers
+
+
+def find_ctrigger_id_frop_position(space_name, position):
+    min_dist = 1.0
+    result = None
+    for ct_id in get_space_ctriggers(space_name):
+        ct_pos = Vector3(get_ctrigger_data(ct_id)['position'])
+        dist = ct_pos.flatDistTo(position)
+        if dist < min_dist:
+            min_dist = dist
+            result = ct_id
+
+    return result
+
+
+_npc_configs = {}
+
+def get_npcmarks_config(space_name):
+    if space_name not in _npc_configs:
+        notes_path = os.path.join(space_name, 'notes.json')
+        section = ResMgr.openSection(notes_path)
+        if section is None:
+            return
+        notes_data = json.loads(section.asBinary)
+        ndata = []
+        for notes in notes_data.get('notes', {}).itervalues():
+            for note_text, position in notes:
+                ndata.append((note_text, Vector3(position)))
+
+        npcs_data = {}
+        for npc_data in notes_data.get('npcs', {}).itervalues():
+            for data in npc_data:
+                npcs_data[data['name']] = Vector3(data['position'])
+
+        _npc_configs[space_name] = {'npcs_data': npcs_data,
+         'ndata': ndata,
+         'bounds': notes_data['bounds']}
+    return _npc_configs[space_name]
+
+
+_ctriggers_params = {}
+if BigWorld.component == 'base':
+    from auto_load_spaces import ALL_SPACES
+    donot_parse_maps = set(['spaces/testers', 'spaces/zoo'])
+    for space_name in ALL_SPACES:
+        if space_name in donot_parse_maps:
+            continue
+        get_space_ctriggers(space_name)

@@ -1,0 +1,216 @@
+# Embedded file name: ./client/CompoundQuestStarter.py
+import json
+import ResMgr
+import BigWorld
+import Constants
+import BWPersonality
+import compound_quest_utils
+from Localization import lc
+from functools import partial
+from Helpers.Caps import CAP_INTERACT
+
+class CompoundQuestStarter(BigWorld.Entity):
+    """" client/EventStarter """
+
+    def __init__(self):
+        BigWorld.Entity.__init__(self)
+        self.name = lc(self.local_name)
+        self.model_path = ''
+        self.quest_entities = []
+        self.model_animation_in = ''
+        self.model_animation_loop = ''
+
+    def onEnterWorld(self, prereqs):
+        self.update_parametres()
+
+    def onLeaveWorld(self):
+        self.model = None
+        return
+
+    def interact(self, player):
+        if self.need_items:
+            BWPersonality.GUICore.showEventStarter(self, player)
+        else:
+            self.cell.interact()
+
+    def get_interaction_dist(self):
+        if not self.targetCaps:
+            return 0
+        return Constants.INTERACTION_DISTANCE ** 2
+
+    def get_hightlight(self, distance):
+        if not self.targetCaps or distance > 15:
+            return None
+        else:
+            return True
+
+    def get_param(self, param_name, default = ''):
+        state_data = compound_quest_utils.get_state_data(self.scenario, self.state)
+        value = state_data.get(param_name, default)
+        if isinstance(value, dict):
+            if self.user_string:
+                return value.get(self.user_string, default)
+        return value
+
+    def update_model_tint(self):
+        if self.isDestroyed:
+            return
+        if not self.model:
+            return
+        model_tint = self.get_param('model_tint', 'default')
+        model_dye = self.get_param('model_dye')
+        try:
+            if model_dye and model_tint:
+                setattr(self.model, model_dye, model_tint)
+        except Exception:
+            print 'CompoundQuestStarter:: ERROR model [{0}], tint [{1}], dye [{2}]'.format(self.model.sources, model_tint, model_dye)
+
+    def update_model_animation(self):
+        if self.isDestroyed:
+            return
+        if not self.model:
+            return
+        if self.model_animation_in:
+            self.model.action(self.model_animation_in).stop()
+        if self.model_animation_loop:
+            self.model.action(self.model_animation_loop).stop()
+        self.model_animation_in = self.get_param('model_animation_in')
+        self.model_animation_loop = self.get_param('model_animation')
+        if not self.model_animation_loop:
+            return
+        action = self.model.action(self.model_animation_loop)
+        if self.model_animation_in:
+            in_action = self.model.action(self.model_animation_in)
+            in_action(0, action)
+        else:
+            action()
+
+    def update_parametres(self):
+        if self.isDestroyed:
+            return
+        self.targetCaps = [CAP_INTERACT] if self.get_param('interact') else []
+        new_model = self.get_param('model')
+
+        def on_load(model):
+            if self.isDestroyed:
+                return
+            self.model = model
+            scale = self.scale
+            self.model.scale = (scale, scale, scale)
+            self.model.newScaleTest = (scale, scale, scale)
+            self.model.isObstacle = True
+            self.model.visible = True
+            if hasattr(self.model, 'no_draw'):
+                self.model.no_draw = 'no_draw'
+            self.update_model_tint()
+            self.update_model_animation()
+            self.update_sfxes()
+            self.update_additional_models()
+
+        self.update_quest_entities()
+        if new_model and (self.model_path != new_model or not self.model):
+            self.model_path = new_model
+            BigWorld.fetchModel(new_model, on_load)
+            return
+        self.update_model_tint()
+        self.update_model_animation()
+        self.update_sfxes()
+        self.update_additional_models()
+
+    def update_sfxes(self):
+        if self.isDestroyed:
+            return
+        key_id = self.get_param('sfx')
+        try:
+            for udo in self.client_sfx_udos:
+                udo.user_string
+
+        except Exception:
+            BigWorld.callback(0.6, self.update_sfxes)
+            return
+
+        if isinstance(key_id, (str, unicode)):
+            key_id = [key_id]
+        for i in self.client_sfx_udos:
+            if i.user_string in key_id:
+                continue
+            i.deactivate()
+
+        for udo in self.client_sfx_udos:
+            if udo.user_string not in key_id:
+                continue
+            udo.activate()
+
+    def update_additional_models(self):
+        if self.isDestroyed:
+            return
+        else:
+            key_id = self.get_param('additional_models')
+            try:
+                for udo in self.additional_models:
+                    if udo is None:
+                        continue
+                    if hasattr(udo, 'event_phase') and key_id and udo.event_phase == int(key_id):
+                        udo.activate()
+                        continue
+                    if hasattr(udo, 'user_string') and str(key_id) in udo.user_string:
+                        udo.activate()
+                        continue
+                    udo.deactivate()
+
+            except BigWorld.UnresolvedUDORefException:
+                BigWorld.callback(1, self.update_additional_models)
+
+            return
+
+    def update_quest_entities(self):
+        if self.isDestroyed:
+            return
+        key_id = self.get_param('quest_entity', '')
+        for i in self.quest_entities:
+            if i.user_string == key_id:
+                continue
+            i.start_destroy()
+
+        self.quest_entities = []
+
+        def on_create_ent(ent_id):
+            ent = BigWorld.entity(ent_id)
+            if not ent:
+                BigWorld.callback(0.5, partial(on_create_ent, ent_id))
+                return
+            self.quest_entities.append(ent)
+
+        if not key_id:
+            return
+        try:
+            for udo in self.client_quest_udos:
+                udo.user_string
+
+        except Exception:
+            BigWorld.callback(0.6, self.update_quest_entities)
+            return
+
+        if isinstance(key_id, (str, unicode)):
+            key_id = [key_id]
+        for udo in self.client_quest_udos:
+            if udo.user_string not in key_id:
+                continue
+            props = {'mark': udo.mark,
+             'conditions': udo.conditions,
+             'highlight': udo.highlight,
+             'light_effect': udo.light_effect,
+             'obstacle': udo.obstacle,
+             'always_active': udo.always_active,
+             'imitate_npc': udo.imitate_npc,
+             'avatar_use_action': udo.avatar_use_action,
+             'avatar_use_duration': udo.avatar_use_duration,
+             'user_string': udo.user_string}
+            ent_id = BigWorld.createEntity('QuestEntity', self.spaceID, 0, udo.position, udo.direction, props, udo.guid)
+            BigWorld.callback(0.1, partial(on_create_ent, ent_id))
+
+    def set_scenario(self, old_value):
+        self.update_parametres()
+
+    def set_state(self, old_value):
+        self.update_parametres()

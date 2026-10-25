@@ -1,0 +1,123 @@
+# Embedded file name: ./client/weapon_reload_scripts/mossberg_bolt_script.py
+import FX
+import BigWorld
+import BWPersonality
+from Math import Matrix, Vector3
+import traceback
+from weapon_bolt_script import BaseWeaponBoltAnimation
+
+class BoltMossberg500(BaseWeaponBoltAnimation):
+    _clb_id = 0
+    lwprov = None
+
+    def play(self, anim_name):
+        BigWorld.callback(0.0, lambda : self._continuePlay(anim_name))
+
+    def _continuePlay(self, anim_name = None):
+        anim_namew = 'shot'
+        weapon_model = self.player.active_weapon.getModel()
+        pWeapon_hilt_provider = weapon_model.node('HP_Lhand')
+        pWeapon_gunrw_provider = weapon_model.node('HP_GUNRW')
+        enable_adhering = 1
+        self.lwprov = BigWorld.HandToWeaponProvider(self.player.model, pWeapon_hilt_provider, pWeapon_gunrw_provider, enable_adhering)
+        self.init_pos = Vector3(0, 0, 0)
+        if self.player.left_weapon_prov:
+            self.init_pos = Vector3(self.player.left_weapon_prov.add_position)
+            self.lwprov.add_position = self.player.left_weapon_prov.add_position
+            self.lwprov.add_rotation = self.player.left_weapon_prov.add_rotation
+        self.player.nodeInfoL.AttachedProviders = (self.lwprov, 0)
+        self.player.model.forceDraw()
+
+        def BoltOpen(*e):
+            self.playSfxOrSound('BoltOpen')
+            shellSFX = self.player.active_weapon.getShellSFX()
+            if shellSFX:
+                FX.bufferedOneShotEffect(shellSFX, weapon_model)
+
+        def BoltClose(*e):
+            self.playSfxOrSound('BoltClose')
+
+        self.player.active_weapon.getModel().cue('BoltOpen', BoltOpen)
+        self.player.active_weapon.getModel().cue('BoltClose', BoltClose)
+        try:
+            action_w = self.player.active_weapon.getModel().action(anim_namew)
+            action_w(0, self._onEndAnimationRealod)
+        except:
+            print 'weapon anim_name: %r' % anim_namew
+            if self.player == BigWorld.player() and self.player.isAdminAccess():
+                BWPersonality.gpd.sendHightMessage(u'\u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d \u044d\u043a\u0448\u043d \u0443 \u043e\u0440\u0443\u0436\u0438\u044f:%r' % anim_namew)
+            traceback.print_exc()
+
+        self._transf_tilt = None
+        self.node_Lhand = weapon_model.node('HP_Lhand')
+        self.node_GUNRW = weapon_model.node('HP_GUNRW')
+        self.node_carrier = weapon_model.node('bolt_carrier')
+        if self._clb_id:
+            BigWorld.cancelCallback(self._clb_id)
+        self._clb_id = BigWorld.callback(0.001, self._updatePosTilt)
+        return
+
+    def _updatePosTilt(self):
+        if not self.player:
+            return
+        elif not self.lwprov:
+            return
+        else:
+            carrier = Matrix(self.node_carrier)
+            gunrw = Matrix(self.node_GUNRW)
+            if self._transf_tilt is None:
+                hilt = Matrix(self.node_Lhand)
+                ihilt = Matrix(hilt)
+                ihilt.invert()
+                self._transf_tilt = Matrix(ihilt)
+                self._transf_tilt.preMultiply(gunrw)
+                invtransf = Matrix(self._transf_tilt)
+                invtransf.invert()
+                self.rw_pos = invtransf.translation + self.init_pos
+                self._init_dist = carrier.translation.distTo(gunrw.translation)
+            dist = carrier.translation.distTo(gunrw.translation)
+            offset = dist - self._init_dist
+            rw_to_pos = self.rw_pos + (0, 0, offset)
+            l_pos = self._transf_tilt.applyPoint(rw_to_pos)
+            self.lwprov.add_position = l_pos
+            self.lwprov.add_position_cur = l_pos
+            self._clb_id = BigWorld.callback(0.0001, self._updatePosTilt)
+            return
+
+    def returnHand(self, player, right = True, blend_time = None):
+        self._transf_tilt = None
+        self.node_Lhand = None
+        self.node_GUNRW = None
+        self.node_carrier = None
+        self.lwprov = None
+        if self._clb_id:
+            BigWorld.cancelCallback(self._clb_id)
+            self._clb_id = None
+        if not player or player.isDestroyed:
+            return
+        else:
+            player.nodeInfoR.AttachedProviders = (player.right_weapon_prov, player.TO_TRACKER_HAND_DELAY)
+            player.nodeInfoL.AttachedProviders = (player.left_weapon_prov, player.TO_TRACKER_HAND_DELAY)
+            return
+
+    def _onEndAnimationRealod(self):
+        self.returnHand(self.player, right=True)
+        try:
+            self.player.active_weapon.getModel().cue('BoltOpen', None)
+            self.player.active_weapon.getModel().cue('BoltClose', None)
+        except:
+            traceback.print_exc()
+
+        self.onFini()
+        return
+
+    def onFini(self):
+        try:
+            if self._onComplete:
+                self._onComplete()
+        except:
+            traceback.print_exc()
+
+        self.player = None
+        self._onComplete = None
+        return

@@ -1,0 +1,128 @@
+# Embedded file name: ./client/FX/Events/PlaySound.py
+import traceback
+from FX.Event import Event
+from FX.Event import TRANSFORM_DEPENDENT_EVENT
+from FX import s_sectionProcessors
+from bwdebug import *
+
+def playSound(sound, obj, volume = None):
+    return obj.playSound(sound)
+
+
+def set_playsound_function(new_playSound):
+    global playSound
+    playSound = new_playSound
+
+
+class EventPlaySound(Event):
+    """
+    This class implements an event that plays a sound.  The sound may be
+    associated with a particular actor to provide its 3D position; if not the
+    sound will be played on the source model.
+    """
+
+    def __init__(self):
+        self.tag = None
+        self._dsiabled = False
+        self._saved_args = None
+        self.attachToActor = False
+        self._sound_obj = None
+        return
+
+    def load(self, pSection, prereqs = None):
+        """
+        This method loads the EventPlaySound event via an XML data section. It
+        reads the sound tag name from the section name.  It also looks for an
+        "attachToActor" tag to specify whether the sound should be played at
+        the given actor's position, or the effect source's position.
+        """
+        self.tag = pSection.asString
+        if self.tag == '':
+            WARNING_MSG('EventPlaySound had no associated tag')
+            return None
+        else:
+            self.attachToActor = pSection.has_key('attachToActor')
+            return self
+
+    def setDisabled(self, value):
+        if bool(self._dsiabled) == bool(value):
+            return
+        self._dsiabled = bool(value)
+        if self._dsiabled:
+            self.stopSound()
+        elif self._saved_args:
+            effect, actor, source, target, kargs = self._saved_args
+            self._realy_play(effect, actor, source, target, **kargs)
+
+    def go(self, effect, actor, source, target, **kargs):
+        self._saved_args = (effect,
+         actor,
+         source,
+         target,
+         kargs)
+        if self._dsiabled:
+            return 1.0
+        duration = self._realy_play(effect, actor, source, target, **kargs)
+        return max(duration, 1.0)
+
+    def _realy_play(self, effect, actor, source, target, **kargs):
+        sound = None
+        if self.tag != '':
+            if kargs.has_key('suffix'):
+                tag = self.tag + kargs['suffix']
+            else:
+                tag = self.tag
+            if self.attachToActor:
+                try:
+                    if not actor:
+                        print 'WARNING: sfx sound not actor!', tag
+                    sound = playSound(tag, actor)
+                except:
+                    ERROR_MSG('error playing sound on actor', self, actor, source, tag)
+                    traceback.print_exc()
+
+            else:
+                if not source:
+                    print 'ERROR FOR:', self
+                    print 'effect=', effect, 'actor=', actor, 'source=', source, 'target=', target
+                    raise ValueError('Not source!!!!')
+                source_object = source
+                if hasattr(source, 'model'):
+                    source_object = source.model
+                if not source_object:
+                    raise TypeError('not sound source_object!')
+                sound = playSound(tag, source_object)
+        if self._sound_obj:
+            self.stopSound()
+        self._sound_obj = sound
+        if sound:
+            return sound.duration
+        else:
+            return 1.0
+
+    def eventTiming(self):
+        return TRANSFORM_DEPENDENT_EVENT
+
+    def setVolume(self, val):
+        if self._sound_obj and not self._sound_obj.isVirtual:
+            self._sound_obj.volume = val
+
+    def stopSound(self):
+        if self._sound_obj:
+            self._sound_obj.stop()
+            self._sound_obj.releaseSound()
+        self._sound_obj = None
+        return
+
+    def stop(self, *w, **kw):
+        self._saved_args = None
+        self.stopSound()
+        return
+
+    def onStopEffect(self, parent):
+        self._saved_args = None
+        self.stopSound()
+        return
+
+
+s_sectionProcessors['PlaySound'] = EventPlaySound

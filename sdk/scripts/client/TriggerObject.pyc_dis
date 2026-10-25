@@ -1,0 +1,175 @@
+# Embedded file name: ./client/TriggerObject.py
+"""
+Created on 05.10.2010
+
+@author: muzhig
+"""
+import FX
+import json
+import ResMgr
+import BigWorld
+import traceback
+import Constants
+import Helpers.Caps
+import ResourceLoader
+from Localization import lc
+from utils import time_test
+from sounds_manager import playSound
+from InteractiveObject import InteractiveObject
+from soGUI.soInworldMarkers import soInworldMarker
+section = ResMgr.openSection('scripts/common/EnumProps/ModelSelector.json')
+CONFIG = json.loads(section.asBinary)['model_index']['values']
+
+class TriggerObject(BigWorld.Entity, InteractiveObject):
+    mark_height = 0.6
+
+    def __init__(self):
+        BigWorld.Entity.__init__(self)
+        self.filter = BigWorld.NoneFilter()
+        self.name = lc(self.displayName)
+        self.hasPlayer = False
+        self.set_activeFlags(None)
+        self._model_path = str(next((model for index, model in CONFIG if index == self.modelSelect), ''))
+        InteractiveObject.__init__(self)
+        if self.qEffect:
+            self.qEffect = 'sfx/' + self.qEffect
+            if not self.qEffect.endswith('.xml'):
+                self.qEffect = self.qEffect + '.xml'
+        return
+
+    def prerequisites(self):
+        if not self._model_path:
+            return []
+        if self.load_model_on_enter_world():
+            return [self._model_path]
+        return []
+
+    def load_model_on_enter_world(self):
+        return False
+
+    def is_obstacle(self):
+        return self.obstacle
+
+    def _on_model_loaded(self, model):
+        if self.isDestroyed:
+            return
+        self.model = model
+        if self.model:
+            self.model.isObstacle = self.is_obstacle()
+        try:
+            self.model.no_draw = 'no_draw'
+        except:
+            pass
+
+    def activate(self):
+        if self.sound_name:
+            playSound(self.sound_name, self.model)
+        self.cell.activate()
+
+    @time_test
+    def onEnterWorld(self, prereqs):
+        InteractiveObject.onEnterWorld(self)
+        if self.high_precision:
+
+            def onLoadHighPrecisionModel(model):
+                if self.isDestroyed:
+                    return
+                self._on_model_loaded(model)
+                self.model.scale = (self.scaleX, self.scaleY, self.scaleZ)
+                box = BigWorld.BoxAttachment()
+                box.minBounds = (-0.25, 0.0, -0.25)
+                box.maxBounds = (0.25, 0.5, 0.25)
+                self.model.root.attach(box)
+                self.skeletonCollider = BigWorld.SkeletonCollider()
+                self.skeletonCollider.addCollider(box)
+                if self.obstacle:
+
+                    def _onLoadObstacle(obst):
+                        if self.isDestroyed:
+                            return
+                        if hasattr(obst, 'no_draw'):
+                            obst.no_draw = 'no_draw'
+                        self.addModel(obst)
+
+                    path = 'models/bolvan/box_trigger_05x05x05.model'
+                    BigWorld.fetchModel(path, _onLoadObstacle)
+
+            BigWorld.fetchModel('models/bolvan/box_trigger_05x05x05.model', onLoadHighPrecisionModel)
+        else:
+            self.load_model(prereqs)
+        self.set_activeFlags(self.activeFlags)
+        if self.quest:
+            BigWorld.player().register_mark_listener(self, self.quest)
+
+    def load_model(self, prereqs = None):
+        if not self._model_path:
+            return
+        else:
+            if prereqs is None or not prereqs.has_key(self._model_path):
+
+                def on_load_ref(prereqs):
+                    if self.isDestroyed:
+                        return
+                    try:
+                        self._on_model_loaded(prereqs.produce(0))
+                    except Exception:
+                        print 'ERROR IN', self, repr(self._model_path), self.position, repr(self.displayName)
+                        traceback.print_exc()
+
+                resType = ResourceLoader.MODEL
+                if type(self._model_path) in (list, tuple):
+                    resType = ResourceLoader.MULTI_MODEL
+                ResourceLoader.asyncLoad([(resType, self._model_path)], on_load_ref)
+            else:
+                self._on_model_loaded(prereqs[self._model_path])
+            return
+
+    def set_activeFlags(self, old_value):
+        self.targetCaps = []
+        if self.activeFlags & Constants.ACTIVE_OBJECT_FLAG:
+            if self.talkFlag:
+                self.addCaps(Helpers.Caps.CAP_CAN_TALK)
+        if self.activeFlags & Constants.ACTIVE_USE_FLAG:
+            self.addCaps(Helpers.Caps.CAP_CAN_USE)
+        if self.sound_name and not self.dungeon_trigger_id:
+            self.addCaps(Helpers.Caps.CAP_CAN_USE)
+
+    def lock(self):
+        self.targetCaps = []
+
+    def onLeaveWorld(self):
+        self.model = None
+        self.skeletonCollider = None
+        player = BigWorld.player()
+        if player:
+            player.unregister_mark_listener(self)
+        return
+
+    def startQEffect(self):
+        if self.qEffect:
+            FX.bufferedOneShotEffect(self.qEffect, self.model)
+
+    def on_mark_changed(self, exist):
+        if exist:
+            self.addCaps(Helpers.Caps.CAP_CAN_USE)
+        elif not self.activeFlags & Constants.ACTIVE_USE_FLAG:
+            self.removeCaps(Helpers.Caps.CAP_CAN_USE)
+
+    def get_target_mark(self, distance):
+        if distance > Constants.INTERACTION_DISTANCE:
+            return None
+        elif Helpers.Caps.CAP_CAN_USE not in self.targetCaps and Helpers.Caps.CAP_CAN_TALK not in self.targetCaps:
+            return None
+        else:
+            return soInworldMarker.MARKER_USE
+
+    def get_hightlight(self, distance):
+        if Helpers.Caps.CAP_CAN_USE not in self.targetCaps and Helpers.Caps.CAP_CAN_TALK not in self.targetCaps:
+            return None
+        elif distance > Constants.HILITE_MARKS_DISTANCE:
+            return None
+        else:
+            return True
+
+    def get_hightlight_model(self):
+        return self.model

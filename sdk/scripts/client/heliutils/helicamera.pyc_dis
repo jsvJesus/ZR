@@ -1,0 +1,158 @@
+# Embedded file name: ./client/heliutils/helicamera.py
+from Math import Matrix, Vector3
+import math_bw
+import BigWorld
+import utils_bw
+_cached_matrix = (None, None, None)
+
+def calculate_heli_matrix(from_point, to_point):
+    global _cached_matrix
+    virtual_pos = Vector3(from_point)
+    cur_view_matrix = Matrix(BigWorld.projection().curView)
+    cur_view_matrix.invert()
+    real_pos = cur_view_matrix.translation
+    virtual_disp = virtual_pos - real_pos
+    if _cached_matrix[1] == from_point and _cached_matrix[2] == to_point:
+        virtual_view_proj = _cached_matrix[0]
+    else:
+        real_view_proj = Matrix(BigWorld.projection().curViewProj)
+        real_view_proj.invert()
+        virtual_view_proj = Matrix(real_view_proj)
+        virtual_disp_matrix = Matrix()
+        virtual_disp_matrix.setTranslate(virtual_disp)
+        virtual_view_proj.postMultiply(virtual_disp_matrix)
+        _cached_matrix = (virtual_view_proj, from_point, to_point)
+    dist = (to_point - from_point).length
+    space_id = BigWorld.player().spaceID
+    view_dist = 1.1
+    points = ((0, 0, 0),
+     (view_dist, view_dist, 0),
+     (view_dist, -view_dist, 0),
+     (-view_dist, view_dist, 0),
+     (-view_dist, -view_dist, 0))
+    for p in points:
+        p = virtual_view_proj.applyPoint(p)
+        res = utils_bw.collide(space_id, to_point, p)
+        if res:
+            dist = min(dist, (res[0] - to_point).length)
+
+    direction = from_point - to_point
+    direction.normalise()
+    direction *= dist
+    from_point = to_point + direction
+    m = Matrix()
+    m.lookAt(from_point, to_point - from_point, Vector3(0, 1, 0))
+    m.invert()
+    return m
+
+
+class Helicamera(object):
+
+    def __init__(self):
+        self._active = False
+
+    def activate(self, sit_node, cam_node, helicopter):
+        """ \xd1\x81\xd1\x80\xd0\xb0\xd0\xb7\xd1\x83 \xd0\xbf\xd0\xbe\xd1\x81\xd0\xbb\xd0\xb5 \xd0\xbf\xd0\xbe\xd1\x81\xd0\xb0\xd0\xb4\xd0\xba\xd0\xb8 \xd0\xb2 \xd0\xb2\xd0\xb5\xd1\x80\xd1\x82\xd0\xbe\xd0\xbb\xd1\x91\xd1\x82 """
+        self._helicopter = helicopter
+        self._heli_mode = False
+        self._active = True
+        self._align_trigger = True
+        self._free_camera, self._original_camera = (None, None)
+        self._sit_node = sit_node
+        self._heli_yaw, self._heli_pitch = (0, -0.5)
+        self._heli_dist = 10.0
+        self._initial_fps_mode = self._p.fps_mode
+        if not self._p.fps_mode:
+            self._p.fps_mode = True
+            self._p.on_cam_activated()
+        if self._helicopter:
+            self._prev_matrix = Matrix(self._helicopter.matrix)
+            self._helicopter.post_update_callback = self._tick
+        else:
+            self._prev_matrix = Matrix(self._sit_node)
+        self._tick()
+        return None
+
+    def _tick(self):
+        """ \xd0\xba\xd0\xb0\xd0\xb6\xd0\xb4\xd1\x8b\xd0\xb9 \xd1\x82\xd0\xb8\xd0\xba \xd0\xbf\xd0\xbe\xd1\x81\xd0\xbb\xd0\xb5 (\xd0\xb3\xd0\xb0\xd1\x80\xd0\xb0\xd0\xbd\xd1\x82\xd0\xb8\xd1\x80\xd0\xbe\xd0\xb2\xd0\xb0\xd0\xbd\xd0\xbe) \xd0\xbe\xd0\xb1\xd0\xbd\xd0\xbe\xd0\xb2\xd0\xbb\xd0\xb5\xd0\xbd\xd0\xb8\xd1\x8f \xd0\xb2\xd0\xb5\xd1\x80\xd1\x82\xd0\xbe\xd0\xbb\xd1\x91\xd1\x82\xd0\xb0 """
+        if not self._active:
+            return None
+        elif self._p.isDestroyed:
+            self.deactivate()
+            return None
+        else:
+            if self._align_trigger:
+                if self._sit_node and getattr(self._sit_node, 'isActualCoords', False):
+                    BigWorld.dcursor().yaw = Matrix(self._sit_node).yaw
+                    self._p.LookAround(True)
+                    self._align_trigger = False
+                    self._p.onAlignHeliCamera()
+            if self._heli_mode and not self._free_camera:
+                if self._p.fps_mode:
+                    self._p.fps_mode = False
+                    self._p.on_cam_mode_changed()
+                self._original_camera = BigWorld.camera()
+                self._free_camera = BigWorld.FreeCamera(self._original_camera)
+                BigWorld.camera(self._free_camera)
+            if not self._heli_mode and self._free_camera:
+                if not self._p.fps_mode:
+                    self._p.fps_mode = True
+                    self._p.on_cam_mode_changed()
+                BigWorld.camera(self._original_camera)
+                self._p.enableFPS()
+                self._free_camera, self._original_camera = (None, None)
+            if self._helicopter:
+                next_matrix = Matrix(self._helicopter.matrix)
+            else:
+                next_matrix = Matrix(self._sit_node)
+            if self._heli_mode:
+                v = Vector3()
+                v.setPitchYaw(self._heli_pitch, self._heli_yaw)
+                v *= self._heli_dist
+                from_point = Matrix(self._helicopter.matrix).applyPoint(v)
+                to_point = Vector3(self._helicopter.position) + (0, 1.5, 0)
+                m = calculate_heli_matrix(from_point, to_point)
+                self._free_camera.invViewProvider = m
+            else:
+                delta_yaw = next_matrix.yaw - self._prev_matrix.yaw
+                BigWorld.dcursor().yaw += delta_yaw
+            self._prev_matrix = next_matrix
+            return None
+
+    def toggle_camera(self):
+        self._heli_mode = not self._heli_mode
+        if self._helicopter and not self._helicopter.isDestroyed:
+            self._helicopter.model.isObstacle = not self._heli_mode
+
+    def handle_mouse_event(self, event):
+        if not self._active:
+            return False
+        if not self._heli_mode:
+            return False
+        self._heli_dist = math_bw.clamp(self._heli_dist - event.dz * 0.005, 5.0, 12.0)
+        self._heli_pitch = math_bw.clamp(self._heli_pitch - event.dy * 0.005, -1.5, 1)
+        self._heli_yaw += event.dx * 0.005
+        return True
+
+    def deactivate(self):
+        if self._free_camera and self._original_camera:
+            BigWorld.camera(self._original_camera)
+        self._p._resetLookAround()
+        self._sit_node = None
+        self._active = False
+        if self._helicopter and not self._helicopter.isDestroyed:
+            self._helicopter.post_update_callback = None
+        self._free_camera, self._original_camera = (None, None)
+        if not self._initial_fps_mode and self._p.fps_mode:
+            self._p.fps_mode = False
+            self._p.on_cam_deactivated()
+        self._heli_mode = False
+        if self._helicopter and not self._helicopter.isDestroyed:
+            self._helicopter.model.isObstacle = True
+        self._helicopter = None
+        BigWorld.player().EnableTargeting()
+        return
+
+    @property
+    def _p(self):
+        return BigWorld.player()

@@ -1,0 +1,1451 @@
+# Embedded file name: ./client/clweapon.py
+import BigWorld
+import math
+import time
+from Math import Vector3, Matrix
+import ItemsUtils
+import traceback
+import weapon
+import scope_reticle_settings
+import recoil_and_spread_table
+from nodes_attach import NODE
+from Items import ItemsCatalog
+import ItemCategories as IC
+import FX
+from sounds_manager import playSound
+from weapon_attachment import WeaponAttachment, Magazine
+from utils import infinity_array_generator
+from utils import ignoreError
+TESTANIMATEFROMTPOSE = False
+SHOW_WARNING_STACK = True
+USE_BRUST_SOUND_LOOP = 'IS_LOOP'
+SHOOTING_MODE_TO_WEAPON_ANIMATION = {ItemsCatalog.SHOOTING_MODE_DISABLE: 'selector_safe',
+ ItemsCatalog.SHOOTING_MODE_AUTO: 'selector_auto',
+ ItemsCatalog.SHOOTING_MODE_1: 'selector_1',
+ ItemsCatalog.SHOOTING_MODE_2: 'selector_2',
+ ItemsCatalog.SHOOTING_MODE_3: 'selector_3',
+ ItemsCatalog.SHOOTING_MODE_7: 'selector_7'}
+_loop_sounds = infinity_array_generator([False, 'IS_LOOP'])
+
+def switchShootSoundLoopType():
+    global USE_BRUST_SOUND_LOOP
+    USE_BRUST_SOUND_LOOP = _loop_sounds.next()
+    return USE_BRUST_SOUND_LOOP
+
+
+def switchShootSoundDebug():
+    return 'TODO!!!'
+
+
+def create_clinet_weapon(parent_entity = None, item = None, slot = None):
+    if item:
+        item_type = item['complexItemType']
+    elif slot:
+        item_type = slot['itemType']
+    GunType = ItemsCatalog.GetItemParam(item_type).get('GunType')
+    wclass_ = ClWeapon
+    if GunType == ItemsCatalog.SPRAYER:
+        import spayer_clweapon
+        wclass_ = spayer_clweapon.SpayerClweapon
+    if item:
+        weapon = wclass_(complex_item=item, parent_entity=parent_entity)
+    elif slot:
+        weapon = wclass_(parent_entity=parent_entity)
+        weapon.makeWeaponFromWeaponSlot(slot)
+    else:
+        raise ValueError
+    return weapon
+
+
+class ClWeapon(weapon.Weapon):
+    _model = None
+    _prev_visible_model = None
+    _last_scope_id = None
+    isBelly = False
+    _defaultIronSight = None
+    _last_shoot_time = 0
+    _scalefactor = 1.0
+    _last_shoot_bt = 0
+    _shot_counter = 0
+
+    def __init__(self, *w, **kw):
+        weapon.Weapon.__init__(self, *w, **kw)
+        self._isDestroyed = False
+        self._wcopy = {}
+        self._scopes = {}
+        self._scope_gen = None
+        self._sight_offset_cashe = {}
+        self._shooting_mode = None
+        self._max_burst_available_count = None
+        self._stop_shoot_callback_id = None
+        if self._parent_entity and getattr(self._parent_entity, 'active_transform', False):
+            scale = self._parent_entity.active_transform.getWeaponScale()
+            if scale:
+                self._scalefactor = scale
+        self._is_player = self._parent_entity == BigWorld.player()
+        if self._is_player:
+            self._parent_entity.applyWeaponSettings(self)
+        return
+
+    def getParamsAndOverrideParamsWeapon(self):
+        """
+        \xd0\xbf\xd0\xb0\xd1\x80\xd0\xb0\xd0\xbc\xd0\xb5\xd1\x82\xd1\x80\xd1\x8b \xd0\xbe\xd1\x80\xd1\x83\xd0\xb6\xd0\xb8\xd1\x8f \xd0\xb8 \xd0\xbf\xd0\xb0\xd1\x80\xd0\xb0\xd0\xbc\xd0\xb5\xd1\x82\xd1\x80\xd1\x8b \xd0\xb4\xd0\xbb\xd1\x8f \xd0\xbb\xd0\xb5\xd0\xb2\xd0\xbe\xd0\xb9 \xd1\x80\xd1\x83\xd0\xba\xd0\xb8(\xd0\xbf\xd0\xbe\xd0\xb4\xd1\x81\xd1\x82\xd0\xb2\xd0\xbe\xd0\xbb\xd1\x8c\xd0\xbd\xd0\xb8\xd0\xba)
+        """
+        param = ItemsCatalog[self.getItemType()]
+        override_param = param
+        if self._custom_hilt:
+            tracker_from = self._custom_hilt.getProp().get('tracker_from')
+            if tracker_from:
+                override_param = ItemsCatalog[tracker_from]
+        return (param, override_param)
+
+    def getModel(self, editable = False):
+        """        \xd0\xb7\xd0\xb0\xd0\xb3\xd1\x80\xd1\x83\xd0\xb7\xd0\xb8\xd1\x82\xd1\x8c \xd0\xb8\xd0\xbb\xd0\xb8 \xd0\xbf\xd0\xbe\xd0\xbb\xd1\x83\xd1\x87\xd0\xb8\xd1\x82\xd1\x8c \xd1\x83\xd0\xb6\xd0\xb5 \xd0\xb7\xd0\xb0\xd0\xb3\xd1\x80\xd1\x83\xd0\xb6\xd0\xb5\xd0\xbd\xd0\xbd\xd1\x83\xd1\x8e \xd0\xbc\xd0\xbe\xd0\xb4\xd0\xb5\xd0\xbb\xd1\x8c \xd0\xbe\xd1\x80\xd1\x83\xd0\xb6\xd0\xb8\xd1\x8f
+                new_duplicate - \xd0\xb7\xd0\xb0\xd0\xb3\xd1\x80\xd1\x83\xd0\xb7\xd0\xb8\xd1\x82\xd1\x8c \xd0\xbd\xd0\xbe\xd0\xb2\xd1\x83\xd1\x8e \xd0\xba\xd0\xbe\xd0\xbf\xd0\xb8\xd1\x8e \xd0\xbc\xd0\xbe\xd0\xb4\xd0\xb5\xd0\xbb\xd0\xb8
+        """
+        if not self._weapon:
+            raise weapon.ErrorItemException('weapon not init')
+        if not self._model:
+            lod_model_path = ClWeapon.get_lod_model_path(self.getItemType())
+            self._weapon.recursiveLoadModels(weapon=self, lod_model_path=lod_model_path)
+            self._model = self._weapon.getModel(lod_model_path=lod_model_path)
+            self._applyMegaLod()
+            self._model.testAnimateFromTpose = TESTANIMATEFROMTPOSE
+            self._model.disableAnimatedHPClamp = True
+            self._weapon.setScaleFactor(self._scalefactor)
+            self._prev_visible_model = self._model
+            self.applyScopeAnimation()
+            if not self._scopes and not self._launchers:
+                self._disable_standard_sight = False
+
+            def scope_gen():
+                while 1:
+                    for scope_id in self._scopes.keys():
+                        yield scope_id
+
+                    if not self._disable_standard_sight and not self._scopes:
+                        yield 0
+                    if self._launchers:
+                        for launcher_id in self._launchers.keys():
+                            yield launcher_id
+
+                    if not self._disable_standard_sight and self._scopes:
+                        yield 0
+
+            self._scope_gen = scope_gen()
+            self._last_scope_id = self._scope_gen.next()
+            if self._shooting_mode is None:
+                self.switchShootingMode()
+            self.onTopModelLoaded()
+        if self._parent_entity and self._parent_entity.__class__.__name__ == 'NPC':
+            self._model.megaLodHideAttach = 0
+        return self._model
+
+    def updateLODparams(self):
+        self._applyMegaLod()
+        for duple_weap_model, dup_w in self._wcopy.items():
+            dup_w._applyMegaLod()
+
+    @ignoreError
+    def _applyMegaLod(self):
+        if not self._model:
+            return
+        else:
+            self._model.weapon_skinned = 'LOD_weapon'
+            import BWPersonality
+            self._model.megaLodInOutDistance = BWPersonality.settings.getMegaLodWeaponValue()
+            self._model.megaLodHideAttach = True
+
+            def color2float(color, def_val = (0, 0, 0, 0)):
+                if not color:
+                    return def_val
+                return tuple([ x / 255.0 for x in color ])
+
+            def apply_lod_color(key, color):
+                if not color:
+                    color = (0.0, 0.0, 0.0, 255)
+                color = color2float(color)
+                alpha = color[3] if len(color) > 3 else 1.0
+                color4 = (color[0],
+                 color[1],
+                 color[2],
+                 alpha)
+                setattr(self._model.weapon_skinned, key, color4)
+
+            param = self.getParam()
+            fore_end_color = (0, 0, 0, 0)
+            body_color = (0, 0, 0, 255)
+            priklad_color = (0, 0, 0, 255)
+            barrel_color = (0, 0, 0, 255)
+            magaz_color = (255, 0, 0, 255) if BWPersonality.RELEASE else (30, 30, 30, 200)
+            scope_color = (127, 127, 127, 255)
+            muzzle_color = (127, 127, 127, 255)
+            launcher_color = (100, 100, 100, 255)
+            priklad_color = param.get('LOD_COLOR_WEAPON_BUTT', priklad_color)
+            body_color = param.get('LOD_COLOR_WEAPON_BODY', body_color)
+            fore_end_color = param.get('LOD_COLOR_WEAPON_FOREEND', fore_end_color)
+            barrel_color = param.get('LOD_COLOR_WEAPON_BARREL', barrel_color)
+            scope_visible = False
+            if self._scopes:
+                scope_color = self._scopes.values()[0].getLODColor(scope_color)
+                scope_visible = self._scopes.values()[0].getLODVisible(True)
+            muzzle_visible = False
+            muzzle_device = self._getMuzzleDeviceOriginalWeapon()
+            if muzzle_device:
+                muzzle_color = muzzle_device.getLODColor(muzzle_color)
+                muzzle_visible = muzzle_device.getLODVisible(True)
+            magaz_visible = False
+            magazine = self.getMagazine()
+            if magazine:
+                magaz_color = magazine.getLODColor(magaz_color)
+                magaz_visible = magazine.getLODVisible(True)
+            launcher_visible = False
+            if self._launchers:
+                launcher = self._launchers.values()[0]
+                launcher_color = launcher.getLODColor(launcher_color)
+                launcher_visible = launcher.getLODVisible(True)
+            apply_lod_color('g_colourOnHead', fore_end_color)
+            apply_lod_color('g_colourLegs', barrel_color)
+            apply_lod_color('g_colourBoots', body_color)
+            apply_lod_color('g_colourJacket', priklad_color)
+            apply_lod_color('g_colourFace', scope_color)
+            apply_lod_color('g_colourArmor', magaz_color)
+            apply_lod_color('g_colourBackpack', muzzle_color)
+            apply_lod_color('g_colourHand', launcher_color)
+            hidden_bones = []
+            if not scope_visible:
+                hidden_bones.append('LOD_scope')
+            if not magaz_visible:
+                hidden_bones.append('LOD_magazine')
+            if not muzzle_visible:
+                hidden_bones.append('LOD_silencer')
+            if not launcher_visible:
+                hidden_bones.append('LOD_launcher')
+            if hidden_bones:
+                if not hasattr(self._model, 'wlod_tracker'):
+                    self._model.wlod_tracker = BigWorld.Tracker()
+                    self._model.wlod_tracker.testTick = False
+                    self._model.wlod_tracker.fashionEraID = 5
+                    self._model.wlod_tracker.maxLod = 500
+                    self._model.wlod_tracker.need_redraw_model_additional = True
+                self._model.wlod_tracker.removeAllAdditionalNodes()
+                nf = BigWorld.NodeInfoLODCloth(self._model)
+                self._model.wlod_tracker.addAdditionalNode(nf)
+                self._model.wlod_tracker.nodeMatrixUpdateType = 'UPDATE_SELECTED'
+                self._model.wlod_tracker.nodeMatrixUpdateList = hidden_bones
+                nf.nodesNames = hidden_bones
+            if not hidden_bones and hasattr(self._model, 'wlod_tracker'):
+                self._model.wlod_tracker = None
+            return
+
+    @ignoreError
+    def playSound(self, sound_path, target_model = None):
+        if not target_model:
+            target_model = self.getModel()
+        if self.getModel().node('HP_AIMSYS').isActualCoords:
+            return playSound(sound_path, target_model)
+        else:
+            return playSound(sound_path, self._parent_entity.model)
+
+    __sight_front_down_played = False
+
+    def applyScopeAnimation(self):
+        if not self._model:
+            return
+        try:
+            if self._scopes:
+                self._model.sight_front_down.testNoWroldPlay(0.5)
+                self._model.sight_back_down.testNoWroldPlay(0.5)
+                self.__sight_front_down_played = True
+            elif self.__sight_front_down_played:
+                self._model.sight_front_down.stop()
+                self._model.sight_back_down.stop()
+        except AttributeError:
+            pass
+        except Exception:
+            traceback.print_exc()
+
+    @staticmethod
+    def get_lod_model_path(item_type):
+        def_model = 'characters2/basemodel/Basem/rifles_LOD.model'
+        param = ItemsCatalog.GetItemParam(item_type)
+        if param:
+            return param.get('LOD_MODEL', def_model)
+
+    @staticmethod
+    def get_all_models_path(player, slot_name):
+        """ \xd0\xb2\xd1\x81\xd0\xb5 \xd0\xb8\xd0\xbc\xd0\xb5\xd0\xbd\xd0\xb0 \xd0\xbc\xd0\xbe\xd0\xb4\xd0\xb5\xd0\xbb\xd0\xb5\xd0\xb9, \xd0\xb2\xd0\xba\xd0\xbb\xd1\x8e\xd1\x87\xd0\xb0\xd1\x8f \xd0\xb0\xd1\x82\xd1\x82\xd0\xb0\xd1\x87\xd0\xb8 \xd0\xb4\xd0\xbb\xd1\x8f \xd0\xbd\xd0\xb5\xd1\x81\xd1\x83\xd1\x89\xd0\xb5\xd1\x81\xd1\x82\xd0\xb2\xd1\x83\xd1\x8e\xd1\x89\xd0\xb5\xd0\xb3\xd0\xbe \xd0\xbe\xd1\x80\xd1\x83\xd0\xb6\xd0\xb8\xd1\x8f """
+        paths = []
+        slot = player.ActiveWeaponSet2[slot_name]
+        item_type = slot['itemType']
+        if not item_type:
+            return paths
+        item_param = ItemsCatalog.GetItemParam(item_type)
+        if not item_param:
+            return paths
+        model_path = item_param.get('ModelPath')
+        lod_model_path = ClWeapon.get_lod_model_path(item_type)
+        if model_path and lod_model_path:
+            paths.append([model_path, lod_model_path])
+        else:
+            if model_path:
+                paths.append(model_path)
+            if lod_model_path:
+                paths.append(lod_model_path)
+        for sub_item in slot['upgr']:
+            model_path = ItemsCatalog.GetItemParam(sub_item['itemType']).get('ModelPath')
+            if model_path:
+                paths.append(model_path)
+
+        ammo_type = slot['ammoType']
+        if ammo_type:
+            ammo_model = ItemsCatalog.GetItemParam(ammo_type).get('ModelPath')
+            if ammo_model:
+                paths.append(ammo_model)
+        return paths
+
+    def getAllModelsPaths(self):
+        """ \xd0\x92\xd1\x81\xd0\xb5 \xd0\xb8\xd0\xbc\xd0\xb5\xd0\xbd\xd0\xb0 \xd0\xbc\xd0\xbe\xd0\xb4\xd0\xb5\xd0\xbb\xd0\xb5\xd0\xb9, \xd0\xb2\xd0\xba\xd0\xbb\xd1\x8e\xd1\x87\xd0\xb0\xd1\x8f \xd0\xb0\xd1\x82\xd0\xb0\xd1\x87\xd0\xb8 \xd0\xb4\xd0\xbb\xd1\x8f \xd1\x81\xd1\x83\xd1\x89\xd0\xb5\xd1\x81\xd1\x82\xd0\xb2\xd1\x83\xd1\x8e\xd1\x89\xd0\xb5\xd0\xb3\xd0\xbe \xd0\xbe\xd1\x80\xd1\x83\xd0\xb6\xd0\xb8\xd1\x8f"""
+        ret = set()
+        if self._weapon:
+            ret.update(self._weapon.getAllModelsPaths())
+        ret.update(self.getAllModelsAttachedRocket())
+        return ret
+
+    def getAllModelsAttachedRocket(self):
+        ret = set()
+        if self.isGrenadeGun() and self.getAmmoNumber() and self.getAmmoType():
+            model_path = ItemsCatalog[self.getAmmoType()].get('ModelPath')
+            if model_path:
+                ret.add(model_path)
+        return ret
+
+    def destroyModels(self):
+        if self._model:
+            self._model.visible = False
+        self._model = None
+        self._rocket_model = None
+        self._prev_visible_model = None
+        self._parent_entity = None
+        if self._weapon:
+            self._weapon.switchSpotLightRecurs(False, silent=True)
+            self._weapon.destroyModels()
+        self._scopes.clear()
+        self._launchers.clear()
+        self._muzzle_device = None
+        self._magazine = None
+        self._BuiltinMagazine = None
+        self._BuiltinMagazineProp = None
+        self._scope_gen = None
+        self._shoot_switcher_gen = None
+        self._defaultIronSight = None
+        self._weapon = None
+        self._wcopy = None
+        if self._stop_shoot_callback_id:
+            BigWorld.cancelCallback(self._stop_shoot_callback_id)
+        return
+
+    @ignoreError
+    def registerSubModel(self, attach, model):
+        prop = attach.getProp()
+        PartType = prop.get('PartType', None)
+        if PartType == ItemsCatalog.LAUNCHER:
+            self._launchers[attach.getID()] = attach
+        if PartType == ItemsCatalog.SCOPE:
+            self._scopes[attach.getID()] = attach
+            self._last_scope_id = attach.getID()
+        if prop.get('DefaultIronSight', False):
+            self._defaultIronSight = attach
+        return
+
+    def createCopyModelWeapon(self):
+        wcopy = _CopyClWeapon(self)
+        wcopy.getModel().recursiveChildModelSetVisible(False, True)
+        self._wcopy[wcopy.getModel()] = wcopy
+        return wcopy.getModel()
+
+    def deleteCopyModel(self, copy_model):
+        if copy_model not in self._wcopy:
+            print 'WARNING  deleteCopyModel not found', copy_model, self, len(self._wcopy)
+            if SHOW_WARNING_STACK:
+                traceback.print_stack()
+                print '\n'
+            return
+        else:
+            self._wcopy[copy_model].destroyModels()
+            del self._wcopy[copy_model]
+            if copy_model == self._prev_visible_model:
+                self._prev_visible_model = None
+            return
+
+    def clearCopyModel(self):
+        """\xd1\x83\xd0\xb4\xd0\xb0\xd0\xbb\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5 \xd0\xb2\xd1\x81\xd0\xb5\xd1\x85 \xd0\xba\xd0\xbe\xd0\xbf\xd0\xb8\xd0\xb9 \xd0\xbe\xd1\x80\xd1\x83\xd0\xb6\xd0\xb8\xd1\x8f"""
+        if self._wcopy is None:
+            return
+        else:
+            for m in self._wcopy.keys():
+                self.deleteCopyModel(m)
+
+            return
+
+    def destroyWeapon(self):
+        self.destroy()
+        weapon.Weapon.destroyWeapon(self)
+
+    def destroy(self):
+        self._isDestroyed = True
+        self.clearCopyModel()
+        self.destroyModels()
+        self._stop_shot_loop_sound()
+
+    def _onChangeVisible(self, new_model, not_safe = False):
+        if self._wcopy is None:
+            return
+        else:
+            if self._prev_visible_model:
+                self._prev_visible_model.recursiveChildModelSetVisible(False, True)
+            if new_model:
+                new_model.recursiveChildModelSetVisible(True, False)
+            prev_top = None
+            new_top = None
+            new_weapon = None
+            if self._prev_visible_model in self._wcopy:
+                prev_top = self._wcopy[self._prev_visible_model]._weapon
+            elif not self._prev_visible_model or self._prev_visible_model == self._model:
+                prev_top = self._weapon
+            if new_model in self._wcopy:
+                new_weapon = self._wcopy[new_model]
+            elif not new_model or new_model == self._model:
+                new_weapon = self
+            if new_weapon and new_weapon._first_launcher:
+                new_weapon._first_launcher.recreateAssemblyTracker()
+            if new_weapon:
+                new_top = new_weapon._weapon
+                new_top.recursiveUpdateColor()
+            self._prev_visible_model = new_model
+
+            def callback():
+                if prev_top:
+                    prev_top.switchSpotLightRecurs(False, silent=True)
+                if new_top:
+                    new_top.switchSpotLightRecurs(self._tmp_light_on, silent=True)
+                if self._parent_entity:
+                    self._parent_entity.onChangeVisibleWeaponModel(self, new_model)
+
+            if not_safe:
+                BigWorld.callback(0, callback)
+            else:
+                callback()
+            return
+
+    def setScaleFactor(self, scalefactor = 1.0, to_all_copy = True):
+        self._scalefactor = scalefactor
+        if self._weapon:
+            self._weapon.setScaleFactor(self._scalefactor)
+        if to_all_copy:
+            for w in self._wcopy.values():
+                w.setScaleFactor(scalefactor, False)
+
+    def setVisibleModel(self, model, not_safe = False):
+        if self._prev_visible_model == model:
+            return
+        self._onChangeVisible(model, not_safe)
+
+    def getComplexSubItemByItemID(self, sub_item_id):
+        if not self._complex_item:
+            return
+        if not sub_item_id:
+            return
+        for subItem in self._complex_item['itemList']:
+            if subItem['itemID'] == sub_item_id:
+                return subItem
+
+    def returnOldMagazine(self, magaz_slot, ammo_type):
+        """ \xd0\xbf\xd1\x80\xd0\xb8 \xd0\xbe\xd1\x82\xd0\xbc\xd0\xb5\xd0\xbd\xd0\xb5 \xd0\xbf\xd0\xb5\xd1\x80\xd0\xb5\xd0\xb7\xd0\xb0\xd1\x80\xd1\x8f\xd0\xb4\xd0\xba\xd0\xb8 \xd0\xb2\xd0\xb5\xd1\x80\xd0\xbd\xd1\x83\xd1\x82\xd1\x8c \xd1\x81\xd1\x82\xd0\xb0\xd1\x80\xd1\x8b\xd0\xb9 \xd0\xbc\xd0\xb0\xd0\xb3\xd0\xb0\xd0\xb7\xd0\xb8\xd0\xbd
+        """
+        if self.isBuiltinMagazine():
+            return
+        else:
+            if self._magazine:
+                self._magazine.detach([])
+                self._magazine = None
+            if self._weapon_slot and magaz_slot and magaz_slot['itemType']:
+                sub_prop = ItemsCatalog.GetItemParam(magaz_slot['itemType'])
+                if sub_prop.get('PartType') != ItemsCatalog.MAGAZINE:
+                    print self, self._parent_entity, magaz_slot.items()
+                    raise TypeError
+                att = Magazine(parent_entity=self._parent_entity)
+                att.makeFromSlot(magaz_slot)
+                self._magazine = att
+                if ammo_type is not None:
+                    self._magazine.setAmmoType(ammo_type, False)
+                    self._magazine.setAmmoNumber(2 if ammo_type else 0, False)
+            if self._complex_item and magaz_slot and magaz_slot['itemType']:
+                sub_prop = ItemsCatalog.GetItemParam(magaz_slot['itemType'])
+                att = Magazine(parent_entity=self._parent_entity)
+                att.makeFromSubItem(magaz_slot, sub_prop=sub_prop)
+                self._magazine = att
+            if self._magazine:
+                self._weapon.attachChildren(self._magazine, NODE.DEF_MAGAZINE_ID)
+                mag_model = self._magazine.getModel()
+                weapon_model = self.getModel()
+                if weapon_model and not weapon_model.visible:
+                    mag_model.visible = False
+            self.updateLODparams()
+            return
+
+    def updateAmmoTypeBuiltinMagazine(self):
+        if not self.isBuiltinMagazine():
+            return
+        new_ammo_type = getattr(self, 'new_ammo_type', 0)
+        if new_ammo_type:
+            if self._parent_entity != BigWorld.player():
+                self._ammoType = new_ammo_type
+
+    def updateMagazineModelByItem(self, magaz_item, visible = False):
+        if self.isBuiltinMagazine():
+            return
+        else:
+            if self._magazine:
+                self._magazine.detach([])
+                self._magazine = None
+            if not magaz_item:
+                self.updateLODparams()
+                return
+            self._magazine = Magazine(parent_entity=self._parent_entity)
+            if ItemsUtils.isSlotUpgr(magaz_item):
+                self._magazine.makeFromSlot(magaz_item, parentAttach=self._weapon)
+                if hasattr(self, 'new_ammo_type'):
+                    self._magazine.setAmmoType(self.new_ammo_type, False)
+                    if self.new_ammo_type:
+                        self._magazine.setAmmoNumber(2, False)
+            else:
+                self._magazine.makeFromSubItem(magaz_item, parentAttach=self._weapon)
+            self._weapon.attachChildren(self._magazine, NODE.DEF_MAGAZINE_ID)
+            mag_model = self._magazine.getModel()
+            weapon_model = self.getModel()
+            if weapon_model and not weapon_model.visible:
+                visible = False
+            if not visible:
+                mag_model.visible = False
+            for duple_weap_model, dup_w in self._wcopy.items():
+                duple_weap_model.node('HP_magazine').attachments = []
+                m_model = self.createTmpMagazineModel(magaz_item)
+                duple_weap_model.node('HP_magazine').attach(m_model)
+                if not visible:
+                    m_model.visible = False
+
+            self.updateLODparams()
+            return
+
+    def createTmpMagazineModel(self, new_magaz_item = None):
+        if not self._weapon:
+            raise weapon.ErrorItemException('weapon not init')
+        if new_magaz_item:
+            if ItemsUtils.isSlotUpgr(new_magaz_item):
+                return self._weapon._loadModel(new_magaz_item['itemType'], COLORISEID=(new_magaz_item['COLORISEA'], new_magaz_item['COLORISEB']), scale=self._scalefactor)
+            if new_magaz_item.has_key('itemParametresKeys') and new_magaz_item.has_key('itemType'):
+                param = ItemsUtils.GetSubItemInconstanParams(new_magaz_item)
+                COLORISEID = (param.get(ItemsCatalog.INC_COLORISE_A, 0), param.get(ItemsCatalog.INC_COLORISE_B, 0))
+                return self._weapon._loadModel(new_magaz_item['itemType'], COLORISEID, scale=self._scalefactor)
+            if new_magaz_item.has_key('complexItemType'):
+                param = ItemsUtils.GetComplexItemInconstanParams(new_magaz_item)
+                COLORISEID = (param.get(ItemsCatalog.INC_COLORISE_A, 0), param.get(ItemsCatalog.INC_COLORISE_B, 0))
+                return self._weapon._loadModel(new_magaz_item['complexItemType'], COLORISEID, scale=self._scalefactor)
+            print '\nERROR FOR: weapon=', self, self._parent_entity
+            print 'new_magaz_item=', type(new_magaz_item), dict(new_magaz_item)
+            raise weapon.ErrorItemException('createTmpMagazineModel new_magaz_item')
+        mag = self.getMagazine()
+        if mag:
+            return mag.loadNewModel()
+
+    def getEquipInActionName(self):
+        return 'equipweapon_%s_in' % self.holster_node_name
+
+    def getEquipOutActionName(self):
+        return 'equipweapon_%s_out' % self.holster_node_name
+
+    def getUnEquipInActionName(self):
+        return 'unEquipweapon_%s_in' % self.holster_node_name
+
+    def getUnEquipOutActionName(self):
+        return 'unEquipweapon_%s_out' % self.holster_node_name
+
+    @ignoreError
+    def onTopModelLoaded(self):
+        if self.isGrenadeGun() and self.getAmmoNumber() and self.getAmmoType():
+            self._rocket_model = WeaponAttachment._loadModel(self.getAmmoType(), scale=self._scalefactor)
+            self._model.grenade = self._rocket_model
+
+    @ignoreError
+    def onSpendAmmo(self, spend_ammo_type):
+        if self.isGrenadeGun():
+            self._updateRocketModel()
+
+    @ignoreError
+    def onChangeAmmo(self):
+        if self.isGrenadeGun():
+            self._updateRocketModel()
+
+    @ignoreError
+    def onWeaponReady(self):
+        muzzle_device = self.getMuzzleDevice()
+        if muzzle_device:
+            params = muzzle_device.getProp()
+        else:
+            params = self.getParam()
+        if params.get('shellSFXOnFire'):
+            load_sfx = params.get('shellSFX')
+            if load_sfx:
+                FX.prepare_buffer(load_sfx)
+        load_sfx = params.get('ShotSFX')
+        if load_sfx:
+            FX.prepare_buffer(load_sfx)
+        load_sfx = params.get('ShotSmokeSFX')
+        if load_sfx:
+            FX.prepare_buffer(load_sfx)
+
+    _rocket_model = None
+
+    def _updateRocketModel(self):
+        if not self.isGrenadeGun():
+            return
+        else:
+            if self.getAmmoNumber():
+                need_attach = self.getAmmoType()
+                if bool(need_attach) and bool(self._rocket_model):
+                    return
+                if need_attach:
+                    self._rocket_model = WeaponAttachment._loadModel(self.getAmmoType(), scale=self._scalefactor)
+                    self._model.grenade = self._rocket_model
+                    self._rocket_model.visible = self._model.visible or False
+            else:
+                self._rocket_model = None
+                self._model.grenade = None
+            return
+
+    def onFireEmpty(self):
+        soundPath = self.getParam().get('soundPath')
+        if not soundPath:
+            return
+        sound_name = soundPath + '/triggerpulldry'
+        self.playSound(sound_name, self.getModel())
+
+    def onFireLauncherEmpty(self):
+        if not self._first_launcher:
+            return
+        soundPath = self._first_launcher.getProp().get('soundPath')
+        if not soundPath:
+            return
+        sound_name = soundPath + '/triggerpulldry'
+        self.playSound(sound_name, self.getModel())
+
+    _trigger_press_left = False
+
+    def triggerPressAnimationLeft(self, value = True):
+        if self._trigger_press_left == bool(value):
+            return
+        else:
+            self._trigger_press_left = bool(value)
+            model = None
+            try:
+                model = self._first_launcher.getModel()
+                if value:
+                    model.trigger_in(0, None, 0, -1, -1, 60).trigger_loop()
+                else:
+                    model.trigger_in.stop()
+                    model.trigger_loop.stop()
+                    firstFrame = model.trigger_in.firstFrame
+                    lastFrame = model.trigger_in.lastFrame
+                    model.trigger_in(0.0, None, 0, lastFrame, firstFrame, 60)
+            except:
+                print 'ERROR FOR:', self, self._parent_entity
+                print 'model:', model
+                if model:
+                    print model.sources
+                traceback.print_exc()
+
+            return
+
+    _zzz0 = 0.08
+    _zzz0f = 200
+    _zzz1 = 0.0
+    _zzz1f = -1
+    _trigger_press = False
+
+    def triggerPressAnimation(self, value = True):
+        if self._trigger_press == bool(value):
+            return
+        else:
+            self._trigger_press = bool(value)
+            weapon_model = self.getModel()
+            try:
+                if value:
+                    trigger_time = self.getTriggeringTime()
+                    if trigger_time <= 0:
+                        trigger_time = weapon_model.trigger_in.duration
+                    if trigger_time <= 0:
+                        trigger_time = 1.0
+                    framerate = weapon_model.trigger_in.frameRate * weapon_model.trigger_in.duration / trigger_time
+                    if framerate < 1:
+                        framerate = 1
+                    framerate = -1
+                    weapon_model.trigger_in(self._zzz0, None, 0, -1, -1, self._zzz0f).trigger_loop()
+                else:
+                    firstFrame = weapon_model.trigger_in.firstFrame
+                    lastFrame = weapon_model.trigger_in.lastFrame
+                    framerate = -1
+                    weapon_model.trigger_in.stop()
+                    weapon_model.trigger_loop.stop()
+                    weapon_model.trigger_in(self._zzz1, None, 0, lastFrame, firstFrame, self._zzz1f)
+            except Exception as err:
+                print 'Weapon trigger ERROR::Have not Action "trigger_in", "trigger_loop"'
+                print err
+                print 'model:', weapon_model, weapon_model.sources
+
+            return
+
+    def getTriggeringTime(self):
+        weapon_param = self.getParam()
+        if self._shooting_mode == ItemsCatalog.SHOOTING_MODE_1:
+            return weapon_param.get('triggering_time_one_shot', 0.0)
+        return weapon_param.get('triggering_time', 0.0)
+
+    def getDelayToNextShoot(self):
+        passed_time = time.time() - self._last_shoot_time
+        return self.timePerShot - passed_time
+
+    def calcSoundFireRate(self):
+        min_coef = 50
+        min_rate = 100
+        max_coef = 500
+        max_rate = 1000
+        d = (self.rateOfFire - min_rate) / float(max_rate - min_rate)
+        fire_coef = min_coef + (max_coef - min_coef) * d
+        fire_coef = int(max(min_coef, min(max_coef, fire_coef)))
+        return fire_coef
+
+    def shutter(self, value = True):
+        weapon_model = self.getModel()
+        if hasattr(weapon_model, 'shutter'):
+            if value:
+                weapon_model.shutter()
+            else:
+                weapon_model.shutter.stop()
+
+    _sh_sound = None
+    _is_brust = False
+
+    def onStopAnimationShot(self):
+        self._is_brust = False
+        self._stop_shot_loop_sound()
+
+    def _stop_shot_loop_sound(self):
+        if self._sh_sound:
+            self._sh_sound.set_param('isloop', 0)
+            self._sh_sound = None
+        return
+
+    def _calc_shot_number(self):
+        if (BigWorld.time() - self._last_shoot_bt) / self.timePerShot > 3.0:
+            self._shot_counter = 0
+        self._shot_counter += 1
+        self._last_shoot_bt = BigWorld.time()
+        return self._shot_counter
+
+    def _need_fix_brust_loop_sound(self):
+        if not self._is_player:
+            return True
+        if self._sprayer:
+            return True
+        calc_shot_number = self._calc_shot_number()
+        if calc_shot_number < 4:
+            return False
+        return True
+
+    _debug_fire_counter = 0
+
+    def shoot(self, weapon_in_water = False, weapon_in_shell = False, isBrust = False, shot_number = 1):
+        self._is_brust = isBrust
+        self._debug_fire_counter += 1
+        weapon_param = self.getParam()
+        if self._max_burst_available_count is not None:
+            self._max_burst_available_count -= 1
+        weapon_model = self.getModel()
+        isBoltAnimation = self.isBoltAnimation()
+        if not isBoltAnimation:
+            ammo_count = self.getAmmoNumber()
+            try:
+                framerate = weapon_model.shot.frameCount / self.timePerShot
+                if ammo_count <= 1 and hasattr(weapon_model, 'shutter'):
+                    weapon_model.shot(0, None, 0, weapon_model.shot.frameCount / 2, -1, framerate).shutter()
+                else:
+                    weapon_model.shot(0, None, 0, -1, -1, framerate)
+            except:
+                print 'model:', weapon_model, weapon_model.sources
+                traceback.print_exc()
+
+        muzzle_device = self.getMuzzleDevice()
+        muzzle_param = weapon_param
+        muzzle_model = weapon_model
+        if muzzle_device is not None:
+            muzzle_model = muzzle_device.getModel()
+            muzzle_param = muzzle_device.getProp()
+        if weapon_in_water:
+            ShotSFX = muzzle_param.get('ShotSFXInWater', '')
+            smoke_sfx = ''
+        else:
+            ShotSFX = muzzle_param.get('ShotSFX', '')
+            smoke_sfx = muzzle_param.get('ShotSmokeSFX', '')
+        soundPath = weapon_param.get('soundPath')
+        if soundPath:
+            shot_type = self.getShootSoundType(weapon_in_shell)
+            if not shot_type:
+                self._stop_shot_loop_sound()
+            if shot_type:
+                shot_path = soundPath + '/' + shot_type
+                if not isBrust:
+                    self._stop_shot_loop_sound()
+                if self._sh_sound and self._sh_sound.sound_path != shot_path:
+                    self._stop_shot_loop_sound()
+                if not self._sh_sound:
+                    shoot_sound = self.playSound(shot_path, muzzle_model)
+                    if isBrust and USE_BRUST_SOUND_LOOP and self._need_fix_brust_loop_sound():
+                        self._sh_sound = shoot_sound
+                        self._sh_sound.set_param('isloop', 1)
+                        self._sh_sound.set_param('fire_rate', self.calcSoundFireRate())
+        current_scope = self.getCurrentScope()
+        if current_scope:
+            is_optical_scope = ItemsCatalog.GetItemCategory(current_scope.getItemType()) == IC.OPTICAL
+            player = BigWorld.player()
+            if ShotSFX:
+                if player.IsAvatarSniping():
+                    if player.isFPSmode() and not is_optical_scope:
+                        FX.bufferedOneShotEffect(ShotSFX, muzzle_model)
+                    isBoltAnimation and self.waitBoltAnimation(True)
+                elif weapon_param.get('shellSFXOnFire', True):
+                    shellSFX = self.getShellSFX()
+                    if shellSFX:
+                        FX.bufferedOneShotEffect(shellSFX, weapon_model)
+                self._last_shoot_time = time.time()
+                self._stop_shoot_callback_id and BigWorld.cancelCallback(self._stop_shoot_callback_id)
+                self._stop_shoot_callback_id = None
+            self._stop_shoot_callback_id = smoke_sfx and BigWorld.callback(0.5, self.endShoot)
+        return
+
+    def endShoot(self):
+        if not self._weapon:
+            return
+        else:
+            target_model = self.getModel()
+            target_param = self.getParam()
+            muzzle_device = self.getMuzzleDevice()
+            if muzzle_device is not None:
+                target_model = muzzle_device.getModel()
+                target_param = muzzle_device.getProp()
+            if not target_model or not target_model.inWorld:
+                return
+            smoke_sfx = target_param.get('ShotSmokeSFX', '')
+            if smoke_sfx:
+                FX.bufferedOneShotEffect(smoke_sfx, target_model)
+            self._stop_shoot_callback_id = None
+            return
+
+    def getShootSoundType(self, weapon_in_shell = False):
+        if not self.getAmmoType():
+            ammo_type = self.getLastAmmoType() or self._ammoType
+            return ammo_type or None
+        else:
+            ammo_param = ItemsCatalog.GetItemParam(ammo_type)
+            if not ammo_param:
+                return None
+            sound_str = 'shotsubs'
+            if self.haveSupressor():
+                sound_str += '_s'
+            if weapon_in_shell:
+                sound_str += '_room'
+            return sound_str
+
+    def getShellSFX(self):
+        if not self.getAmmoType():
+            ammo_type = self.getLastAmmoType()
+            return ammo_type or None
+        else:
+            ammo_param = ItemsCatalog.GetItemParam(ammo_type)
+            if not ammo_param:
+                return None
+            return ammo_param.get('shellSFX')
+
+    def drawLaunch(self, position, velocity, grenade_type):
+        launcher = self._first_launcher
+        launcher_param = launcher.getProp()
+        ShotSFX = launcher_param.get('ShotSFX', '')
+        if ShotSFX:
+            FX.bufferedOneShotEffect(ShotSFX, launcher.getModel())
+        shot_path = launcher_param.get('soundPath', '')
+        if shot_path:
+            self.playSound(shot_path + '/shotsups', launcher.getModel())
+        launcher.onFireGreande()
+
+    def updateLauncherGreandeByItem(self, item):
+        visible = False
+        if self._model and self._model.visible:
+            visible = True
+        self._first_launcher.updateLauncherGreandeByItem(item, visible=visible)
+
+    def updateLauncherGunByItem(self, grenade_type):
+        if not self.isGrenadeGun():
+            return
+        else:
+            for w in self._wcopy.values():
+                w.updateLauncherGunByItem(grenade_type)
+
+            if self._parent_entity != BigWorld.player():
+                self._ammoType = grenade_type
+                self._ammoNumber = 1 if grenade_type else 0
+            self._model.grenade = None
+            self._rocket_model = None
+            self.onChangeAmmo()
+            return
+
+    _left_hilt_launcher_matrix = None
+    _sight_assembly_pos_ot_gunrw_ = (0, 0, 0)
+    _left_hilt_launcher_from_lhand_matrix = None
+    _left_hilt_launcher_fl_inv = None
+
+    def attachHandToCustomHilt(self, left_weapon_prov, right_weapon_prov):
+        if not self._custom_hilt:
+            return
+        if self._left_hilt_launcher_matrix:
+            left_weapon_prov.attached_hilt_matrix = self._left_hilt_launcher_matrix
+            left_weapon_prov.attached_hilt = True
+            return
+        weapon_model = self.getModel()
+        gunrw = weapon_model.node('HP_GUNRW')
+        lhand = weapon_model.node('HP_Lhand')
+        lhand_launcher = self._custom_hilt.getModel().node('HP_Lhand')
+        if self._first_launcher:
+            sight_assembly = self._first_launcher.getModel().node('sight_assembly')
+        weapon_model.forceDraw()
+        self._left_hilt_launcher_matrix = Matrix(gunrw.lastRenderTransform)
+        self._left_hilt_launcher_matrix.invert()
+        self._left_hilt_launcher_matrix.preMultiply(lhand_launcher.lastRenderTransform)
+        self._left_hilt_launcher_from_lhand_matrix = Matrix(lhand_launcher.lastRenderTransform)
+        self._left_hilt_launcher_from_lhand_matrix.invert()
+        self._left_hilt_launcher_from_lhand_matrix.preMultiply(lhand.lastRenderTransform)
+        self._left_hilt_launcher_fl_inv = Matrix(self._left_hilt_launcher_from_lhand_matrix)
+        self._left_hilt_launcher_fl_inv.invert()
+        if self._first_launcher:
+            self._sight_assembly_pos_ot_gunrw_ = sight_assembly.lastRenderTransform.translation
+            m = Matrix(gunrw.lastRenderTransform)
+            m.invert()
+            self._sight_assembly_pos_ot_gunrw_ = m.applyPoint(self._sight_assembly_pos_ot_gunrw_)
+            self._first_launcher._sight_assembly_pos_ot_gunrw_ = self._sight_assembly_pos_ot_gunrw_
+        left_weapon_prov.attached_hilt_matrix = self._left_hilt_launcher_matrix
+        left_weapon_prov.attached_hilt = True
+
+    def reload_weapon(self):
+        pass
+
+    def equip(self):
+        pass
+
+    def unequip(self):
+        pass
+
+    def getScopeType(self, ID = 0):
+        pass
+
+    def getBulletSpread(self, shot_number = 0):
+        if not self.getParam('gun_bulletSpreadGrad', 0):
+            bullet_spread = 0
+            mult = 1
+            if self._complex_item:
+                current_leading = ItemsUtils.GetItemPollution(self._complex_item, ItemsCatalog.INC_POLLUTION_LEADING, entity=self._parent_entity)
+                current_coppering = ItemsUtils.GetItemPollution(self._complex_item, ItemsCatalog.INC_POLLUTION_COPPERING, entity=self._parent_entity)
+                leading_grouping_affection = ItemsUtils.GetItemScheduleParam(self.getItemType(), 'LeadingGroupingAffection', current_leading, 1)
+                coppering_grouping_affection = ItemsUtils.GetItemScheduleParam(self.getItemType(), 'CopperingGroupingAffection', current_coppering, 1)
+                condition_grouping_affection = ItemsUtils.GetItemScheduleParam(self.getItemType(), 'ConditionGroupingAffection ', self.getCondition(), 1)
+                mult = leading_grouping_affection * coppering_grouping_affection * condition_grouping_affection
+            ammo_param = self.getAmmoParam()
+            if ammo_param:
+                bullet_spread += ammo_param.get('Accuracy', 0.0)
+            attach_list = self.getAttachListTypes()
+            for attach_type in attach_list:
+                attach_param = ItemsCatalog.GetItemParam(attach_type)
+                bullet_spread += attach_param.get('Accuracy', 0.0)
+
+            bullet_spread = max(0.0, bullet_spread * mult)
+            angle_spread = math.radians(bullet_spread)
+            perk_mod = shot_number > 1 and self._parent_entity and recoil_and_spread_table.getPerkAndGradeRecoil(self._parent_entity)
+            angle_spread += perk_mod * self.getParam('rec_moa_add', 0)
+        return angle_spread
+
+    def getCondition(self):
+        max_cond = self.getParam('MaxCondition')
+        if not self._complex_item:
+            return max_cond
+        return int(round(self._ItemCondition * float(max_cond) / ItemsCatalog.MAX_CONDITION_VALUE))
+
+    def getJammed(self):
+        if not self._complex_item:
+            return 0
+        inconstant_param = ItemsUtils.GetComplexItemInconstanParams(self._complex_item)
+        return inconstant_param.get(ItemsCatalog.INC_IS_BROKEN, 0)
+
+    def getMaxShootDist(self):
+        return 300
+
+    def on_start_burst(self):
+        self._max_burst_available_count = None if self._shooting_mode <= 1 else self._shooting_mode
+        return
+
+    def burst_depleted(self):
+        return self._max_burst_available_count is not None and self._max_burst_available_count <= 0
+
+    def _debug_shooting_mode_move(self):
+        self._debug_shooting_mode = not getattr(self, '_debug_shooting_mode', False)
+        if self._debug_shooting_mode:
+            self._parent_entity._pygunRWnode.switchShootRotatVeiewMode(True)
+            self.updateShootingModeMatrix()
+        else:
+            self._parent_entity._pygunRWnode.switchShootRotatVeiewMode(False)
+
+    def updateShootingModeMatrix(self):
+        if getattr(self._parent_entity, '_pygunRWnode', None):
+            self._parent_entity._pygunRWnode.switch_shoot_mode_matrix = self._getSwitchShootingMatrix()
+        return
+
+    def _getSwitchShootingMatrix(self):
+        weapon_param = self.getParam()
+        add_pos = weapon_param.get('switch_shooting_mode_pos', (0, 0, 0))
+        add_rot = weapon_param.get('switch_shooting_mode_rot', (0, 0, 0))
+        m = Matrix()
+        m_rot = Matrix()
+        m.setTranslate(tuple(add_pos))
+        m_rot.setRotateYPR(tuple(add_rot))
+        m.preMultiply(m_rot)
+        return m
+
+    def _getRotateLauncherModeMatrix(self):
+        to_launcher = Matrix()
+        to_launcher_rot = Matrix()
+        to_launcher.setTranslate((0, -0.32, -0.05))
+        to_launcher_rot.setRotateYPR((-0.3, -0.9, -1.3))
+        to_launcher.preMultiply(to_launcher_rot)
+        return to_launcher
+
+    _shoot_switcher_gen = None
+
+    def switchShootingMode(self):
+
+        def shoot_switcher_gen():
+            available_shooting_modes = self.getParam('ShootingMode')
+            index = 0
+            index_direction = 1
+            while True:
+                if not available_shooting_modes:
+                    yield
+                    continue
+                if len(available_shooting_modes) == 1:
+                    yield available_shooting_modes[0]
+                    continue
+                yield available_shooting_modes[index]
+                index += index_direction
+                if index == len(available_shooting_modes) - 1 or index == 0:
+                    index_direction *= -1
+
+            return
+
+        if not self._shoot_switcher_gen:
+            self._shoot_switcher_gen = shoot_switcher_gen()
+        self._shooting_mode = self._shoot_switcher_gen.next()
+
+    def switch_shooting_mode(self, silent = False):
+
+        def _return_weapon():
+            if getattr(self._parent_entity, '_pygunRWnode', None):
+                self._parent_entity._pygunRWnode.switchShootRotatVeiewMode(False)
+            self._id_return_weapon_sm = 0
+            return
+
+        delay_play = 0.3
+        if getattr(self, '_id_return_weapon_sm', 0):
+            BigWorld.cancelCallback(self._id_return_weapon_sm)
+            delay_play = 0.0
+        if getattr(self._parent_entity, '_pygunRWnode', None):
+            self._id_return_weapon_sm = BigWorld.callback(1.0, _return_weapon)
+            self._parent_entity._pygunRWnode.switchShootRotatVeiewMode(True)
+            self.updateShootingModeMatrix()
+        prev_shooting_mode = self._shooting_mode
+        self.switchShootingMode()
+        self._max_burst_available_count = None if self._shooting_mode <= 1 else self._shooting_mode
+
+        def play_():
+            if self._shooting_mode is not None:
+                action = SHOOTING_MODE_TO_WEAPON_ANIMATION[self._shooting_mode]
+                try:
+                    getattr(self.getModel(), action)()
+                except:
+                    print 'clweapon::weapon model not suited to play switch animation'
+
+                up = True
+                if not prev_shooting_mode:
+                    if 0 > self._shooting_mode:
+                        up = False
+                    self.playSoundShootingMode(up)
+                    pl_action = self.getParam().get('switch_shooting_hand_animation')
+                    pl_action and self._parent_entity and self._parent_entity.model and self._parent_entity.model.action(pl_action)()
+            return
+
+        if self._shooting_mode != prev_shooting_mode and not silent:
+            BigWorld.callback(delay_play, play_)
+        return self._shooting_mode != prev_shooting_mode
+
+    @property
+    def shooting_mode(self):
+        return self._shooting_mode
+
+    def playSoundScopeReticle(self, attach):
+        sound = attach.getScopeReticleParams().get('sound_reticle', None)
+        if sound is None:
+            sound = scope_reticle_settings.def_sound_reticle
+        if sound:
+            self.playSound(sound)
+        return
+
+    def playSoundShootingMode(self, up = False):
+        soundPath = self.getParam().get('soundPath')
+        if not soundPath:
+            return
+        sound_name = soundPath
+        sound_name += '/selectorup' if up else '/selectordown'
+        self.playSound(sound_name, self.getModel())
+
+    def _getVisibleWeapon(self):
+        if self._prev_visible_model and self._prev_visible_model != self._model:
+            if self._prev_visible_model not in self._wcopy:
+                print 'WARNING! self._prev_visible_model not in _wcopy', self, self._parent_entity, self._prev_visible_model, self._prev_visible_model.inWorld
+                self._prev_visible_model = None
+                traceback.print_stack()
+                return self
+            return self._wcopy[self._prev_visible_model]
+        else:
+            return self
+
+    def onChangeScope(self, prev_id, new_id):
+        att = self.getScopeOrLauncher(prev_id)
+        if att:
+            att.onDeactivateAttach()
+        att = self.getScopeOrLauncher(new_id)
+        if att:
+            att.onActivateAttach()
+        if self._parent_entity and getattr(self._parent_entity, '_pygunRWnode', None):
+            self._parent_entity._pygunRWnode.launcherRotateViewMode(False)
+        return
+
+    def onlookInScope(self, look = False):
+        if self._last_scope_id and self._last_scope_id in self._scopes:
+            self._scopes[self._last_scope_id].onlookInScope(look)
+        elif self._last_scope_id in self._launchers:
+            self._launchers[self._last_scope_id].onlookInScope(look)
+
+    def getScopeOrLauncher(self, item_id):
+        return self._launchers.get(item_id) or self._scopes.get(item_id)
+
+    def getCurrentLauncher(self):
+        return self._launchers.get(self._last_scope_id)
+
+    def _getScopeModel(self, last_scope_id = -1):
+        if last_scope_id == -1:
+            last_scope_id = self._last_scope_id
+        if last_scope_id in self._scopes:
+            return self._scopes[last_scope_id].model
+
+    def swithScopeSnipingMode(self):
+        if self._scope_gen:
+            self.onlookInScope(False)
+            prev_id = self._last_scope_id
+            self._last_scope_id = self._scope_gen.next()
+            self.onChangeScope(prev_id, self._last_scope_id)
+
+    def onCahngeFPSMode(self, isfps):
+        try:
+            top_attach = self._getVisibleWeapon()._weapon
+            top_attach.onCahngeFPSMode(isfps)
+        except:
+            traceback.print_exc()
+
+    def getCameraNode(self):
+        if not self._model:
+            self.getModel()
+        if self._last_scope_id:
+            model = self._getScopeModel(self._last_scope_id)
+        else:
+            model = self._model
+        if model:
+            return model.node('HP_SIGHT')
+
+    def recreateSightOffset(self):
+        """ \xd1\x80\xd0\xb5\xd0\xb4\xd0\xb0\xd0\xba\xd1\x82\xd0\xbe\xd1\x80 \xd0\xbe\xd1\x80\xd1\x83\xd0\xb6\xd0\xb8\xd1\x8f \xd0\xbe\xd0\xb1\xd0\xbd\xd0\xbe\xd0\xb2\xd0\xb8\xd0\xbb sight_offset_add
+        """
+        self._sight_offset_cashe.clear()
+
+    def getDefaultSightOffset(self):
+        """ \xd0\xb2\xd0\xbe\xd0\xb7\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd1\x82\xd0\xbe\xd1\x87\xd0\xba\xd1\x83 \xd0\xbf\xd0\xbe\xd0\xbb\xd0\xbe\xd0\xb6\xd0\xb5\xd0\xbd\xd0\xb8\xd1\x8f \xd0\xba\xd0\xb0\xd0\xbc\xd0\xb5\xd1\x80\xd1\x8b \xd0\xbe\xd1\x82\xd0\xbd\xd0\xbe\xd1\x81\xd0\xb8\xd1\x82\xd0\xb5\xd0\xbb\xd1\x8c\xd0\xbd\xd0\xbe HP_GUNR \xd0\xb4\xd0\xbb\xd1\x8f \xd1\x82\xd0\xb5\xd0\xba\xd1\x83\xd1\x89\xd0\xb5\xd0\xb3\xd0\xbe \xd0\xbf\xd1\x80\xd0\xb8\xd1\x86\xd0\xb5\xd0\xbb\xd0\xb0
+                \xd0\xb1\xd0\xb5\xd0\xb7 \xd0\xbd\xd0\xb0\xd0\xbb\xd0\xbe\xd0\xb6\xd0\xb5\xd0\xbd\xd0\xb8\xd1\x8f \xd1\x82\xd1\x80\xd0\xb5\xd0\xba\xd0\xb5\xd1\x80\xd0\xb0 GUNRWPOS
+        """
+        scope_id = 0
+        if self._last_scope_id:
+            scope_id = self._last_scope_id
+        if scope_id in self._sight_offset_cashe:
+            return self._sight_offset_cashe[scope_id]
+        wcopy = _CopyClWeapon(self)
+        model = wcopy.getModel()
+        hp_gun_r = model.node('HP_GUNR')
+        hp_gun_sight = model.node('HP_SIGHT')
+        scop_sights = {}
+        scop_sights_m = {}
+        for tmp_scope_id, tmp_att in wcopy._scopes.items() + wcopy._launchers.items():
+            scop_sights[tmp_scope_id] = tmp_att.model.node('HP_SIGHT')
+            scop_sights_m[tmp_scope_id] = (tmp_att.model, tmp_att.model.root)
+
+        model.forceDraw()
+        gun_r = Matrix(hp_gun_r)
+        gun_r.invert()
+        offset = (0, 0, self.getParam().get('sight_offset_add', 0))
+        scope_offset_z = self.getParam().get('sight_offset_scope_add', 0)
+        self._sight_offset_cashe[0] = gun_r.applyPoint(Matrix(hp_gun_sight).translation) + offset
+        self._sight_offset_cashe_default = Vector3(self._sight_offset_cashe[0])
+        primary_point = self._sight_offset_cashe[0]
+        for idd, node in scop_sights.items():
+            point = gun_r.applyPoint(Matrix(node).translation)
+            point.z = primary_point.z + (point.z - primary_point.z) * 0.05 + scope_offset_z
+            self._sight_offset_cashe[idd] = point
+
+        wcopy.destroyModels()
+        return self._sight_offset_cashe[scope_id]
+
+    def setMainSightOffset(self, add_value):
+        self._sight_offset_cashe[0] = self._sight_offset_cashe_default + Vector3(0, 0, add_value)
+
+    _sight_offset_add = 0.0
+
+    def changeMainSightOffset(self, dir_):
+        min_, max_ = self.getParam().get('sight_offset_user_limit', (0, 0))
+        step = (max_ - min_) / 10.0
+        if dir_ > 0:
+            step = -step
+        self._sight_offset_add += step
+        self._sight_offset_add = min(max_, max(min_, self._sight_offset_add))
+        self.setMainSightOffset(self._sight_offset_add)
+
+    def getLensbackNode(self):
+        scope = self.getCurrentScope()
+        if not scope:
+            return
+        elif not scope.getParam().get('ScopeType', None):
+            return
+        w = self._getVisibleWeapon()
+        scope_model = w._getScopeModel(self._last_scope_id)
+        if scope_model:
+            return scope_model.node('HP_LENS_BACK')
+        else:
+            return
+
+    def getLensFrontNode(self):
+        scope = self.getCurrentScope()
+        if not scope:
+            return
+        elif not scope.getParam().get('ScopeType', None):
+            return
+        w = self._getVisibleWeapon()
+        scope_model = w._getScopeModel(self._last_scope_id)
+        if scope_model:
+            return scope_model.node('HP_LENS_FRONT')
+        else:
+            return
+
+    def getCurrentScope(self):
+        if self._last_scope_id and self._last_scope_id in self._scopes:
+            return self._scopes[self._last_scope_id]
+        else:
+            return None
+
+    def getCurrentIronSight(self):
+        scope = self.getCurrentScope()
+        if scope:
+            return scope
+        if self._defaultIronSight:
+            return self._defaultIronSight
+        return self._weapon
+
+    def addScopeZoom(self, step):
+        attach = self.getCurrentScope()
+        if not attach:
+            self.changeMainSightOffset(step)
+            return
+        prop = attach.getProp()
+        if not prop:
+            return
+        param = scope_reticle_settings.SCOPE_MULTIPLER_TABLE.get(prop.get('ScopeType'))
+        if not param:
+            return
+        max_zoom = len(param['zoom']) - 1
+        prev_zoom_id = attach.current_zoom_id
+        attach.current_zoom_id += step
+        attach.current_zoom_id = max(0, min(max_zoom, attach.current_zoom_id))
+        return prev_zoom_id != attach.current_zoom_id and param.get('zoom_sound_enable')
+
+    def resetZoom(self):
+        attach = self.getCurrentScope()
+        if not attach:
+            return
+        attach.current_zoom_id = 0
+
+    def canRotateGrenadeLaunch(self):
+        return self.isGrenadeLaunchMode() and self._first_launcher.getProp().get('enable_rotate_greandesight')
+
+    def isGrenadeLaunchMode(self):
+        return self._first_launcher and self._last_scope_id == self._first_launcher.getID()
+
+    def set_shooting_mode(self, shooting_mode):
+        """\xd1\x83\xd1\x81\xd1\x82\xd0\xb0\xd0\xbd\xd0\xbe\xd0\xb2\xd0\xb8\xd1\x82\xd1\x8c \xd1\x80\xd0\xb5\xd0\xb6\xd0\xb8\xd0\xbc \xd0\xbe\xd0\xb3\xd0\xbd\xd1\x8f"""
+        available_modes = self.getParam('ShootingMode')
+        if not available_modes or shooting_mode not in available_modes:
+            return
+        while self._shooting_mode != shooting_mode:
+            self.switchShootingMode()
+
+    def set_launcher_rot_index(self, launcher_rot_index):
+        """\xd1\x83\xd1\x81\xd1\x82\xd0\xb0\xd0\xbd\xd0\xbe\xd0\xb2\xd0\xb8\xd1\x82\xd1\x8c \xd1\x80\xd0\xb5\xd0\xb6\xd0\xb8\xd0\xbc \xd0\xb4\xd0\xb0\xd0\xbb\xd1\x8c\xd0\xbd\xd0\xbe\xd1\x81\xd1\x82\xd0\xb8 \xd0\xb3\xd1\x80\xd0\xb0\xd0\xbd\xd0\xb0\xd1\x82\xd0\xbe\xd0\xbc\xd1\x91\xd1\x82\xd0\xb0"""
+        if self._first_launcher and launcher_rot_index:
+            launcher_id = self._first_launcher.getID()
+            self.setRotateStepGreandeSight(launcher_id, launcher_rot_index)
+            att = self.getScopeOrLauncher(launcher_id)
+            if att:
+                att.onDeactivateAttach()
+
+    def set_scope_id(self, scope_id):
+        """\xd1\x83\xd1\x81\xd1\x82\xd0\xb0\xd0\xbd\xd0\xbe\xd0\xb2\xd0\xb8\xd1\x82\xd1\x8c \xd1\x80\xd0\xb5\xd0\xb6\xd0\xb8\xd0\xbc \xd0\xbf\xd1\x80\xd0\xb8\xd1\x86\xd0\xb5\xd0\xbb\xd0\xb8\xd0\xb2\xd0\xb0\xd0\xbd\xd0\xb8\xd1\x8f"""
+        if scope_id is not None:
+            start_scope_id = self._last_scope_id
+            while True:
+                self.swithScopeSnipingMode()
+                if self._last_scope_id == scope_id or self._last_scope_id == start_scope_id:
+                    break
+
+        return
+
+    def set_reticle_index(self, reticle_index):
+        """\xd1\x83\xd1\x81\xd1\x82\xd0\xb0\xd0\xbd\xd0\xbe\xd0\xb2\xd0\xb8\xd1\x82\xd1\x8c \xd0\xbf\xd0\xbe\xd0\xb4\xd1\x81\xd0\xb2\xd0\xb5\xd1\x82\xd0\xba\xd1\x83 \xd0\xbf\xd1\x80\xd0\xb8\xd1\x86\xd0\xb5\xd0\xbb\xd0\xb0"""
+        if reticle_index:
+            attach = self.getCurrentIronSight()
+            if attach is not None:
+                attach.setScopeReticleParams(reticle_index)
+        return
+
+    def apply_settings(self, slot_data):
+        self.set_shooting_mode(slot_data.get('shooting_mode', 0))
+        self.set_launcher_rot_index(slot_data.get('launcher_rot_index', 0))
+        self.set_scope_id(slot_data.get('scope_id', None))
+        self.set_reticle_index(slot_data.get('reticle_index', 0))
+        return
+
+    def setRotateStepGreandeSight(self, launcher_id, rot_index):
+        launcher = self._launchers.get(launcher_id)
+        if launcher:
+            launcher.setRotateStepGreandeSight(rot_index)
+            sound_path = launcher.getProp().get('SoundSightAssemblyClick', '')
+            if sound_path:
+                self.playSound(sound_path, launcher.getModel())
+
+    _visible_fps_sight_launcher = False
+
+    def rotateStepGreandeSight(self, dir_):
+        launcher = self._launchers[self._last_scope_id]
+        if self._visible_fps_sight_launcher:
+            change, rot_index = launcher.rotateStepGreandeSight(self, dir_)
+            if change:
+                sound_path = launcher.getProp().get('SoundSightAssemblyClick', '')
+                if sound_path:
+                    self.playSound(sound_path, launcher.getModel())
+                if self._parent_entity:
+                    self._parent_entity.changeAngleLauncherSight(self.getItemID(), rot_index, delay=1.0)
+                    self._parent_entity.addWeaponSettings(launcher_rot_index=rot_index)
+        self._visible_fps_sight_launcher = True
+        if self._parent_entity:
+            self._parent_entity._pygunRWnode.launcherRotateViewMode(True)
+            self._parent_entity._pygunRWnode.launcher_view_matrix = self._getRotateLauncherModeMatrix()
+
+            def view_off():
+                self._visible_fps_sight_launcher = False
+                self._parent_entity._pygunRWnode.launcherRotateViewMode(False)
+
+            if getattr(self, '_id_view_off', 0):
+                BigWorld.cancelCallback(self._id_view_off)
+            self._id_view_off = BigWorld.callback(1.0, view_off)
+
+    def isRotateSightLauncherMode(self):
+        return self._visible_fps_sight_launcher
+
+    def cancelRotateSightLauncherMode(self):
+        if getattr(self, '_id_view_off', 0):
+            BigWorld.cancelCallback(self._id_view_off)
+        self._visible_fps_sight_launcher = False
+        if self._parent_entity:
+            self._parent_entity._pygunRWnode.launcherRotateViewMode(False)
+
+    _tmp_light_on = False
+
+    def isSpotLightEnabled(self):
+        return self._tmp_light_on
+
+    def switchSpotLight(self, enable, silent = False):
+        enable = bool(enable)
+        self._tmp_light_on = enable
+        try:
+            top_attach = self._getVisibleWeapon()._weapon
+            top_attach.switchSpotLightRecurs(enable, silent=silent)
+        except:
+            traceback.print_exc()
+
+    def isLampBroken(self):
+        btoken_time = BigWorld.time() - getattr(self, '_broken_lamp_ts', 0)
+        return btoken_time < 4
+
+    def playSfxLampBroke(self):
+        if not self._tmp_light_on:
+            return
+        self._broken_lamp_ts = BigWorld.time()
+        self.switchSpotLight(False)
+        top_attach = self._getVisibleWeapon()._weapon
+        top_attach.switchSpotLightRecurs(False, silent=True)
+        for light_attach in top_attach.getAllSpotLight():
+            if light_attach.model:
+                FX.bufferedOneShotEffect('sfx/events/electro_lamp_broke.xml', light_attach.model)
+                break
+
+    def _getMuzzleDeviceOriginalWeapon(self):
+        return self.getMuzzleDevice()
+
+
+class _CopyClWeapon(ClWeapon):
+
+    def __init__(self, original):
+        self._scopes = {}
+        self._launchers = {}
+        ClWeapon.__init__(self)
+        if not original._weapon:
+            raise weapon.ErrorItemException('_weapon not init')
+        self._shoot_switcher_gen = original._shoot_switcher_gen
+        self._shooting_mode = original._shooting_mode
+        self._itemID = original._itemID
+        self._itemType = original._itemType
+        self._ammoType = original._ammoType
+        self._ammoNumber = original._ammoNumber
+        self._BuiltinMagazine = original._BuiltinMagazine
+        self._scalefactor = original._scalefactor
+        self._weapon = original._weapon.createDuplicate()
+        self._getMuzzleDeviceOriginalWeapon = original.getMuzzleDevice
+        self.getModel()

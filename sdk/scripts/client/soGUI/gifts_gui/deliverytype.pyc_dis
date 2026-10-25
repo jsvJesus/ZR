@@ -1,0 +1,213 @@
+# Embedded file name: ./client/soGUI/gifts_gui/deliverytype.py
+import BWPersonality
+import gui_jokes
+import BigWorld
+import ItemsUtils
+import colorCodes as cc
+from Localization import lc
+import GUI
+from soGUI.soButton import soButton
+import GiftBankUtils as GBU
+from utils import groupNumber
+from soGUI.textMoney import getColorMoney
+from functools import partial
+from utils import Listenable
+from Helpers.PyGUI.PyGUIBase import Interceptor
+
+class EventType:
+    OnCancel, OnConfirm = ((r, 'gift.delivery') for r in range(2))
+
+
+class TooltipStar(Interceptor):
+
+    def handleMouseEnterEvent(self, comp):
+        if BWPersonality.GUICore.toolTip:
+            BWPersonality.GUICore.toolTip.hide()
+        string = lc('GiftGui.tabs.created.clanp_discount')
+        BWPersonality.GUICore.showToolTip(cc.tf3_regular_text_color + string)
+        return False
+
+    def handleMouseLeaveEvent(self, comp):
+        if BWPersonality.GUICore.toolTip:
+            BWPersonality.GUICore.toolTip.hide()
+        return False
+
+
+class Block(object):
+
+    def __init__(self, tarif_id, time_text, base_text, additional_text, total_text, selector):
+        self._base_text = base_text
+        self._selector = selector
+        self._total_text = total_text
+        self._tariff_id = tarif_id
+        self._additional_text = additional_text
+        self._time_text = time_text
+        self.total_cost = None
+        TooltipStar(self._time_text)
+        comp = GUI.Text(u'*', 'RobotoCondensedRegular_20.font')
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.width, comp.height = comp.stringDimensions(comp.text)
+        comp.position = self._time_text.position + (0, -8, 0)
+        comp.colour = self._time_text.colour
+        comp.visible = False
+        self._time_text.addChild(comp, 'star')
+        return
+
+    def update(self, data):
+        cost = GBU.getBaseCost(self._tariff_id, data['from_bank'], data['to_bank'])
+        self._base_text.text = groupNumber(cost, "'") + ' ' + lc('GiftGui.return.rub')
+        cost = GBU.getAllTax(self._tariff_id, data['money'], data['items'], data['from_bank'], data['to_bank'])
+        self._additional_text.text = groupNumber(cost, "'") + ' ' + lc('GiftGui.return.rub')
+        time_transf = GBU.getTimeTransfer(self._tariff_id, data['from_bank'], data['to_bank'])
+        self._time_text.text = ItemsUtils.timeToString(time_transf)
+        p = BigWorld.player()
+        if p.GetClanID() and p.has_perk('CLAN_MAIL'):
+            self._time_text.star.visible = True
+            width = self._time_text.stringDimensions(self._time_text.text)[0]
+            self._time_text.star.position[0] = self._time_text.position[0] + width / 2
+            self._time_text.script.change_interseption(intercept_moving=True)
+        else:
+            self._time_text.star.visible = False
+            self._time_text.script.change_interseption(intercept_moving=False)
+        cost = GBU.getFullCost(self._tariff_id, data['money'], data['items'], data['from_bank'], data['to_bank'])
+        self.total_cost = cost
+        self._total_text.text = groupNumber(cost, "'") + ' ' + lc('GiftGui.return.rub')
+        self._total_text.colour = getColorMoney(cost)
+
+    def set_selected(self, tariff_id):
+        self._selector.visible = tariff_id == self._tariff_id
+
+    @property
+    def selected(self):
+        return self._selector.visible
+
+
+class DeliveryType(Listenable):
+
+    def __init__(self):
+        Listenable.__init__(self)
+        comp = GUI.Window('')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = (586, 204)
+        self.component = comp
+        self._data = None
+        self.mode = GBU.TRANSFER_TYPE_BASE
+        self._blocks = []
+        space_y = 26
+        space_x = 134
+        pos_y1 = 50
+        pos_x1 = 268
+        pos_y = [15,
+         pos_y1,
+         pos_y1 + space_y,
+         pos_y1 + space_y * 2,
+         pos_y1 + space_y * 3 + 16]
+        pos_x = [0,
+         pos_x1,
+         pos_x1 + space_x,
+         pos_x1 + space_x * 2]
+        tarbutton_size = (100, 32)
+        basebutton_size = (130, 32)
+
+        def create_label(text, pos_x, pos_y, horizontal_anchor, colour):
+            comp = GUI.Text(text, 'RobotoCondensedRegular_16.font')
+            comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+            comp.horizontalAnchor, comp.verticalAnchor = horizontal_anchor, 'CENTER'
+            comp.position = (pos_x, pos_y, 0.9)
+            comp.colour = colour
+            self.component.addChild(comp)
+            return comp
+
+        def create_button(text, pos_x, pos_y, button_size, callback):
+            comp = GUI.Window()
+            btn = soButton(comp)
+            btn.initVSC('soGUI/elements/button_1.xml')
+            comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+            comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+            comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+            comp.label.font = 'RobotoCondensedRegular_16.font'
+            comp.label.text = text
+            comp.width, comp.height = button_size
+            comp.position = (pos_x, pos_y, 0.9)
+            self.component.addChild(comp)
+            btn.onClick = callback
+            btn.onBound()
+            return btn
+
+        def create_selector(pos_x):
+            comp = GUI.Window('soGUI/frame/paint/white.dds')
+            comp.materialFX = 'BLEND'
+            comp.colour = (255, 255, 255, 30)
+            comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+            comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+            comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'TOP')
+            comp.width, comp.height = (100, 131)
+            comp.position = (pos_x, 30, 1)
+            self.component.addChild(comp)
+            return comp
+
+        create_button(lc('GiftGui.return.basetariff'), pos_x[1], pos_y[0], tarbutton_size, partial(self._on_tariff_click, GBU.TRANSFER_TYPE_BASE))
+        create_button(lc('GiftGui.return.expresstariff'), pos_x[2], pos_y[0], tarbutton_size, partial(self._on_tariff_click, GBU.TRANSFER_TYPE_EXPRESS))
+        create_button(lc('GiftGui.return.prevtariff'), pos_x[3], pos_y[0], tarbutton_size, partial(self._on_tariff_click, GBU.TRANSFER_TYPE_GOLD))
+        create_label(lc('GiftGui.return.method'), pos_x[0], pos_y[0], 'LEFT', cc.inactive_rgba)
+        create_label(lc('GiftGui.return.time'), pos_x[0], pos_y[1], 'LEFT', cc.inactive_rgba)
+        create_label(lc('GiftGui.return.price'), pos_x[0], pos_y[2], 'LEFT', cc.inactive_rgba)
+        create_label(lc('GiftGui.return.charge'), pos_x[0], pos_y[3], 'LEFT', cc.inactive_rgba)
+        create_label(lc('GiftGui.return.total'), pos_x[0], pos_y[4], 'LEFT', cc.highlighted_rgba)
+        self._blocks.append(Block(GBU.TRANSFER_TYPE_BASE, create_label(u'', pos_x[1], pos_y[1], 'CENTER', cc.active_rgba), create_label(u'', pos_x[1], pos_y[2], 'CENTER', cc.active_rgba), create_label(u'', pos_x[1], pos_y[3], 'CENTER', cc.active_rgba), create_label(u'', pos_x[1], pos_y[4], 'CENTER', cc.active_rgba), create_selector(pos_x[1])))
+        self._blocks.append(Block(GBU.TRANSFER_TYPE_EXPRESS, create_label(u'', pos_x[2], pos_y[1], 'CENTER', cc.active_rgba), create_label(u'', pos_x[2], pos_y[2], 'CENTER', cc.active_rgba), create_label(u'', pos_x[2], pos_y[3], 'CENTER', cc.active_rgba), create_label(u'', pos_x[2], pos_y[4], 'CENTER', cc.active_rgba), create_selector(pos_x[2])))
+        self._blocks.append(Block(GBU.TRANSFER_TYPE_GOLD, create_label(u'', pos_x[3], pos_y[1], 'CENTER', cc.premgold_grba), create_label(u'', pos_x[3], pos_y[2], 'CENTER', cc.premgold_grba), create_label(u'', pos_x[3], pos_y[3], 'CENTER', cc.premgold_grba), create_label(u'', pos_x[3], pos_y[4], 'CENTER', cc.premgold_grba), create_selector(pos_x[3])))
+        button_pos_y = self.component.height - 16
+        button_pos_x = 186
+        self.confirm_button = create_button(lc('GiftGui.return.confirm'), button_pos_x, button_pos_y, basebutton_size, self._on_confirm_click)
+        create_button(lc('GiftGui.return.cancel'), self.component.width - button_pos_x, button_pos_y, basebutton_size, self._on_cancel_click)
+        comp = GUI.Window('soGUI/frame/paint/white.dds')
+        comp.materialFX = 'BLEND'
+        comp.colour = (255, 255, 255, 50)
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.widthMode, comp.heightMode = ('CLIP', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'CENTER')
+        comp.width, comp.height = (2, 1)
+        comp.position = (pos_x[0], 162, 1)
+        self.component.addChild(comp)
+        self._update_mode()
+        return
+
+    def _on_confirm_click(self):
+        total_cost = next((b.total_cost for b in self._blocks if b.selected))
+        data = {'mode': self.mode,
+         'total_cost': total_cost}
+        self.notify_listeners(EventType.OnConfirm, data)
+
+    def _on_cancel_click(self):
+        self.notify_listeners(EventType.OnCancel)
+
+    def _on_tariff_click(self, tariff_id):
+        if tariff_id == GBU.TRANSFER_TYPE_GOLD and not BigWorld.player().isPremium():
+
+            def callback(event):
+                if event == gui_jokes.askUserYesNo.YES:
+                    BWPersonality.GUICore.storehouse_screen.show_shop()
+                    BWPersonality.GUICore.storehouse_screen.set_premium_filter()
+
+            gui_jokes.askUserYesNo(lc('GiftGui.return.title_need_premium'), lc('GiftGui.return.text_need_premium'), callback=callback)
+            return
+        self.mode = tariff_id
+        self._update_mode()
+
+    def _update_mode(self):
+        for block in self._blocks:
+            block.set_selected(self.mode)
+
+    def _update_content(self):
+        for block in self._blocks:
+            block.update(self._data)
+
+    def set_data(self, data):
+        """ \xd0\xba\xd0\xbb\xd1\x8e\xd1\x87\xd0\xb8: from_bank, to_bank, money, items """
+        self._data = data
+        self._update_content()

@@ -1,0 +1,144 @@
+# Embedded file name: ./client/Radio.py
+import traceback
+import os
+import BWPersonality
+import BigWorld
+import Helpers.Caps
+from soGUI.soInworldMarkers import soInworldMarker
+from Localization import lc
+import sounds_manager as sounds
+import space_utils
+import utils
+import Settings
+Settings = Settings.Settings()
+
+class Saver:
+    _save_path = os.path.join(utils.stalker_path(), 'usercontent/radios')
+
+    def __init__(self):
+        self._cache = {}
+        self._dirty_spaces = set()
+
+    def _dump(self):
+        if not self._dirty_spaces:
+            return
+        if not os.path.exists(Saver._save_path):
+            os.makedirs(Saver._save_path)
+        for space_id in self._dirty_spaces:
+            file_path = os.path.join(Saver._save_path, str(space_id))
+            try:
+                lines = []
+                for guid, value in self._cache[space_id].iteritems():
+                    if value:
+                        continue
+                    lines.append(guid)
+
+                if lines:
+                    with open(file_path, 'w') as f:
+                        f.write('\n'.join(lines))
+                elif os.path.exists(file_path):
+                    os.remove(file_path)
+            except:
+                traceback.print_exc()
+                traceback.print_stack()
+
+        self._dirty_spaces.clear()
+
+    def save(self, space_id, guid, value):
+        """ true - \xd0\xb7\xd0\xbd\xd0\xb0\xd1\x87\xd0\xb8\xd1\x82 \xd0\xb7\xd0\xb2\xd1\x83\xd0\xba \xd0\xbd\xd1\x83\xd0\xb6\xd0\xb5\xd0\xbd """
+        if not space_id:
+            return
+        if self._cache[space_id].get(guid) == value:
+            return
+        self._cache[space_id][guid] = value
+        self._dirty_spaces.add(space_id)
+        self._dump()
+
+    def load(self, space_id, guid):
+        if not space_id:
+            return True
+        if space_id not in self._cache:
+            self._cache[space_id] = {}
+            file_path = os.path.join(Saver._save_path, str(space_id))
+            if os.path.exists(file_path):
+                try:
+                    with open(file_path) as f:
+                        for line_guid in f.readlines():
+                            if not line_guid:
+                                continue
+                            self._cache[space_id][line_guid] = False
+
+                except:
+                    traceback.print_exc()
+                    traceback.print_stack()
+                    self._dirty_spaces.add(space_id)
+
+        return self._cache[space_id].get(guid, True)
+
+
+_saver = Saver()
+
+class Radio(BigWorld.Entity):
+    DEFAULT_MODEL = 'models/misc/containers/radio_01.model'
+    CLICK_SOUND = 'items/radio_onoff'
+    INTERACTION_DISTANCE = 3.0
+
+    def __init__(self):
+        BigWorld.Entity.__init__(self)
+        self._sound = None
+        self._static_space_id = None
+        return
+
+    def prerequisites(self):
+        return self.model_path or [self.DEFAULT_MODEL]
+
+    def onEnterWorld(self, prereqs):
+        Settings.addSfxChangeObserver(self)
+        self.model = prereqs.produce(0)
+        if Helpers.Caps.CAP_INTERACT not in self.targetCaps:
+            self.targetCaps = self.targetCaps + [Helpers.Caps.CAP_INTERACT]
+        if not self.track:
+            self.track = 'music/radio/radio70x'
+            print 'Radio (ERROR): no track found, use default value'
+        space_name = BWPersonality.game.get_space_name_advanced(self.spaceID)
+        if not space_utils.get_space_id_by_name(space_name[7:]):
+            self._static_space_id = abs(hash(space_name))
+            self._sound = _saver.load(self._static_space_id, self.guid) and sounds.playSound(self.track, self.model)
+            self._update_volume()
+
+    def sfxVolumeChanged(self, volume):
+        self._update_volume()
+
+    def get_target_mark(self, distance):
+        if distance > self.INTERACTION_DISTANCE:
+            return None
+        else:
+            return soInworldMarker.MARKER_USE
+
+    def _update_volume(self):
+        if not self._sound:
+            return
+        volume = Settings.getEnvironmentVolume()
+        self._sound.set_volume(volume)
+
+    def interact(self, activator):
+        sounds.playSound(self.CLICK_SOUND, self.model)
+        if self._sound:
+            self._sound.paused = not self._sound.paused
+            _saver.save(self._static_space_id, self.guid, not self._sound.paused)
+        else:
+            self._sound = sounds.playSound(self.track, self.model)
+            self._update_volume()
+            _saver.save(self._static_space_id, self.guid, True)
+
+    def get_mark_name(self):
+        return lc('Items.radio')
+
+    def onLeaveWorld(self):
+        Settings.removeSfxChangeObserver(self)
+        if self._sound:
+            self._sound.stop()
+            self._sound.releaseSound()
+            self._sound = None
+        self.model = None
+        return

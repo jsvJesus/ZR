@@ -1,0 +1,276 @@
+# Embedded file name: ./client/soGUI/login/servwin/servers_win.py
+from sounds_manager import playSound
+from functools import partial
+import BWPersonality
+import BigWorld
+import GUI
+from Localization import lc
+from ..base_win import BaseWin
+from ..edit_box import EditBox, EventType as EditBoxET
+from soGUI.donat_shop.window.win_ui.scroll_bar import ScrollBar
+from ui.panel import Panel
+from ui.transform import pixel_params, clip_params
+from soGUI.donat_shop.window.element import Tickable
+from Helpers.PyGUI import Utils
+from serv_line import ServLine, EventType as LineET, back_colour
+from math_bw import clamp
+
+class EventType:
+    OnBackRequest, OnConnectRequest, OnMasterRequest = ((r, 'serverswin') for r in range(3))
+
+
+class ServBar(ScrollBar):
+
+    def __init__(self, content, parent):
+        ScrollBar.__init__(self, content, parent, 'bar')
+        comp = self.component.line
+        comp.materialFX = 'SOLID'
+        comp.colour = (140, 140, 140, 255)
+        self.component.handler.colour = (65, 65, 65, 255)
+
+    def handleMouseButtonEvent(self, component, event):
+        ScrollBar.handleMouseButtonEvent(self, component, event)
+        return True
+
+
+class ServersWin(BaseWin, Tickable):
+
+    def __init__(self):
+        Tickable.__init__(self, tick_delay=30)
+        self._scroll = None
+        self._lines = []
+        self._update_handler = None
+        self._hovered = None
+        self._selected = None
+        self._last_server_shown = False
+        BaseWin.__init__(self)
+        self._dev_mode_created = False
+        self._developer_width = 758
+        self._default_width = self.component.width
+        return
+
+    def _create_content(self, margin, center_width):
+        pos_y = BaseWin._create_content(self, margin, center_width, lc('LoginWin.servers.caption'))
+        self._create_data = (center_width, pos_y, margin)
+        pos_y += 26
+        content_height = 266
+        comp = GUI.Window('soGUI/frame/paint/white.dds')
+        comp.materialFX = 'SOLID'
+        comp.colour = back_colour
+        view_panel = Panel(self.component, 'view', component=comp)
+        view_panel.transform.set_base_resolution(None)
+        hm = clip_params((0, 1), pixel_anchors=(margin, -margin))
+        vm = pixel_params(0, 0, content_height, pos_y)
+        view_panel.transform.set_base_resolution(None)
+        view_panel.transform.set_mixed_mode(hm, vm)
+        pos_y += content_height
+        comp = GUI.Window('soGUI/frame/paint/white.dds')
+        comp.materialFX = 'SOLID'
+        comp.colour = back_colour
+        self._content = Panel(self.component.view, 'content', depth=0.9, component=comp)
+        self._content.transform.set_base_resolution(None)
+        hm = clip_params((0, 1))
+        vm = pixel_params(0, 0, 300, 0)
+        self._content.transform.set_base_resolution(None)
+        self._content.transform.set_mixed_mode(hm, vm)
+        self._scroll = ServBar(self._content, self.component.view)
+        self._scroll.transform.set_base_resolution(None)
+        hm = pixel_params(1, 1, 16, pixel_pos=0)
+        vm = clip_params((0, 1), pixel_anchors=(2, -2))
+        self._scroll.transform.set_mixed_mode(hm, vm)
+        pos_y += 16
+        self._login_btn, pos_y = self._create_button(pos_y, center_width, lc('LoginWin.servers.login'))
+        self._login_btn.on_click = self._on_login_click
+        pos_y += 10
+        btn, pos_y = self._create_button(pos_y, center_width, lc('LoginWin.servers.back'), visual='soGUI/frame/loginwin/loginwinTextButton2.xml')
+        btn.on_click = self._on_back_click
+        pos_y += 40
+        return pos_y
+
+    def _create_developer_content(self):
+        center_width, pos_y, margin = self._create_data
+        pos_x = self._developer_width - center_width - margin
+        pos_y += 26
+        comp = GUI.Window()
+        comp.ha, comp.va = ('LEFT', 'TOP')
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = center_width, 40
+        comp.position = (pos_x, pos_y, 0.5)
+        self.component.addChild(comp)
+        self._login_box = EditBox(comp, placeholder='Masterpass')
+        self._login_box.add_listener(self._on_editbox_event)
+        self._login_box.onTab = self._on_login_tab
+        pos_y += comp.height
+        pos_y += 10
+        comp = GUI.Window()
+        comp.ha, comp.va = ('LEFT', 'TOP')
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = center_width, 40
+        comp.position = (pos_x, pos_y, 0.5)
+        self.component.addChild(comp)
+        self._password_box = EditBox(comp, mask_char='*', placeholder='Password')
+        self._password_box.add_listener(self._on_editbox_event)
+        pos_y += comp.height
+        pos_y += 18
+        self._master_btn, pos_y = self._create_button(pos_y, center_width, lc('LoginWin.login.login'))
+        self._master_btn.component.ha = 'LEFT'
+        self._master_btn.component.position[0] = pos_x
+        self._master_btn.on_click = self._on_master_click
+
+    def _on_login_tab(self):
+        self._password_box.activate(True)
+
+    def _provide_cancel_comp_example(self):
+        return self._login_btn.component
+
+    def _on_load_cancel_click(self):
+        BWPersonality.game.disconnect(reason='user_termination')
+        BigWorld.disconnect()
+
+    def handleMouseEvent(self, component, event):
+        if self._scroll and event.dz:
+            self._scroll.move_abs(-event.dz)
+        return True
+
+    def _on_login_click(self):
+        data = {'uid': self.selected.uid}
+        self.notify_listeners(EventType.OnConnectRequest, data)
+
+    def _on_master_click(self):
+        data = {'login': self._login_box.text_value,
+         'password': self._password_box.text_value,
+         'uid': self.selected.uid}
+        self.notify_listeners(EventType.OnMasterRequest, data)
+
+    def _on_back_click(self):
+        self.notify_listeners(EventType.OnBackRequest)
+
+    def _check_autoselect(self):
+        if self._last_server_shown or not self._lines:
+            return
+        self._last_server_shown = True
+        uid = BigWorld.auth.last_server_uid
+        if uid:
+            for line in self._lines:
+                if line.uid == uid:
+                    self.selected = line
+                    comp_y = self.selected.component.position.y
+                    parent_height = self.selected.component.parent.height
+                    view_height = self.selected.component.parent.parent.height
+                    ratio = clamp(comp_y / (parent_height - view_height))
+                    BigWorld.callback(0, partial(self._scroll.move_to, ratio))
+                    break
+
+    def on_show(self):
+        BaseWin.on_show(self)
+        if BigWorld.auth.ac_access_level > 0:
+            if not self._dev_mode_created:
+                self._dev_mode_created = True
+                self._create_developer_content()
+            self.component.width = self._developer_width
+        else:
+            self.component.width = self._default_width
+        self._check_autoselect()
+        self.start_tick()
+        self._update_login_enable()
+        self._update_masterpass_enable()
+
+    def on_hide(self):
+        BaseWin.on_hide(self)
+        self.stop_tick()
+        if self._dev_mode_created:
+            self._login_box.activate(False)
+            self._password_box.activate(False)
+
+    def can_tick(self):
+        return Utils.is_visible_in_hierarchy(self.component)
+
+    def on_tick(self):
+        BigWorld.auth.updateServersInfo()
+
+    def update_data(self, data):
+        line_height = 42
+        for i, serv_data in enumerate(data):
+            if len(self._lines) == i:
+                content_comp = self.component.view.content
+                comp = GUI.Window('soGUI/frame/paint/white.dds')
+                comp.materialFX = 'SOLID'
+                comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+                comp.ha, comp.va = ('LEFT', 'TOP')
+                comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+                comp.width, comp.height = content_comp.width - 18, line_height
+                comp.position = (0, line_height * i, 0.5)
+                line = ServLine(comp)
+                self._lines.append(line)
+                line.add_listener(self._on_line_event)
+                content_comp.addChild(comp)
+            self._lines[i].set_data(serv_data)
+
+        while len(self._lines) > len(data):
+            line = self._lines[-1]
+            del self._lines[-1]
+            line.release()
+            self.component.view.content.delChild(line.component)
+
+        _, hm, vm = self._content.transform._mode
+        vm = list(vm)
+        vm[3] = line_height * len(self._lines)
+        self._content.transform.set_mixed_mode(hm, tuple(vm))
+        self._check_autoselect()
+
+    def _on_line_event(self, event_type, data):
+        if event_type == LineET.OnEnter:
+            playSound('ui/hover')
+            self.hovered = data['line']
+        elif event_type == LineET.OnLeave:
+            if self.hovered == data['line']:
+                self.hovered = None
+        elif event_type == LineET.OnClick:
+            if data['line'] != self.selected:
+                playSound('ui/add_click')
+            self.selected = data['line']
+        return
+
+    def _on_editbox_event(self, event_type, data):
+        if event_type == EditBoxET.OnEmptyChanged:
+            self._update_masterpass_enable()
+
+    def _update_masterpass_enable(self):
+        if not self._dev_mode_created:
+            return
+        self._master_btn.enabled = bool(self._login_box.text_value and self._password_box.text_value and self.selected)
+
+    def _update_login_enable(self):
+        self._login_btn.enabled = bool(self.selected)
+
+    @property
+    def selected(self):
+        return self._selected
+
+    @selected.setter
+    def selected(self, value):
+        if value == self._selected:
+            return
+        if self._selected:
+            self._selected.set_selected(False)
+        self._selected = value
+        if self._selected:
+            self._selected.set_selected(True)
+        self._update_login_enable()
+        self._update_masterpass_enable()
+
+    @property
+    def hovered(self):
+        return self._hovered
+
+    @hovered.setter
+    def hovered(self, value):
+        if value == self._hovered:
+            return
+        if self._hovered:
+            self._hovered.set_hovered(False)
+        self._hovered = value
+        if self._hovered:
+            self._hovered.set_hovered(True)

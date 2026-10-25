@@ -1,0 +1,665 @@
+# Embedded file name: ./client/transform.py
+import random
+import BigWorld
+import utils_bw
+import funEventsCommon
+from ChatChannelConfig import CHANNEL_CONSTS
+import traceback
+from FunTransform import FunTransformation
+import FX
+from Math import Matrix, Vector3
+import math
+import sounds_manager as sounds
+import helicopter_transform
+import Constants
+from Victim import Victim
+from transform_weapon import TransformWeapon
+from functools import partial
+from FX.persistent_ext_bg import PersistentWrapper
+from draw_utils_extend import LinesHolder
+drawer = LinesHolder(500)
+DEBUG_DRAW = False
+
+def change_debug_mode():
+    global DEBUG_DRAW
+    DEBUG_DRAW = not DEBUG_DRAW
+    drawer.clear()
+
+
+def debug_draw(foo):
+
+    def wrapped(self, *e, **kw):
+        if not DEBUG_DRAW:
+            return
+        if self.isDestroyed:
+            return
+        if BigWorld.isConsumer():
+            return
+        if not self.active_transform and not self._active_skill:
+            return
+        return foo(self, *e, **kw)
+
+    return wrapped
+
+
+class Transformation(object):
+    active_transform = None
+    vechicle_contorled = None
+    active_sounds = None
+    transform_weapon = None
+    _last_transf = None
+    _saved_transf_att = None
+    _saved_sfxs = []
+
+    def onInitTransform(self, transf):
+        self.forceClearTrackerLock()
+        if self._last_transf and self._last_transf.getModelPath() == transf.getModelPath() and self._last_transf.get_equipped_items() == transf.get_equipped_items():
+            BigWorld.callback(0.0, self.onLoadModelForTransform)
+        else:
+            BigWorld.callback(0.0, self._update_avatar_model)
+
+    def onResetTransform(self, transf):
+        if self._saved_transf_att:
+            for node, m in self._saved_transf_att:
+                try:
+                    node.detach(m)
+                except:
+                    print 'ERROR for:', [self, node, m]
+                    traceback.print_exc()
+
+        self._saved_transf_att = []
+        for sfx in self._saved_sfxs:
+            sfx.release()
+
+        self._saved_sfxs = []
+        self._last_transf = None
+        self.forceClearTrackerLock()
+        self.autogunModelVisible = True
+        if not self.transformationID:
+            BigWorld.callback(0.0, self._update_avatar_model)
+        else:
+            self._last_transf = transf
+        if self.vechicle_contorled:
+            self.vechicle_contorled.onReset()
+            self.vechicle_contorled = None
+        if self.transform_weapon:
+            try:
+                self.transform_weapon.onDestroy()
+            except:
+                print 'ERROR FOR', self
+                traceback.print_exc()
+
+            self.transform_weapon = None
+        try:
+            if self.model and transf:
+                for action in transf.raw_configs.get('persistent_actions', []):
+                    self.model.action(action).stop()
+
+        except:
+            traceback.print_exc()
+
+        self.rememberlastFootTwist(True, channel='transform')
+        return
+
+    def onLeaveWorldTransform(self):
+        if not self.active_transform:
+            return
+        else:
+            try:
+                transf = self.active_transform
+                self.active_transform = None
+                transf.resetTransformation()
+            except:
+                traceback.print_exc()
+
+            return
+
+    def onLoadModelForTransform(self):
+        if not self.active_transform:
+            return
+        else:
+            if self.active_transform.getparam('fix_last_foot_twist'):
+                self.rememberlastFootTwist(False, channel='transform')
+            if self.active_transform.raw_configs.get('disable_foot_tracker'):
+                if getattr(self, 'torso_nodeinfo', None):
+                    self.torso_nodeinfo.leftFootNodeInfo = None
+                    self.torso_nodeinfo.rightFootNodeInfo = None
+            transform_weapon_conf = self.active_transform.raw_configs.get('transform_weapon')
+            if transform_weapon_conf:
+                self.transform_weapon = TransformWeapon(self, transform_weapon_conf)
+            try:
+                for action in self.active_transform.raw_configs.get('persistent_actions', []):
+                    self.model.action(action)()
+
+            except:
+                traceback.print_exc()
+
+            attach_models = self.active_transform.raw_configs.get('attach_models')
+            if attach_models:
+                for node_name, model_path in attach_models.items():
+                    BigWorld.fetchModel(str(model_path), partial(self.onLoadAttachTransform, str(node_name), model_path))
+
+            for sfx_path in self.active_transform.raw_configs.get('persistent_sfxs', []):
+                sfx = PersistentWrapper(sfx_path, self.model)
+                sfx.run()
+                self._saved_sfxs.append(sfx)
+
+            return
+
+    def onLoadAttachTransform(self, node_name, model_path, model):
+        if self.isDestroyed:
+            return
+        if not self.active_transform:
+            return
+        if not model:
+            print 'onLoadAttachTransform not load model', [node_name, model_path], self
+            return
+        if not self.model:
+            return
+        attach_models = self.active_transform.raw_configs.get('attach_models', {})
+        if node_name not in attach_models:
+            return
+        if attach_models[node_name] != model_path:
+            return
+        if node_name[-11:] == '__to_origin':
+            node_name = node_name[:-11]
+            model.origin(node_name)
+        modelnode = self.model.node(node_name)
+        modelnode.attach(model)
+        if not self._saved_transf_att:
+            self._saved_transf_att = []
+        self._saved_transf_att.append((modelnode, model))
+
+    def onChangePrimaryActionForTransf(self, prev_type, new_type):
+        if not self.model:
+            return
+        if prev_type == 'sprint':
+            if self.active_transform.raw_configs.get('force_to_weapon_incombat'):
+                self.SetWeaponStatus(Constants.WEAPON_INCOMABAT)
+        if not self.active_transform.raw_configs.get('persistent_actions_pause_by_sprint'):
+            return
+        if prev_type == 'sprint':
+            for action in self.active_transform.raw_configs.get('persistent_actions', []):
+                self.model.action(action)()
+
+        elif new_type == 'sprint':
+            for action in self.active_transform.raw_configs.get('persistent_actions', []):
+                self.model.action(action).stop()
+
+    def getCurrentModel(self):
+        if self.vechicle_contorled and self.vechicle_contorled._model:
+            return self.vechicle_contorled._model
+        return self.model
+
+    def startTransformAction(self, *e):
+        return False
+
+    def set_transformationID(self, old = None):
+        if self.active_transform:
+            transf = self.active_transform
+            self.active_transform = None
+            transf.resetTransformation()
+        if self.active_sounds:
+            self.active_sounds.stop()
+            self.active_sounds = None
+        if self.transformationID:
+            self.active_transform = FunTransformation(self, self.transformationID)
+            self.active_transform.init(self)
+            if self.vechicle_contorled:
+                self.vechicle_contorled.onReset()
+            if self.active_transform.raw_configs.get('isHelicopter'):
+                self.vechicle_contorled = helicopter_transform.Helicopter(self)
+                self.vechicle_contorled.onInit()
+            transform_sound = self.active_transform.raw_configs.get('environment_sound')
+            if transform_sound and self.model:
+                self.active_sounds = sounds.playSound(transform_sound, self.model)
+        self.EnableCrosshair()
+        return
+
+    def breakBoredTimer(self):
+        pass
+
+    def onActionEvent(self, actionName, okayToGo, event):
+        return False
+
+    def onFireHelicopterRoket(self, weaponNodeID, position, velocity, clientGrenadeID, grenade_type):
+        if not self.vechicle_contorled:
+            return
+        self.vechicle_contorled.onFireHelicopterRoket(weaponNodeID, position, velocity, clientGrenadeID, grenade_type)
+
+    def onFireHelicopterMachineGun(self, status, weaponType):
+        if not self.vechicle_contorled:
+            return
+        self.vechicle_contorled.onFireHelicopterMachineGun(status, weaponType)
+
+    def onHelicopterBurn(self):
+        if not self.vechicle_contorled:
+            return
+        self.vechicle_contorled.onHelicopterBurn()
+
+    def onHelicopterEvent(self, event_id, event_status, event_value, event_dir):
+        if not self.vechicle_contorled:
+            return
+        self.vechicle_contorled.onHelicopterEvent(event_id, event_status, event_value, event_dir)
+
+    def set_transformationProperty(self, old = None):
+        if not self.vechicle_contorled:
+            return
+        self.vechicle_contorled.onTransformationProperty(old)
+
+    def onTransformFireGrenade(self, position, velocity, original_id, grenade_type):
+        self.fire_grenade(position, velocity, original_id, grenade_type)
+
+    def transformEvent(self, skill_id, status):
+        if not self.active_transform:
+            return
+        skill = self.active_transform.getSkill(skill_id)
+        skill.serverEvent(status)
+
+    def startTSAction(self, action_id, action_name, skill):
+        if skill.getActionClass() == 'ANIMATION_SEQUENCE':
+            self._startTSActionSeqAnim(action_id, action_name, skill)
+        else:
+            animation = skill.param['animation']
+            if animation:
+                try:
+                    act = self.model.action(animation)
+                    act()
+                except:
+                    print '\nERROR FOR', self, self.model, self.transformationID,
+                    print '  ', skill.getActionClass(), animation
+                    print '  ', self.model.sources
+                    traceback.print_stack()
+                    traceback.print_exc()
+
+        self.funSfx(skill.param.get('sfx_start_animation'))
+        lock_trackers = skill.param.get('lock_trackers', {})
+        if any(lock_trackers.values()):
+            lock_id = 'SKILL-%s-%s' % (action_name, action_id)
+            self.pushTrackerLockByName(lock_id, lock_track_torso=lock_trackers.get('lock_track_torso'), lock_track_head=lock_trackers.get('lock_track_head'), lock_track_foot=lock_trackers.get('lock_track_foot'))
+
+    def _startTSActionSeqAnim(self, action_id, action_name, skill):
+        try:
+            animation_in = skill.param['animation_in']
+            animation_loop = skill.param['animation']
+            a_in = self.model.action(animation_in)
+            getattr(a_in(), animation_loop)()
+        except:
+            traceback.print_exc()
+
+    def checkEffectBsp(self, action_id, action_name, skill):
+        bsp_config = skill.param.get('on_effect_bsp_collide')
+        if not bsp_config:
+            return
+        collide_height = bsp_config.get('collide_height')
+        collide_dist = bsp_config.get('collide_dist')
+        apply_self_effect = bsp_config.get('apply_self_effect')
+        if collide_height is None:
+            return
+        elif collide_dist is None:
+            return
+        elif apply_self_effect is None:
+            return
+        pos = self.position + (0, collide_height, 0)
+        my_dir = Vector3()
+        my_dir.setPitchYaw(0, self.model.yaw)
+        end_pos = pos + my_dir * collide_dist
+        if utils_bw.collide(self.spaceID, pos, end_pos):
+            return True
+        else:
+            return
+
+    def startTSAapply(self, action_id, action_name, skill, dead_also = True):
+        action_class = skill.getActionClass()
+        targets = None
+        if action_class == 'AOE':
+            targets = self.applyAOEAttack(action_id, skill, dead_also=dead_also)
+        elif action_class == 'SECTOR_MELEE':
+            targets = self.applySectorAttack(action_id, skill, dead_also=dead_also)
+        elif action_class == 'BOX_MELEE':
+            targets = self.applyBoxAttack(action_id, skill)
+        elif action_class == 'ANIMATION':
+            pass
+        elif action_class == 'ANIMATION_SEQUENCE':
+            pass
+        elif action_class == 'SUMMON_ELF':
+            self.applySummonElf(action_id, skill)
+        elif action_class == 'SELF_EFFECT':
+            targets = self.applySelfEffectAttack(action_id, skill)
+        elif action_class == 'THROW_GRENADE':
+            targets = self.applyThrowGrenadeAttack(action_id, skill, dead_also=dead_also)
+        elif action_class == 'THROW_GRENADE2':
+            self.applyThrowGrenadeAttack2(action_id, skill)
+        elif action_class == 'FIRE_TRANSFORM_WEAPON':
+            targets = self.transformWeaponFire(action_id, skill, dead_also=dead_also)
+        else:
+            print self
+            print [action_id, action_name, skill]
+            raise ValueError('uncknow FunnSkill action_class %s' % action_class)
+        if targets:
+            self.funSfx(skill.param.get('sfx_apply_effect_hit'))
+            for victim in targets:
+                if isinstance(victim, Transformation):
+                    victim.onVictimApplyFTSkill(self, action_id, action_name, skill)
+
+        else:
+            self.funSfx(skill.param.get('sfx_apply_effect_boner'))
+        return
+
+    def onVictimApplyFTSkill(self, damager, action_id, action_name, skill):
+        if not self.model:
+            return
+        if self.dead:
+            return
+        rand_victim_hit_actions = skill.param.get('rand_victim_hit_actions')
+        if not rand_victim_hit_actions:
+            return
+
+        def callback(*e):
+            self.popTrackerLock(tr_lock)
+
+        act = random.choice(rand_victim_hit_actions)
+        tr_lock = self.pushTrackerLock('Right', lock_track_torso=True, lock_track_head=True, comment='onVictimApplyFTSkill')
+        self.model.action(act)(0, callback)
+
+    def endTSAnimation(self, action_id, action_name, skill):
+        if skill.getActionClass() == 'ANIMATION_SEQUENCE':
+            self._endTSAnimationSeqAnim(action_id, action_name, skill)
+        self.funSfx(skill.param.get('sfx_end_animation'))
+        lock_trackers = skill.param.get('lock_trackers', {})
+        if any(lock_trackers.values()):
+            lock_id = 'SKILL-%s-%s' % (action_name, action_id)
+            self.popTrackerLock(lock_id)
+
+    def _endTSAnimationSeqAnim(self, action_id, action_name, skill):
+        try:
+            animation_out = skill.param['animation_out']
+            animation = skill.param['animation']
+            self.model.action(animation_out)()
+            self.model.action(animation).stop()
+        except:
+            traceback.print_exc()
+
+    def endTSReuseTimer(self, action_id, action_name, skill):
+        pass
+
+    def onStopSkill(self, action_id, action_name, skill):
+        pass
+
+    def onEndSkillAmmo(self, action_id, action_name, skill):
+        pass
+
+    def applyThrowGrenadeAttack(self, action_id, skill, dead_also = False):
+        return []
+
+    def applyThrowGrenadeAttack2(self, action_id, skill):
+        pass
+
+    def transformWeaponFire(self, action_id, skill, dead_also = False):
+        if self.transform_weapon:
+            self.transform_weapon.fire(action_id, skill)
+        return []
+
+    def applyBoxAttack(self, action_id, skill):
+        targets = self._getEntitiesBoxAttack(action_id, skill)
+        return targets
+
+    def _getEntitiesBoxAttack(self, action_id, skill):
+        box_width = skill.param.get('box_width')
+        if not box_width:
+            print '[ERROR] not box_width:', skill
+            return []
+        box_height = skill.param.get('box_height')
+        if not box_height:
+            print '[ERROR] not box_heigh:', skill
+            return []
+        w_min, w_max = box_width
+        h_min, h_max = box_height
+        dist_attack = skill.param.get('dist_attack', 3.0)
+        matrix = Matrix(self.model.matrix)
+        m_r = Matrix()
+        m_r.setRotateYPR(Vector3(0, -math.pi * 0.5, 0))
+        matrix.preMultiply(m_r)
+        minBounds = Vector3(w_min, 0, h_min)
+        maxBounds = Vector3(w_max, -dist_attack, h_max)
+        res = BigWorld.traceOrientedBoxWithEntities(matrix, minBounds, maxBounds, self.id)
+        targets = []
+        for e_id, hitbox, local_pos in res:
+            entity = BigWorld.entity(e_id)
+            if not isinstance(entity, Victim):
+                continue
+            if not entity.canTakeDamage:
+                continue
+            targets.append(entity)
+
+        if DEBUG_DRAW:
+            drawer.clear()
+            from DrawPrimitivesUtils import DrawBBox2
+            color = (1, 0, 0, 1)
+            DrawBBox2(matrix, minBounds, maxBounds, color=color, holder=drawer)
+            self._show_targets(targets)
+        return targets
+
+    def applySectorAttack(self, action_id, skill, dead_also = False):
+        targets = self._getEntitiesSectorAttack(action_id, skill, dead_also=False)
+        self._show_sector(skill, targets)
+        return targets
+
+    def _getEntitiesSectorAttack(self, action_id, skill, dead_also = False, yaw = None):
+        angles_sector = skill.param.get('angles_sector')
+        if not angles_sector:
+            return []
+        else:
+            min_sector_local = math.radians(angles_sector[0])
+            max_sector_local = math.radians(angles_sector[1])
+            entities = self._getEntitiesInSkillAOE(action_id, skill, dead_also=dead_also)
+            targets = []
+            my_dir = Vector3()
+            if yaw is None:
+                yaw = self.model.yaw
+            my_dir.setPitchYaw(0, yaw)
+            my_pos = self.position
+            offset = skill.param.get('offset_position_attack')
+            if offset:
+                offset = tuple(offset)
+                my_pos = Matrix(self.model.matrix).applyPoint(offset)
+            for ent in entities:
+                to_ent = ent.position - my_pos
+                to_ent.normalise()
+                dot = to_ent.dot(my_dir)
+                dot = max(-1, min(1, dot))
+                angle = math.acos(dot)
+                if (my_dir * to_ent)[1] < 0:
+                    angle = -angle
+                if min_sector_local <= angle <= max_sector_local:
+                    targets.append(ent)
+
+            return targets
+
+    def applyAOEAttack(self, action_id, skill, dead_also = False):
+        targets = self._getEntitiesInSkillAOE(action_id, skill, dead_also=dead_also)
+        self._show_aoe(skill, targets)
+        return targets
+
+    def applySelfEffectAttack(self, action_id, skill, dead_also = False):
+        targets = [self]
+        return targets
+
+    def applySummonElf(self, action_id, skill):
+        pass
+
+    def _getEntitiesInSkillAOE(self, action_id, skill, dead_also = False):
+        position = self.position
+        radius = skill.param['radius']
+        radiusSq = radius ** 2
+        from_radiusSq = skill.param.get('from_radius', 0) ** 2
+        offset = skill.param.get('offset_position_attack')
+        if offset:
+            offset = tuple(offset)
+            position = Matrix(self.model.matrix).applyPoint(offset)
+        targets = []
+        height_attack_limit = skill.param.get('height_attack_limit')
+        if height_attack_limit:
+            min_h, max_h = height_attack_limit
+            min_h = min_h + position[1]
+            max_h = max_h + position[1]
+        for ent in BigWorld.entities.values():
+            if ent == self:
+                continue
+            if not isinstance(ent, Victim):
+                continue
+            if not dead_also:
+                if ent.is_dead():
+                    continue
+                if not ent.canTakeDamage:
+                    continue
+            if height_attack_limit:
+                if not min_h <= ent.position[1] <= max_h:
+                    continue
+            distSq = (ent.position - position).lengthSquared
+            if distSq > radiusSq:
+                continue
+            if from_radiusSq and distSq < from_radiusSq:
+                continue
+            targets.append(ent)
+
+        return targets
+
+    def funSfx(self, path):
+        if path:
+            FX.bufferedOneShotEffect(path, self.model)
+
+    def on_damaged_transform(self, source_data, damagetaken_data):
+        if self.active_transform:
+            animation_on_damage = self.active_transform.getparam('animation_on_damage')
+            if animation_on_damage:
+                try:
+                    anim = self.model.action(animation_on_damage)
+                    anim()
+                except:
+                    traceback.print_exc()
+
+            sfx_on_damage = self.active_transform.getparam('sfx_on_damage')
+            try:
+                self.funSfx(sfx_on_damage)
+            except:
+                traceback.print_exc()
+
+    @debug_draw
+    def _show_aoe(self, skill, targets):
+        drawer.clear()
+        pos = self.position
+        offset = skill.param.get('offset_position_attack')
+        if offset:
+            offset = tuple(offset)
+            pos = Matrix(self.model.matrix).applyPoint(offset)
+        hh = []
+        radius = skill.param.get('radius', 1.0)
+        from_radius = skill.param.get('from_radius', 0)
+        height_attack_limit = skill.param.get('height_attack_limit')
+        if height_attack_limit:
+            hh.append(Vector3(pos[0], pos[1] + height_attack_limit[0], pos[2]))
+            hh.append(Vector3(pos[0], pos[1] + height_attack_limit[1], pos[2]))
+        else:
+            hh.append(Vector3(pos[0], pos[1] + 1.0, pos[2]))
+        drawer.add(hh[0], hh[-1], (1, 0, 0, 1))
+        v = Vector3()
+
+        def drawCircles(radius, colour = (1, 0, 0, 1)):
+            vert_lines_list = []
+            for centr in hh:
+                vert_lines = []
+                vert_lines_list.append(vert_lines)
+                last = None
+                w = 0
+                segments = 20
+                for x in xrange(segments + 1):
+                    w += 6.28 / segments
+                    v.setPitchYaw(0, w)
+                    pos1 = centr + v * radius
+                    if last:
+                        vert_lines.append(pos1)
+                        drawer.add(last, pos1, colour)
+                    last = pos1
+
+            for x in xrange(len(vert_lines_list[0])):
+                drawer.add(vert_lines_list[0][x], vert_lines_list[1][x], colour)
+
+            return
+
+        drawCircles(radius)
+        if from_radius:
+            drawCircles(from_radius, (0, 1, 0, 1))
+        self._show_targets(targets)
+
+    @debug_draw
+    def _show_sector(self, skill, targets, yaw = None):
+        print '_show_sector', skill, targets, yaw
+        if yaw is None:
+            yaw = self.model.yaw
+        drawer.clear()
+        pos = self.position
+        offset = skill.param.get('offset_position_attack')
+        if offset:
+            offset = tuple(offset)
+            pos = Matrix(self.model.matrix).applyPoint(offset)
+        hh = []
+        height_attack_limit = skill.param.get('height_attack_limit')
+        if height_attack_limit:
+            hh.append(Vector3(pos[0], pos[1] + height_attack_limit[0], pos[2]))
+            hh.append(Vector3(pos[0], pos[1] + height_attack_limit[1], pos[2]))
+        else:
+            hh.append(Vector3(pos[0], pos[1] + 1.0, pos[2]))
+        radius = skill.param.get('radius', 1.0)
+        from_radius = skill.param.get('from_radius', 0)
+        drawer.add(hh[0], hh[-1], (1, 0.0, 0.0, 1))
+        v = Vector3()
+        angles_sector = skill.param.get('angles_sector')
+        if not angles_sector:
+            return
+        else:
+            min_s_local = math.radians(angles_sector[0])
+            max_s_local = math.radians(angles_sector[1])
+            min_s = min_s_local + yaw
+            max_s = max_s_local + yaw
+            v = Vector3()
+
+            def drawSectors(radius, colour = (1, 0, 0, 1)):
+                vert_lines = []
+                for centr in hh:
+                    vert = []
+                    vert_lines.append(vert)
+                    last = None
+                    v.setPitchYaw(0, min_s)
+                    drawer.add(centr, centr + v * radius, colour, 0)
+                    v.setPitchYaw(0, max_s)
+                    drawer.add(centr, centr + v * radius, colour, 0)
+                    v.setPitchYaw(0, yaw)
+                    drawer.add(centr, centr + v * radius, (1, 1, 1, 1), 0)
+                    w = min_s
+                    segments = 20
+                    for x in xrange(segments + 1):
+                        v.setPitchYaw(0, w)
+                        w += (max_s - min_s) / segments
+                        pos1 = centr + v * radius
+                        if last:
+                            vert.append(pos1)
+                            drawer.add(last, pos1, colour, 0)
+                        last = pos1
+
+                for x in xrange(len(vert_lines[0])):
+                    drawer.add(vert_lines[0][x], vert_lines[1][x], colour, 0)
+
+                return
+
+            drawSectors(radius)
+            if from_radius:
+                drawSectors(from_radius, (0, 1, 0, 1))
+            self._show_targets(targets)
+            return
+
+    def _show_targets(self, targets):
+        for ent in targets:
+            drawer.add(ent.position, ent.position + (0, 5, 0), (1, 1, 0.0, 1), 0)
+            drawer.add(ent.position + (0.5, 0.01, 0), ent.position + (-0.5, 0.01, 0), (1, 1, 0.0, 1), 0)
+            drawer.add(ent.position + (0, 0.01, 0.5), ent.position + (0, 0.01, -0.5), (1, 1, 0.0, 1), 0)

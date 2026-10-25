@@ -1,0 +1,131 @@
+# Embedded file name: ./client/PostProcessing/sprint_postproc.py
+import PostProcessing
+import BigWorld
+MAX_SCALE = (0.02, 0.02, 0.01, 0.01)
+TIME_START = 0.7
+TIME_STOP = 0.3
+
+class LinearTimeBlend:
+
+    def __init__(self, callback = None):
+        self.curentValue_ = 0.0
+        self.valueTo_ = 0.0
+        self.time_ = 1.0
+        self.callback = callback
+        self._trigerred = False
+
+    def enable(self, time_):
+        self.setValueTo(1.0, time_)
+        self._trigerred = False
+
+    def disable(self, time_):
+        self.setValueTo(0, time_)
+        self._trigerred = False
+
+    def setValueTo(self, value, time_):
+        self.valueTo_ = value
+        self.valueFrom_ = self.curentValue_
+        self.diff_ = self.valueTo_ - self.curentValue_
+        self.time_ = time_ or 0.0001
+        self.passed_ = 0
+
+    def setCurrentValue(self, val):
+        self.curentValue_ = val
+
+    def getCurrentValue(self):
+        return self.curentValue_
+
+    def updateBlend(self, dtime):
+        self.passed_ += dtime
+        if self.passed_ > self.time_:
+            self.curentValue_ = self.valueTo_
+            if self.callback and not self._trigerred:
+                self._trigerred = True
+                self.callback()
+            return
+        perc = min(1.0, self.passed_ / self.time_)
+        self.curentValue_ = self.valueFrom_ + self.diff_ * perc
+
+
+class SprintPostproc(object):
+    """docstring for SprintPostproc"""
+    instance = None
+    _tick_id = 0
+    _blend_value = None
+    is_sprint = False
+    ppid = None
+
+    def __new__(cls, *w, **kw):
+        if cls.instance is None:
+            cls.instance = object.__new__(cls, *w, **kw)
+        return cls.instance
+
+    def __init__(self):
+        super(SprintPostproc, self).__init__()
+        self._blend_value = LinearTimeBlend(callback=self._onBlendEnd)
+
+    def _onBlendEnd(self):
+        if self._tick_id:
+            BigWorld.cancelCallback(self._tick_id)
+            self._tick_id = None
+        if not self._blend_value.getCurrentValue():
+            self.disable()
+        return
+
+    def _tick(self):
+        self._tick_id = BigWorld.callback(0.0001, self._tick)
+        self._blend_value.updateBlend(BigWorld.getTimeDelta())
+        self._setValue(self._blend_value.getCurrentValue())
+
+    def _setValue(self, value):
+        if not self.ppid:
+            return
+        else:
+            chain = PostProcessing.getPPChainByID(self.ppid)
+            if not chain:
+                self.ppid = None
+                return
+            for index, eff in enumerate(chain[1]):
+                if eff.phases[-1].material:
+                    eff.phases[-1].material.scale = value * MAX_SCALE[index]
+
+            return
+
+    def changeSprint(self, value):
+        if value:
+            self.startSprint()
+        else:
+            self.stopSprint()
+
+    def startSprint(self):
+        if self.is_sprint:
+            return
+        self.is_sprint = True
+        if not self.ppid:
+            self.ppid = PostProcessing.addPPChainByName('pp_sprint')
+            self._setValue(0.0)
+        if not self._tick_id:
+            self._tick_id = BigWorld.callback(0.0001, self._tick)
+        self._blend_value.enable(TIME_START)
+
+    def stopSprint(self):
+        if not self.is_sprint:
+            return
+        self.is_sprint = False
+        self._blend_value.disable(TIME_STOP)
+        if not self._tick_id:
+            self._tick_id = BigWorld.callback(0.0001, self._tick)
+
+    def disable(self):
+        self._blend_value.setValueTo(0.0, None)
+        self._blend_value.setCurrentValue(0.0)
+        if self.ppid:
+            PostProcessing.removePPChain(self.ppid)
+            self.ppid = None
+        if self._tick_id:
+            BigWorld.cancelCallback(self._tick_id)
+            self._tick_id = None
+        return
+
+
+sprint_postprocess = SprintPostproc()

@@ -1,0 +1,286 @@
+# Embedded file name: ./client/ui/transform.py
+import math_bw
+import BigWorld
+_base_resolution = (1980, 1020, 0.5)
+_pixel, _clip, _mixed, _fill = xrange(4)
+
+def pixel_params(pivot, clip_pos, size, pixel_pos = 0):
+    return (_pixel,
+     pivot,
+     clip_pos,
+     size,
+     pixel_pos)
+
+
+def clip_params(clip_anchors, pixel_anchors = (0, 0)):
+    return (_clip, clip_anchors, pixel_anchors)
+
+
+class Transform(object):
+
+    def __init__(self, component):
+        comp = component
+        comp.verticalPositionMode, comp.horizontalPositionMode = ('PIXEL', 'PIXEL')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        self._mode = None
+        self._clamp_size = (None, None)
+        self._pixel_perfect = True
+        self._base_resolution = _base_resolution
+        self.component = comp
+        return
+
+    def set_base_resolution(self, base_resolution):
+        self._base_resolution = base_resolution
+        if self._mode and self.component.parent:
+            self.apply_mode()
+
+    def set_pixel_perfect(self, perfect):
+        self._pixel_perfect = perfect
+        if self._mode:
+            self.apply_mode()
+
+    def set_screen_pos(self, comp_x, comp_y, screen_x, screen_y):
+        if self._mode[0] == _pixel:
+            screen_width, screen_height = BigWorld.screenSize()
+            local_x, local_y = self.component.localToScreen((0, 0))
+            local_x = (local_x + 1.0) * 0.5 * screen_width
+            local_y = (local_y + 1.0) * 0.5 * screen_height
+            ratio = self._pixel_ratio()
+            disp_x = (local_x + comp_x - screen_x) / ratio
+            disp_y = (local_y - comp_y - screen_y) / ratio
+            if disp_x or disp_y:
+                pixel_anchors = self._mode[-1]
+                pixel_anchors = (pixel_anchors[0] - disp_x, pixel_anchors[1] + disp_y)
+                self._mode[-1] = pixel_anchors
+                self.apply_mode()
+        elif self._mode[0] == _clip:
+            screen_width, screen_height = BigWorld.screenSize()
+            local_x, local_y = self.component.localToScreen((0, 0))
+            local_x = (local_x + 1.0) * 0.5 * screen_width
+            local_y = (local_y + 1.0) * 0.5 * screen_height
+            disp_x = (local_x + comp_x - screen_x) / self.component.parent.width
+            disp_y = (local_y - comp_y - screen_y) / self.component.parent.height
+            if disp_x or disp_y:
+                clip_anchors = self._mode[1]
+                clip_anchors = (clip_anchors[0] - disp_x,
+                 clip_anchors[1] + disp_y,
+                 clip_anchors[2] - disp_x,
+                 clip_anchors[3] + disp_y)
+                self._mode[1] = clip_anchors
+                self.apply_mode()
+        else:
+            raise NotImplementedError
+
+    def set_scale_clamp_scale(self, min_size, max_size):
+        if self._mode[0] == _pixel and min_size and max_size:
+            size = self._mode[3]
+            size_x = math_bw.clamp(size[0], min_size[0], max_size[0])
+            size_y = math_bw.clamp(size[1], min_size[1], max_size[1])
+            if (size_x, size_y) != size:
+                self._mode[3] = (size_x, size_y)
+                self.apply_mode()
+        self._clamp_size = (min_size, max_size)
+
+    def scale(self, pivot, scale):
+        if self._mode[0] == _pixel:
+            pixel_ratio = self._pixel_ratio()
+            size, pixel_anchors = self._mode[3], self._mode[-1]
+            new_size = [size[0] * scale, size[1] * scale]
+            aspect = float(size[0]) / size[1]
+            if self._clamp_size[0]:
+                if self._clamp_size[0][0] > new_size[0]:
+                    new_size[0] = self._clamp_size[0][0]
+                    new_size[1] = new_size[0] / aspect
+                    scale = new_size[0] / size[0]
+                if self._clamp_size[0][1] > new_size[1]:
+                    new_size[1] = self._clamp_size[0][1]
+                    new_size[0] = new_size[1] * aspect
+                    scale = new_size[1] / size[1]
+            if self._clamp_size[1]:
+                if self._clamp_size[1][0] < new_size[0]:
+                    new_size[0] = self._clamp_size[1][0]
+                    new_size[1] = new_size[0] / aspect
+                    scale = new_size[0] / size[0]
+                if self._clamp_size[1][1] < new_size[1]:
+                    new_size[1] = self._clamp_size[1][1]
+                    new_size[0] = new_size[1] * aspect
+                    scale = new_size[1] / size[1]
+            x, y = pivot[0] / pixel_ratio - size[0] * 0.5, pivot[1] / pixel_ratio - size[1] * 0.5
+            pixel_anchors = (pixel_anchors[0] + x * (1 - scale), pixel_anchors[1] + y * (1 - scale))
+            self._mode[3], self._mode[-1] = new_size, pixel_anchors
+            self.apply_mode()
+        else:
+            raise NotImplementedError
+
+    def set_pixel_mode(self, pivot, clip_pos, size, pixel_pos = (0, 0)):
+        self._mode = [_pixel,
+         pivot,
+         clip_pos,
+         size,
+         pixel_pos]
+        if self.component.parent:
+            self.apply_mode()
+
+    def set_clip_mode(self, clip_anchors, pixel_anchors = (0, 0, 0, 0)):
+        self._mode = [_clip, clip_anchors, pixel_anchors]
+        if self.component.parent:
+            self.apply_mode()
+
+    def set_mixed_mode(self, x_params, y_params):
+        self._mode = (_mixed, x_params, y_params)
+        if self.component.parent:
+            self.apply_mode()
+
+    def set_child(self, child_transform, name):
+        self.component.addChild(child_transform.component, name)
+        child_transform.apply_mode()
+
+    def del_child(self, name):
+        self.component.delChild(name)
+
+    def set_fill_mode(self):
+        self._mode = (_fill,)
+        if self.component.parent:
+            self.apply_mode()
+
+    def apply_mode(self):
+        if not self._mode:
+            raise AssertionError
+            pixel_ratio = self._pixel_ratio()
+            prev_size = (self.component.width, self.component.height)
+
+            def parent_size():
+                parent = self.component.parent
+                prev_mode = (parent.widthMode, parent.heightMode)
+                parent.widthMode, parent.heightMode = ('PIXEL', 'PIXEL')
+                result = (parent.width, parent.height)
+                parent.widthMode, parent.heightMode = prev_mode
+                return result
+
+            def apply_pixel_mode(_, pivot, clip_pos, size, pixel_pos):
+                width, height = parent_size()
+                x = width * clip_pos[0] + pixel_pos[0] * pixel_ratio
+                y = height * clip_pos[1] + pixel_pos[1] * pixel_ratio
+                width, height = size[0] * pixel_ratio, size[1] * pixel_ratio
+                x -= width * pivot[0]
+                y -= height * pivot[1]
+                return (x,
+                 y,
+                 width,
+                 height)
+
+            def apply_clip_mode(_, clip_anchors, pixel_anchors):
+                width, height = parent_size()
+                x1 = clip_anchors[0] * width + pixel_anchors[0] * pixel_ratio
+                y1 = clip_anchors[1] * height + pixel_anchors[1] * pixel_ratio
+                x2 = clip_anchors[2] * width + pixel_anchors[2] * pixel_ratio
+                y2 = clip_anchors[3] * height + pixel_anchors[3] * pixel_ratio
+                return (x1,
+                 y1,
+                 x2 - x1,
+                 y2 - y1)
+
+            def apply_mixed_mode(_, x_params, y_params):
+                width, height = parent_size()
+                if x_params[0] == _pixel:
+                    _, pivot, clip_pos, size, pixel_pos = x_params
+                    x = width * clip_pos + pixel_pos * pixel_ratio
+                    width = size * pixel_ratio
+                    x -= width * pivot
+                elif x_params[0] == _clip:
+                    _, clip_anchors, pixel_anchors = x_params
+                    x = clip_anchors[0] * width + pixel_anchors[0] * pixel_ratio
+                    x2 = clip_anchors[1] * width + pixel_anchors[1] * pixel_ratio
+                    width = x2 - x
+                if y_params[0] == _pixel:
+                    _, pivot, clip_pos, size, pixel_pos = y_params
+                    y = height * clip_pos + pixel_pos * pixel_ratio
+                    height = size * pixel_ratio
+                    y -= height * pivot
+                elif y_params[0] == _clip:
+                    _, clip_anchors, pixel_anchors = y_params
+                    y = clip_anchors[0] * height + pixel_anchors[0] * pixel_ratio
+                    y2 = clip_anchors[1] * height + pixel_anchors[1] * pixel_ratio
+                    height = y2 - y
+                return (x,
+                 y,
+                 width,
+                 height)
+
+            def apply_fill_mode():
+                width, height = parent_size()
+                ratio = float(width) / height
+                w, h = self.component.texture.width, self.component.texture.height
+                r = float(w) / h
+                if ratio > r:
+                    h = width / r
+                    w = width
+                else:
+                    w = height * r
+                    h = height
+                return ((width - w) * 0.5,
+                 (height - h) * 0.5,
+                 w,
+                 h)
+
+            if self._mode[0] == _pixel:
+                rect = apply_pixel_mode(*self._mode)
+            elif self._mode[0] == _clip:
+                rect = apply_clip_mode(*self._mode)
+            elif self._mode[0] == _mixed:
+                rect = apply_mixed_mode(*self._mode)
+            elif self._mode[0] == _fill:
+                rect = apply_fill_mode()
+            else:
+                raise NotImplementedError
+            comp = self.component
+            x, y, width, height = rect
+            comp.position.x, comp.position.y, comp.width, comp.height = self._pixel_perfect and (round(x),
+             round(y),
+             round(width),
+             round(height))
+        else:
+            comp.position.x, comp.position.y, comp.width, comp.height = (x,
+             y,
+             width,
+             height)
+        if (self.component.width, self.component.height) != prev_size:
+            for _, child in self.component.children:
+                if hasattr(child.script, 'transform'):
+                    child.script.transform.apply_mode()
+
+            self.component.script.on_size_changed()
+        self.component.script.on_mode_applied()
+
+    @staticmethod
+    def calc_pixel_ratio():
+        screen_width, screen_height = BigWorld.screenSize()
+        return screen_width / _base_resolution[0] * (1 - _base_resolution[2]) + screen_height / _base_resolution[1] * _base_resolution[2]
+
+    def _pixel_ratio(self):
+        if self._base_resolution:
+            screen_width, screen_height = BigWorld.screenSize()
+            return screen_width / self._base_resolution[0] * (1 - self._base_resolution[2]) + screen_height / self._base_resolution[1] * self._base_resolution[2]
+        else:
+            return 1.0
+
+    @property
+    def pixel_ratio(self):
+        return self._pixel_ratio()
+
+    @property
+    def height(self):
+        return self.component.height
+
+    @property
+    def width(self):
+        return self.component.width
+
+    @property
+    def ratio_height(self):
+        return self.height / self.pixel_ratio
+
+    @property
+    def ratio_width(self):
+        return self.width / self.pixel_ratio

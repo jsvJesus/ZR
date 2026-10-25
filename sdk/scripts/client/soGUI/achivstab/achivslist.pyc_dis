@@ -1,0 +1,108 @@
+# Embedded file name: ./client/soGUI/achivstab/achivslist.py
+import BigWorld
+from achivslist_elements import AchList, HIDDEN_ACHS_CODE
+from Helpers.PyGUI import PyGUIBase
+from achivments import achives_parser
+from AchUser import EventType as ET
+AV = achives_parser.AchVis
+
+class Achivslist(PyGUIBase):
+
+    def __init__(self, component):
+        PyGUIBase.__init__(self, component)
+        self.component.script = self
+        prev_mode = (component.widthMode, component.heightMode)
+        component.widthMode, component.heightMode = ('PIXEL', 'PIXEL')
+        width, height = component.width, component.height
+        component.widthMode, component.heightMode = prev_mode
+        self._hidden_count = 0
+        self._ach_list = AchList(width, height, lambda : self._hidden_count)
+        comp = self._ach_list.component
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = width, height
+        comp.position = (0, 0, 0.8)
+        self.component.addChild(comp, 'list')
+        self._ach_list.onBound()
+        self._ach_list.achiv_selected_callback = self._on_achiv_selected
+        self._dev_mode = False
+        self._filter = None
+        self._rebuilding = False
+        self.on_achiv_selected = lambda ach_id: None
+        self.on_updated_callback = lambda got_count, total_count: None
+        return
+
+    def _on_achiv_selected(self, ach_id):
+        if not self._rebuilding:
+            self.on_achiv_selected(ach_id)
+
+    def set_filter(self, value):
+        if value:
+            self._filter = value.lower()
+        else:
+            self._filter = None
+        self._rebuild()
+        return
+
+    def on_show(self):
+        self._dev_mode = self._data_provider.isAdminAccess() and BigWorld.isKeyDown(BigWorld.stringToKey('F2'))
+        self._data_provider.add_ach_listener(self)
+        self._rebuild()
+
+    def on_hide(self):
+        self._dev_mode = False
+        self._data_provider.remove_ach_listener(self)
+
+    def on_achivs_event(self, event_type, data):
+        if event_type == ET.AchmaskUpdated:
+            self._rebuild()
+
+    def _rebuild(self):
+        self._rebuilding = True
+        self._ach_list.save_state()
+        self._ach_list.clear()
+        self._hidden_count = 0
+        counts = [0, 0]
+
+        def filter_ach(ach_id):
+            achiv = achives_parser.get_achiv(ach_id)
+            ach_vis = achiv.get('alwaysvisible', AV.Common)
+            if ach_vis == AV.Broken:
+                return False
+            if ach_vis == AV.Locked and not self._dev_mode:
+                return False
+            counts[1] += 1
+            if ach_id in has_achivs:
+                counts[0] += 1
+            if ach_vis == AV.Hidden and ach_id not in has_achivs and not self._dev_mode:
+                self._hidden_count += 1
+                return False
+            if self._filter and self._filter not in achiv['name'].lower():
+                return False
+            return True
+
+        def sort_key(ach_id):
+            ach_name = achives_parser.get_achiv(ach_id)['name']
+            has_ach = ach_id in has_achivs
+            unread = ach_id in unread_achs
+            return (has_ach, unread, ach_name)
+
+        ach_ids = achives_parser.get_all_achiv_ids()
+        has_achivs = self._data_provider.achiv_ids
+        unread_achs = self._data_provider.get_unread_achs()
+        ach_ids = filter(filter_ach, ach_ids)
+        ach_ids = sorted(ach_ids, key=sort_key, reverse=True)
+        for ach_id in ach_ids:
+            self._ach_list.addElement(unicode(ach_id), attachment=ach_id, delayedRender=True)
+
+        if self._hidden_count > 0:
+            self._ach_list.addElement(unicode(HIDDEN_ACHS_CODE), attachment=HIDDEN_ACHS_CODE, delayedRender=True)
+        self._ach_list.applyElements()
+        self._ach_list.restore_state()
+        self._rebuilding = False
+        self.on_updated_callback(*counts)
+
+    @property
+    def _data_provider(self):
+        return BigWorld.player()

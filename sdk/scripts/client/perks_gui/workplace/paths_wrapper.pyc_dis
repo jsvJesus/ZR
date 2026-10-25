@@ -1,0 +1,452 @@
+# Embedded file name: ./client/perks_gui/workplace/paths_wrapper.py
+from functools import partial
+from sys import float_info
+import BigWorld
+import GUI
+from Math import Vector2
+from math import atan2, sin, cos, pi
+from collections import defaultdict
+from math_bw import vector_between_vectors, angle_between_vectors, clamp
+from Helpers.BWCoroutine import BWMemberCoroutine, BWWaitForPeriod
+from visuals import visuals
+
+class SData(object):
+
+    def __init__(self, shape, *e_ids):
+        self.shape = shape
+        self.e_ids = set()
+        for ieds in e_ids:
+            self.e_ids |= set(ieds)
+
+    def __str__(self):
+        return 'id: {0}, length {1}'.format(self.e_ids, self.shape[0].distTo(self.shape[1]))
+
+    def __repr__(self):
+        return str(self)
+
+
+class ShapeAnimator:
+
+    def __init__(self, shape):
+        self._shape = shape
+
+
+class LShapeAnimator(ShapeAnimator):
+
+    def __init__(self, shape):
+        ShapeAnimator.__init__(self, shape)
+        self.pos0 = Vector2(self._shape[0])
+        self.pos1 = Vector2(self._shape[1])
+        self.length = self.pos0.distTo(self.pos1)
+
+
+class CShapeAnimator(ShapeAnimator):
+
+    def __init__(self, shape):
+        ShapeAnimator.__init__(self, shape)
+        self.pos0 = Vector2(cos(shape[0][0]), sin(shape[0][0])) * shape[1]
+        self.pos1 = Vector2(cos(shape[0][1]), sin(shape[0][1])) * shape[1]
+        self.length = self.pos0.distTo(self.pos1)
+
+
+class EdgeAnimator:
+
+    def __init__(self, end_pos, lshapes, cshapes):
+        self._shapes = map(LShapeAnimator, lshapes) + map(CShapeAnimator, cshapes)
+        for i, s in enumerate(self._shapes):
+            s.index = i
+
+        self._ordered = []
+        next_pos = end_pos
+        self._total_length = 0
+        while self._shapes:
+            shape = self._find_nearest(next_pos, self._shapes)
+            if shape.pos0.distTo(next_pos) < shape.pos1.distTo(next_pos):
+                next_pos = shape.pos1
+                shape.inverted = True
+            else:
+                next_pos = shape.pos0
+                shape.inverted = False
+            self._ordered.insert(0, shape)
+            self._total_length += shape.length
+            self._shapes.remove(shape)
+
+    def _find_nearest(self, pos, shapes):
+        dist = float_info.max
+        result = None
+        for s in shapes:
+            min_dist = min(s.pos0.distTo(pos), s.pos1.distTo(pos))
+            if min_dist < dist:
+                dist = min_dist
+                result = s
+
+        return result
+
+    def get_actives(self, ratio):
+        dist = ratio * self._total_length
+        result = [None] * len(self._ordered)
+        acc_left = 0
+        acc_right = 0
+        for i, s in enumerate(self._ordered):
+            acc_right += s.length
+            if dist <= acc_left:
+                act = (0, 0)
+            elif dist >= acc_right:
+                act = (1, 0)
+            else:
+                r = (dist - acc_left) / (acc_right - acc_left)
+                if s.inverted:
+                    act = (1, 1 - r)
+                else:
+                    act = (0, r)
+            acc_left += s.length
+            result[s.index] = act
+
+        return result
+
+
+_rstep = 0.0001
+
+class PathsWrapper:
+
+    def __init__(self, parent_comp):
+        line_width_base = visuals['line_sizes']['base']
+        line_width_galo = visuals['line_sizes']['galo']
+        min_size_in_pixels = visuals['line_sizes']['min_pixel']
+        base_color = visuals['line_colors']['base']
+        fill_color = visuals['line_colors']['fill']
+        self._resolved = False
+        self._animation_coroutine = None
+        self._animation_data = None
+        self._learned_edge_ids = None
+        self._update_after_anmiation = None
+        gl = GUI.LineComponent()
+        gl.horizontalPositionMode, gl.verticalPositionMode = ('CLIP', 'CLIP')
+        gl.horizontalAnchor, gl.verticalAnchor = ('CENTER', 'CENTER')
+        gl.widthMode, gl.heightMode = ('CLIP', 'CLIP')
+        gl.width, gl.height = (2, -2)
+        gl.position = (0, 0, 1.0)
+        gl.baseColor = base_color
+        gl.fillColor = fill_color
+        gl.curveWidth = (line_width_base, 0, line_width_galo)
+        gl.minCurveSizeInPixels = min_size_in_pixels
+        self._gl = gl
+        parent_comp.addChild(gl, 'lines')
+        gc = GUI.CurveComponent()
+        gc.horizontalPositionMode, gc.verticalPositionMode = ('CLIP', 'CLIP')
+        gc.horizontalAnchor, gc.verticalAnchor = ('CENTER', 'CENTER')
+        gc.widthMode, gc.heightMode = ('CLIP', 'CLIP')
+        gc.width, gc.height = (2, -2)
+        gc.baseColor = base_color
+        gc.fillColor = fill_color
+        gc.curveWidth = (line_width_base, 0, line_width_galo)
+        gc.minCurveSizeInPixels = min_size_in_pixels
+        gc.position = (0, 0, 0.9)
+        self._gc = gc
+        parent_comp.addChild(gc, 'curves')
+        return
+
+    def set_visible(self, visible, nodes, edges_wrapper):
+        if visible and edges_wrapper.dirty:
+            self._regenerate_paths(nodes, edges_wrapper)
+            edges_wrapper.mark_undirty()
+        self._gl.visible = visible
+        self._gc.visible = visible
+
+    def _regenerate_paths(self, nodes, edges_wrapper):
+        self._resolved = True
+        lshapes = []
+        cshapes = []
+        for e in edges_wrapper.edges:
+            lshapes.extend((SData(s, [e.id]) for s in e.lshapes))
+            cshapes.extend((SData(s, [e.id]) for s in e.cshapes))
+
+        l_resolve_data = defaultdict(list)
+        for sdata in lshapes:
+            shape = (Vector2(sdata.shape[0]), Vector2(sdata.shape[1]))
+            if shape[0].distTo(shape[1]) < _rstep:
+                continue
+            if shape[0].length > shape[1].length:
+                angle = atan2(shape[0][1], shape[0][0])
+            else:
+                angle = atan2(shape[1][1], shape[1][0])
+            sdata.shape = shape
+            l_resolve_data[round(angle, 4)].append(sdata)
+
+        def resolve_lshapes(sdata1, sdata2):
+            sh1 = sdata1.shape
+            sh2 = sdata2.shape
+            e1 = sdata1.e_ids
+            e2 = sdata2.e_ids
+            sh1_l1 = sh1[0].length
+            sh1_l2 = sh1[1].length
+            sh2_l1 = sh2[0].length
+            sh2_l2 = sh2[1].length
+            if sh1_l1 < sh1_l2:
+                sh1_min, sh1_max = sh1[0], sh1[1]
+                sh1_minl, sh1_maxl = sh1_l1, sh1_l2
+            else:
+                sh1_min, sh1_max = sh1[1], sh1[0]
+                sh1_minl, sh1_maxl = sh1_l2, sh1_l1
+            if sh2_l1 < sh2_l2:
+                sh2_min, sh2_max = sh2[0], sh2[1]
+                sh2_minl, sh2_maxl = sh2_l1, sh2_l2
+            else:
+                sh2_min, sh2_max = sh2[1], sh2[0]
+                sh2_minl, sh2_maxl = sh2_l2, sh2_l1
+            if abs(sh1_minl - sh2_minl) < _rstep and abs(sh1_maxl - sh2_maxl) < _rstep:
+                return [SData(sh1, e1, e2)]
+            if sh1_minl <= sh2_minl <= sh2_maxl <= sh1_maxl:
+                res = []
+                if abs(sh1_minl - sh2_minl) >= _rstep:
+                    res.append(SData((Vector2(sh1_min), Vector2(sh2_min)), e1))
+                res.append(SData(sh2, e1, e2))
+                if abs(sh2_maxl - sh1_maxl) >= _rstep:
+                    res.append(SData((Vector2(sh2_max), Vector2(sh1_max)), e1))
+                return res
+            if sh2_minl <= sh1_minl <= sh1_maxl <= sh2_maxl:
+                res = []
+                if abs(sh2_minl - sh1_minl) >= _rstep:
+                    res.append(SData((Vector2(sh2_min), Vector2(sh1_min)), e2))
+                res.append(SData(sh1, e1, e2))
+                if abs(sh1_maxl - sh2_maxl) >= _rstep:
+                    res.append(SData((Vector2(sh1_max), Vector2(sh2_max)), e2))
+                return res
+            if sh1_minl <= sh2_minl < sh1_maxl:
+                res = []
+                if abs(sh1_minl - sh2_minl) >= _rstep:
+                    res.append(SData((Vector2(sh1_min), Vector2(sh2_min)), e1))
+                if abs(sh2_minl - sh1_maxl) >= _rstep:
+                    res.append(SData((Vector2(sh2_min), Vector2(sh1_max)), e1, e2))
+                if abs(sh1_maxl - sh2_maxl) >= _rstep:
+                    res.append(SData((Vector2(sh1_max), Vector2(sh2_max)), e2))
+                return res
+            if sh2_minl <= sh1_minl < sh2_maxl:
+                res = []
+                if abs(sh2_minl - sh1_minl) >= _rstep:
+                    res.append(SData((Vector2(sh2_min), Vector2(sh1_min)), e2))
+                if abs(sh1_minl - sh2_maxl) >= _rstep:
+                    res.append(SData((Vector2(sh1_min), Vector2(sh2_max)), e1, e2))
+                if abs(sh2_maxl - sh1_maxl) >= _rstep:
+                    res.append(SData((Vector2(sh2_max), Vector2(sh1_max)), e1))
+                return res
+            return False
+
+        def resolve_shapes(sdatas, comparator):
+            for i in xrange(100):
+                rerun = False
+                for i in xrange(len(sdatas)):
+                    if rerun:
+                        break
+                    for j in xrange(i + 1, len(sdatas)):
+                        result = comparator(sdatas[i], sdatas[j])
+                        if result is not False:
+                            del sdatas[j]
+                            del sdatas[i]
+                            sdatas[i:i] = result
+                            rerun = True
+                            break
+
+                if not rerun:
+                    return sdatas
+
+            raise RuntimeError
+
+        def rstep_check(a1, a2):
+            angle_diff = abs(a1 - a2)
+            angle_diff = (angle_diff + pi) % (pi * 2) - pi
+            return angle_diff > _rstep
+
+        l_resolved = []
+        for angle, sdatas in l_resolve_data.items():
+            l_resolved.extend(resolve_shapes(sdatas, resolve_lshapes))
+
+        c_resolve_data = defaultdict(list)
+        for sdata in cshapes:
+            shape = sdata.shape
+            if abs(shape[0][0] - shape[0][1]) < _rstep:
+                continue
+            radius = shape[1]
+            c_resolve_data[round(radius, 4)].append(sdata)
+
+        def resolve_cshapes(sdata1, sdata2):
+            sh1 = sdata1.shape
+            sh2 = sdata2.shape
+            e1 = sdata1.e_ids
+            e2 = sdata2.e_ids
+            r = sh1[1]
+            a11, a12 = sh1[0]
+            a21, a22 = sh2[0]
+            v11 = Vector2(cos(a11), sin(a11))
+            v12 = Vector2(cos(a12), sin(a12))
+            v21 = Vector2(cos(a21), sin(a21))
+            v22 = Vector2(cos(a22), sin(a22))
+            if not rstep_check(a11, a12) or not rstep_check(a21, a22):
+                result = []
+                if rstep_check(a11, a12):
+                    result.append(SData(sh1, e1, e2))
+                if rstep_check(a21, a22):
+                    result.append(SData(sh2, e1, e2))
+                return result
+            if vector_between_vectors(v11, v21, v22):
+                if vector_between_vectors(v12, v21, v22):
+                    if angle_between_vectors(v21, v12) < angle_between_vectors(v21, v11):
+                        res = []
+                        if rstep_check(a21, a12):
+                            res.append(SData(((a21, a12), r), e2))
+                        res.append(SData(sh1, e1, e2))
+                        if rstep_check(a11, a22):
+                            res.append(SData(((a11, a22), r), e2))
+                        return res
+                    else:
+                        res = []
+                        if rstep_check(a21, a11):
+                            res.append(SData(((a21, a11), r), e2))
+                        res.append(SData(sh1, e1, e2))
+                        if rstep_check(a12, a22):
+                            res.append(SData(((a12, a22), r), e2))
+                        return res
+                elif not rstep_check(a11, a21) or not rstep_check(a11, a22):
+                    pass
+                elif angle_between_vectors(v21, v12) < angle_between_vectors(v22, v12):
+                    return (SData(((a12, a21), r), e1), SData(((a21, a11), r), e1, e2), SData(((a11, a22), r), e2))
+                else:
+                    return (SData(((a21, a11), r), e2), SData(((a11, a22), r), e1, e2), SData(((a22, a12), r), e1))
+
+            if vector_between_vectors(v21, v11, v12):
+                if vector_between_vectors(v22, v11, v12):
+                    if angle_between_vectors(v11, v21) < angle_between_vectors(v11, v22):
+                        res = []
+                        if rstep_check(a11, a21):
+                            res.append(SData(((a11, a21), r), e1))
+                        res.append(SData(sh2, e1, e2))
+                        if rstep_check(a22, a12):
+                            res.append(SData(((a22, a12), r), e1))
+                        return res
+                    else:
+                        res = []
+                        if rstep_check(a11, a22):
+                            res.append(SData(((a11, a22), r), e1))
+                        res.append(SData(sh2, e1, e2))
+                        if rstep_check(a21, a12):
+                            res.append(SData(((a21, a12), r), e1))
+                        return res
+                elif not rstep_check(a21, a11) or not rstep_check(a21, a12):
+                    pass
+                elif angle_between_vectors(v11, v22) < angle_between_vectors(v12, v22):
+                    return (SData(((a22, a11), r), e2), SData(((a11, a21), r), e1, e2), SData(((a21, a12), r), e1))
+                else:
+                    return (SData(((a11, a21), r), e1), SData(((a21, a12), r), e1, e2), SData(((a12, a22), r), e2))
+
+            return False
+
+        c_resolved = []
+        for sdatas in c_resolve_data.values():
+            c_resolved.extend(resolve_shapes(sdatas, resolve_cshapes))
+
+        self._lshapes_count = len(l_resolved)
+        self._l_shapes = []
+        self._eid_to_lshape_indises = defaultdict(list)
+        for i, sd in enumerate(l_resolved):
+            self._l_shapes.append(sd.shape)
+            for e_id in sd.e_ids:
+                self._eid_to_lshape_indises[e_id].append(i)
+
+        self._eid_to_cshape_indises = defaultdict(list)
+        self._gl.setShapes(self._l_shapes)
+        self._c_chapes = []
+        self._cshapes_count = len(c_resolved)
+        for i, sd in enumerate(c_resolved):
+            self._c_chapes.append(sd.shape)
+            for e_id in sd.e_ids:
+                self._eid_to_cshape_indises[e_id].append(i)
+
+        self._gc.setShapes(self._c_chapes)
+
+    def animate_buy(self, end_pos, edges, animation_time):
+        edge_animators = []
+        for edge in edges:
+            l_indices = self._eid_to_lshape_indises[edge.id]
+            l_shapes = map(lambda i: self._l_shapes[i], l_indices)
+            c_indices = self._eid_to_cshape_indises[edge.id]
+            c_shapes = map(lambda i: self._c_chapes[i], c_indices)
+            edge_animators.append((EdgeAnimator(end_pos, l_shapes, c_shapes), l_indices, c_indices))
+
+        if self._animation_coroutine:
+            self._animation_coroutine.stop()
+        self._animation_coroutine = self._animation_coroutine_runner(edge_animators, animation_time)
+        self._animation_coroutine.run()
+
+    @BWMemberCoroutine
+    def _animation_coroutine_runner(self, edge_animators, animation_time):
+        start_time = BigWorld.time()
+        while BigWorld.time() < start_time + animation_time:
+            l_indices = []
+            c_indices = []
+            ratio = clamp((BigWorld.time() - start_time) / animation_time)
+            for ea, l_inds, c_inds in edge_animators:
+                actives = ea.get_actives(ratio)
+                l_indices.extend(list(zip(l_inds, actives[:len(l_inds)])))
+                c_indices.extend(list(zip(c_inds, actives[len(l_inds):])))
+
+            self._animation_data = (l_indices, c_indices)
+            self._update_edges_visual(self._learned_edge_ids)
+            yield BWWaitForPeriod(0)
+
+        self._animation_data = None
+        self._update_edges_visual(self._learned_edge_ids)
+        self._animation_coroutine = None
+        if self._update_after_anmiation:
+            self._update_after_anmiation()
+            self._update_after_anmiation = None
+        return
+
+    def update_edges_visual(self, learned_edge_ids):
+        if self._animation_coroutine:
+            self._update_after_anmiation = partial(self.update_edges_visual, learned_edge_ids)
+        else:
+            self._update_edges_visual(learned_edge_ids)
+
+    def _update_edges_visual(self, learned_edge_ids):
+        self._learned_edge_ids = learned_edge_ids
+        if not self._resolved:
+            return
+        a_lshapes = [(0, 0)] * self._lshapes_count
+        a_cshapes = [(0, 0)] * self._cshapes_count
+        for e_id in self._learned_edge_ids:
+            indices = self._eid_to_lshape_indises[e_id]
+            for index in indices:
+                a_lshapes[index] = (0, 1)
+
+            indices = self._eid_to_cshape_indises[e_id]
+            for index in indices:
+                a_cshapes[index] = (0, 1)
+
+        def apply_l_animated(index, active):
+            prev_active = a_lshapes[index]
+            if prev_active[0] == prev_active[1]:
+                a_lshapes[index] = active
+            else:
+                a0 = min(prev_active[0], prev_active[1], active[0], active[1])
+                a1 = max(prev_active[0], prev_active[1], active[0], active[1])
+                a_lshapes[index] = (a0, a1)
+
+        def apply_c_animated(index, active):
+            prev_active = a_cshapes[index]
+            if prev_active[0] == prev_active[1]:
+                a_cshapes[index] = active
+            else:
+                a0 = min(prev_active[0], prev_active[1], active[0], active[1])
+                a1 = max(prev_active[0], prev_active[1], active[0], active[1])
+                a_cshapes[index] = (a0, a1)
+
+        if self._animation_data:
+            la_indices, ca_indices = self._animation_data
+            for index, active in la_indices:
+                apply_l_animated(index, active)
+
+            for index, active in ca_indices:
+                apply_c_animated(index, active)
+
+        self._gl.setShapeActives(a_lshapes)
+        self._gc.setShapeActives(a_cshapes)

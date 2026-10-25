@@ -1,0 +1,134 @@
+# Embedded file name: ./client/TNTTrigger.py
+import json
+import ResMgr
+import BigWorld
+import traceback
+import ItemsUtils
+import BWPersonality
+from Localization import lc
+from functools import partial
+from ItemHolder import ItemHolder
+from Helpers.Caps import CAP_INTERACT
+from soGUI.soInworldMarkers import soInworldMarker
+section = ResMgr.openSection('scripts/common/EnumProps/TNTTrigger.json')
+CONFIG = json.loads(section.asBinary)['model_index']['values']
+
+class TNTTrigger(BigWorld.Entity, ItemHolder):
+
+    def __init__(self):
+        BigWorld.Entity.__init__(self)
+        self._model_path = next((model for index, model in CONFIG if index == self.model_index), None)
+        self.model = None
+        self.callback_id = None
+        self.targetCaps = [CAP_INTERACT]
+        self.name = lc('TriggerNames.event.detonator')
+        self.wires = []
+        self.inited = False
+        return
+
+    def prerequisites(self):
+        if self._model_path:
+            return [self._model_path]
+        return []
+
+    def onEnterWorld(self, prereqs):
+        if self._model_path:
+            scale = self.scale
+            self.model = prereqs[self._model_path]
+            self.model.isObstacle = True
+            self.model.visible = True
+            self.model.scale = (scale, scale, scale)
+            self.model.newScaleTest = (scale, scale, scale)
+        self.wires = []
+        self.create_wires()
+
+    def create_wires(self):
+        if self.inited:
+            return
+        for udo in self.wires_udos:
+            try:
+                udo.model_index
+            except BigWorld.UnresolvedUDORefException:
+                BigWorld.callback(3.0, self.create_wires)
+                return
+
+        def on_create_ent(ent_id):
+            ent = BigWorld.entity(ent_id)
+            if not ent:
+                BigWorld.callback(0.5, partial(on_create_ent, ent_id))
+                return
+            ent.set_parent(self)
+            self.wires.append(ent)
+
+        items_count = self.get_items_count()
+        for index, udo in enumerate(self.wires_udos):
+            active = index < items_count
+            visible = index <= items_count
+            props = {'model_index': udo.model_index,
+             'tint_full': udo.tint_full,
+             'tint_none': udo.tint_none,
+             'model_dye': udo.model_dye,
+             'scale': udo.scale,
+             'active': active,
+             'visible': visible}
+            ent_id = BigWorld.createEntity('TNTWire', self.spaceID, 0, udo.position, udo.direction, props)
+            BigWorld.callback(0.1, partial(on_create_ent, ent_id))
+
+        self.inited = True
+
+    def get_items_count(self):
+        count = 0
+        for item in self.CarryingItems:
+            count += ItemsUtils.GetItemNumber(item)
+
+        return count
+
+    def set_CarryingItems(self, old_value):
+        items_count = self.get_items_count()
+        for index, wire in enumerate(self.wires):
+            wire.set_active(index < items_count)
+            wire.set_visible(index <= items_count)
+
+    def setObstacle(self, value):
+        self.isObstacle = value
+        if self.model:
+            self.model.isObstacle = value
+            self.model.visible = value
+
+    def onLeaveWorld(self):
+        self.model = None
+        for wire in self.wires:
+            if wire.isDestroyed:
+                continue
+            wire.start_destroy()
+
+        self.wires = []
+        return
+
+    def update_gui(self):
+        if not BWPersonality.GUICore.eventStarter:
+            return
+        BWPersonality.GUICore.eventStarter.update(self)
+
+    def interact(self, player):
+        if self.get_items_count() < len(self.wires):
+            return
+        self.cell.detonate()
+
+    def on_wire_use(self, wire):
+        index = self.wires.index(wire)
+        if index != self.get_items_count():
+            return
+        self.cell.get_item()
+
+    def get_target_mark(self, distance):
+        if self.get_hightlight(distance):
+            return soInworldMarker.MARKER_USE
+        else:
+            return None
+
+    def get_hightlight(self, distance):
+        if distance > 15:
+            return None
+        else:
+            return True

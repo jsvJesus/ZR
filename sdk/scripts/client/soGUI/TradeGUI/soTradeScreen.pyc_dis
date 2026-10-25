@@ -1,0 +1,289 @@
+# Embedded file name: ./client/soGUI/TradeGUI/soTradeScreen.py
+""" \xd0\xbc\xd0\xbe\xd0\xb4\xd1\x83\xd0\xbb\xd1\x8c \xd1\x81 \xd0\xb8\xd0\xbd\xd1\x82\xd0\xb5\xd1\x80\xd1\x84\xd0\xb5\xd0\xb9\xd1\x81\xd0\xbe\xd0\xbc \xd1\x82\xd0\xbe\xd1\x80\xd0\xb3\xd0\xbe\xd0\xb2\xd0\xbb\xd0\xb8
+"""
+import BWPersonality
+import BigWorld
+import ItemsUtils
+from Localization import lc
+from SellItemBox import SellItemBox
+from RecieveItemBox import RecieveItemBox
+from GivingItemBox import GivingItemBox
+from utils import pyFixedToNativePythonType as deepcopy
+from AvatarCommon import WEIGHT_STATE
+
+class TradeScreen:
+    """ \xd1\x81\xd0\xbe\xd0\xb2\xd0\xbe\xd0\xba\xd1\x83\xd0\xbf\xd0\xbd\xd0\xbe\xd1\x81\xd1\x82\xd1\x8c \xd0\xbd\xd0\xb5\xd1\x81\xd0\xba\xd0\xbe\xd0\xbb\xd1\x8c\xd0\xba\xd0\xb8\xd1\x85 \xd0\xbe\xd0\xba\xd0\xbe\xd0\xbd \xd0\xb4\xd0\xbb\xd1\x8f \xd1\x82\xd0\xbe\xd1\x80\xd0\xb3\xd0\xbe\xd0\xb2\xd0\xbb\xd0\xb8 """
+
+    def __init__(self, tradegive_comp, traderecive_comp, sell_comp, trade_hint):
+        self._selling_assortment = None
+        self.setup_content(tradegive_comp, traderecive_comp, sell_comp)
+        self._wait_seller = None
+        self.on_close_click = lambda : None
+        self._tradehint = trade_hint
+        return
+
+    def setup_content(self, tradegive_comp, traderecive_comp, sell_comp):
+        self._selling_item_list = SellItemBox(self, sell_comp)
+        self._recieving_item_list = RecieveItemBox(self, traderecive_comp)
+        self._givining_item_list = GivingItemBox(self, tradegive_comp)
+
+    def show(self):
+        self._selling_item_list.show()
+        self._recieving_item_list.show()
+        self._givining_item_list.show()
+
+    def hide(self):
+        self._selling_assortment = None
+        self._selling_item_list.hide()
+        self._recieving_item_list.hide()
+        self._givining_item_list.hide()
+        return
+
+    def set_assortment(self, buying_assortment, selling_assortment, keepitems, rep_id):
+        self._selling_assortment = selling_assortment
+        self._selling_item_list.set_assortment(buying_assortment, keepitems, rep_id)
+        self._givining_item_list.set_allowed_assortment(True, selling_assortment)
+
+    def on_close(self):
+        self.on_close_click()
+
+    def apply_item_sell_filter(self, item):
+        return self._givining_item_list.apply_item_sell_filter(item)
+
+    def on_slot_outdrop(self, factory_string, item_data):
+        if factory_string == 'soGUI.RecieveTradeSlot':
+            self._recieving_item_list.remove_item_by_item_data(item_data)
+        elif factory_string == 'soGUI.GivingTradeSlot':
+            self._givining_item_list.remove_item(item_data['complexItemID'])
+
+    def on_sell_item_dblclick(self, item_data):
+        if self._recieving_item_list.locked:
+            return
+        item_data = deepcopy(item_data)
+        item_data['count'] = 1
+        if ItemsUtils.isStackedItemType(item_data['complexItemType']):
+            ItemsUtils.SetItemNumber(item_data, item_data['count'])
+        self._recieving_item_list.add_item(item_data)
+
+    def on_offer_click(self):
+        transaction = self._compile_transaction()
+        error = self._validate_buying(transaction)
+        if error:
+            self._tradehint.set_text(error)
+            self._tradehint.show()
+            return False
+        self._wait_seller = BigWorld.callback(0.5, self._on_seller_waited)
+        self._tradehint.set_text(self._compile_buy_text(transaction))
+        self._tradehint.show(autofade=False)
+        return True
+
+    def on_inventory_dbl_click(self, item_data):
+        self._givining_item_list.on_inventory_dbl_click(item_data)
+
+    def on_inventory_ctrl_click(self, item_data):
+        self._givining_item_list.on_drop_items('soGUI.soInventorySlot2', [item_data])
+
+    def on_inventory_shift_click(self, item_data):
+        self._givining_item_list.on_inventory_shift_click(item_data)
+
+    def _compile_transaction(self):
+        transaction = {'credits': -self._recieving_item_list.calc_credits(),
+         'unexhausted': [],
+         'unique': [],
+         'selling': [],
+         'money': self._recieving_item_list.money - self._givining_item_list.money}
+
+        def selling_pack(item):
+            return {'itemID': item['complexItemID'],
+             'count': item['count'],
+             'price': item['price'],
+             'typeID': item['complexItemType'],
+             'credits': item['credits'],
+             'condition': ItemsUtils.GetItemGoodness(item)}
+
+        transaction['selling'] = map(selling_pack, self._givining_item_list.items)
+        for item in self._recieving_item_list.items:
+            count = item.get('count', 1)
+            if item['selltype'] == 'unique':
+                transaction['unique'].append({'item_id': item['complexItemID'],
+                 'count': count})
+            elif item['selltype'] == 'unexhausted':
+                transaction['unexhausted'].append({'count': count,
+                 'artic': item['artic'],
+                 'item_type': item['complexItemType']})
+
+        transaction['credits'] += self._givining_item_list.calc_credits()
+        return transaction
+
+    def _validate_buying(self, transaction):
+        error = self.delegate.validate_buying(transaction)
+        if not error and not any(transaction.values()):
+            error = lc('soTradeInterface.tradescreen.EMPTYTRADE')
+        return error
+
+    def on_confirm_click(self):
+        self._tradehint.fade_now()
+        transaction = self._compile_transaction()
+        error = self._validate_buying(transaction)
+        if error:
+            self._tradehint.set_text(error)
+            self._tradehint.show()
+        else:
+            self._givining_item_list.allow_confirm(False)
+            self.delegate.commit_buy(transaction)
+
+    def is_item_locked(self, item_id):
+        return self._givining_item_list.is_item_locked(item_id)
+
+    def _compile_buy_text(self, transaction):
+        outcome = income = total = ''
+        if self._recieving_item_list.money:
+            income += lc('soTradeInterface.tradescreen.RPRICE').format(self._recieving_item_list.money)
+        if self._givining_item_list.money:
+            outcome += lc('soTradeInterface.tradescreen.RPRICE').format(self._givining_item_list.money)
+        if transaction['money']:
+            total += lc('soTradeInterface.tradescreen.RPRICE').format(transaction['money'])
+        if not outcome:
+            outcome = u' ' + lc('soTradeInterface.tradescreen.RPRICE').format(0)
+        if not income:
+            income = u' ' + lc('soTradeInterface.tradescreen.RPRICE').format(0)
+        if not total:
+            total = u' ' + lc('soTradeInterface.tradescreen.RPRICE').format(0)
+        text = lc('soTradeInterface.tradescreen.TRADEINFO').format(outcome, income, total)
+        weight_state = self.delegate.get_potential_encumbered_state(self._calc_transaction_items_weight(transaction))
+        if weight_state == WEIGHT_STATE.NORMAL:
+            pass
+        elif weight_state == WEIGHT_STATE.HEAVY:
+            text += u'\n' + lc('soTradeInterface.tradescreen.OVERLOAD1')
+        elif weight_state == WEIGHT_STATE.STOP:
+            text += u'\n' + lc('soTradeInterface.tradescreen.OVERLOAD2')
+        credits = self._recieving_item_list.calc_credits()
+        if credits or transaction['credits']:
+            text += u'\n' + lc('soTradeInterface.tradescreen.REPPRICE')
+        if transaction['credits']:
+            text += u'\n' + lc('soTradeInterface.tradescreen.PREPPRICE').format(transaction['credits'])
+        return text
+
+    def _calc_transaction_items_weight(self, transaction):
+        recieve_weight = sum(map(ItemsUtils.GetItemWeight, self._recieving_item_list.items))
+        give_weight = sum(map(ItemsUtils.GetItemWeight, self._givining_item_list.items))
+        return recieve_weight - give_weight
+
+    def buy_completed(self, result, buy_assortment, sell_assortment, keepitems, rep_id):
+        if result:
+            self._givining_item_list.reset()
+            self._recieving_item_list.reset()
+        self._selling_item_list.set_assortment(buy_assortment, keepitems, rep_id)
+        self._givining_item_list.set_allowed_assortment(result, sell_assortment)
+        if not result:
+            self._update_reciving_item_list()
+
+            def after_update(delayed_and_blinked):
+                if not delayed_and_blinked:
+                    self._tradehint.set_text(lc('soTradeInterface.tradescreen.BAD_PRICE'))
+                    self._tradehint.show()
+                    self._givining_item_list.allow_confirm(True)
+                elif self._recieving_item_list.items:
+                    self._tradehint.set_text(lc('soTradeInterface.tradescreen.BAD_PRICE'))
+                    self._tradehint.show()
+                    self._givining_item_list.allow_confirm(True)
+                else:
+                    self._tradehint.set_text(lc('soTradeInterface.tradescreen.ITEM_NOT_AVAILABLE'))
+                    self._tradehint.show()
+                    self._givining_item_list.reset()
+                    self._recieving_item_list.reset()
+
+            self._recieving_item_list.on_assortment_updated(self._selling_item_list.unfiltered_items, after_update)
+
+    def _on_seller_waited(self):
+        """ \xd0\xbd\xd0\xb5\xd0\xb1\xd0\xbe\xd0\xbb\xd1\x8c\xd1\x88\xd0\xb0\xd1\x8f \xd0\xb7\xd0\xb0\xd0\xb4\xd0\xb5\xd1\x80\xd0\xb6\xd0\xba\xd0\xb0 \xd0\xb8\xd0\xbc\xd0\xb8\xd1\x82\xd0\xb8\xd1\x80\xd1\x83\xd1\x8e\xd1\x89\xd0\xb0\xd1\x8f \xd0\xb7\xd0\xb0\xd1\x82\xd0\xbe\xd1\x80\xd0\xbc\xd0\xbe\xd0\xb6\xd0\xb5\xd0\xbd\xd0\xbd\xd0\xbe\xd1\x81\xd1\x82\xd1\x8c \xd0\xbf\xd1\x80\xd0\xbe\xd0\xb4\xd0\xb0\xd0\xb2\xd1\x86\xd0\xb0 """
+        self._wait_seller = None
+        self._recieving_item_list.lock(True)
+        self._givining_item_list.allow_confirm(True)
+        return
+
+    def on_slot_add_item_count(self, item_data, count):
+        if ItemsUtils.isStackedItemType(item_data['complexItemType']):
+            item_data = deepcopy(item_data)
+            item_data['count'] = count
+            ItemsUtils.SetItemNumber(item_data, count)
+            self._recieving_item_list.add_item(item_data)
+        else:
+            for i in xrange(count):
+                item_data['count'] = 1
+                self._recieving_item_list.add_item(deepcopy(item_data))
+
+    def on_items_max_size(self):
+        from Constants import MESSAGE_TYPES as MT
+        BWPersonality.gpd.sendHightMessage(lc('soTradeInterface.tradescreen.BADACTION'), MT.PERSONAL)
+        self._tradehint.set_text(lc('soTradeInterface.tradescreen.NOROOM'))
+        self._tradehint.show()
+
+    def on_cancel_click(self):
+        self._tradehint.fade_now()
+        if self._wait_seller:
+            BigWorld.cancelCallback(self._wait_seller)
+            self._wait_seller = None
+        self._recieving_item_list.lock(False)
+        return
+
+    def _update_reciving_item_list(self):
+        money, credits = self._givining_item_list.get_items_cost()
+        self._recieving_item_list.money = money
+        self._recieving_item_list.credits = credits
+
+    def on_reciving_items_updated(self, items):
+        money, credits = self._recieving_item_list.get_items_cost()
+        self._givining_item_list.money = money
+        self._givining_item_list.credits = credits
+        self._selling_item_list.hide_bought_items(items)
+        self._update_reciving_item_list()
+
+    def on_giving_items_updated(self, items):
+        self.delegate.on_sell_items_updated(items)
+        self._update_reciving_item_list()
+
+    def on_giving_filter_failed(self, message = None):
+        self._tradehint.set_text(message or lc('soTradeInterface.shop.RELATION0'))
+        self._tradehint.show()
+
+    def can_add_items(self):
+        return not self._recieving_item_list.locked
+
+    def get_recive_slots_available(self):
+        return self._recieving_item_list.get_slots_available()
+
+    def request_clear_all(self):
+        self._givining_item_list.set_items([])
+        self._recieving_item_list.set_items([])
+
+    def request_trade_data(self):
+        self.delegate.request_trade_data()
+
+    def doReposition(self):
+        self._givining_item_list.do_reposition()
+        self._recieving_item_list.do_reposition()
+
+    def on_sellitem_ctrl_click(self, item_data):
+        if item_data['selltype'] == 'unexhausted':
+            return
+        item_data = deepcopy(item_data)
+        if ItemsUtils.isStackedItemType(item_data['complexItemType']):
+            ItemsUtils.SetItemNumber(item_data, item_data['count'])
+        self._recieving_item_list.add_item(item_data)
+
+    def on_inventory_update(self):
+        self._givining_item_list.on_inventory_update()
+
+    def has_selling_assortment(self):
+        return bool(self._selling_assortment)
+
+    def calculate_give_item_price(self, complex_item):
+        return self._givining_item_list.calculate_item_price(complex_item)
+
+    def validate_item(self, complex_item):
+        return self._givining_item_list.validate_item(complex_item)
+
+    @property
+    def delegate(self):
+        return BigWorld.player()

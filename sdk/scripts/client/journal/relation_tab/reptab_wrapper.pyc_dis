@@ -1,0 +1,134 @@
+# Embedded file name: ./client/journal/relation_tab/reptab_wrapper.py
+import BigWorld
+import Quest
+from journal.rep_tab.rep_tab_view import EventType as RvET
+from journal.rep_tab.base_reptab_view import BaseReptabView
+from journal.rep_tab.rep_data_provider import IdET
+import QuestDispatcher as qd
+import AdditionalNPCParameters as AP
+
+class ItemData(object):
+
+    def __init__(self, npc_id):
+        self._group_data = {'id': npc_id}
+        self._callback_listeners = []
+
+    def add_callback_listener(self, callback_listener):
+        self._callback_listeners.append(callback_listener)
+
+    def del_callback_listener(self, callback_listener):
+        if callback_listener in self._callback_listeners:
+            self._callback_listeners.remove(callback_listener)
+
+    def _notify_listeners(self, event_type, data):
+        for l in self._callback_listeners:
+            l(event_type, data)
+
+    @property
+    def cur_quests(self):
+        return self._group_data and self._group_data.get('cur_quests')
+
+    @property
+    def available_quests(self):
+        return self._group_data and self._group_data.get('available_quests')
+
+    @property
+    def has_value(self):
+        return True
+
+    @property
+    def rep_id(self):
+        return self._group_data and self._group_data['id']
+
+    def on_destroy(self):
+        self._callback_listeners = []
+
+    def invalidate_quests(self):
+        handled = False
+        if 'cur_quests' in self._group_data:
+            del self._group_data['cur_quests']
+            handled = True
+        if 'available_quests' in self._group_data:
+            del self._group_data['available_quests']
+            handled = True
+        if handled:
+            data = {'item_data': self,
+             'mode': Quest.CUR_REP_QUESTS}
+            self._notify_listeners(IdET.OnQuestsChanged, data)
+            data = {'item_data': self,
+             'mode': Quest.AVAILABLE_REP_QUEST}
+            self._notify_listeners(IdET.OnQuestsChanged, data)
+
+    def set_quests(self, quest_ids, mode, data):
+        if mode == Quest.CUR_REP_QUESTS:
+            self._group_data['cur_quests'] = quest_ids
+            data = {'item_data': self,
+             'mode': mode}
+            self._notify_listeners(IdET.OnQuestsChanged, data)
+        elif mode == Quest.AVAILABLE_REP_QUEST:
+            time_data = data
+            self._group_data['available_quests'] = zip(quest_ids, time_data)
+            data = {'item_data': self,
+             'mode': mode}
+            self._notify_listeners(IdET.OnQuestsChanged, data)
+        else:
+            raise RuntimeError
+
+
+class ReptabWrapper(object):
+
+    def __init__(self, comp, quest_click_callback):
+        self._reptab = BaseReptabView(comp, self._on_tab_event)
+        self._npc_id = None
+        self._item_data = None
+        self._quest_click_callback = quest_click_callback
+        self.on_quest_callback = lambda quest_id: None
+        return
+
+    def on_show(self):
+        self._user.load_npc_quests1 = self.load_npc_quests1
+        self._reptab.on_show()
+        if self._npc_id:
+            npc_id = self._npc_id
+            self._npc_id = None
+            self.set_npc_id(npc_id)
+        BigWorld.player().subscribe_all_quests_changes((self._on_quest_state_event, None), self)
+        return
+
+    def _on_quest_state_event(self, quest_id, prev_state, state):
+        holder_name = qd.get_holder(quest_id)
+        npc_id = AP.get_npc_id_by_name(holder_name)
+        if self._item_data and self._item_data.rep_id == npc_id:
+            self._item_data.invalidate_quests()
+
+    def on_hide(self):
+        self._reptab.on_hide()
+        self._item_data = None
+        BigWorld.player().unsubscribe_all_quests_changes(self)
+        return
+
+    def set_npc_id(self, npc_id):
+        if self._npc_id == npc_id:
+            return
+        self._npc_id = npc_id
+        self._item_data = ItemData(self._npc_id)
+        self._reptab.set_group(self._item_data)
+
+    def _on_tab_event(self, event_type, data):
+        if event_type == RvET.CurQuestsEmptyVisible:
+            npc_id = data['id']
+            self._user.base.load_npc_quests0(npc_id, Quest.CUR_REP_QUESTS)
+        elif event_type == RvET.AvailableQuestsEmptyVisible:
+            npc_id = data['id']
+            self._user.base.load_npc_quests0(npc_id, Quest.AVAILABLE_REP_QUEST)
+        elif event_type == RvET.OnQuestClick:
+            quest_id = data['quest_id']
+            self._quest_click_callback(quest_id)
+
+    def load_npc_quests1(self, npc_id, q_ids, mode, data):
+        if self._item_data and self._item_data.rep_id == npc_id:
+            self._item_data.set_quests(q_ids, mode, data)
+
+    @property
+    def _user(self):
+        return BigWorld.player()

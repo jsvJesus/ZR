@@ -1,0 +1,1071 @@
+# Embedded file name: ./common/math_bw.py
+import BigWorld
+import math
+import bisect
+from random import random, uniform
+import traceback
+from Math import Vector2, Vector3, Matrix
+import sys
+if BigWorld.component != 'emulator':
+    from Math import Quaternion
+neg_inf = float('-inf')
+VECTOR3_INVALID = Vector3(neg_inf, neg_inf, neg_inf)
+VECTOR3_ZERO = Vector3(0, 0, 0)
+VECTOR3_UP = Vector3(0, 1, 0)
+cached_matrix = Matrix()
+cached_v3 = Vector3()
+
+def getScaleMatrix(m, local_scale = True):
+    if local_scale:
+        m_back = Matrix()
+        m_back.setRotateYPR((-m.yaw, -m.pitch, -m.roll))
+        m = Matrix(m)
+        m.postMultiply(m_back)
+    sx = Vector3(m.get(0, 0), m.get(1, 0), m.get(2, 0))
+    sy = Vector3(m.get(0, 1), m.get(1, 1), m.get(2, 1))
+    sz = Vector3(m.get(0, 2), m.get(1, 2), m.get(2, 2))
+    return Vector3(sx.length, sy.length, sz.length)
+
+
+def getScaleMatrixFix(m):
+    sx = Vector3(m.get(0, 0), m.get(0, 1), m.get(0, 2))
+    sy = Vector3(m.get(1, 0), m.get(1, 1), m.get(1, 2))
+    sz = Vector3(m.get(2, 0), m.get(2, 1), m.get(2, 2))
+    return Vector3(sx.length, sy.length, sz.length)
+
+
+def toHEX(a, r, g, b):
+    """ \xd0\xbe\xd1\x82 0 \xd0\xb4\xd0\xbe 255 """
+    return (a << 24) + (r << 16) + (g << 8) + b
+
+
+def toHEXno_alpha(r, g, b):
+    """ \xd0\xbe\xd1\x82 0 \xd0\xb4\xd0\xbe 255 """
+    return (r << 16) + (g << 8) + b
+
+
+def lerp_rgb_colors(color1, color2, value):
+    return (lerp(color1[0], color2[0], value),
+     lerp(color1[1], color2[1], value),
+     lerp(color1[2], color2[2], value),
+     lerp(color1[3], color2[3], value))
+
+
+def lerp_hex_colors(color1, color2, value):
+    a1 = color1 >> 24 & 255
+    r1 = color1 >> 16 & 255
+    g1 = color1 >> 8 & 255
+    b1 = color1 & 255
+    a2 = color2 >> 24 & 255
+    r2 = color2 >> 16 & 255
+    g2 = color2 >> 8 & 255
+    b2 = color2 & 255
+    a = int(lerp(a1, a2, value))
+    r = int(lerp(r1, r2, value))
+    g = int(lerp(g1, g2, value))
+    b = int(lerp(b1, b2, value))
+    return toHEX(a, r, g, b)
+
+
+def toARGB(hexcolor):
+    """ \xd0\xbe\xd1\x82 0 \xd0\xb4\xd0\xbe 255 """
+    a = hexcolor >> 24 & 255
+    r = hexcolor >> 16 & 255
+    g = hexcolor >> 8 & 255
+    b = hexcolor & 255
+    return (a,
+     r,
+     g,
+     b)
+
+
+def int16toRGB(int16color):
+    c = int16color
+    b = 31 & c
+    c >>= 5
+    g = 63 & c
+    c >>= 6
+    r = 31 & c
+    return (r / 31.0, g / 63.0, b / 31.0)
+
+
+def hexToInt16color(hexcolor):
+    r, g, b = toRGB(hexcolor)
+    r = min(31, int(r * 32.0))
+    g = min(63, int(g * 64.0))
+    b = min(31, int(b * 32.0))
+    return (r << 11) + (g << 5) + b
+
+
+def toRGB(hexcolor):
+    """ \xd0\xbe\xd1\x82 0.0 \xd0\xb4\xd0\xbe 1.0 """
+    _, r, g, b = toARGB(hexcolor)
+    return (r / 255.0, g / 255.0, b / 255.0)
+
+
+def stringToRGB255(hexcolor):
+    """ \xd0\xbe\xd1\x82 0 \xd0\xb4\xd0\xbe 255 """
+    hexcolor = int(hexcolor, 16)
+    r = hexcolor >> 16 & 255
+    g = hexcolor >> 8 & 255
+    b = hexcolor & 255
+    return (r, g, b)
+
+
+def getMinMaxArray(array_points):
+    min_ = [None, None, None]
+    max_ = [None, None, None]
+    for v in array_points:
+        for i in xrange(3):
+            if min_[i] is None:
+                min_[i] = v[i]
+            if max_[i] is None:
+                max_[i] = v[i]
+            if max_[i] < v[i]:
+                max_[i] = v[i]
+            if min_[i] > v[i]:
+                min_[i] = v[i]
+
+    return (Vector3(min_), Vector3(max_))
+
+
+def plane_ray_intersect(p1, p2, p3, src, ray_dir):
+    """ \xd0\xbf\xd0\xb5\xd1\x80\xd0\xb5\xd1\x81\xd0\xb5\xd1\x87\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5 \xd0\xbb\xd1\x83\xd1\x87\xd0\xb0 \xd0\xb8 \xd0\xbf\xd0\xbb\xd0\xbe\xd1\x81\xd0\xba\xd0\xbe\xd1\x81\xd1\x82\xd0\xb8, \xd0\xb7\xd0\xb0\xd0\xb4\xd0\xb0\xd0\xbd\xd0\xbd\xd0\xbe\xd0\xb9 \xd1\x82\xd1\x80\xd0\xb5\xd0\xbc\xd1\x8f \xd1\x82\xd0\xbe\xd1\x87\xd0\xba\xd0\xb0\xd0\xbc\xd0\xb8 """
+    e1 = p2 - p1
+    e2 = p3 - p1
+    s1 = ray_dir * e2
+    divisor = s1.dot(e1)
+    inv_divisor = 1.0 / divisor
+    d = src - p1
+    s2 = d * e1
+    t = e2.dot(s2) * inv_divisor
+    return src + t * ray_dir
+
+
+def nearest_point_on_line(point0, dir0, point1, dir1):
+    """ http://geomalgorithms.com/a07-_distance.html
+    """
+    dir0.normalise()
+    dir1.normalise()
+    P0 = point0
+    P1 = point0 + dir0
+    Q0 = point1
+    Q1 = point1 + dir1
+    u = P1 - P0
+    v = Q1 - Q0
+    w0 = P0 - Q0
+    a = u.dot(u)
+    b = u.dot(v)
+    c = v.dot(v)
+    d = u.dot(w0)
+    e = v.dot(w0)
+    Sc = (b * e - c * d) / (a * c - b * b)
+    Tc = (a * e - b * d) / (a * c - b * b)
+    PSc = P0 + u * Sc
+    QTc = Q0 + v * Tc
+    return Sc
+
+
+def box_intersect_line(segment_begin, segment_end, box_center, box_size):
+    """ \xd0\xbd\xd0\xb0\xd1\x85\xd0\xbe\xd0\xb4\xd0\xb8\xd1\x82 \xd1\x82\xd0\xbe\xd1\x87\xd0\xba\xd0\xb8 \xd0\xbf\xd0\xb5\xd1\x80\xd0\xb5\xd1\x81\xd0\xb5\xd1\x87\xd0\xb5\xd0\xbd\xd0\xb8\xd1\x8f \xd0\xba\xd0\xbe\xd1\x80\xd0\xbe\xd0\xb1\xd0\xba\xd0\xb8 (AABB \xd1\x82\xd0\xbe\xd0\xbb\xd1\x8c\xd0\xba\xd0\xbe) \xd0\xb8 \xd0\xbe\xd1\x82\xd1\x80\xd0\xb5\xd0\xb7\xd0\xba\xd0\xb0
+            \xd0\xb2\xd0\xb7\xd1\x8f\xd0\xbb \xd0\xbe\xd1\x82\xd1\x81\xd1\x8e\xd0\xb4\xd0\xb0: https://stackoverflow.com/questions/3106666/intersection-of-line-segment-with-axis-aligned-box-in-c-sharp
+    """
+    AXIS_X, AXIS_Y, AXIS_Z = xrange(3)
+    begin_to_end = segment_end - segment_begin
+    min_to_max = Vector3(box_size.x, box_size.y, box_size.z)
+    min_ = box_center - min_to_max / 2
+    max_ = box_center + min_to_max / 2
+    begin_to_min = min_ - segment_begin
+    begin_to_max = max_ - segment_begin
+    t_near = sys.float_info.min
+    t_far = sys.float_info.max
+    intersections = []
+    for axis in (AXIS_X, AXIS_Y, AXIS_Z):
+        if begin_to_end[axis] == 0:
+            if begin_to_min[axis] > 0 or begin_to_max[axis] < 0:
+                return intersections
+        else:
+            t1 = begin_to_min[axis] / begin_to_end[axis]
+            t2 = begin_to_max[axis] / begin_to_end[axis]
+            t_min = min(t1, t2)
+            t_max = max(t1, t2)
+            if t_min > t_near:
+                t_near = t_min
+            if t_max < t_far:
+                t_far = t_max
+            if t_near > t_far or t_far < 0:
+                return intersections
+
+    if 0 <= t_near <= 1:
+        intersections.append(segment_begin + begin_to_end * t_near)
+    if 0 <= t_far <= 1:
+        intersections.append(segment_begin + begin_to_end * t_far)
+    return intersections
+
+
+def intersect_line_sphere(line_start, line_end, sphere_center, sphere_r):
+    """        \xd0\xbf\xd0\xb5\xd1\x80\xd0\xb5\xd1\x81\xd0\xb5\xd1\x87\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5 \xd0\xbe\xd1\x82\xd1\x80\xd0\xb5\xd0\xb7\xd0\xba\xd0\xb0 \xd0\xb8 \xd1\x81\xd1\x84\xd0\xb5\xd1\x80\xd1\x8b     """
+    sp_delta = sphere_center - line_start
+    sp_dist = sp_delta.length
+    if sp_dist < sphere_r:
+        return True
+    direction = line_end - line_start
+    line_lenght = direction.length
+    if sp_dist > line_lenght + sphere_r:
+        return False
+    direction.normalise()
+    sp_delta.normalise()
+    dot = direction.dot(sp_delta)
+    if dot < 0:
+        return False
+    dot = max(-1, min(1, dot))
+    angle = math.acos(dot)
+    dist_to_ray = sp_dist * math.sin(angle)
+    if dist_to_ray > sphere_r:
+        return False
+    return True
+
+
+def intersect_ray_cylinder(raybase, raydir, base, axis, radius):
+    """ \xd0\xbf\xd0\xb5\xd1\x80\xd0\xb5\xd1\x81\xd0\xb5\xd1\x87\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5 \xd0\xbb\xd1\x83\xd1\x87\xd0\xb0 \xd0\xb8 \xd0\xb1\xd0\xb5\xd1\x81\xd0\xba\xd0\xbe\xd0\xbd\xd0\xb5\xd1\x87\xd0\xbd\xd0\xbe\xd0\xb3\xd0\xbe \xd1\x86\xd0\xb8\xd0\xbb\xd0\xb8\xd0\xbd\xd0\xb4\xd1\x80\xd0\xb0"""
+    in_, out_ = (None, None)
+    RC = raybase - base
+    n = raydir * axis
+    ln = n.length
+    if ln == 0:
+        d = RC.dot(axis)
+        D = RC - axis * d
+        d = D.length
+        hit = d <= radius
+        return (hit, 0.0, 9999999.0)
+    else:
+        n.normalise()
+        d = abs(RC.dot(n))
+        hit = d <= radius
+        if hit:
+            O = RC * axis
+            t = -O.dot(n) / ln
+            O = n * axis
+            O.normalise()
+            s = abs(math.sqrt(radius ** 2 - d ** 2) / raydir.dot(O))
+            in_ = t - s
+            out_ = t + s
+        return (hit, in_, out_)
+
+
+def intersect_line_vert_cylinder(line_start, line_end, base, radius, cyl_height):
+    """ \xd0\xbf\xd0\xb5\xd1\x80\xd0\xb5\xd1\x81\xd0\xb5\xd1\x87\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5 \xd0\xbe\xd1\x82\xd1\x80\xd0\xb5\xd0\xb7\xd0\xba\xd0\xb0 \xd0\xb8 \xd0\xb2\xd0\xb5\xd1\x80\xd1\x82\xd0\xb8\xd0\xba\xd0\xb0\xd0\xbb\xd1\x8c\xd0\xbd\xd0\xbe\xd0\xb3\xd0\xbe \xd1\x86\xd0\xb8\xd0\xbb\xd0\xb8\xd0\xbd\xd0\xb4\xd1\x80\xd0\xb0 \xd1\x81 \xd0\xb2\xd1\x8b\xd1\x81\xd0\xbe\xd1\x82\xd0\xbe\xd0\xb9 cyl_height"""
+    ray_dir = line_end - line_start
+    ray_dir.normalise()
+    axis = Vector3(0, 1, 0)
+    hit, in_, out_ = intersect_ray_cylinder(line_start, ray_dir, base, axis, radius)
+    if not hit:
+        return False
+    h1 = (line_start + ray_dir * in_).y
+    h2 = (line_start + ray_dir * out_).y
+    min_ = base.y
+    max_ = min_ + cyl_height
+    if h1 < min_ and h2 < min_:
+        return False
+    if h1 > max_ and h2 > max_:
+        return False
+    return True
+
+
+def int64_bool_array_to_int_set(int64_bool_array):
+    """ \xd0\xba\xd0\xbe\xd0\xbd\xd0\xb2\xd0\xb5\xd1\x80\xd1\x82\xd0\xb8\xd1\x80\xd1\x83\xd0\xb5\xd1\x82 \xd0\xb1\xd0\xb8\xd1\x82\xd0\xbe\xd0\xb2\xd1\x8b\xd0\xb9 \xd0\xbc\xd0\xb0\xd1\x81\xd1\x81\xd0\xb8\xd0\xb2 \xd0\xb2 \xd0\xbd\xd0\xb0\xd0\xb1\xd0\xbe\xd1\x80 \xd1\x86\xd0\xb5\xd0\xbb\xd1\x8b\xd1\x85 \xd1\x87\xd0\xb8\xd1\x81\xd0\xb5\xd0\xbb
+            \xd1\x82\xd0\xbe \xd0\xb6\xd0\xb5, \xd1\x87\xd1\x82\xd0\xbe int_array_to_int64_bool_array, \xd1\x82\xd0\xbe\xd0\xbb\xd1\x8c\xd0\xba\xd0\xbe \xd0\xbd\xd0\xb0\xd0\xbe\xd0\xb1\xd0\xbe\xd1\x80\xd0\xbe\xd1\x82
+    """
+    result = set()
+    index = 0
+    MASK_LEN = 64
+    for order, int64 in enumerate(int64_bool_array):
+        while int64:
+            if int64 & 1:
+                result.add(index)
+            int64 = int64 >> 1
+            index += 1
+
+        index = (order + 1) * MASK_LEN
+
+    return result
+
+
+def is_inside_trap(pos1, pos2, size):
+    """        \xd0\xbd\xd0\xb0\xd1\x85\xd0\xbe\xd0\xb4\xd1\x8f\xd1\x82\xd1\x81\xd1\x8f \xd0\xbb\xd0\xb8 \xd0\xbe\xd0\xb1\xd0\xb5 \xd1\x82\xd0\xbe\xd1\x87\xd0\xba\xd0\xb8 \xd0\xb2 \xd0\xbe\xd0\xb4\xd0\xbd\xd0\xbe\xd0\xbc \xd0\xba\xd0\xb2\xd0\xb0\xd0\xb4\xd1\x80\xd0\xb0\xd1\x82\xd0\xb5 \xd1\x80\xd0\xb0\xd0\xb7\xd0\xbc\xd0\xb5\xd1\x80\xd0\xb0 size
+            (\xd0\xb4\xd0\xbb\xd1\x8f \xd0\xbf\xd1\x80\xd0\xbe\xd0\xb2\xd0\xb5\xd1\x80\xd0\xbe\xd0\xba \xd1\x80\xd0\xb0\xd0\xb1\xd0\xbe\xd1\x82\xd1\x8b \xd1\x81 proximity \xd0\xb8 \xd0\xbf\xd1\x80.)
+    """
+    return abs(pos1[0] - pos2[0]) <= size and abs(pos1[2] - pos2[2]) <= size
+
+
+def int_array_to_int64_bool_array(int_iterable):
+    """ \xd0\xba\xd0\xbe\xd0\xbd\xd0\xb2\xd0\xb5\xd1\x80\xd1\x82\xd0\xb8\xd1\x80\xd1\x83\xd0\xb5\xd1\x82 \xd0\xbc\xd0\xb0\xd1\x81\xd1\x81\xd0\xb8\xd0\xb2 \xd1\x86\xd0\xb5\xd0\xbb\xd1\x8b\xd1\x85 \xd1\x87\xd0\xb8\xd1\x81\xd0\xb5\xd0\xbb \xd0\xb2 \xd0\xb4\xd0\xb2\xd0\xbe\xd0\xb8\xd1\x87\xd0\xbd\xd1\x8b\xd0\xb9 \xd0\xbc\xd0\xb0\xd1\x81\xd1\x81\xd0\xb8\xd0\xb2 \xd0\xb4\xd0\xb0\xd0\xbd\xd0\xbd\xd1\x8b\xd1\x85
+            (\xd0\xbf\xd1\x80\xd0\xb8\xd0\xbc\xd0\xb5\xd0\xbd\xd1\x8f\xd0\xb5\xd1\x82\xd1\x81\xd1\x8f \xd0\xb4\xd0\xbb\xd1\x8f \xd1\x81\xd0\xb6\xd0\xb0\xd1\x82\xd0\xb8\xd1\x8f \xd0\xbf\xd1\x80\xd0\xb8 \xd0\xbf\xd0\xb5\xd1\x80\xd0\xb5\xd0\xb4\xd0\xb0\xd1\x87\xd0\xb5 \xd0\xbc\xd0\xb0\xd1\x81\xd1\x81\xd0\xb8\xd0\xb2\xd0\xbe\xd0\xb2 \xd0\xb4\xd0\xb0\xd0\xbd\xd0\xbd\xd1\x8b\xd1\x85)
+            \xd1\x82\xd0\xbe \xd0\xb6\xd0\xb5, \xd1\x87\xd1\x82\xd0\xbe int64_bool_array_to_int_set, \xd1\x82\xd0\xbe\xd0\xbb\xd1\x8c\xd0\xba\xd0\xbe \xd0\xbd\xd0\xb0\xd0\xbe\xd0\xb1\xd0\xbe\xd1\x80\xd0\xbe\xd1\x82
+    """
+    result = 0
+    for int_value in int_iterable:
+        result |= 1 << int_value
+
+    result_array = []
+    MASK_LEN = 64
+    while result > 0:
+        mask = (1 << MASK_LEN) - 1
+        part = result & mask
+        result_array.append(part)
+        result = result >> MASK_LEN
+
+    return result_array
+
+
+def clamp_vector(value, min_value, max_value):
+    length = value.length
+    if length > max_value:
+        value.normalise()
+        value *= max_value
+    elif length < min_value:
+        value.normalise()
+        value *= min_value
+    return value
+
+
+def move_towards_angle(value, destination, distance):
+    """ \xd0\xb2 \xd1\x80\xd0\xb0\xd0\xb4\xd0\xb8\xd0\xb0\xd0\xbd\xd0\xb0\xd1\x85 """
+    value = map_angle(value)
+    destination = map_angle(destination)
+    if abs(value - destination) <= math.pi:
+        return move_towards(value, destination, distance)
+    if value > destination:
+        value -= math.pi * 2
+    else:
+        value += math.pi * 2
+    value = move_towards(value, destination, distance)
+    return map_angle(value)
+
+
+def move_towards_v3(value, destination, distance):
+    to_distance = destination - value
+    if to_distance.lengthSquared <= distance * distance:
+        return destination
+    to_distance.normalise()
+    return value + to_distance * distance
+
+
+def rotate_toward(src, dst, max_delta):
+    """ \xd0\xba\xd1\x80\xd1\x83\xd1\x82\xd0\xb8\xd1\x82 \xd0\xb2\xd0\xb5\xd0\xba\xd1\x82\xd0\xbe\xd1\x80 \xd0\xbd\xd0\xb0\xd0\xbf\xd1\x80\xd0\xb0\xd0\xb2\xd0\xbb\xd0\xb5\xd0\xbd\xd0\xb8\xd1\x8f \xd0\xba \xd0\xb4\xd1\x80\xd1\x83\xd0\xb3\xd0\xbe\xd0\xbc\xd1\x83 \xd0\xb2\xd0\xb5\xd0\xba\xd1\x82\xd0\xbe\xd1\x80\xd1\x83 \xd0\xbd\xd0\xb0\xd0\xbf\xd1\x80\xd0\xb0\xd0\xb2\xd0\xbb\xd0\xb5\xd0\xbd\xd0\xb8\xd1\x8f """
+    src = Vector3(src)
+    src.normalise()
+    dst = Vector3(dst)
+    dst.normalise()
+    axis = dst.crossProduct(src)
+    axis.normalise()
+    try:
+        rotate_angle = math.acos(clamp(src.dot(dst), -1, 1))
+    except:
+        print src, dst
+        raise
+
+    sub_rotate_angle = min(max_delta, rotate_angle)
+    q_rotate = Quaternion()
+    q_rotate.fromAngleAxis(sub_rotate_angle, axis)
+    q_rotate_inverted = Quaternion(q_rotate)
+    q_rotate_inverted.invert()
+    q_src = Quaternion()
+    q_src.w = 0
+    q_src.x = src.x
+    q_src.y = src.y
+    q_src.z = src.z
+    result = Quaternion(q_rotate)
+    result.postMultiply(q_src)
+    result.postMultiply(q_rotate_inverted)
+    r = Vector3()
+    r.x = result.x
+    r.y = result.y
+    r.z = result.z
+    r.normalise()
+    return r
+
+
+def move_towards(value, destination, distance):
+    """ \xd0\xb4\xd0\xb2\xd0\xb8\xd0\xb3\xd0\xb0\xd0\xb5\xd1\x82 \xd1\x87\xd0\xb8\xd1\x81\xd0\xbb\xd0\xbe \xd0\xba \xd1\x87\xd0\xb8\xd1\x81\xd0\xbb\xd1\x83 """
+    dist = destination - value
+    if abs(dist) <= distance:
+        return destination
+    if destination > value:
+        return value + distance
+    return value - distance
+
+
+def move_point(value, destination, distance):
+    """
+            \xd0\xb4\xd0\xb2\xd0\xb8\xd0\xb3\xd0\xb0\xd0\xb5\xd1\x82 \xd1\x82\xd0\xbe\xd1\x87\xd0\xba\xd1\x83 \xd0\xbf\xd0\xbe \xd0\xbd\xd0\xb0\xd0\xbf\xd1\x80\xd0\xb0\xd0\xb2\xd0\xbb\xd0\xb5\xd0\xbd\xd0\xb8\xd1\x8e \xd0\xba \xd0\xb4\xd1\x80\xd1\x83\xd0\xb3\xd0\xbe\xd0\xb9 \xd1\x82\xd0\xbe\xd1\x87\xd0\xba\xd0\xb5 \xd0\xbd\xd0\xb0 \xd1\x80\xd0\xb0\xd1\x81\xd1\x81\xd1\x82\xd0\xbe\xd1\x8f\xd0\xbd\xd0\xb8\xd0\xb5 distance
+            \xd0\xb2\xd0\xbe\xd0\xb7\xd0\xb2\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd1\x82\xd0\xbe\xd1\x87\xd0\xba\xd1\x83 \xd0\xb8 \xd1\x81\xd0\xba\xd0\xb0\xd0\xbb\xd1\x8f\xd1\x80
+    """
+    v = destination - value
+    length = v.length
+    if length <= distance:
+        return (destination, distance - length)
+    v.normalise()
+    v *= distance
+    return (value + v, 0)
+
+
+class SmoothVector(object):
+    """ \xd1\x81\xd0\xb3\xd0\xbb\xd0\xb0\xd0\xb6\xd0\xb8\xd0\xb2\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xb2\xd0\xb5\xd0\xba\xd1\x82\xd0\xbe\xd1\x80 """
+
+    def __init__(self, number = 3):
+        self.number = number
+        self.arr = []
+        for _ in xrange(number):
+            self.arr.append(Vector3())
+
+        self.index = 0
+        self.value = Vector3(0, 0, 0)
+
+    def smooth(self, vector):
+        self.arr[self.index] = Vector3(vector)
+        self.index = (self.index + 1) % len(self.arr)
+        self.value = reduce(lambda x, y: x + y, self.arr) / len(self.arr)
+        return self.value
+
+
+def clamp(v, min_value = 0, max_value = 1):
+    if v <= min_value:
+        return min_value
+    if v >= max_value:
+        return max_value
+    return v
+
+
+def clamp_angle(angle, min_angle, max_angle):
+    """ \xd0\xb7\xd0\xb0\xd0\xb6\xd0\xb8\xd0\xbc\xd0\xb0\xd0\xb5\xd1\x82 \xd1\x83\xd0\xb3\xd0\xbe\xd0\xbb (\xd0\xb2 \xd1\x80\xd0\xb0\xd0\xb4\xd0\xb8\xd0\xb0\xd0\xbd\xd0\xb0\xd1\x85) \xd0\xb2 \xd0\xbf\xd1\x80\xd0\xb5\xd0\xb4\xd0\xb5\xd0\xbb\xd1\x8b
+            \xd1\x83\xd1\x87\xd0\xb8\xd1\x82\xd1\x8b\xd0\xb2\xd0\xb0\xd0\xb5\xd1\x82 \xd1\x86\xd0\xb8\xd0\xba\xd0\xbb\xd0\xb8\xd1\x87\xd0\xbd\xd0\xbe\xd1\x81\xd1\x82\xd1\x8c \xd1\x83\xd0\xb3\xd0\xbb\xd0\xbe\xd0\xb2
+    """
+
+    def normalizePI(a):
+        a %= 2 * math.pi
+        if a < math.pi:
+            return a
+        return a - math.pi * 2
+
+    n_min = normalizePI(min_angle - angle)
+    n_max = normalizePI(max_angle - angle)
+    if n_min <= 0 and n_max >= 0:
+        return angle
+    if abs(n_min) < abs(n_max):
+        return min_angle
+    return max_angle
+
+
+def clampLim(v, max_value):
+    return clamp(v, -max_value, max_value)
+
+
+def angle_dist(angle1, angle2):
+    """ \xd0\xbd\xd0\xb5 \xd0\xbf\xd1\x80\xd0\xb0\xd0\xb2\xd0\xb8\xd0\xbb\xd1\x8c\xd0\xbd\xd0\xbe \xd1\x80\xd0\xb0\xd0\xb1\xd0\xbe\xd1\x82\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xbd\xd0\xb0\xd0\xbf\xd1\x80 -3.11 \xd0\xb8 -pi """
+    angle1 = map_angle(angle1)
+    angle2 = map_angle(angle2)
+    result = abs(angle1 - angle2)
+    if result <= math.pi:
+        return result
+    return result - math.pi
+
+
+def move_towards_angle_smooth_damp(current, target, cur_velocity, smooth_time, max_speed, delta_time):
+    """ \xd0\xb2 \xd1\x80\xd0\xb0\xd0\xb4\xd0\xb8\xd0\xb0\xd0\xbd\xd0\xb0\xd1\x85 """
+    current = map_angle(current)
+    target = map_angle(target)
+    if abs(current - target) <= math.pi:
+        return smooth_damp(current, target, cur_velocity, smooth_time, max_speed, delta_time)
+    if current > target:
+        current -= math.pi * 2
+    else:
+        current += math.pi * 2
+    current, cur_velocity = smooth_damp(current, target, cur_velocity, smooth_time, max_speed, delta_time)
+    return (map_angle(current), cur_velocity)
+
+
+def smooth_damp(current, target, cur_velocity, smooth_time, max_speed, delta_time):
+    smooth_time = max(0.0001, smooth_time)
+    omega = 2.0 / smooth_time
+    x = omega * delta_time
+    exp = 1.0 / (1.0 + x + 0.48 * x * x + 0.235 * x * x * x)
+    change = current - target
+    original_to = target
+    max_change = max_speed * smooth_time
+    change = clamp(change, -max_change, max_change)
+    target = current - change
+    temp = (cur_velocity + omega * change) * delta_time
+    cur_velocity = (cur_velocity - omega * temp) * exp
+    output = target + (change + temp) * exp
+    if (original_to - current > 0) == (output > original_to):
+        output = original_to
+        cur_velocity = (output - original_to) / delta_time
+    return (output, cur_velocity)
+
+
+def angle_dist2(angle1, angle2):
+    """ \xd1\x8d\xd1\x82\xd0\xbe\xd1\x82 \xd0\xb2\xd1\x80\xd0\xbe\xd0\xb4\xd0\xb5 \xd0\xbf\xd1\x80\xd0\xb0\xd0\xb2\xd0\xb8\xd0\xbb\xd1\x8c\xd0\xbd\xd0\xbe """
+    angle1 = map_angle(angle1)
+    angle2 = map_angle(angle2)
+    result = abs(angle1 - angle2)
+    if result <= math.pi:
+        return result
+    return abs(result - 2 * math.pi)
+
+
+def safe_asin(value):
+    return math.asin(clamp(value, -1, 1))
+
+
+def safe_acos(value):
+    return math.acos(clamp(value, -1, 1))
+
+
+def vector_between_vectors(v, v1, v2):
+    angle = angle_between_vectors(v1, v2)
+    if angle_between_vectors(v, v1) > angle:
+        return False
+    if angle_between_vectors(v, v2) > angle:
+        return False
+    return True
+
+
+def angle_between_vectors(v1, v2):
+    """ \xd1\x83\xd0\xb3\xd0\xbe\xd0\xbb \xd0\xbc\xd0\xb5\xd0\xb6\xd0\xb4\xd1\x83 \xd0\xb2\xd0\xb5\xd0\xba\xd1\x82\xd0\xbe\xd1\x80\xd0\xb0\xd0\xbc\xd0\xb8 \xd0\xb2 \xd1\x80\xd0\xb0\xd0\xb4\xd0\xb8\xd0\xb0\xd0\xbd\xd0\xb0\xd1\x85 (\xd0\xb2\xd1\x81\xd0\xb5\xd0\xb3\xd0\xb4\xd0\xb0 \xd0\xbf\xd0\xbe\xd0\xbb\xd0\xbe\xd0\xb6\xd0\xb8\xd1\x82\xd0\xb5\xd0\xbb\xd1\x8c\xd0\xbd\xd1\x8b\xd0\xb9) """
+    try:
+        length = v1.length * v2.length
+        if not length:
+            return 0
+        cos = v1.dot(v2) / length
+        cos = max(-1.0, min(1.0, cos))
+        return math.acos(cos)
+    except:
+        print 'angle_between_vectors ERROR:', v1, v2
+        traceback.print_exc()
+        return 0
+
+
+def angle_between_flat_vectors(v1, v2):
+    """ \xd1\x83\xd0\xb3\xd0\xbe\xd0\xbb \xd0\xbc\xd0\xb5\xd0\xb6\xd0\xb4\xd1\x83 \xd0\xb2\xd0\xb5\xd0\xba\xd1\x82\xd0\xbe\xd1\x80\xd0\xb0\xd0\xbc\xd0\xb8 \xd0\xb2 \xd1\x80\xd0\xb0\xd0\xb4\xd0\xb8\xd0\xb0\xd0\xbd\xd0\xb0\xd1\x85 (\xd0\xb2\xd1\x81\xd0\xb5\xd0\xb3\xd0\xb4\xd0\xb0 \xd0\xbf\xd0\xbe\xd0\xbb\xd0\xbe\xd0\xb6\xd0\xb8\xd1\x82\xd0\xb5\xd0\xbb\xd1\x8c\xd0\xbd\xd1\x8b\xd0\xb9) """
+    try:
+        v1 = Vector3(v1)
+        v2 = Vector3(v2)
+        v1.y = 0
+        v2.y = 0
+        length = v1.length * v2.length
+        if not length:
+            return 0
+        cos = v1.dot(v2) / length
+        cos = max(-1.0, min(1.0, cos))
+        return math.acos(cos)
+    except:
+        print 'angle_between_vectors ERROR:', v1, v2
+        traceback.print_exc()
+        return 0
+
+
+def normalize_rotation(rotation):
+    """ \xd0\xb5\xd1\x81\xd0\xbb\xd0\xb8 \xd1\x83\xd0\xb3\xd0\xbe\xd0\xbb \xd0\xb1\xd1\x83\xd0\xb4\xd0\xb5\xd1\x82 \xd0\xb1\xd0\xbe\xd0\xbb\xd1\x8c\xd1\x88\xd0\xb5 100 \xd1\x80\xd0\xb0\xd0\xb4\xd0\xb8\xd0\xb0\xd0\xbd, \xd0\xba\xd0\xbb\xd0\xb8\xd0\xb5\xd0\xbd\xd1\x82 \xd0\xb8 WE \xd1\x83\xd0\xbf\xd0\xb0\xd0\xb4\xd1\x83\xd1\x82 """
+    rotation = Vector3(rotation)
+    rotation[0] %= math.pi * 2
+    rotation[1] %= math.pi * 2
+    rotation[2] %= math.pi * 2
+    return rotation
+
+
+def int_to_uint16(n):
+    return n & 65535
+
+
+def uint_to_int16(n):
+    n &= 65535
+    return (n ^ 32768) - 32768
+
+
+def rotate_by_yaw_pitch(vec, yaw, pitch):
+    cached_matrix.setRotateYPR((yaw, pitch, 0))
+    return cached_matrix.applyVector(vec)
+
+
+def random_vector(in_vec, max_random_angle, normalised = True):
+    """
+            \xd0\xb2\xd0\xbe\xd0\xb7\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd1\x81\xd0\xbb\xd1\x83\xd1\x87\xd0\xb0\xd0\xb9\xd0\xbd\xd1\x8b\xd0\xb9 \xd0\xb2\xd0\xb5\xd0\xba\xd1\x82\xd0\xbe\xd1\x80 \xd0\xb8\xd0\xb7 \xd0\xba\xd0\xbe\xd0\xbd\xd1\x83\xd1\x81\xd0\xb0
+            \xd1\x81 \xd1\x86\xd0\xb5\xd0\xbd\xd1\x82\xd1\x80\xd0\xbe\xd0\xbc in_vec \xd1\x80\xd0\xb0\xd0\xb4\xd0\xb8\xd1\x83\xd1\x81\xd0\xb0 max_random_angle (\xd0\xb2 \xd1\x80\xd0\xb0\xd0\xb4\xd0\xb8\xd0\xb0\xd0\xbd\xd0\xb0\xd1\x85)
+            normalised - \xd0\xb2\xd0\xbe\xd0\xb7\xd0\xb2\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xbd\xd0\xbe\xd1\x80\xd0\xbc\xd0\xb0\xd0\xbb\xd0\xb8\xd0\xb7\xd0\xbe\xd0\xb2\xd0\xb0\xd0\xbd\xd0\xbd\xd1\x8b\xd0\xb9 \xd0\xb2\xd0\xb5\xd0\xba\xd1\x82\xd0\xbe\xd1\x80
+    """
+    random_yaw = -max_random_angle + 2 * max_random_angle * random()
+    random_roll = 2 * math.pi * random()
+    cached_matrix.setRotateYPR((in_vec.yaw, in_vec.pitch, random_roll))
+    cached_v3.setPitchYaw(0, random_yaw)
+    result = cached_matrix.applyVector(cached_v3)
+    if not normalised:
+        result *= in_vec.length
+    return result
+
+
+def rotate_by_Y(vec, angle_rad):
+    cached_matrix.setRotateY(angle_rad)
+    return cached_matrix.applyVector(vec)
+
+
+def randomPointInRadius(radius, center = Vector3(0, 0, 0)):
+    angle = random() * 2 * math.pi
+    pos = center + radius * Vector3(math.cos(angle), 0, math.sin(angle))
+    return pos
+
+
+def random_point_in_circle(radius):
+    """ \xd1\x81\xd0\xbb\xd1\x83\xd1\x87\xd0\xb0\xd0\xb9\xd0\xbd\xd0\xb0\xd1\x8f \xd1\x82\xd0\xbe\xd1\x87\xd0\xba\xd0\xb0 \xd0\xb2 \xd0\xba\xd1\x80\xd1\x83\xd0\xb3\xd0\xb5 \xd1\x81 \xd1\x80\xd0\xb0\xd0\xb2\xd0\xbd\xd0\xbe\xd0\xbc\xd0\xb5\xd1\x80\xd0\xbd\xd1\x8b\xd0\xbc \xd1\x80\xd0\xb0\xd1\x81\xd0\xbf\xd1\x80\xd0\xb5\xd0\xb4\xd0\xb5\xd0\xbb\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5\xd0\xbc """
+    angle = uniform(0, math.pi * 2)
+    r = radius * math.sqrt(random())
+    return Vector2(r * math.cos(angle), r * math.sin(angle))
+
+
+def random_point3_in_circle(radius):
+    """ \xd1\x81\xd0\xbb\xd1\x83\xd1\x87\xd0\xb0\xd0\xb9\xd0\xbd\xd0\xb0\xd1\x8f \xd1\x82\xd0\xbe\xd1\x87\xd0\xba\xd0\xb0 \xd0\xb2 \xd0\xba\xd1\x80\xd1\x83\xd0\xb3\xd0\xb5 \xd1\x81 \xd1\x80\xd0\xb0\xd0\xb2\xd0\xbd\xd0\xbe\xd0\xbc\xd0\xb5\xd1\x80\xd0\xbd\xd1\x8b\xd0\xbc \xd1\x80\xd0\xb0\xd1\x81\xd0\xbf\xd1\x80\xd0\xb5\xd0\xb4\xd0\xb5\xd0\xbb\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5\xd0\xbc """
+    angle = uniform(0, math.pi * 2)
+    r = radius * math.sqrt(random())
+    return Vector3(r * math.cos(angle), 0, r * math.sin(angle))
+
+
+def random_point_in_sphere():
+    """ \xd1\x81\xd0\xbb\xd1\x83\xd1\x87\xd0\xb0\xd0\xb9\xd0\xbd\xd0\xb0\xd1\x8f \xd1\x82\xd0\xbe\xd1\x87\xd0\xba\xd0\xb0 \xd0\x92\xd0\x9d\xd0\xa3\xd0\xa2\xd0\xa0\xd0\x98 \xd0\xb5\xd0\xb4\xd0\xb8\xd0\xbd\xd0\xb8\xd1\x87\xd0\xbd\xd0\xbe\xd0\xb9 \xd1\x81\xd1\x84\xd0\xb5\xd1\x80\xd1\x8b \xd1\x81 \xd1\x80\xd0\xb0\xd0\xb2\xd0\xbd\xd0\xbe\xd0\xbc\xd0\xb5\xd1\x80\xd0\xbd\xd1\x8b\xd0\xbc \xd1\x80\xd0\xb0\xd1\x81\xd0\xbf\xd1\x80\xd0\xb5\xd0\xb4\xd0\xb5\xd0\xbb\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5\xd0\xbc
+            https://karthikkaranth.me/blog/generating-random-points-in-a-sphere/
+    """
+    u = random()
+    v = random()
+    theta = u * 2.0 * math.pi
+    phi = math.acos(2.0 * v - 1.0)
+    r = math.pow(random(), 1.0 / 3.0)
+    sin_theta = math.sin(theta)
+    cos_theta = math.cos(theta)
+    sin_phi = math.sin(phi)
+    cos_phi = math.cos(phi)
+    x = r * sin_phi * cos_theta
+    y = r * sin_phi * sin_theta
+    z = r * cos_phi
+    return Vector3(x, y, z)
+
+
+def random_normalized_vector():
+    """ \xd1\x81\xd0\xbb\xd1\x83\xd1\x87\xd0\xb0\xd0\xb9\xd0\xbd\xd1\x8b\xd0\xb9 \xd0\xb5\xd0\xb4\xd0\xb8\xd0\xbd\xd0\xb8\xd1\x87\xd0\xbd\xd1\x8b\xd0\xb9 \xd0\xb2\xd0\xb5\xd0\xba\xd1\x82\xd0\xbe\xd1\x80 \xd1\x81 \xd1\x80\xd0\xb0\xd0\xb2\xd0\xbd\xd0\xbe\xd0\xbc\xd0\xb5\xd1\x80\xd0\xbd\xd1\x8b\xd0\xbc \xd1\x80\xd0\xb0\xd1\x81\xd0\xbf\xd1\x80\xd0\xb5\xd0\xb4\xd0\xb5\xd0\xbb\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5\xd0\xbc \xd0\x9f\xd0\x9e \xd1\x81\xd1\x84\xd0\xb5\xd1\x80\xd0\xb5
+            https://math.stackexchange.com/questions/1585975/how-to-generate-random-points-on-a-sphere
+    """
+    angle = uniform(0, math.pi * 2)
+    height = uniform(-1, 1)
+    height2 = math.sqrt(1 - height * height)
+    return Vector3(math.cos(angle) * height2, math.sin(angle) * height2, height)
+
+
+def print_matrix(*matrix_providers):
+    matrices = map(Matrix, matrix_providers)
+    for row in xrange(0, 4):
+        for matrix in matrices:
+            for col in xrange(0, 4):
+                print '%6.1f' % matrix.get(row, col),
+
+            print ' | ',
+
+        print '\n'
+
+
+def linear_map(value, from_min, from_max, to_min, to_max, clamp = False):
+    """ \xd0\xbe\xd0\xb4\xd0\xb8\xd0\xbd \xd0\xb4\xd0\xb8\xd0\xb0\xd0\xbf\xd0\xb0\xd0\xb7\xd0\xbe\xd0\xbd \xd0\xbf\xd1\x80\xd0\xb5\xd0\xbe\xd0\xb1\xd1\x80\xd0\xb0\xd0\xb7\xd1\x83\xd0\xb5\xd1\x82 \xd0\xb2 \xd0\xb4\xd1\x80\xd1\x83\xd0\xb3\xd0\xbe\xd0\xb9 """
+    if not from_max != from_min:
+        raise AssertionError
+        normalized = float(value - from_min) / (from_max - from_min)
+        result = to_min + normalized * (to_max - to_min)
+        return clamp and clamp(result, to_min, to_max)
+    return result
+
+
+def map_angle(map_angle):
+    """ \xd0\xb7\xd0\xb0\xd0\xb3\xd0\xbe\xd0\xbd\xd1\x8f\xd0\xb5\xd1\x82 \xd1\x83\xd0\xb3\xd0\xbe\xd0\xbb \xd0\xb2 \xd0\xbf\xd1\x80\xd0\xb5\xd0\xb4\xd0\xb5\xd0\xbb\xd1\x8b -pi, +pi """
+    map_angle = map_angle % (2 * math.pi)
+    if map_angle > math.pi:
+        return map_angle - 2 * math.pi
+    return map_angle
+
+
+def matrix_from_pos_and_dir(position, direction_rpy):
+    tm = Matrix()
+    tm.setTranslate(position)
+    rm = Matrix()
+    r, p, y = direction_rpy
+    rm.setRotateYPR((y, p, r))
+    tm.preMultiply(rm)
+    return tm
+
+
+def weighted_random(weights):
+    rnd = random() * sum(weights)
+    for i, weight in enumerate(weights):
+        rnd -= weight
+        if rnd < 0:
+            return i
+
+    if len(weights) == 1:
+        return 0
+    else:
+        return None
+
+
+class WeightedRandom:
+    """ Select random index using weights.
+            Runs faster than weighted_random func if you need several selections.
+    """
+
+    def __init__(self, weights):
+        total_sum = float(sum(weights))
+        self.weights = []
+        prev_sum = 0
+        for weight in weights:
+            prev_sum += weight
+            self.weights.append(prev_sum / total_sum)
+
+    def get(self):
+        return bisect.bisect(self.weights, random())
+
+
+def point_line_distance(p, v1, v2):
+    x1, y1 = v1[0], v1[1]
+    x2, y2 = v2[0], v2[1]
+    x3, y3 = p[0], p[1]
+    px = x2 - x1
+    py = y2 - y1
+    norm = px * px + py * py
+    if norm == 0:
+        dx = x3 - x2
+        dy = y3 - y2
+        return (dx * dx + dy * dy) ** 0.5
+    u = ((x3 - x1) * px + (y3 - y1) * py) / float(norm)
+    if u > 1:
+        u = 1
+    elif u < 0:
+        u = 0
+    x = x1 + u * px
+    y = y1 + u * py
+    dx = x - x3
+    dy = y - y3
+    dist = (dx * dx + dy * dy) ** 0.5
+    return dist
+
+
+def distance_from_point_to_line(point, point_on_line, vector_of_line):
+    point, point_on_line, vector_of_line = Vector3(point), Vector3(point_on_line), Vector3(vector_of_line)
+    return ((point - point_on_line) * vector_of_line).length / vector_of_line.length
+
+
+def is_point_in_cylinder(point, cylinder_cap_center, cylinder_vector, cylinder_radius):
+    """ is_point_in_cylinder(impact_point, fire_src_point, fire_vector, valid_impact_threshold)"""
+    return distance_from_point_to_line(point, cylinder_cap_center, cylinder_vector) <= cylinder_radius
+
+
+def ray_to_point(ray_srs, ray_dir, dst):
+    """ \xd1\x80\xd0\xb0\xd1\x81\xd1\x81\xd1\x82\xd0\xbe\xd1\x8f\xd0\xbd\xd0\xb8\xd0\xb5 \xd0\xbe\xd1\x82 \xd0\xbb\xd1\x83\xd1\x87\xd0\xb0 \xd0\xb4\xd0\xbe \xd1\x82\xd0\xbe\xd1\x87\xd0\xba\xd0\xb8 """
+    ray_dir = Vector3(ray_dir)
+    ray_dir.normalise()
+    to_dest = dst - ray_srs
+    distance = to_dest.length
+    to_dest.normalise()
+    dot = ray_dir.dot(to_dest)
+    if dot <= 0:
+        return distance
+    angle = math.acos(dot)
+    dist = math.sin(angle)
+    return dist * distance
+
+
+def lerpclamp(value1, value2, amount):
+    """ \xd0\xbb\xd0\xb8\xd0\xbd\xd0\xb5\xd0\xb9\xd0\xbd\xd0\xb0\xd1\x8f \xd0\xb8\xd0\xbd\xd1\x82\xd0\xb5\xd1\x80\xd0\xbf\xd0\xbe\xd0\xbb\xd1\x8f\xd1\x86\xd0\xb8\xd1\x8f \xd1\x81 \xd0\xbe\xd0\xb3\xd1\x80\xd0\xb0\xd0\xbd\xd0\xb8\xd1\x87\xd0\xb5\xd0\xbd\xd0\xb8\xd1\x8f\xd0\xbc\xd0\xb8 (0 < amount < 1) """
+    result = lerp(value1, value2, amount)
+    return clamp(result, value1, value2)
+
+
+def lerp(value1, value2, amount):
+    """ \xd0\xbb\xd0\xb8\xd0\xbd\xd0\xb5\xd0\xb9\xd0\xbd\xd0\xb0\xd1\x8f \xd0\xb8\xd0\xbd\xd1\x82\xd0\xb5\xd1\x80\xd0\xbf\xd0\xbe\xd0\xbb\xd1\x8f\xd1\x86\xd0\xb8\xd1\x8f \xd0\xb1\xd0\xb5\xd0\xb7 \xd0\xbe\xd0\xb3\xd1\x80\xd0\xb0\xd0\xbd\xd0\xb8\xd1\x87\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb9 (0 < amount < 1) """
+    return (value2 - value1) * amount + value1
+
+
+def inverse_lerpclam(a, b, value):
+    """ percentage of value between start and end clamped (0..1) """
+    return clamp(float(value - a) / (b - a))
+
+
+def inverse_lerp(a, b, value):
+    """ percentage of value between start and end (0..1) """
+    return float(value - a) / (b - a)
+
+
+def map_UINT8_to_100(value):
+    """ \xd0\xbf\xd1\x80\xd0\xb5\xd0\xbe\xd0\xb1\xd1\x80\xd0\xb0\xd0\xb7\xd1\x83\xd0\xb5\xd1\x82 \xd0\xb7\xd0\xbd\xd0\xb0\xd1\x87\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5 \xd0\xb2 \xd0\xbf\xd1\x80\xd0\xb5\xd0\xb4\xd0\xb5\xd0\xbb\xd0\xb0\xd1\x85 UINT8(0:255) \xd0\xb2 FLOAT(0.0:100.0) """
+    return value / 2.55
+
+
+def map_100_to_UINT8(value):
+    """ \xd0\xbf\xd1\x80\xd0\xb5\xd0\xbe\xd0\xb1\xd1\x80\xd0\xb0\xd0\xb7\xd1\x83\xd0\xb5\xd1\x82 \xd0\xb7\xd0\xbd\xd0\xb0\xd1\x87\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5 \xd0\xb2 \xd0\xbf\xd1\x80\xd0\xb5\xd0\xb4\xd0\xb5\xd0\xbb\xd0\xb0\xd1\x85 FLOAT(0.0:100.0) \xd0\xb2 UINT8(0:255)
+    """
+    return int(value * 2.55)
+
+
+def map_any(value, from_min, from_max, to_min, to_max):
+    """ \xd0\xbf\xd1\x80\xd0\xb5\xd0\xbe\xd0\xb1\xd1\x80\xd0\xb0\xd0\xb7\xd1\x83\xd0\xb5\xd1\x82 \xd0\xb7\xd0\xbd\xd0\xb0\xd1\x87\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5 \xd0\xb2 \xd0\xbf\xd1\x80\xd0\xb5\xd0\xb4\xd0\xb5\xd0\xbb\xd0\xb0\xd1\x85 from(min:max) \xd0\xb2 to(min:max)
+    """
+    ratio = float(value - from_min) / float(from_max - from_min)
+    return lerp(to_min, to_max, ratio)
+
+
+def map_UINT8_to_1(value):
+    """ \xd0\xbf\xd1\x80\xd0\xb5\xd0\xbe\xd0\xb1\xd1\x80\xd0\xb0\xd0\xb7\xd1\x83\xd0\xb5\xd1\x82 \xd0\xb7\xd0\xbd\xd0\xb0\xd1\x87\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5 \xd0\xb2 \xd0\xbf\xd1\x80\xd0\xb5\xd0\xb4\xd0\xb5\xd0\xbb\xd0\xb0\xd1\x85 UINT(0:255) \xd0\xb2 FLOAT(0.0:1.0)
+    """
+    return value / 255.0
+
+
+def map_UINT8(value, min_value, max_value):
+    """ \xd0\xbf\xd1\x80\xd0\xb5\xd0\xbe\xd0\xb1\xd1\x80\xd0\xb0\xd0\xb7\xd1\x83\xd0\xb5\xd1\x82 \xd0\xb7\xd0\xbd\xd0\xb0\xd1\x87\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5 \xd0\xb2 \xd0\xbf\xd1\x80\xd0\xb5\xd0\xb4\xd0\xb5\xd0\xbb\xd0\xb0\xd1\x85 UINT(0:255) \xd0\xb2 (min_value:max_value)
+    """
+    return lerp(min_value, max_value, value / 255.0)
+
+
+def lerp_angle(value1, value2, amount):
+    """ \xd0\xbb\xd0\xb8\xd0\xbd\xd0\xb5\xd0\xb9\xd0\xbd\xd0\xb0\xd1\x8f \xd0\xb8\xd0\xbd\xd1\x82\xd0\xb5\xd1\x80\xd0\xbf\xd0\xbe\xd0\xbb\xd1\x8f\xd1\x86\xd0\xb8\xd1\x8f \xd1\x83\xd0\xb3\xd0\xbb\xd0\xbe\xd0\xb2 (0 < amount < 1) \xd0\xb2 \xd1\x80\xd0\xb0\xd0\xb4\xd0\xb8\xd0\xb0\xd0\xbd\xd0\xb0\xd1\x85
+    """
+    q1 = Quaternion()
+    q2 = Quaternion()
+    q3 = Quaternion()
+    q1.fromAngleAxis(value1, Vector3(0, 1, 0))
+    q2.fromAngleAxis(value2, Vector3(0, 1, 0))
+    q3.slerp(q1, q2, amount)
+    return q3.axisAngle()[1]
+
+
+def direction_slerp(direction1, direction2, value):
+    """ \xd0\xb8\xd0\xbd\xd1\x82\xd0\xb5\xd1\x80\xd0\xbf\xd0\xbe\xd0\xbb\xd1\x8f\xd1\x86\xd0\xb8\xd1\x8f \xd0\xbd\xd0\xb0\xd0\xbf\xd1\x80\xd0\xb0\xd0\xb2\xd0\xbb\xd0\xb5\xd0\xbd\xd0\xb8\xd1\x8f \xd1\x87\xd0\xb5\xd1\x80\xd0\xb5\xd0\xb7 \xd0\xba\xd0\xb2\xd0\xb0\xd1\x82\xd0\xb5\xd1\x80\xd0\xbd\xd0\xb8\xd0\xbe\xd0\xbd\xd1\x8b """
+    q1 = Quaternion()
+    q1.set(direction1, 1.0)
+    q2 = Quaternion()
+    q2.set(direction2, 1.0)
+    q3 = Quaternion()
+    q3.slerp(q1, q2, value)
+    return q3.axisAngle()[0]
+
+
+def lerp_angle2(value1, value2, amount):
+    """ \xd0\xb2 \xd1\x80\xd0\xb0\xd0\xb4\xd0\xb8\xd0\xb0\xd0\xbd\xd0\xb0\xd1\x85 """
+
+    def short_angle_dist(a0, a1):
+        da = (a1 - a0) % (math.pi * 2)
+        return 2 * da % (math.pi * 2) - da
+
+    return value1 + short_angle_dist(value1, value2) * amount
+
+
+def get_angle(angle_a, angle_b):
+    """ \xd1\x83\xd0\xb3\xd0\xbe\xd0\xbb \xd0\xbc\xd0\xb5\xd0\xb6\xd0\xb4\xd1\x83 \xd1\x83\xd0\xb3\xd0\xbb\xd0\xb0\xd0\xbc\xd0\xb8 (\xd0\xb2 \xd1\x80\xd0\xb0\xd0\xb4\xd0\xb8\xd0\xb0\xd0\xbd\xd0\xb0\xd1\x85) """
+    return abs((angle_a - angle_b + math.pi) % (math.pi * 2) - math.pi)
+
+
+def calculate_reflection(collision_point, collision_vector, collision_triangle):
+    """ collision_point - \xd1\x82\xd0\xbe\xd1\x87\xd0\xba\xd0\xb0 \xd1\x81\xd1\x82\xd0\xbe\xd0\xbb\xd0\xba\xd0\xbd\xd0\xbe\xd0\xb2\xd0\xb5\xd0\xbd\xd0\xb8\xd1\x8f
+            collision_vector - \xd0\xbd\xd0\xb0\xd0\xbf\xd1\x80\xd0\xb0\xd0\xb2\xd0\xbb\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5 \xd1\x81\xd1\x82\xd0\xbe\xd0\xbb\xd0\xba\xd0\xbd\xd0\xbe\xd0\xb2\xd0\xb5\xd0\xbd\xd0\xb8\xd1\x8f
+            collision_triangle - \xd1\x82\xd1\x80\xd0\xb8 \xd1\x82\xd0\xbe\xd1\x87\xd0\xba\xd0\xb8, \xd0\xba\xd0\xbe\xd1\x82\xd0\xbe\xd1\x80\xd1\x8b \xd1\x85\xd0\xb0\xd1\x80\xd0\xb0\xd0\xba\xd1\x82\xd0\xb5\xd1\x80\xd0\xb8\xd0\xb7\xd1\x83\xd1\x8e\xd1\x82 \xd0\xbc\xd0\xb5\xd1\x81\xd1\x82\xd0\xbe \xd1\x83\xd0\xb4\xd0\xb0\xd1\x80\xd0\xb0
+            \xd0\xb5\xd1\x81\xd0\xbb\xd0\xb8 \xd0\xbf\xd0\xbe\xd0\xb2\xd0\xb5\xd1\x80\xd1\x85\xd0\xbd\xd0\xbe\xd1\x81\xd1\x82\xd1\x8c \xd0\xb2\xd1\x8b\xd0\xb2\xd0\xb5\xd1\x80\xd0\xbd\xd1\x83\xd1\x82\xd0\xb0, \xd1\x81\xd0\xba\xd0\xbe\xd1\x80\xd1\x80\xd0\xb5\xd0\xba\xd1\x82\xd0\xb8\xd1\x80\xd1\x83\xd0\xb5\xd1\x82\xd1\x81\xd1\x8f \xd0\xb0\xd0\xb2\xd1\x82\xd0\xbe\xd0\xbc\xd0\xb0\xd1\x82\xd0\xb8\xd1\x87\xd0\xb5\xd1\x81\xd0\xba\xd0\xb8
+    """
+    vector1 = collision_triangle[0] - collision_triangle[1]
+    vector2 = collision_triangle[0] - collision_triangle[2]
+    collision_vector = Vector3(collision_vector)
+    collision_vector.normalise()
+    normal = vector1 * vector2
+    normal.normalise()
+    dot = collision_vector.dot(normal)
+    if dot > 0.0:
+        normal = -normal
+        dot = collision_vector.dot(normal)
+    result = collision_vector - normal * dot * 2
+    result.normalise()
+    return (result, normal)
+
+
+def get_triangle_normal(triangle):
+    tri_normal = (triangle[2] - triangle[0]) * (triangle[2] - triangle[1])
+    tri_normal.normalise()
+    return tri_normal
+
+
+def reflect_vector(vector, normal):
+    """ \xd0\xbe\xd1\x82\xd1\x80\xd0\xb0\xd0\xb6\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5 \xd0\xb2\xd0\xb5\xd0\xba\xd1\x82\xd0\xbe\xd1\x80\xd0\xb0 \xd0\xbf\xd1\x80\xd0\xb8 \xd0\xb8\xd0\xb7\xd0\xb2\xd0\xb5\xd1\x81\xd1\x82\xd0\xbd\xd0\xbe\xd0\xb9 \xd0\xbd\xd0\xbe\xd1\x80\xd0\xbc\xd0\xb0\xd0\xbb\xd0\xb8 \xd0\xbf\xd0\xbe\xd0\xb2\xd0\xb5\xd1\x80\xd1\x85\xd0\xbd\xd0\xbe\xd1\x81\xd1\x82\xd0\xb8 """
+    normalized_normal = Vector3(normal)
+    normalized_normal.normalise()
+    normalized_vector = Vector3(vector)
+    normalized_vector.normalise()
+    axis = normalized_vector * normalized_normal
+    m = Matrix().xfromAngleAxis(axis, math.asin(axis.length) * 2)
+    return m.applyVector(vector)
+
+
+def get_bits_count(value):
+    if value == 0:
+        return 0
+    return (0 if value % 2 == 0 else 1) + get_bits_count(value >> 1)
+
+
+def erf(x):
+    """approximation of http://en.wikipedia.org/wiki/Error_function"""
+    sign = 1 if x >= 0 else -1
+    x = abs(x)
+    t = 1.0 / (1.0 + 0.3275911 * x)
+    return sign * (1.0 - ((((1.061405429 * t + -1.453152027) * t + 1.421413741) * t + -0.284496736) * t + 0.254829592) * t * math.exp(-x ** 2))
+
+
+def blend_matrises(matrix1, matrix2, amount):
+    pos = lerp(matrix1.translation, matrix2.translation, amount)
+    mt = Matrix()
+    mt.setTranslate(pos)
+    yaw1, pitch1, roll1 = matrix1.yaw, matrix1.pitch, matrix1.roll
+    yaw2, pitch2, roll2 = matrix2.yaw, matrix2.pitch, matrix2.roll
+    yaw = lerp_angle2(yaw1, yaw2, amount)
+    pitch = lerp_angle2(pitch1, pitch2, amount)
+    roll = lerp_angle2(roll1, roll2, amount)
+    mr = Matrix()
+    mr.setRotateYPR((yaw, pitch, roll))
+    mt.preMultiply(mr)
+    return mt
+
+
+def get_reflection_from_collision(from_point, box_attachment, collision_position):
+    """ \xd0\xbe\xd1\x82\xd1\x80\xd0\xb0\xd0\xb6\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5 \xd0\xb2\xd0\xb5\xd0\xba\xd1\x82\xd0\xbe\xd1\x80\xd0\xb0 \xd0\xbe\xd1\x82 \xd0\xb1\xd0\xbe\xd0\xba\xd1\x81\xd0\xb0 (\xd0\xb0\xd0\xbd\xd0\xb0\xd0\xbb\xd0\xbe\xd0\xb3 \xd0\xbd\xd0\xb5\xd1\x80\xd0\xb0\xd0\xb1\xd0\xbe\xd1\x82\xd0\xb0\xd1\x8e\xd1\x89\xd0\xb5\xd0\xb3\xd0\xbe SkeletonCollider.impactReflection)
+            \xd0\xbd\xd1\x8b\xd0\xbd\xd0\xb5 \xd1\x80\xd0\xb5\xd0\xb0\xd0\xbb\xd0\xb8\xd0\xb7\xd0\xbe\xd0\xb2\xd0\xb0\xd0\xbd\xd0\xbe \xd0\xb2 C++ \xd0\xb8 \xd0\xbf\xd0\xbe\xd1\x81\xd0\xb5\xd0\xbc\xd1\x83 \xd0\xbd\xd0\xb5 \xd0\xb0\xd0\xba\xd1\x82\xd1\x83\xd0\xb0\xd0\xbb\xd1\x8c\xd0\xbd\xd0\xbe (\xd0\xbe\xd1\x81\xd1\x82\xd0\xb0\xd0\xb2\xd0\xbb\xd0\xb5\xd0\xbd\xd0\xbe \xd0\xb4\xd0\xbb\xd1\x8f \xd0\xb8\xd1\x81\xd1\x82\xd0\xbe\xd1\x80\xd0\xb8\xd0\xb8)
+    """
+    m = Matrix(box_attachment.worldTransform)
+    m.invert()
+    local_point = m.applyPoint(collision_position)
+    x_max, y_max, z_max = box_attachment.maxBounds
+    x_min, y_min, z_min = box_attachment.minBounds
+    local_direction = m.applyPoint(from_point) - local_point
+    local_direction.normalise()
+    epsilon = 0.001
+
+    def compare(value1, value2):
+        return abs(value1 - value2) <= epsilon
+
+    if compare(local_point.x, x_max):
+        local_normal = Vector3(1, 0, 0)
+    elif compare(local_point.x, x_min):
+        local_normal = Vector3(-1, 0, 0)
+    elif compare(local_point.y, y_max):
+        local_normal = Vector3(0, 1, 0)
+    elif compare(local_point.y, y_min):
+        local_normal = Vector3(0, -1, 0)
+    elif compare(local_point.z, z_max):
+        local_normal = Vector3(0, 0, 1)
+    elif compare(local_point.z, z_min):
+        local_normal = Vector3(0, 0, -1)
+    else:
+        return None
+    axis = local_direction * local_normal
+    m = Matrix().xfromAngleAxis(axis, math.asin(axis.length) * 2)
+    local_reflectin = m.applyVector(local_direction)
+    world_reflection = box_attachment.worldTransform.applyVector(local_reflectin)
+    world_reflection.normalise()
+    return world_reflection
+
+
+def calc_complex_chance(*chances):
+    """ \xd0\xb1\xd0\xb5\xd1\x80\xd1\x91\xd1\x82 \xd1\x88\xd0\xb0\xd0\xbd\xd1\x81\xd1\x8b (\xd0\xb2 \xd0\xb4\xd0\xbe\xd0\xbb\xd1\x8f\xd1\x85) \xd0\xb8 \xd0\xb2\xd1\x8b\xd1\x87\xd0\xb8\xd1\x81\xd0\xbb\xd1\x8f\xd0\xb5\xd1\x82 \xd0\xb8\xd0\xb7 \xd0\xbd\xd0\xb8\xd1\x85 \xd0\xbd\xd0\xbe\xd0\xb2\xd1\x8b\xd0\xb9 \xd1\x88\xd0\xb0\xd0\xbd\xd1\x81 \xd1\x81 \xd1\x83\xd1\x87\xd1\x91\xd1\x82\xd0\xbe\xd0\xbc \xd1\x81\xd0\xbb\xd0\xbe\xd0\xb6\xd0\xbd\xd1\x8b\xd1\x85 \xd0\xbf\xd1\x80\xd0\xbe\xd1\x86\xd0\xb5\xd0\xbd\xd1\x82\xd0\xbe\xd0\xb2 """
+    return clamp(1.0 - reduce(lambda v1, v2: v1 * v2, (1.0 - ch for ch in chances)))
+
+
+_cache = [None, None]
+
+def catmull_rom(p0, p1, p2, p3, i):
+    global _cache
+    if _cache[0] == (p0,
+     p1,
+     p2,
+     p3):
+        k1, k2, k3, k4 = _cache[1]
+    else:
+        k1 = 2 * p1
+        k2 = -p0 + p2
+        k3 = 2 * p0 - 5 * p1 + 4 * p2 - p3
+        k4 = -p0 + 3 * p1 - 3 * p2 + p3
+        _cache = [(p0,
+          p1,
+          p2,
+          p3), (k1,
+          k2,
+          k3,
+          k4)]
+    i2 = i * i
+    return 0.5 * (k1 + k2 * i + k3 * i2 + k4 * i2 * i)
+
+
+def to_euler_angles(q):
+    """ \xd0\xba\xd0\xb2\xd0\xb0\xd1\x82\xd0\xb5\xd1\x80\xd0\xbd\xd0\xb8\xd0\xbe\xd0\xbd \xd0\xb2 \xd1\x83\xd0\xb3\xd0\xbb\xd1\x8b \xd0\xad\xd0\xb9\xd0\xbb\xd0\xb5\xd1\x80\xd0\xb0 (roll, pitch, yaw) """
+    t0 = 2.0 * (q.w * q.x + q.y * q.z)
+    t1 = 1.0 - 2.0 * (q.x * q.x + q.y * q.y)
+    t2 = 2.0 * (q.w * q.y - q.z * q.x)
+    t3 = 2.0 * (q.w * q.z + q.x * q.y)
+    t4 = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
+    if t2 > 1.0:
+        t2 = 1.0
+    if t2 < -1.0:
+        t2 = -1.0
+    roll = math.atan2(t0, t1)
+    pitch = math.asin(t2)
+    yaw = math.atan2(t3, t4)
+    return (roll, pitch, yaw)
+
+
+def euler_to_quaternion(roll, pitch, yaw):
+    """ \xd1\x83\xd0\xb3\xd0\xbb\xd1\x8b \xd0\xad\xd0\xbb\xd0\xb5\xd1\x80\xd0\xb0 (roll, pitch, yaw) \xd0\xb2 \xd0\xba\xd0\xb2\xd0\xb0\xd1\x82\xd0\xb5\xd1\x80\xd0\xbd\xd0\xb8\xd0\xbe\xd0\xbd """
+    cr = math.cos(roll * 0.5)
+    sr = math.sin(roll * 0.5)
+    cp = math.cos(pitch * 0.5)
+    sp = math.sin(pitch * 0.5)
+    cy = math.cos(yaw * 0.5)
+    sy = math.sin(yaw * 0.5)
+    q = Quaternion()
+    q.w = cr * cp * cy + sr * sp * sy
+    q.x = sr * cp * cy - cr * sp * sy
+    q.y = cr * sp * cy + sr * cp * sy
+    q.z = cr * cp * sy - sr * sp * cy
+    norm = math.sqrt(q.w * q.w + q.x * q.x + q.y * q.y + q.z * q.z)
+    q.w /= norm
+    q.x /= norm
+    q.y /= norm
+    q.z /= norm
+    return q
+
+
+def flatDot(v1, v2):
+    v1 = Vector3(v1)
+    v2 = Vector3(v2)
+    v1[1] = 0
+    v2[1] = 0
+    v1.normalise()
+    v2.normalise()
+    if not v1:
+        return 0
+    if not v2:
+        return 0
+    return v1.dot(v2)
+
+
+def V3toV2(vector3):
+    return Vector2(vector3[0], vector3[2])
+
+
+def V2toV3(vector2):
+    return Vector3(vector2[0], 0, vector2[1])
+
+
+def isNanV3(v3):
+    if math.isnan(v3[0]):
+        return True
+    if math.isnan(v3[1]):
+        return True
+    if math.isnan(v3[2]):
+        return True
+    return False

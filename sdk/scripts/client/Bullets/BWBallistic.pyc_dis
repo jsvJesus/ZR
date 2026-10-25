@@ -1,0 +1,228 @@
+# Embedded file name: ./client/Bullets/BWBallistic.py
+import BigWorld
+from Math import Vector2, Vector3
+import SFXer
+import math
+from SfxCatalog import Mat
+from SfxCatalog import RICOCHET_CATALOG as RC
+from SfxCatalog import RICOCHET_INTERACTION as RI
+from SfxCatalog import PIERCE_INTERACTION as PI
+from SfxCatalog import BULLET_SPIRALS_CATALOG
+from utils_bw import IGNORE_MATERIAL
+from math_bw import toHEX
+from Items import ItemsCatalog
+import ItemCategories as IC
+from wound_and_soak_parameters import material_blood_params
+
+class SfxType:
+    NO_SFX, REFLECT, PIERCE, STUCK = xrange(0, 4)
+
+
+class SkeletonColliderType:
+    NORMAL, ARMOR = xrange(0, 2)
+
+
+from Bullets.EnviroCollision import onEnviroCollision, onWaterCollision
+from Bullets.EntityCollision import onEntityCollision
+from _BWBallistic import *
+SPIRAL_RICOCHET = 'ricochet_9x19'
+GRAVITY = 30
+FRICTION = 0.0
+MIN_SPEED = 1.0
+LIFE_TIME = 3.0
+SPEED = 250
+LENGTH = 0.017
+FLAME_DIST = 0
+COLOUR = (1, 1, 1, 1)
+VISIBLE = True
+COLLISION_SPREAD = 0.3
+PIERCE_FACTOR = 0.024
+MAX_RICOCHETS = 2
+CRAZY_RATIO = 0.01
+CRAZY_DUMP = (0.005, 0.1)
+SOUND_CAM_RADIUS = 5
+SOUND_CAM_ANGLE = 45
+BULLET_MODEL_CACHE = []
+MAX_CACHED_ELEMENTS = 500
+
+def get_ammo_param(ammo_type, weapon_item_type):
+    """
+    \xd1\x80\xd0\xb0\xd1\x81\xd1\x87\xd1\x91\xd1\x82 \xd0\xbf\xd0\xb0\xd1\x80\xd0\xb0\xd0\xbc\xd0\xb5\xd1\x82\xd1\x80\xd0\xbe\xd0\xb2 \xd0\xbf\xd1\x83\xd0\xbb\xd0\xb8 \xd0\xb2 \xd0\xb7\xd0\xb0\xd0\xb2\xd0\xb8\xd1\x81\xd0\xb8\xd0\xbc\xd0\xbe\xd1\x81\xd1\x82\xd0\xb8 \xd0\xbe\xd1\x82 \xd1\x81\xd1\x82\xd1\x80\xd0\xb5\xd0\xbb\xd0\xba\xd0\xbe\xd0\xb2\xd0\xbe\xd0\xb3\xd0\xbe \xd0\xbe\xd1\x80\xd1\x83\xd0\xb6\xd0\xb8\xd1\x8f
+    """
+    if weapon_item_type == 0:
+        return {}
+    param1 = ItemsCatalog.GetItemParam(ammo_type)
+    param2 = ItemsCatalog.GetItemParam(weapon_item_type)
+    param = {'TracerSpeed': param1.get('AddTracerSpeed', SPEED),
+     'TracerLength': param1.get('AddTracerLength', LENGTH),
+     'TracerFriction': param1.get('AddTracerFriction', FRICTION),
+     'TracerGravity': Vector3(0, -param1.get('AddTracerGravity', GRAVITY), 0)}
+    param['TracerSpeed'] += param2.get('AddTracerSpeed', 0)
+    param['TracerLength'] += param2.get('AddTracerLength', 0)
+    param['TracerFriction'] += param2.get('AddTracerFriction', 0)
+    param['TracerGravity'] += Vector3(0, -param2.get('AddTracerGravity', 0), 0)
+    return param
+
+
+def onBulletsPassby(lst):
+    SFXer.bulletsPassby(lst)
+
+
+def init():
+
+    def getPierceData():
+        res = {}
+        for mat in PI:
+            res[mat] = PI[mat][0]
+
+        return res
+
+    def formRicochetCatalogues():
+        cat = []
+        indexmap = {}
+
+        def get_rc_by_matname(matname):
+            lst = RC[matname]
+            res = []
+            for data in lst:
+                res.append((data['range'][0], data['ricochet'], data['speed']))
+
+            return res
+
+        cat.append(get_rc_by_matname('Default'))
+        indexmap['Default'] = 0
+        for matname in RC:
+            if matname == 'Default':
+                continue
+            indexmap[matname] = len(cat)
+            cat.append(get_rc_by_matname(matname))
+
+        inter = []
+        interMap = {}
+
+        def get_ri_by_name(name):
+            data = RI[name]
+            dc = {}
+            for mat in data:
+                matid = mat
+                if mat == 'default':
+                    matid = 0
+                dc[matid] = indexmap[data[mat][0]]
+
+            return dc
+
+        interMap['Default'] = 0
+        inter.append(get_ri_by_name('Default'))
+        for interact_str in RI:
+            if interact_str == 'Default':
+                continue
+            interMap[interact_str] = len(inter)
+            inter.append(get_ri_by_name(interact_str))
+
+        return (cat, inter, interMap)
+
+    def getAmmoConfig(interactMap):
+
+        def getAmmoType(ammoid):
+            if ammoid == 0:
+                return None
+            else:
+                params = ItemsCatalog.GetItemParam(ammoid)
+                spinName = params.get('TracerSpiralRicochet', SPIRAL_RICOCHET)
+                spin_params = BULLET_SPIRALS_CATALOG[spinName]
+                spinData = (spin_params['SpiralDensity'],
+                 spin_params['SpiralSpeed'],
+                 spin_params['SpiralSize'],
+                 spin_params['VelocityFade'])
+                gravity = Vector3(0, -params.get('TracerGravity', GRAVITY), 0)
+                tracerSpeed = params.get('TracerSpeed', SPEED)
+                friction = params.get('TracerFriction', FRICTION)
+                color = params.get('TracerColour', COLOUR)
+                visible = params.get('TracerVisible', VISIBLE)
+                length = params.get('TracerLength', LENGTH)
+
+                def process(v):
+                    return int(v * 255)
+
+                uintColor = toHEX(process(color[0]), process(color[1]), process(color[2]), process(color[3]))
+                interactName = params.get('HitSfxCategory') or 'Default'
+                interactID = interactMap.get(interactName, interactMap.get('Default'))
+                return (spinData,
+                 gravity,
+                 tracerSpeed,
+                 friction,
+                 uintColor,
+                 interactID,
+                 ammoid,
+                 visible,
+                 length)
+
+        ammoMap = {}
+        for id_ in ItemsCatalog:
+            if ItemsCatalog.GetItemCategory(id_) == IC.CARTRIDGE:
+                ammoMap[id_] = 0
+
+        bHasZeroBullet = False
+        ammoMap[0] = 0
+        todel = []
+        for id_ in ammoMap:
+            if id_ == 0:
+                continue
+            data = getAmmoType(id_)
+            if not data:
+                todel.append(id_)
+            ammoMap[id_] = data
+            if not bHasZeroBullet:
+                ammoMap[0] = data
+                bHasZeroBullet = True
+
+        for id_ in todel:
+            del ammoMap[id_]
+
+        return ammoMap
+
+    def getBulletConfig():
+        ignoreMats = IGNORE_MATERIAL
+        crazyRatios = {}
+        for matname in material_blood_params:
+            matid = Mat.get_material_id_by_name(matname)
+            crazyRatios[matid] = material_blood_params[matname]['crazy_ratio']
+
+        angle = math.cos(math.radians(SOUND_CAM_ANGLE))
+        return (ignoreMats,
+         crazyRatios,
+         MAX_RICOCHETS,
+         LIFE_TIME,
+         MIN_SPEED * MIN_SPEED,
+         CRAZY_RATIO,
+         COLLISION_SPREAD,
+         PIERCE_FACTOR,
+         FLAME_DIST,
+         SOUND_CAM_RADIUS,
+         angle,
+         onBulletsPassby)
+
+    pierceData = getPierceData()
+    ricochetCatalogue, richochetInteract, interMap = formRicochetCatalogues()
+    ammoTypes = getAmmoConfig(interMap)
+    baseBulletConfig = getBulletConfig()
+
+    def callback(entityCollisions, enviroSfxCollisions, waterCollisions):
+        for tri0, tri1, tri2, triNormal, material, point, sfxType, ammoID, ownerID in enviroSfxCollisions:
+            owner = BigWorld.entity(ownerID)
+            if not owner:
+                continue
+            tri = (tri0, tri1, tri2)
+            onEnviroCollision(tri, triNormal, material, point, sfxType, ammoID, owner)
+
+        if entityCollisions:
+            for info in entityCollisions:
+                skeletons, armors, toPoint, potentialPos, bulletPos, bulletVel, bulletSpeed, ammoID, weaponID, victimID, ownerID = info
+                onEntityCollision(skeletons, armors, toPoint, potentialPos, bulletPos, bulletVel, bulletSpeed, ammoID, weaponID, victimID, ownerID)
+
+        for waterCollidePos in waterCollisions:
+            onWaterCollision(waterCollidePos)
+
+    model_name = 'characters2/weapons/ammo/tracer_trail.model'
+    crazyratio = Vector2(*CRAZY_DUMP)
+    return InitBulletController(ricochetCatalogue, richochetInteract, pierceData, ammoTypes, baseBulletConfig, callback, model_name, crazyratio)

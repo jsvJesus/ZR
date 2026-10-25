@@ -1,0 +1,134 @@
+# Embedded file name: ./common/Lib/PIL/FliImagePlugin.py
+from PIL import Image, ImageFile, ImagePalette, _binary
+__version__ = '0.2'
+i8 = _binary.i8
+i16 = _binary.i16le
+i32 = _binary.i32le
+o8 = _binary.o8
+
+def _accept(prefix):
+    return len(prefix) >= 6 and i16(prefix[4:6]) in (44817, 44818)
+
+
+class FliImageFile(ImageFile.ImageFile):
+    format = 'FLI'
+    format_description = 'Autodesk FLI/FLC Animation'
+
+    def _open(self):
+        s = self.fp.read(128)
+        magic = i16(s[4:6])
+        if magic in (44817, 44818) and i16(s[14:16]) in (0, 3):
+            if not s[20:22] == '\x00\x00':
+                raise SyntaxError('not an FLI/FLC file')
+            self.mode = 'P'
+            self.size = (i16(s[8:10]), i16(s[10:12]))
+            duration = i32(s[16:20])
+            if magic == 44817:
+                duration = duration * 1000 / 70
+            self.info['duration'] = duration
+            palette = [ (a, a, a) for a in range(256) ]
+            s = self.fp.read(16)
+            self.__offset = 128
+            self.__offset = i16(s[4:6]) == 61696 and self.__offset + i32(s)
+            s = self.fp.read(16)
+        if i16(s[4:6]) == 61946:
+            s = self.fp.read(6)
+            if i16(s[4:6]) == 11:
+                self._palette(palette, 2)
+            elif i16(s[4:6]) == 4:
+                self._palette(palette, 0)
+        palette = [ o8(r) + o8(g) + o8(b) for r, g, b in palette ]
+        self.palette = ImagePalette.raw('RGB', ''.join(palette))
+        self.__frame = -1
+        self.__fp = self.fp
+        self.__rewind = self.fp.tell()
+        self._n_frames = None
+        self._is_animated = None
+        self.seek(0)
+        return
+
+    def _palette(self, palette, shift):
+        i = 0
+        for e in range(i16(self.fp.read(2))):
+            s = self.fp.read(2)
+            i = i + i8(s[0])
+            n = i8(s[1])
+            if n == 0:
+                n = 256
+            s = self.fp.read(n * 3)
+            for n in range(0, len(s), 3):
+                r = i8(s[n]) << shift
+                g = i8(s[n + 1]) << shift
+                b = i8(s[n + 2]) << shift
+                palette[i] = (r, g, b)
+                i += 1
+
+    @property
+    def n_frames(self):
+        if self._n_frames is None:
+            current = self.tell()
+            try:
+                while True:
+                    self.seek(self.tell() + 1)
+
+            except EOFError:
+                self._n_frames = self.tell() + 1
+
+            self.seek(current)
+        return self._n_frames
+
+    @property
+    def is_animated(self):
+        if self._is_animated is None:
+            current = self.tell()
+            try:
+                self.seek(1)
+                self._is_animated = True
+            except EOFError:
+                self._is_animated = False
+
+            self.seek(current)
+        return self._is_animated
+
+    def seek(self, frame):
+        if frame == self.__frame:
+            return
+        if frame < self.__frame:
+            self._seek(0)
+        last_frame = self.__frame
+        for f in range(self.__frame + 1, frame + 1):
+            try:
+                self._seek(f)
+            except EOFError:
+                self.seek(last_frame)
+                raise EOFError('no more images in FLI file')
+
+    def _seek(self, frame):
+        if frame == 0:
+            self.__frame = -1
+            self.__fp.seek(self.__rewind)
+            self.__offset = 128
+        if frame != self.__frame + 1:
+            raise ValueError('cannot seek to frame %d' % frame)
+        self.__frame = frame
+        self.fp = self.__fp
+        self.fp.seek(self.__offset)
+        s = self.fp.read(4)
+        if not s:
+            raise EOFError
+        framesize = i32(s)
+        self.decodermaxblock = framesize
+        self.tile = [('fli',
+          (0, 0) + self.size,
+          self.__offset,
+          None)]
+        self.__offset += framesize
+        return
+
+    def tell(self):
+        return self.__frame
+
+
+Image.register_open(FliImageFile.format, FliImageFile, _accept)
+Image.register_extension(FliImageFile.format, '.fli')
+Image.register_extension(FliImageFile.format, '.flc')

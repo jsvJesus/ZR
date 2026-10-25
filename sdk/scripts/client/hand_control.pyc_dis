@@ -1,0 +1,2174 @@
+# Embedded file name: ./client/hand_control.py
+"""
+\xd0\x9a\xd0\xbb\xd0\xb0\xd1\x81\xd1\x81 \xd0\xba\xd0\xbe\xd0\xbd\xd1\x82\xd1\x80\xd0\xbe\xd0\xbb\xd0\xb8\xd1\x80\xd1\x83\xd0\xb5\xd1\x82 \xd0\xbf\xd1\x80\xd0\xb8\xd0\xbb\xd0\xb8\xd0\xbf\xd0\xb0\xd0\xbd\xd0\xb8\xd0\xb5 \xd1\x80\xd1\x83\xd0\xba \xd0\xba \xd0\xbe\xd1\x80\xd1\x83\xd0\xb6\xd0\xb8\xd1\x8e
+\xd0\xb8 \xd0\xbe\xd1\x80\xd1\x83\xd0\xb6\xd0\xb8\xd1\x8f \xd0\xba \xd1\x80\xd1\x83\xd0\xba\xd0\xb0\xd0\xbc \xd0\xb2\xd0\xbe \xd0\xb2\xd1\x80\xd0\xb5\xd0\xbc\xd1\x8f \xd0\xb0\xd0\xbd\xd0\xb8\xd0\xbc\xd0\xb0\xd1\x86\xd0\xb8\xd0\xb9 \xd0\xb8\xd0\xbb\xd0\xb8 \xd1\x81\xd0\xbf\xd0\xb5\xd1\x86 \xd1\x81\xd0\xbe\xd1\x81\xd1\x82\xd0\xbe\xd1\x8f\xd0\xbd\xd0\xb8\xd1\x8f
+
+\xd1\x82\xd0\xb0\xd0\xba \xd0\xb6\xd0\xb5 \xd0\xbf\xd1\x80\xd0\xbe\xd0\xb8\xd0\xb3\xd1\x80\xd1\x8b\xd0\xb2\xd0\xb0\xd0\xb5\xd1\x82\xd1\x81\xd1\x8f \xd0\xb0\xd0\xbd\xd0\xb8\xd0\xbc\xd0\xb0\xd1\x86\xd0\xb8\xd1\x8f \xd1\x8d\xd0\xba\xd0\xb8\xd0\xbf\xd0\xb8\xd1\x80\xd0\xbe\xd0\xb2\xd0\xba\xd0\xb8 \xd0\xbe\xd1\x80\xd1\x83\xd0\xb6\xd0\xb8\xd1\x8f
+"""
+from functools import partial
+import BigWorld
+import BWPersonality
+import climb_settings
+from Math import Matrix
+import time
+import sounds_manager as sounds
+from Items import ItemsCatalog
+from utils import ignoreError, PY
+from utils_bw import not_safe_animation_callback
+import Constants
+import traceback
+import weapon_reload_scripts
+import clweapon
+import ItemsUtils
+import ResMgr
+import player_speed_settings
+from ItemsUtils import nodebyslot
+DEBUG = False
+BELLY_TEST_POSE = True
+
+def idgenerator():
+    x = 0
+    while True:
+        x += 1
+        yield x
+
+
+idgenerator = idgenerator()
+
+def getMatrix(pos, ypr = None):
+    matr = Matrix()
+    matr.setTranslate(pos)
+    if not ypr:
+        return matr
+    matr2 = Matrix()
+    matr2.setRotateYPR(ypr)
+    matr.preMultiply(matr2)
+    return matr
+
+
+def assert_break(isBreak):
+    if isBreak and DEBUG:
+        if not False:
+            raise AssertionError
+        return True
+    return False
+
+
+class HandControl:
+    _hand_gravity_enabled = False
+    _weapon_to_attached = None
+    _prev_cheked_key = None
+    __climb_command = None
+    _is_injured = False
+    TO_TRACKER_HAND_DELAY = 0.2
+    hand_cotrol_wait_tmp = False
+    __isPutOnOffProgress = False
+    __isPutOffUnEq = False
+    __isEquipProgress = False
+    __lock_progress_by_on_hand_weapon = False
+    __use_animation_played = False
+    __reload_weapon_progress = False
+    __reload_weapon_osn_anmation = False
+    _getup_animation_played = False
+    _left_to_right_played = False
+    _belly_to_right_played = False
+    h_crawl_left_hand_anim = False
+    h_need_attach_left_after_crawl = False
+    h_crawl_anim_played = False
+    _after_jump_landing_state = False
+    __itemType = 0
+    _slope_caps = False
+    _weapon_reloader = None
+    __saved_data_gravity = None
+    reload_from_bored = False
+    reload_from_sprint = False
+    _to_track_progress = False
+    _lock_gravity_by_attach_weapon = False
+    _belly2model = None
+    _belly2 = None
+    _e_hib_id = 0
+    is_disable_hand_gravity = False
+    RELOAD_FROM_SPRINT_DELAY = 0.2
+    RELOAD_FROM_BORED_DELAY = 0.15
+
+    def __init__(self):
+        self._tracker_locks = {}
+        self._by_anim_weapon_to = None
+        self._by_anim_has_lock = False
+        return
+
+    @ignoreError
+    def onPreModelChangeHand(self):
+        self._belly2model = None
+        if self._belly2:
+            self._belly2.attachments = []
+        self._belly2 = None
+        self.__saved_data_gravity = None
+        if self._hand_gravity_enabled and self._leftFreeHandProvider:
+            self.__saved_data_gravity = {'free_left': ResMgr.DataSection('free_left'),
+             'free_right': ResMgr.DataSection('free_right')}
+            self._leftFreeHandProvider.saveState(self.__saved_data_gravity['free_left'])
+            self._rightFreeHandProvider.saveState(self.__saved_data_gravity['free_right'])
+        return
+
+    @ignoreError
+    def onCreateWeaponProvAfterLoadHand(self):
+        if self.left_weapon_prov:
+            self.left_weapon_prov.add_position_cur = self.left_weapon_prov.add_position
+            self.left_weapon_prov.add_rotation_cur = self.left_weapon_prov.add_rotation
+        if self.right_weapon_prov:
+            self.right_weapon_prov.add_position_cur = self.right_weapon_prov.add_position
+            self.right_weapon_prov.add_rotation_cur = self.right_weapon_prov.add_rotation
+
+    @ignoreError
+    def onPostModelChangeHand(self):
+        if self.__saved_data_gravity and self._canEnableHandGravity():
+            if self._leftFreeHandProvider:
+                self._hand_gravity_enabled = True
+                self._leftFreeHandProvider.restoreState(self.__saved_data_gravity['free_left'])
+                self._rightFreeHandProvider.restoreState(self.__saved_data_gravity['free_right'])
+                self.RhandAttachTo(self._rightFreeHandProvider, 0.001)
+                self.LhandAttachTo(self._leftFreeHandProvider, 0.001)
+        self.__saved_data_gravity = None
+        self._to_track_progress = False
+        if self.active_weapon_model:
+            self.active_weapon_model.forceDraw()
+        return
+
+    def LhandAttachTo(self, *e):
+        if getattr(self, 'nodeInfoL', None):
+            self.nodeInfoL.AttachedProviders = e
+        return
+
+    def RhandAttachTo(self, *e):
+        if getattr(self, 'nodeInfoR', None):
+            self.nodeInfoR.AttachedProviders = e
+        return
+
+    @property
+    def isRelaodWeaponProgress(self):
+        return self.__reload_weapon_progress
+
+    @property
+    def isPutOnOffWeaponProgress(self):
+        return self.__isPutOnOffProgress
+
+    @property
+    def isEquipWeaponProgress(self):
+        return self.__isEquipProgress or self.__lock_progress_by_on_hand_weapon
+
+    def onStickComplete(self):
+        self.__hand_belly_pose_stop()
+
+    def __hand_belly_pose(self):
+        if BELLY_TEST_POSE and self.model:
+            self.model.hand_belly_pose()
+
+    def __hand_belly_pose_stop(self):
+        if BELLY_TEST_POSE and self.model:
+            self.model.hand_belly_pose.stop()
+
+    def blendHandOffset(self, model, hand_prov = None, from_ = 1.0, to_ = 0.0, interval = 0.3, launcher_offset = None):
+        """
+        \xd0\xbf\xd0\xbb\xd0\xb0\xd0\xb2\xd0\xbd\xd0\xbe\xd0\xb5 \xd1\x81\xd0\xbc\xd0\xb5\xd1\x89\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5 \xd1\x84\xd0\xb5\xd0\xb9\xd0\xba\xd0\xbe\xd0\xb2\xd0\xbe\xd0\xb9 \xd0\xbc\xd0\xbe\xd0\xb4\xd0\xb5\xd0\xbb\xd0\xb8 \xd0\xb2 \xd1\x80\xd1\x83\xd0\xba\xd0\xb5 \xd0\xbe\xd1\x82 \xd0\xbf\xd1\x80\xd0\xbe\xd0\xb2\xd0\xb0\xd0\xb9\xd0\xb4\xd0\xb5\xd1\x80\xd0\xb0 \xd1\x85\xd0\xb2\xd0\xb0\xd1\x82\xd0\xb0 \xd1\x81\xd0\xbe \xd1\x81\xd0\xbc\xd0\xb5\xd1\x89\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5 \xd1\x80\xd1\x83\xd0\xba\xd0\xbe\xd1\x8f\xd1\x82\xd0\xb8
+        """
+        if not model:
+            return
+        else:
+            if hand_prov is None:
+                hand_prov = self.left_weapon_prov
+            offset_matrx = Matrix()
+            m_add_rot = Matrix()
+            offset_matrx.setTranslate(hand_prov.add_position)
+            m_add_rot.setRotateYPR(hand_prov.add_rotation)
+            offset_matrx.preMultiply(m_add_rot)
+            offset_matrx.invert()
+            if launcher_offset:
+                offset_matrx.preMultiply(launcher_offset)
+            model.setBlendedMatrixOffset(from_, to_, interval, offset_matrx)
+            return
+
+    def checkHandInAir(self, inAir):
+        self.__check()
+
+    def playAnimationAfterFire(self):
+        param = self.active_weapon.getParam()
+        anim_key = 'boltAnimation'
+        if self.IsAvatarCrawling():
+            anim_key = 'boltAnimation_crawl'
+        anim_name = param.get(anim_key)
+        if not anim_name:
+            return False
+        active_weapon = self.active_weapon
+
+        def continue_play():
+            if not self.active_weapon:
+                self.__reload_weapon_progress = False
+                return
+            if active_weapon != self.active_weapon:
+                self.__reload_weapon_progress = False
+                return
+            anim_cls_name = 'BaseWeaponBoltAnimation'
+            if ':' in anim_name:
+                anim_cls_name = anim_name.split(':')[1]
+                anim_cls_name = anim_cls_name.strip()
+            anim_cls = getattr(weapon_reload_scripts, anim_cls_name)
+            self.__reload_weapon_progress = True
+            self.__reload_weapon_osn_anmation = True
+            self._weapon_reloader = anim_cls(self, lambda : self.onBoltAnimateComplete(active_weapon))
+            self._weapon_reloader.LEFT_HAND = param.get('boltAnimationLeftHand', False)
+            self._weapon_reloader.subscribeCues(anim_name)
+            self._weapon_reloader.play(anim_name)
+            self.onBoltAnimationWeapon()
+
+        boltAnimationDelay = param.get('boltAnimationDelay', 0.4)
+        BigWorld.callback(boltAnimationDelay, continue_play)
+        self.__reload_weapon_progress = True
+
+    def onBoltAnimateComplete(self, weapon = None):
+        self.__reload_weapon_progress = False
+        self.__reload_weapon_osn_anmation = False
+        self._weapon_reloader = None
+        if weapon:
+            weapon.waitBoltAnimation(False)
+        elif self.active_weapon:
+            self.active_weapon.waitBoltAnimation(False)
+        self.onBoltAnimationWeapon(True)
+        return
+
+    def canRealodWeapon(self):
+        """ """
+        if not self.model:
+            return False
+        if not self.active_weapon:
+            return False
+        if not self.active_weapon_model:
+            return False
+        if self.__isEquipProgress:
+            return False
+        if self == BigWorld.player() and self.__lock_progress_by_on_hand_weapon:
+            return False
+        if self.isRelaodWeaponProgress:
+            return False
+        return True
+
+    def onReloadInsertAmmo(self, ammo_item):
+        pass
+
+    def onReloadInsertGrenade(self, grenade_item):
+        pass
+
+    _reload_end_time = 0
+
+    def onReloadComplete(self):
+        self._reload_end_time = time.time() + 0.2
+        self.__reload_weapon_progress = False
+        self.__reload_weapon_osn_anmation = False
+        self._weapon_reloader = None
+        self.onReloadWeapon(True)
+        self.updateBlendNodeByImpacting(True)
+        if self.active_weapon and self.active_weapon.getParam('boltAnimationAfterReload'):
+            self.playAnimationAfterFire()
+        return
+
+    def onUnjammComplete(self):
+        self.onReloadComplete()
+
+    def reloadLauncherWeapon(self, grenade_item = None):
+        """\xd0\xbf\xd0\xb5\xd1\x80\xd0\xb5\xd0\xb7\xd0\xb0\xd1\x80\xd1\x8f\xd0\xb4\xd0\xba\xd0\xb0 \xd0\xbf\xd0\xbe\xd0\xb4\xd1\x81\xd1\x82\xd0\xb2\xd0\xbe\xd0\xbb\xd1\x8c\xd0\xbd\xd0\xb8\xd0\xba\xd0\xbe\xd0\xb2"""
+        self.reload_from_bored = False
+        if not self.canRealodWeapon():
+            return False
+        else:
+            launcher_prop = self.active_weapon.getLauncherParam()
+            prev_greande = self.active_weapon.getCurrentGrenadeNumber()
+            anim_key = None
+            if not grenade_item and prev_greande:
+                anim_key = 'reload_weapon_animation_pull_out'
+            elif grenade_item and not prev_greande:
+                anim_key = 'reload_weapon_animation_insert'
+            else:
+                anim_key = 'reload_weapon_animation'
+            if not launcher_prop.get(anim_key):
+                anim_key = 'reload_weapon_animation'
+            anim_name = launcher_prop.get(anim_key)
+            if not anim_name:
+                if self == BigWorld.player():
+                    BWPersonality.gpd.sendHightMessage(u'\u0412 \u044d\u0442\u043e\u043c \u0441\u043e\u0441\u0442\u043e\u044f\u043d\u0438\u0438 \u043d\u0435\u0442 \u0430\u043d\u0438\u043c\u0430\u0446\u0438\u0438 \u043f\u0435\u0440\u0435\u0437\u0430\u0440\u044f\u0434\u043a\u0438 \u0434\u043b\u044f \u044d\u0442\u043e\u0433\u043e \u043e\u0440\u0443\u0436\u0438\u044f')
+                return False
+            reload_data = None
+            anim_cls_name = 'BaseWeaponReloader'
+            if ':' in anim_name:
+                tmp = anim_name.split(':')
+                anim_cls_name = tmp[1]
+                if len(tmp) > 2:
+                    reload_data = tmp[2:]
+                anim_cls_name = anim_cls_name.strip()
+            anim_cls = getattr(weapon_reload_scripts, anim_cls_name)
+            self.__reload_weapon_progress = True
+            self.__reload_weapon_osn_anmation = True
+            self._weapon_reloader = anim_cls(self, self.onReloadComplete, self.onReloadInsertGrenade, grenade_item)
+            self._weapon_reloader.reload_data = reload_data
+            self._weapon_reloader.is_launcher_script = True
+            self.reload_from_sprint = False
+            self.reload_from_bored = False
+
+            def continuePlay():
+                if not self._weapon_reloader:
+                    return
+                self._weapon_reloader.subscribeCues(anim_name)
+                self._weapon_reloader.play(anim_name)
+
+            if self == BigWorld.player():
+                if self.sprinting:
+                    self.SetSprinting(False, delayed=False)
+                    self.SetWeaponStatusNoValidate(Constants.WEAPON_INCOMABAT)
+                    self.reload_from_sprint = True
+                    BigWorld.callback(self.RELOAD_FROM_SPRINT_DELAY, continuePlay)
+                elif self.IsAvatarBored():
+                    self.reload_from_bored = True
+                    self.SetWeaponStatusNoValidate(Constants.WEAPON_INCOMABAT)
+                    BigWorld.callback(self.RELOAD_FROM_BORED_DELAY, continuePlay)
+                else:
+                    continuePlay()
+            else:
+                continuePlay()
+            self.onReloadWeapon()
+            self.updateBlendNodeByImpacting(True)
+            if self._hand_gravity_enabled:
+                self._enableHandGravity(False)
+            return True
+
+    def get_reload_animation(self, ammo_or_magazine_item = None):
+        prev_magaz = self.active_weapon.getMagazine()
+        param = self.active_weapon.getParam()
+        if self.IsAvatarCrawling():
+            anim_key = 'reload_weapon_animation_crawl'
+        else:
+            anim_key = None
+            if not ammo_or_magazine_item and prev_magaz:
+                anim_key = 'reload_weapon_animation_pull_out'
+            elif ammo_or_magazine_item and not prev_magaz:
+                anim_key = 'reload_weapon_animation_insert'
+            else:
+                anim_key = 'reload_weapon_animation'
+            if not param.get(anim_key):
+                anim_key = 'reload_weapon_animation'
+            if getattr(self.active_weapon, 'new_weapon_clip', None):
+                anim_key = 'reload_weapon_animation_clip'
+                del self.active_weapon.new_weapon_clip
+        anim_name = param.get(anim_key)
+        return anim_name
+
+    def unjammWeapon(self):
+        """ \xd1\x80\xd0\xb0\xd1\x81\xd0\xba\xd0\xbb\xd0\xb8\xd0\xbd\xd0\xb8\xd0\xb2\xd0\xb0\xd0\xbd\xd0\xb8\xd0\xb5 \xd0\xbe\xd1\x80\xd1\x83\xd0\xb6\xd0\xb8\xd1\x8f
+        """
+        if time.time() < self._reload_end_time:
+            return
+        else:
+            self.reload_from_bored = False
+            if not self.canRealodWeapon():
+                return
+            anim_name = self.active_weapon.getParam('unjamm_animation')
+            if not anim_name:
+                anim_name = self.active_weapon.getParam('reload_weapon_animation')
+            anim_cls_name = 'BaseWeaponReloader'
+            reload_data = None
+            if ':' in anim_name:
+                tmp = anim_name.split(':')
+                anim_cls_name = tmp[1]
+                if len(tmp) > 2:
+                    reload_data = tmp[2:]
+                anim_cls_name = anim_cls_name.strip()
+            if not anim_name:
+                return False
+            anim_cls = getattr(weapon_reload_scripts, anim_cls_name)
+            self.__reload_weapon_progress = True
+            self.__reload_weapon_osn_anmation = True
+            self._weapon_reloader = anim_cls(self, self.onUnjammComplete)
+            self._weapon_reloader.reload_data = reload_data
+            self.reload_from_sprint = False
+            self.reload_from_bored = False
+
+            def continuePlay():
+                self._weapon_reloader.subscribeCues(anim_name)
+                duration = self._weapon_reloader.unjamm(anim_name)
+                return duration
+
+            duration = None
+            if self == BigWorld.player():
+                if self.sprinting:
+                    self.SetSprinting(False, delayed=False)
+                    self.SetWeaponStatusNoValidate(Constants.WEAPON_INCOMABAT)
+                    self.reload_from_sprint = True
+                    BigWorld.callback(self.RELOAD_FROM_SPRINT_DELAY, continuePlay)
+                elif self.IsAvatarBored():
+                    self.reload_from_bored = True
+                    self.SetWeaponStatusNoValidate(Constants.WEAPON_INCOMABAT)
+                    BigWorld.callback(self.RELOAD_FROM_BORED_DELAY, continuePlay)
+                else:
+                    duration = continuePlay()
+            else:
+                duration = continuePlay()
+            self.onReloadWeapon()
+            self.updateBlendNodeByImpacting(True)
+            if self._hand_gravity_enabled:
+                self._enableHandGravity(False)
+            return duration
+
+    def reloadWeapon(self, ammo_or_magazine_item = None, reload_speed = 1.0):
+        """ \xd0\xbf\xd0\xb5\xd1\x80\xd0\xb5\xd0\xb7\xd0\xb0\xd1\x80\xd1\x8f\xd0\xb4\xd0\xba\xd0\xb0 \xd0\xbe\xd1\x80\xd1\x83\xd0\xb6\xd0\xb8\xd1\x8f
+        """
+        self.reload_from_bored = False
+        if not self.canRealodWeapon():
+            return False
+        else:
+            anim_name = self.get_reload_animation(ammo_or_magazine_item)
+            if not anim_name and self == BigWorld.player():
+                BWPersonality.gpd.sendHightMessage(u'\u0412 \u044d\u0442\u043e\u043c \u0441\u043e\u0441\u0442\u043e\u044f\u043d\u0438\u0438 \u043d\u0435\u0442 \u0430\u043d\u0438\u043c\u0430\u0446\u0438\u0438 \u043f\u0435\u0440\u0435\u0437\u0430\u0440\u044f\u0434\u043a\u0438 \u0434\u043b\u044f \u044d\u0442\u043e\u0433\u043e \u043e\u0440\u0443\u0436\u0438\u044f')
+                return False
+            anim_cls_name = 'BaseWeaponReloader'
+            reload_data = None
+            if ':' in anim_name:
+                tmp = anim_name.split(':')
+                anim_cls_name = tmp[1]
+                if len(tmp) > 2:
+                    reload_data = tmp[2:]
+                anim_cls_name = anim_cls_name.strip()
+            anim_cls = getattr(weapon_reload_scripts, anim_cls_name)
+            self.__reload_weapon_progress = True
+            self.__reload_weapon_osn_anmation = True
+            self._weapon_reloader = anim_cls(self, self.onReloadComplete, self.onReloadInsertAmmo, ammo_or_magazine_item, reload_speed=reload_speed)
+            self._weapon_reloader.reload_data = reload_data
+            self.reload_from_sprint = False
+            self.reload_from_bored = False
+
+            def continuePlay():
+                if not self._weapon_reloader:
+                    return
+                try:
+                    self._weapon_reloader.subscribeCues(anim_name)
+                    self._weapon_reloader.play(anim_name)
+                except:
+                    print 'ERROR FOR:', self, self._weapon_reloader, self.active_weapon, repr(anim_name)
+                    traceback.print_stack()
+                    traceback.print_exc()
+
+            if self == BigWorld.player():
+                if self.sprinting:
+                    self.SetSprinting(False, delayed=False)
+                    self.SetWeaponStatusNoValidate(Constants.WEAPON_INCOMABAT)
+                    self.reload_from_sprint = True
+                    BigWorld.callback(self.RELOAD_FROM_SPRINT_DELAY, continuePlay)
+                elif self.IsAvatarBored():
+                    self.reload_from_bored = True
+                    self.SetWeaponStatusNoValidate(Constants.WEAPON_INCOMABAT)
+                    BigWorld.callback(self.RELOAD_FROM_BORED_DELAY, continuePlay)
+                else:
+                    continuePlay()
+            else:
+                continuePlay()
+            self.onReloadWeapon()
+            self.updateBlendNodeByImpacting(True)
+            if self._hand_gravity_enabled:
+                self._enableHandGravity(False)
+            return True
+
+    @ignoreError
+    def cancelReloadWeapon(self, smooth = False, magaz_slot = None, ammo_type = None, **kw):
+        is_launcher_script = False
+        if self._weapon_reloader:
+            is_launcher_script = getattr(self._weapon_reloader, 'is_launcher_script')
+            self._weapon_reloader.cancelReload(smooth)
+            self._weapon_reloader = None
+            if self.active_weapon:
+                self.active_weapon.waitBoltAnimation(False)
+        if self.active_weapon and not is_launcher_script:
+            self.active_weapon.returnOldMagazine(magaz_slot, ammo_type)
+        return
+
+    def onCanceledReloadWeapon(self, smooth = False):
+        self.__reload_weapon_osn_anmation = False
+        self.__reload_weapon_progress = False
+        self._weapon_to_attached = None
+        self.__check()
+        self.onReloadWeapon(True)
+        return
+
+    @not_safe_animation_callback
+    def __cueMagazineGunToHand(self, time_anim):
+        if self.model.Rhand and self.model.Rhand.magazine:
+            self.model.Rhand.magazine.visible = False
+        if self.model.Lhand:
+            self.model.Lhand.visible = True
+
+    @not_safe_animation_callback
+    def __cueMagazineHandToGun(self, time_anim):
+        if self.model.Rhand and self.model.Rhand.magazine:
+            self.model.Rhand.magazine.visible = True
+        if self.model.Lhand:
+            self.model.Lhand.visible = False
+
+    def __reloadWeaponReturnHand(self):
+        self._weapon_to_attached = 'Right'
+        self.__reload_weapon_osn_anmation = False
+        self.__check()
+
+    def __onEndAnimationRealod(self):
+        self.__reload_weapon_progress = False
+        self.onEndReloaAnimation()
+
+    def onEndReloaAnimation(self):
+        pass
+
+    def onHandToWeaponComplete(self):
+        self.updateBlendNodeByImpacting(True)
+
+    def __onEndPutOnOffWeapon(self):
+        self.__isPutOnOffProgress = False
+        self.onChangeManipulateWeapon()
+        self.updateBlendNodeByImpacting(True)
+        self.UpdateAvatarAnimationCaps()
+
+    @ignoreError
+    def checkWeaponSet2(self):
+        if self.need_hide_weapon():
+            self.__reload_weapon_osn_anmation = False
+            self.__reload_weapon_progress = False
+            self.__isEquipProgress = False
+            self.__lock_progress_by_on_hand_weapon = False
+            return
+        else:
+            self.__isPutOnOffProgress = True
+
+            def getNeedPutOff():
+                put_off = {}
+                put_onn = {}
+                for slot_name in nodebyslot.keys():
+                    if self.weapon_slots.get(slot_name):
+                        if self.ActiveWeaponSet2[slot_name]['itemID'] != self.weapon_slots[slot_name].getItemID():
+                            put_off[self.weapon_slots[slot_name].getItemID()] = slot_name
+                            if self.ActiveWeaponSet2[slot_name]['itemID']:
+                                put_onn[self.ActiveWeaponSet2[slot_name]['itemID']] = slot_name
+                    elif self.ActiveWeaponSet2[slot_name]['itemID']:
+                        put_onn[self.ActiveWeaponSet2[slot_name]['itemID']] = slot_name
+
+                return (put_off, put_onn)
+
+            put_off, put_onn = getNeedPutOff()
+            self.onChangeManipulateWeapon()
+            self.updateBlendNodeByImpacting(True)
+            self.update_add_step_sound_params()
+            if not put_off and not put_onn:
+                self.setDirectionProviderParam(old=None, force=False)
+                self.UpdateWeaponIcon()
+                if self == BigWorld.player():
+                    BWPersonality.onAvatarChangeWeapon(self.active_weapon.getItemType() if self.active_weapon else 0)
+                    BWPersonality.GUICore.updateTestWeaponWindowActiveItem()
+                weapon_id_belly = self.belly_weapon.getItemID() if self.belly_weapon else 0
+                if self.BellyItemID != weapon_id_belly:
+                    if weapon_id_belly:
+                        belly = self.belly_weapon
+
+                        def onUneq():
+                            self.checkWeaponSet2()
+
+                        def oneq():
+                            if weapon_id_belly == self.ActiveItemID:
+                                self.__onEndPutOnOffWeapon()
+                                self.__check_for_weapon()
+                                return
+                            else:
+                                self.__unequipWeapon(belly, None, onUneq)
+                                return
+
+                        if self.active_weapon:
+
+                            def onUneqActive():
+                                self.active_weapon = None
+                                self.setActiveWeaponModel(None)
+                                self.__equipWeapon(belly, oneq)
+                                return
+
+                            self.__unequipWeapon(self.active_weapon, belly, onUneqActive)
+                        else:
+                            self.__equipWeapon(belly, oneq)
+                    else:
+                        slot_name = ItemsUtils.getWeaponSlotNameByItemID(self, self.BellyItemID)
+                        weapon = self.weapon_slots[slot_name]
+                        if weapon == self.active_weapon:
+                            self.__unequipWeaponToBelly(weapon, None, self.checkWeaponSet2)
+                        else:
+
+                            def onEq():
+                                self.__unequipWeaponToBelly(weapon, None, self.checkWeaponSet2)
+                                return
+
+                            self.__equipWeapon(weapon, onEq)
+                    return
+                weapon_id_in_hand = self.active_weapon.getItemID() if self.active_weapon else 0
+                if self.ActiveItemID and self.ActiveItemID != weapon_id_in_hand:
+                    slot_name = ItemsUtils.getWeaponSlotNameByItemID(self, self.ActiveItemID)
+                    if not slot_name:
+                        print 'ERROR not slot_name ', self, self.ActiveItemID
+                        print 'ActiveWeaponSet2:', PY(self.ActiveWeaponSet2)
+                        traceback.print_stack()
+                        return
+                    weapon = self.weapon_slots[slot_name]
+
+                    def on_eq1():
+                        self.__onEndPutOnOffWeapon()
+                        self.setDirectionProviderParam(old=None, force=False)
+                        self.__check_for_weapon()
+                        return
+
+                    def on_un_eq1():
+                        self.__equipWeapon(weapon, on_eq1)
+
+                    if self.active_weapon:
+                        self.__unequipWeapon(self.active_weapon, weapon, on_un_eq1)
+                    else:
+                        on_un_eq1()
+                    return
+                if not self.ActiveItemID and weapon_id_in_hand:
+
+                    def on_ueq():
+                        self.__onEndPutOnOffWeapon()
+                        self.__isPutOffUnEq = False
+                        self.__toUnarmed()
+
+                    self.__isPutOffUnEq = True
+                    self.__unequipWeapon(self.active_weapon, None, on_ueq)
+                    self.lockHandHvatAnimation(left=1, right=1, update=True)
+                self.__onEndPutOnOffWeapon()
+                if not self.active_weapon:
+                    self.__toUnarmed()
+                if self.active_weapon:
+                    self.setDirectionProviderParam(old=None, force=False)
+                    self.__check_for_weapon()
+                return
+
+            def onPutOff():
+                self.checkWeaponSet2()
+
+            if self.active_weapon and self.active_weapon.getItemID() in put_off:
+                self.__putOffActiveWeapon(put_off[self.active_weapon.getItemID()], onPutOff)
+                return
+
+            def onEndUneq(*e):
+                self.checkWeaponSet2()
+
+            if self.active_weapon and self.active_weapon.getItemID() not in put_off:
+                self.__unequipWeapon(self.active_weapon, None, onEndUneq)
+                return
+
+            def onEndEq(*e):
+                self.UpdateWeaponIcon()
+                self.checkWeaponSet2()
+
+            if put_off:
+                oldItemID, slot_name = put_off.items()[0]
+                to_delete_weapon = self.weapon_slots[slot_name]
+                self.__equipWeapon(to_delete_weapon, onEndEq)
+                return
+            if put_onn:
+
+                def onEndPutOn(*e):
+                    self.UpdateWeaponIcon()
+                    self.checkWeaponSet2()
+
+                ids = put_onn.keys()
+                if self.ActiveItemID and self.ActiveItemID in ids:
+                    ids.remove(self.ActiveItemID)
+                if ids:
+                    newItemID = ids[0]
+                else:
+                    newItemID = self.ActiveItemID
+                slot_name = put_onn[newItemID]
+                slot = self.ActiveWeaponSet2[slot_name]
+                weapon = self.makeWeaponFromSlot(slot, slot_name)
+                weapon.getModel()
+                self.__putOnnWeapon(slot_name, weapon, onEndPutOn)
+            return
+
+    def __putOffActiveWeapon(self, slot_name, callback = None):
+        self._weapon_to_attached = None
+
+        def onend_putOffweapon():
+            if self.isDestroyed:
+                return
+            else:
+                r_hand_model.visible = False
+                try:
+                    holster_node_name = self.active_weapon.holster_node_name
+                    setattr(self.model, holster_node_name, None)
+                except:
+                    traceback.print_exc()
+
+                self.active_weapon = None
+                self.setActiveWeaponModel(None)
+                old_weapon = self.weapon_slots.pop(slot_name, None)
+                if old_weapon:
+                    old_weapon.destroyWeapon()
+                else:
+                    print 'WARNING :: no old_weapon by slot_name:', slot_name
+                    traceback.print_stack()
+                setattr(self.model, 'GUNR', None)
+                setattr(self.model, 'Rhand', None)
+                if callback:
+                    callback()
+                return
+
+        r_hand_model = self.active_weapon.createCopyModelWeapon()
+        setattr(self.model, 'Rhand', r_hand_model)
+        self.active_weapon.setVisibleModel(r_hand_model)
+        self.LhandAttachTo(None, 0.1)
+        self.RhandAttachTo(None, 0.1)
+        self.model.putOffweapon()
+        BigWorld.callback(player_speed_settings.ANIMATIONS.TIME_PUTOFF_WEAPON, onend_putOffweapon)
+        return
+
+    def __putOnnWeapon(self, slot_name, weapon, callback = None):
+        self._weapon_to_attached = None
+        weapon.isBelly = False
+        if self.BellyItemID == weapon.getItemID():
+            weapon.isBelly = True
+            self.belly_weapon = weapon
+        elif self.ActiveItemID == weapon.getItemID():
+            self.setActiveWeaponModel(weapon.getModel(), weapon)
+            self.model.GUNR = self.active_weapon_model
+            self.active_weapon = weapon
+            self.setDirectionProviderParam(force=True)
+        r_hand_model = weapon.createCopyModelWeapon()
+        setattr(self.model, 'Rhand', r_hand_model)
+        weapon.setVisibleModel(r_hand_model)
+        r_hand_model.visible = False
+
+        def showModel(isBreak = False):
+            if self.isDestroyed:
+                return
+            r_hand_model.visible = True
+            weapon.setVisibleModel(r_hand_model)
+
+        def _OnBellyDownPut(isBreak = False):
+            if assert_break(isBreak):
+                return
+            else:
+                self.model.Rhand = None
+                weapon.setVisibleModel(self.model.belly)
+                if self.need_hide_weapon():
+                    return
+                self.weapon_slots[slot_name] = weapon
+                callback()
+                return
+
+        def _OnHandToWeapon(isBreak = False):
+            if assert_break(isBreak):
+                return
+            else:
+                self.model.Rhand = None
+                weapon.setVisibleModel(self.active_weapon_model)
+                weapon.clearCopyModel()
+                if self.need_hide_weapon():
+                    return
+                self.weapon_slots[slot_name] = weapon
+                callback()
+                return
+
+        def onEndUneq(*e):
+            if self.need_hide_weapon():
+                return
+            else:
+                self.weapon_slots[slot_name] = weapon
+                self.setActiveWeaponModel(None)
+                self.active_weapon = None
+                callback()
+                return
+
+        def onend_putOnWeapon(*e):
+            if self.isDestroyed:
+                return
+            else:
+                if weapon.isBelly:
+                    self.model.Lhand = None
+                    self.model.belly = None
+                    duple_model_b = weapon.createCopyModelWeapon()
+                    duple_model_h = weapon.createCopyModelWeapon()
+                    self.model.belly = duple_model_b
+                    hand_provider = duple_model_b.node('HP_Rhand')
+                    hand_provider.disableDrawInReflection = True
+                    hand_provider.blend_factor_hand = 1.0
+                    self.forceDrawModel()
+                    self.RhandAttachTo(hand_provider, 0.3, _OnBellyDownPut)
+                    weapon.setVisibleModel(duple_model_h)
+                elif self.ActiveItemID == weapon.getItemID():
+                    self.active_weapon = weapon
+                    self._check_left_hand_free_and_track()
+                    self.RhandAttachTo(self.right_weapon_prov, self.TO_TRACKER_HAND_DELAY, _OnHandToWeapon)
+                else:
+                    self.__unequipWeapon(weapon, None, onEndUneq)
+                return
+
+        self.model.putOnweapon()
+        BigWorld.callback(player_speed_settings.ANIMATIONS.TIME_PUTON_WEAPON_SHOW, showModel)
+        BigWorld.callback(player_speed_settings.ANIMATIONS.TIME_PUTON_WEAPON, onend_putOnWeapon)
+        self.RhandAttachTo(None, 0.3)
+        self.LhandAttachTo(None, 0.3)
+        if self == BigWorld.player():
+            self.applyWeaponSettings(weapon)
+        return
+
+    def onChangeManipulateWeapon(self, *w, **kw):
+        pass
+
+    def cancelEquipUneqipWeapon(self):
+        self.__isEquipProgress = False
+        self._weapon_to_attached = None
+        self.RhandAttachTo(None, 0.0)
+        self.RhandAttachTo(None, 0.0)
+        self.LhandAttachTo(None, 0.0)
+        self.LhandAttachTo(None, 0.0)
+        if self._e_hib_id:
+            BigWorld.cancelCallback(self._e_hib_id)
+        self.updateBlendNodeByImpacting(True)
+        self.onChangeManipulateWeapon()
+        return
+
+    def equipWeaponToHand(self, new_weapon = None, prev_to_belly = False, onEndCallback = None):
+        """ 
+        """
+        self.__isEquipProgress = True
+        self.onChangeManipulateWeapon(new_weapon, prev_to_belly)
+        self.updateBlendNodeByImpacting(True)
+        self._setHeapTagertVisible(False)
+        self.disableSpotLight()
+
+        def onEquipComplete():
+            self._weapon_to_attached = 'Track'
+            self.__isEquipProgress = False
+            self.onChangeManipulateWeapon()
+            self.updateBlendNodeByImpacting(True)
+            if self.active_weapon:
+                self.__itemType = self.active_weapon.getItemType()
+                self.ActiveItemID = self.active_weapon.getItemID()
+                if self == BigWorld.player():
+                    BWPersonality.onAvatarChangeWeapon(self.__itemType)
+                    BWPersonality.GUICore.updateTestWeaponWindowActiveItem()
+            self._setHeapTagertVisible(True)
+            self.setDirectionProviderParam(force=True)
+            if onEndCallback:
+                onEndCallback()
+            if self._sniping_key_pressed:
+                BigWorld.cancelCallback(self.sniping_callback_id)
+                self.snipingCorutine()
+
+        def onUneqipPrevWeapon():
+            self.model.GUNR = None
+            self.active_weapon = None
+            need_update_tracekers = not new_weapon
+            self.setActiveWeaponModel(None, update=need_update_tracekers)
+            self.ActiveItemID = 0
+            self.__itemType = 0
+            if self == BigWorld.player():
+                BWPersonality.onAvatarChangeWeapon(self.__itemType)
+                BWPersonality.GUICore.updateTestWeaponWindowActiveItem()
+            self.detachHandToWeaponTMP()
+            if not new_weapon:
+                onEquipComplete()
+                self.__toUnarmed()
+                return
+            else:
+                if new_weapon.isBelly:
+                    self.__equipWeaponFromBelly(new_weapon, onEquipComplete)
+                else:
+                    self.__equipWeapon(new_weapon, onEquipComplete)
+                return
+
+        if self.active_weapon:
+            if prev_to_belly:
+                self.__unequipWeaponToBelly(self.active_weapon, new_weapon, onUneqipPrevWeapon)
+            else:
+                self.__unequipWeapon(self.active_weapon, new_weapon, onUneqipPrevWeapon)
+        else:
+            onUneqipPrevWeapon()
+
+    def __unequipWeaponToBelly(self, prev_weapon, new_weapon, complete_callback):
+        self._hand_gravity_enabled = False
+        self._weapon_to_attached = None
+        self.model.Lhand = None
+        self.model.Rhand = None
+        self.model.belly = None
+        belly_model = prev_weapon.createCopyModelWeapon()
+        rhand_model = prev_weapon.createCopyModelWeapon()
+        self.active_weapon.setVisibleModel(rhand_model)
+        BigWorld.callback(0.0, partial(sounds.playSound, 'guns/weapon_change', self.model))
+        if not new_weapon:
+            self.active_weapon = None
+            self.setActiveWeaponModel(None)
+            self.SetWeaponStatusNoValidate(Constants.WEAPON_BORED)
+            self.UpdateAvatarAnimationCaps()
+            self.onChangeActiveWeapon(None)
+
+        def OnBellyDown(isBreak):
+            if assert_break(isBreak):
+                return
+            else:
+                try:
+                    if self.model.belly and self.model.Rhand and getattr(self, 'tracker_belly', None):
+                        self.tracker_belly.pushByModels(self.model.belly, self.model.Rhand)
+                except Exception:
+                    traceback.print_exc()
+
+                if self.active_weapon:
+                    self.onChangeActiveWeapon(None)
+                self.active_weapon = None
+                self.setActiveWeaponModel(None)
+                prev_weapon.isBelly = True
+                prev_weapon.setVisibleModel(belly_model)
+                prev_weapon.deleteCopyModel(rhand_model)
+                self.model.Rhand = None
+                self.belly_weapon = prev_weapon
+                if not new_weapon:
+                    self.RhandAttachTo(None, self.TO_TRACKER_HAND_DELAY)
+                complete_callback()
+                return
+
+        self.model.belly = belly_model
+        self.model.Rhand = rhand_model
+        if prev_weapon and prev_weapon._left_hilt_launcher_fl_inv:
+            belly_nand_l = self.model.belly.node('HP_Lhand', prev_weapon._left_hilt_launcher_fl_inv)
+        else:
+            belly_nand_l = self.model.belly.node('HP_Lhand')
+        belly_nand_l.blend_factor_hand = 1.0
+        belly_nand_l.disableDrawInReflection = True
+        if not new_weapon:
+            self.LhandAttachTo(None, self.TO_TRACKER_HAND_DELAY)
+        else:
+            self.LhandAttachTo(belly_nand_l, self.TO_TRACKER_HAND_DELAY)
+        hand_provider = belly_model.node('HP_Rhand')
+        hand_provider.blend_factor_hand = 1.0
+        hand_provider.disableDrawInReflection = True
+        self.forceDrawModel()
+        self.RhandAttachTo(hand_provider, 0.3, OnBellyDown)
+        return
+
+    def forceDrawModel(self):
+        """\xd0\xbe\xd0\xb1\xd0\xbd\xd0\xbe\xd0\xb2\xd0\xb8\xd1\x82\xd1\x8c \xd0\xb2\xd1\x81\xd0\xb5 \xd0\xba\xd0\xbe\xd1\x81\xd1\x82\xd0\xb8 \xd1\x83 \xd0\xbc\xd0\xbe\xd0\xb5\xd0\xb9 \xd0\xbc\xd0\xbe\xd0\xb4\xd0\xb5\xd0\xbb\xd0\xb8 \xd0\xb8 \xd0\xb0\xd1\x82\xd1\x82\xd0\xb0\xd1\x87\xd0\xb5\xd0\xb9, \xd0\xbf\xd0\xb5\xd1\x80\xd0\xb2\xd1\x8b\xd0\xb9 \xd0\xba\xd0\xb0\xd0\xb4\xd1\x80 \xd1\x80\xd1\x83\xd0\xba\xd0\xb8 \xd0\xbd\xd0\xb5 \xd0\xb1\xd1\x83\xd0\xb4\xd1\x83\xd1\x82 \xd1\x83\xd0\xbb\xd0\xb5\xd1\x82\xd0\xb0\xd1\x82\xd1\x8c """
+        if not self.model:
+            return
+        if self != BigWorld.player() and self.position.distTo(BigWorld.camera().position) > 70.0:
+            return
+        self.model.forceTick(0.005)
+        self.model.forceDraw()
+
+    def __unequipWeapon(self, prev_weapon, new_weapon, complete_callback):
+        """\xd1\x83\xd0\xb1\xd1\x80\xd0\xb0\xd1\x82\xd1\x8c \xd0\xbe\xd1\x80\xd1\x83\xd0\xb6\xd0\xb8\xd0\xb5 \xd0\xb2 \xd0\xba\xd0\xbe\xd0\xb1\xd1\x83\xd1\x80\xd1\x83(\xd0\xb7\xd0\xb0 \xd1\x81\xd0\xbf\xd0\xb8\xd0\xbd\xd1\x83)"""
+        self._hand_gravity_enabled = False
+        self._weapon_to_attached = None
+        holster_node_name = prev_weapon.holster_node_name
+        holster_model = prev_weapon.createCopyModelWeapon()
+        r_hand_model = prev_weapon.createCopyModelWeapon()
+        r_hand_model.node('HP_%s' % holster_node_name).attach(BigWorld.Model(''))
+        setattr(self.model, holster_node_name, holster_model)
+        setattr(self.model, 'Rhand', r_hand_model)
+        if not new_weapon:
+            self.active_weapon = None
+            self.setActiveWeaponModel(None)
+            self.SetWeaponStatusNoValidate(Constants.WEAPON_BORED)
+            self.UpdateAvatarAnimationCaps()
+            self.onChangeActiveWeapon(None)
+
+        def onTrackEnd(isBreak = False):
+            if assert_break(isBreak):
+                return
+
+        def startToBackMove(isBreak = False):
+            if assert_break(isBreak):
+                return
+            else:
+                self.model.Lhand = None
+                prev_weapon.setVisibleModel(r_hand_model)
+                self._play_equip_anim_set(prev_weapon.getUnEquipInActionName(), prev_weapon.getUnEquipOutActionName(), weaponInBack, prev_weapon)
+                action_unqeip_in = self.model.action(prev_weapon.getUnEquipInActionName())
+                duration = action_unqeip_in.duration
+                duration = min(0.2, duration / 2.0)
+                self.LhandAttachTo(None, duration)
+                self.RhandAttachTo(None, duration, onTrackEnd)
+                return
+
+        @not_safe_animation_callback
+        def weaponInBack(*e):
+            prev_weapon.setVisibleModel(holster_model, not_safe=True)
+            if holster_node_name == 'weaponback':
+                self.tracker_weaponback.blendFromModel(r_hand_model, 'HP_weaponback')
+            if holster_node_name == 'weaponback2':
+                self.tracker_weaponback2.blendFromModel(r_hand_model, 'HP_weaponback2')
+
+            def safe():
+                if self.isDestroyed:
+                    return
+                else:
+                    setattr(self.model, 'Rhand', None)
+                    complete_callback()
+                    return
+
+            BigWorld.callback(0, safe)
+
+        if self._weapon_to_attached == 'Belly' and self.model.belly:
+            prev_weapon.setVisibleModel(self.model.belly)
+            belly_nand = self.model.belly.node('HP_Rhand')
+            belly_nand.blend_factor_hand = 1.0
+            belly_nand.disableDrawInReflection = True
+            self.RhandAttachTo(belly_nand, 0.2, startToBackMove)
+        else:
+            startToBackMove(False)
+        return
+
+    def _play_equip_anim_set(self, a_in, a_out, in_callback, weapon = None):
+        gun_type = weapon.getGunType() if weapon else 0
+        speed = 1.0 + self.get_perk_action_val('W_EQUIP_SPEED_MOD', gun=gun_type)
+        speed += weapon.getParam().get('equip_speed_mod', 0)
+        action_in = self.model.action(a_in)
+        action_out = self.model.action(a_out)
+        frameratein = action_in.frameRate
+        framerateout = action_out.frameRate
+        anim_set = getattr(action_in(0, in_callback, 0, -1, -1, frameratein * speed), a_out)
+        anim_set(0, None, 0, -1, -1, framerateout * speed)
+        return
+
+    def __equipWeaponFromBelly(self, weapon, complete_equip_callback):
+
+        def onBellyHandToTrack(isBreak):
+            if assert_break(isBreak):
+                return
+            else:
+                self.model.Lhand = None
+                weapon.setVisibleModel(r_hand_model)
+                self._check_left_hand_free_and_track()
+                self.RhandAttachTo(self.right_weapon_prov, 0.11, onMoveComplete)
+                self.setDirectionProviderParam(force=True)
+                sounds.playSound('guns/weapon_change', self.model)
+                return
+
+        def onMoveComplete(isBreak):
+            if assert_break(isBreak):
+                return
+            else:
+                self.__tmp_belly_nand_l = None
+                self.__tmp_belly_nand = None
+                self.model.Lhand = None
+                self.model.Rhand = None
+                self.model.belly = None
+                weapon.setVisibleModel(self.active_weapon_model)
+                weapon.clearCopyModel()
+                complete_equip_callback()
+                return
+
+        self.model.GUNR = None
+        self.active_weapon = weapon
+        weapon.isBelly = False
+        self.belly_weapon = None
+        self.setActiveWeaponModel(weapon.getModel(), weapon)
+        if self.active_weapon_model.inWorld:
+            setattr(self.model, weapon.holster_node_name, None)
+        self.model.GUNR = self.active_weapon_model
+        self.__itemType = weapon.getItemType()
+        r_hand_model = weapon.createCopyModelWeapon()
+        self.model.Rhand = r_hand_model
+        if self.model.belly:
+            weapon.setVisibleModel(self.model.belly)
+        self._weapon_to_attached = 'Track'
+        self.createTrakers(only_gun=True)
+        self.createDiffDirProviders()
+        self._setHeapTagertVisible(False)
+        self.setDirectionProviderParam()
+        self.UpdateAvatarAnimationCaps()
+        self.attachHandToWeaponTMP(self.active_weapon_model)
+        self.SetWeaponStatusNoValidate(Constants.WEAPON_INCOMABAT)
+        if not self.model.belly:
+            onBellyHandToTrack(False)
+            return
+        else:
+            self.__tmp_belly_nand = self.model.belly.node('HP_Rhand')
+            self.__tmp_belly_nand.blend_factor_hand = 1.0
+            self.__tmp_belly_nand.disableDrawInReflection = True
+            if weapon and weapon._left_hilt_launcher_fl_inv:
+                self.__tmp_belly_nand_l = self.model.belly.node('HP_Lhand', weapon._left_hilt_launcher_fl_inv)
+            else:
+                self.__tmp_belly_nand_l = self.model.belly.node('HP_Lhand')
+            self.__tmp_belly_nand_l.blend_factor_hand = 1.0
+            self.__tmp_belly_nand_l.disableDrawInReflection = True
+            self.LhandAttachTo(self.__tmp_belly_nand_l, 0.2)
+            self.RhandAttachTo(self.__tmp_belly_nand, 0.3, onBellyHandToTrack)
+            self.__hand_belly_pose()
+            self.forceDrawModel()
+            return
+
+    def __equipWeapon(self, weapon, complete_equip_callback):
+        """\xd0\xbf\xd1\x80\xd0\xbe\xd0\xb4\xd0\xbe\xd0\xbb\xd0\xb6\xd0\xb8\xd1\x82\xd1\x8c \xd1\x8d\xd0\xba\xd0\xb8\xd0\xbf\xd0\xb8\xd1\x80\xd0\xbe\xd0\xb2\xd0\xba\xd1\x83 \xd0\xbe\xd1\x80\xd1\x83\xd0\xb6\xd0\xb8\xd1\x8f"""
+        if weapon.isBelly:
+            self.__equipWeaponFromBelly(weapon, complete_equip_callback)
+            return
+        else:
+            self._hand_gravity_enabled = False
+            holster_node_name = weapon.holster_node_name
+            self.__x = self.__x2 = BigWorld.time()
+
+            def stamp():
+                x = BigWorld.time()
+                out = '%.2f,+%.2f ' % (x - self.__x, x - self.__x2)
+                self.__x2 = x
+                return out
+
+            self.model.GUNR = None
+            self.active_weapon = weapon
+            self.setActiveWeaponModel(weapon.getModel(), weapon)
+            if self.active_weapon_model.inWorld:
+                setattr(self.model, holster_node_name, None)
+            self.model.GUNR = self.active_weapon_model
+            self.__itemType = weapon.getItemType()
+            r_hand_model = weapon.createCopyModelWeapon()
+            self.model.Rhand = r_hand_model
+            holster_model = getattr(self.model, holster_node_name, None)
+            if not holster_model:
+                holster_model = weapon.createCopyModelWeapon()
+                try:
+                    setattr(self.model, holster_node_name, holster_model)
+                except:
+                    print 'self:', self
+                    print 'weapon', weapon, weapon.getItemType()
+                    print 'holster_node_name', holster_node_name
+                    print 'holster_model', holster_model
+                    if holster_model:
+                        print 'sources', holster_model.sources
+                    raise
+
+            temp_left_hand_provider = r_hand_model.node('HP_Lhand')
+            temp_left_hand_provider.blend_factor_hand = 1.0
+            temp_left_hand_provider.disableDrawInReflection = True
+            weapon.setVisibleModel(holster_model)
+            self.createTrakers(only_gun=True)
+            self.createDiffDirProviders()
+            self._setHeapTagertVisible(False)
+            self.SetWeaponStatusNoValidate(Constants.WEAPON_INCOMABAT)
+            self.UpdateAvatarAnimationCaps()
+            self.attachHandToWeaponTMP(self.active_weapon_model)
+            self.setDirectionProviderParam(force=True)
+            self.LhandAttachTo(None, 0.2)
+            self.RhandAttachTo(None, 0.2)
+
+            def _tortr(delay = 0.2):
+                if self.isDestroyed:
+                    return
+                delay = 0.3
+                self.RhandAttachTo(self.right_weapon_prov, delay, onEquipComplete)
+                self.LhandAttachTo(temp_left_hand_provider, delay * 0.9)
+                self.blendHandOffset(r_hand_model, hand_prov=self.right_weapon_prov, from_=0.0, to_=1.0, interval=delay * 2)
+
+            def onHandInBack():
+                if self.isDestroyed:
+                    return
+                weapon.setVisibleModel(r_hand_model)
+                self.SetWeaponStatusNoValidate(Constants.WEAPON_INCOMABAT)
+                action_out = self.model.action(weapon.getEquipOutActionName())
+                duration = action_out.duration
+                delay_tracker = 0.2
+                if duration < delay_tracker:
+                    print 'WARNING hand_cotrol: onHandInBack, duration=%.3f, de_tr=%.3f' % (duration, delay_tracker)
+                    self._e_hib_id = BigWorld.callback(duration - 0.01, lambda : _tortr((duration - 0.01) / 2.0))
+                else:
+                    self._e_hib_id = BigWorld.callback(duration - delay_tracker + 0.01, lambda : _tortr(delay_tracker))
+
+            def onEquipComplete(isBreak = False):
+                if assert_break(isBreak):
+                    return
+                else:
+                    if not self.active_weapon_model:
+                        print '---------------'
+                        print self, self.id, self.position
+                        print 'active_weapon:', self.active_weapon
+                        print 'weapon:', weapon
+                        traceback.print_stack()
+                    weapon.setVisibleModel(self.active_weapon_model)
+                    weapon.clearCopyModel()
+                    self.model.Rhand = None
+                    self._weapon_to_attached = 'Track'
+                    self.onChangeTrackerStatus()
+                    self.onChangeActiveWeapon(self.active_weapon)
+                    complete_equip_callback()
+                    return
+
+            self._play_equip_anim_set(weapon.getEquipInActionName(), weapon.getEquipOutActionName(), onHandInBack, weapon)
+            self.forceDrawModel()
+            return
+
+    def __toUnarmed(self):
+        self.SetWeaponStatusNoValidate(Constants.WEAPON_BORED)
+        self.setDirectionProviderParam(force=True)
+        self.onChangeTrackerStatus()
+        self.onChangeActiveWeapon(None)
+        self.__hand_belly_pose_stop()
+        if self == BigWorld.player():
+            BWPersonality.onAvatarChangeWeapon(0)
+            BWPersonality.GUICore.updateTestWeaponWindowActiveItem()
+        return
+
+    def onCreateHandToWeaponProvider(self):
+        self.__check(blend_time=0.001)
+
+    def onCreateTrackers(self):
+        self._hand_gravity_enabled = False
+        if self._weapon_to_attached == 'Belly2':
+            self._attachBelly2weaponModel(set_visible=True)
+        self.__check()
+
+    def onCreateWeaponModel(self):
+        self.__check()
+
+    def onChangeTrackerStatus(self):
+        self.__check()
+
+    def updateHandControl(self):
+        if self.isDestroyed:
+            return
+        self.__check()
+
+    def onStartToSatyCrouchAnimPlay(self, duration, need_free_left_hand, **kw):
+        if not need_free_left_hand:
+            return
+        else:
+            self.h_crawl_anim_played = True
+            if self.isImpactingPlayed():
+                return
+            if self.isEquipWeaponProgress:
+                return
+            if self.isRelaodWeaponProgress:
+                return
+            if not self.active_weapon_model:
+                return
+            self.h_crawl_left_hand_anim = True
+            if not self._weapon_to_attached == 'Track':
+                return
+            self.LhandAttachTo(None, 0.3)
+
+            def returnLeftHand():
+                self.h_crawl_left_hand_anim = False
+                if not self._weapon_to_attached == 'Track':
+                    return
+                self._check_left_hand_free_and_track()
+                self.unLockHandHvatAnimation(left=1, right=0, update=True)
+                self.h_need_attach_left_after_crawl = False
+
+            BigWorld.callback(duration - 0.3, returnLeftHand)
+            self.lockHandHvatAnimation(left=1, right=0, update=True)
+            return
+
+    def onEndToSatyCrouchAnimPlay(self):
+        self.h_crawl_anim_played = False
+        self.h_crawl_left_hand_anim = False
+        self.__check()
+        if self.h_need_attach_left_after_crawl:
+            self.h_need_attach_left_after_crawl = False
+            if self._weapon_to_attached == 'Track':
+                self._check_left_hand_free_and_track()
+
+    def onStartClimbAnimation(self, climb_obj):
+        self.__climb_command = climb_obj.getWeaponCommand()
+        self.__check()
+
+    def onEndClimbAction(self, climb_obj):
+        pass
+
+    def onEndClimbAnimation(self, climb_obj):
+        self.__climb_command = None
+        self.__check()
+        return
+
+    def onGetUpPlayed(self, is_played = True):
+        self._getup_animation_played = is_played
+        self.__check()
+        self.update_turn_states()
+        self.updateBlendNodeByImpacting(only_factor=True)
+
+    def isGetupAnimationPlayed(self):
+        return self._getup_animation_played
+
+    def onEndUseAnimation(self, *e):
+        self.__use_animation_played = False
+        self.__check()
+
+    def _canEnableHandGravity(self, for_left_hand = False):
+        if self.is_disable_hand_gravity:
+            return False
+        if self._is_injured:
+            return False
+        if self.__isEquipProgress:
+            return False
+        if self.__isPutOnOffProgress:
+            return False
+        if self.__isPutOffUnEq:
+            return False
+        if self.dead:
+            return False
+        if self._left_to_right_played:
+            return False
+        if self._belly_to_right_played:
+            return False
+        if self.isRelaodWeaponProgress:
+            return False
+        if self._getup_animation_played:
+            return False
+        if self._slope_caps:
+            return False
+        if self.__use_animation_played:
+            return False
+        if self._by_anim_weapon_to:
+            return False
+        if self._by_anim_has_lock:
+            return False
+        if self.isUseItemAnimationPlayed():
+            return False
+        if self.isImpactingPlayed():
+            return False
+        if self._inAir:
+            return False
+        if self.isJump():
+            return False
+        if self.isMovingTest:
+            return False
+        if self.isToStayCrouchAnimPlayed:
+            return False
+        if self.active_transform and self.active_transform.isDisableHandGravity:
+            return False
+        if self.active_weapon_model:
+            tr_param, tr_param_override = self.getTrackerParam()
+            if for_left_hand:
+                if tr_param.get('left_hand_free', False) and self._last_action_type == 'idle':
+                    return True
+            if tr_param.get('to_attach_weapon', 'Track') == 'Track':
+                return False
+        return self.getTrackerKey() == ('tracker', 'bored', 'idle')
+
+    _left_hand_light_use = False
+    _left_hand_use = False
+
+    def _enableHandGravity(self, enable = False):
+        self._hand_gravity_enabled = enable
+        if enable:
+            self.RhandAttachTo(self._rightFreeHandProvider, 1.1, self._onHandGravityOn)
+            if not self._left_hand_light_use and not self._left_hand_use:
+                self.LhandAttachTo(self._leftFreeHandProvider, 1.1)
+            self.__hand_belly_pose_stop()
+        else:
+            self.RhandAttachTo(None, 0.1, self._onHandGravityOFF)
+            self.LhandAttachTo(None, 0.3)
+        return
+
+    @ignoreError
+    def __check(self, blend_time = 0):
+        if self.hand_cotrol_wait_tmp:
+            return
+        if self.__isEquipProgress:
+            return
+        if self.__isPutOnOffProgress:
+            return
+        if not self.model:
+            return
+        if getattr(self, 'npcSuit', False):
+            return
+        if not self.active_weapon_model:
+            self.__check_for_unarmed()
+        else:
+            self.__check_for_weapon(blend_time=blend_time)
+
+    _last_start_graw_id = 0
+
+    def __check_for_unarmed(self):
+        if self._last_start_graw_id:
+            BigWorld.cancelCallback(self._last_start_graw_id)
+            self._last_start_graw_id = 0
+        if self._hand_gravity_enabled != self._canEnableHandGravity():
+            if not self._hand_gravity_enabled:
+
+                def start():
+                    if self.isDestroyed:
+                        return
+                    if not self._hand_gravity_enabled and self._canEnableHandGravity():
+                        self._enableHandGravity(True)
+
+                self._last_start_graw_id = BigWorld.callback(0.5, start)
+            else:
+                self._enableHandGravity(False)
+
+    def forceUpdateHandWeapon(self):
+        """ \xd0\xbc\xd0\xbe\xd0\xb4\xd0\xb5\xd0\xbb\xd1\x8c \xd0\xb8\xd0\xb3\xd1\x80\xd0\xbe\xd0\xba\xd0\xb0 \xd0\xb8 \xd0\xbe\xd1\x80\xd1\x83\xd0\xb6\xd0\xb8\xd1\x8f \xd0\xb7\xd0\xb0\xd0\xb3\xd1\x80\xd1\x83\xd0\xb7\xd0\xb8\xd0\xbb\xd0\xb0\xd1\x81\xd1\x8c
+        
+        """
+        if self.active_weapon:
+            self.__check_for_weapon()
+
+    @property
+    def left_hand_light_use(self):
+        return self._left_hand_light_use
+
+    def setLeftHandLightUseAnimation(self, enable = True):
+        if self._left_hand_light_use == enable:
+            return
+        else:
+            self._left_hand_light_use = enable
+            if enable:
+                self.LhandAttachTo(None, 0.1)
+                return
+            self.updateHandControl()
+            return
+
+    def setLeftHandUseAnimation(self, enable = True, blend_time = 0.1):
+        if self._left_hand_use == enable:
+            return
+        else:
+            self._left_hand_use = enable
+            if enable:
+                self.LhandAttachTo(None, blend_time)
+                return
+            self.updateHandControl()
+            return
+
+    def _check_left_hand_free_and_track(self, left_model = None, blend_time = 0):
+        if not blend_time:
+            blend_time = self.TO_TRACKER_HAND_DELAY
+            tr_param, tr_param_override = self.getTrackerParam()
+            left_hand_free = tr_param.get('left_hand_free', False)
+            cur_prov = self.nodeInfoL.AttachedProviders[0]
+            need_gravity = self._canEnableHandGravity(for_left_hand=True)
+            return (self._left_hand_light_use or self._left_hand_use) and None
+        else:
+            if self._weapon_to_attached == 'Track' and left_hand_free:
+                need_prov = None
+                if need_gravity:
+                    need_prov = self._leftFreeHandProvider
+                if need_prov != cur_prov:
+                    if left_model and need_prov:
+                        pass
+                    else:
+                        self.LhandAttachTo(need_prov, blend_time * 2)
+            elif self._weapon_to_attached == 'Track':
+                if self._to_track_progress:
+                    return
+                if self.left_weapon_prov != cur_prov:
+                    self.LhandAttachTo(self.left_weapon_prov, blend_time)
+                    if left_model:
+                        havat_offset = None
+                        if self.active_weapon:
+                            havat_offset = self.active_weapon._left_hilt_launcher_from_lhand_matrix
+                        self.blendHandOffset(left_model, from_=0, to_=1.0, interval=blend_time, launcher_offset=havat_offset)
+            return
+
+    def __check_for_weapon(self, force = None, blend_time = 0):
+        if self.need_hide_weapon():
+            self.__reload_weapon_osn_anmation = False
+            self.__reload_weapon_progress = False
+            self.__isEquipProgress = False
+            self.__lock_progress_by_on_hand_weapon = False
+            if self.transformationID:
+                return
+        blend_time = blend_time or self.TO_TRACKER_HAND_DELAY
+        if self.__reload_weapon_osn_anmation:
+            return
+        elif self.__isPutOnOffProgress:
+            return
+        elif not hasattr(self, 'nodeInfoL'):
+            return
+        elif not hasattr(self, 'nodeInfoR'):
+            return
+        else:
+            if self._last_start_graw_id:
+                BigWorld.cancelCallback(self._last_start_graw_id)
+                self._last_start_graw_id = 0
+            tr_param, tr_param_override = self.getTrackerParam()
+            tr_key = self.getTrackerKey()
+            to_attach_weapon = tr_param.get('to_attach_weapon', 'Track')
+
+            def best_attach():
+                if self._by_anim_weapon_to:
+                    return self._by_anim_weapon_to
+                if self.dead or self._getup_animation_played:
+                    if self._weapon_to_attached == 'Left':
+                        return 'Left'
+                    return 'Right'
+                if self.__climb_command and self.__climb_command != 'Track':
+                    if self.__climb_command == 'Belly' and self.active_weapon.isPistol():
+                        return 'Right'
+                    if self.__climb_command == 'Belly' and self.BellyItemID:
+                        return 'Belly2'
+                    return self.__climb_command
+                return to_attach_weapon
+
+            to_attach_weapon = best_attach()
+            if self._inAir:
+                if not self._after_jump_landing_state and to_attach_weapon == 'Track':
+                    to_attach_weapon = 'Right'
+                elif self._slope_caps == 'DOWN' and to_attach_weapon == 'Track':
+                    to_attach_weapon = 'Right'
+                if force:
+                    to_attach_weapon = force
+                prev_to_attach_weapon = self._weapon_to_attached
+                left_hand_free = tr_param.get('left_hand_free', False)
+                prev_cheked_key = self._prev_cheked_key
+                self._prev_cheked_key = tr_key
+                if self._weapon_to_attached == to_attach_weapon:
+                    if prev_cheked_key != tr_key or self._hand_gravity_enabled != self._canEnableHandGravity():
+                        if to_attach_weapon != 'Track':
+                            if self._hand_gravity_enabled != self._canEnableHandGravity():
+                                if not self._lock_gravity_by_attach_weapon:
+                                    self._enableHandGravity(not self._hand_gravity_enabled)
+                    if self._hand_wepon_providers_recreted:
+                        if not to_attach_weapon == 'Track':
+                            self._check_left_hand_free_and_track()
+                            return
+                    if not self.left_weapon_prov or not self.right_weapon_prov:
+                        if to_attach_weapon == 'Track':
+                            print self, 'to_attach_weapon wait left_weapon_prov'
+                            return
+                    if self._weapon_to_attached is None and to_attach_weapon == 'Belly':
+                        if self.active_weapon.isBelly:
+                            self._weapon_to_attached = to_attach_weapon
+                            return
+                    self._weapon_to_attached = to_attach_weapon
+                    self._hand_gravity_enabled = False
+                    if self == BigWorld.player():
+                        if to_attach_weapon != 'Track':
+                            self._setHeapTagertVisible(False)
+                    if prev_to_attach_weapon == 'Belly' and self.model.belly:
+                        sounds.playSound('guns/weapon_change', self.model)
+                    if to_attach_weapon in ('Left', 'Right'):
+                        self.__hand_belly_pose_stop()
+                        self.model.Lhand = prev_to_attach_weapon == 'Belly' and self.model.belly and None
+                        self.model.Rhand = None
+                        hand_provider = self.model.belly.node('HP_Rhand')
+                        hand_provider.blend_factor_hand = 1.0
+                        hand_provider.disableDrawInReflection = True
+                        self._belly_to_right_played = True
+                        self.RhandAttachTo(hand_provider, 0.3, self._OnBellyHandToAnimHand)
+                        self.__hand_belly_pose()
+                    elif prev_to_attach_weapon == 'PistolHolster' and self.model.Pistol and to_attach_weapon == 'Right':
+
+                        def OnPistolHandToRight(isBreak):
+                            if assert_break(isBreak):
+                                return
+                            else:
+                                self.active_weapon.setVisibleModel(self.model.Rhand)
+                                self.active_weapon.deleteCopyModel(self.model.Pistol)
+                                self.model.Pistol = None
+                                self.RhandAttachTo(None, 0.2, self._OnHandDown)
+                                return
+
+                        self.model.Lhand = None
+                        self.model.Rhand = None
+                        self.model.Rhand = self.active_weapon.createCopyModelWeapon()
+                        pist_nand = self.model.Pistol.node('HP_Rhand')
+                        pist_nand.blend_factor_hand = 1.0
+                        pist_nand.disableDrawInReflection = True
+                        self.RhandAttachTo(pist_nand, 0.3, OnPistolHandToRight)
+                        self.LhandAttachTo(None, 0.8)
+                    elif prev_to_attach_weapon in ('Left', 'Right') and to_attach_weapon in ('Left', 'Right'):
+                        self.model.fix_weapon_left_to_right()
+                        self._left_to_right_played = True
+                        self._enableHandGravity(False)
+                        if self.model.Lhand:
+                            duple_model_hl = self.model.Lhand
+                        else:
+                            duple_model_hl = self.active_weapon.createCopyModelWeapon()
+                            self.model.Lhand = duple_model_hl
+                        if self.model.Rhand:
+                            duple_model_hr = self.model.Rhand
+                        else:
+                            duple_model_hr = self.active_weapon.createCopyModelWeapon()
+                            self.model.Rhand = duple_model_hr
+                        duple_model_center = self.active_weapon.createCopyModelWeapon()
+                        duple_model_center.origin('HP_Rhand')
+                        matr = getMatrix((0.0, 0.2, 0.0), (2.64, -0.3, -0.5))
+                        _node = self.model.node('Spine1', matr)
+                        _node.attach(duple_model_center)
+
+                        def on_to_down(isBreak = False):
+                            if assert_break(isBreak):
+                                return
+                            _node.detach(duple_model_center)
+                            self._OnHandDown(False)
+                            self.active_weapon.deleteCopyModel(duple_model_center)
+                            self.unLockHandHvatAnimation(left=1, right=1, update=True)
+
+                        def on_to_center(isBreak = False):
+                            if assert_break(isBreak):
+                                return
+                            else:
+                                self.LhandAttachTo(None, 0.2)
+                                self.RhandAttachTo(None, 0.2, on_to_down)
+                                if to_attach_weapon == 'Left':
+                                    self.active_weapon.setVisibleModel(duple_model_hl)
+                                    self.active_weapon.deleteCopyModel(duple_model_hr)
+                                    self.model.Rhand = None
+                                elif to_attach_weapon == 'Right':
+                                    self.active_weapon.setVisibleModel(duple_model_hr)
+                                    self.active_weapon.deleteCopyModel(duple_model_hl)
+                                    self.model.Lhand = None
+                                return
+
+                        hand_provider_R = duple_model_center.node('HP_Rhand')
+                        hand_provider_L = duple_model_center.node('HP_Lhand')
+                        hand_provider_R.blend_factor_hand = 1.0
+                        hand_provider_L.blend_factor_hand = 1.0
+                        hand_provider_R.disableDrawInReflection = True
+                        hand_provider_L.disableDrawInReflection = True
+                        self.LhandAttachTo(hand_provider_L, 0.3)
+                        self.RhandAttachTo(hand_provider_R, 0.3, on_to_center)
+                        if to_attach_weapon == 'Left':
+                            self.active_weapon.setVisibleModel(duple_model_hr)
+                            self.lockHandHvatAnimation(left=0, right=1, update=True)
+                        elif to_attach_weapon == 'Right':
+                            self.active_weapon.setVisibleModel(duple_model_hl)
+                            self.lockHandHvatAnimation(left=1, right=0, update=True)
+                    elif prev_to_attach_weapon and to_attach_weapon in ('Left', 'Right') and not self.active_weapon.isPistol() and not self._canEnableHandGravity():
+                        self.model.Lhand = None
+                        self.model.Rhand = None
+                        duple_model_hl = self.active_weapon.createCopyModelWeapon()
+                        duple_model_hr = self.active_weapon.createCopyModelWeapon()
+                        self.model.Lhand = duple_model_hl
+                        self.model.Rhand = duple_model_hr
+                        self.lockHandHvatAnimation(left=1, right=0, update=True)
+                        self.active_weapon.setVisibleModel(duple_model_hr)
+                        duple_model_center = self.active_weapon.createCopyModelWeapon()
+                        duple_model_center.origin('HP_Rhand')
+                        matr = getMatrix((0.0, 0.2, 0.0), (2.64, -0.3, -0.5))
+                        _node = self.model.node('Spine1', matr)
+                        _node.attach(duple_model_center)
+                        self._lock_gravity_by_attach_weapon = True
+
+                        def on_to_center_t_rl(isBreak = False):
+                            if assert_break(isBreak):
+                                self._lock_gravity_by_attach_weapon = False
+                                return
+                            else:
+
+                                def on_to_down_t_rl(isBreak = False):
+                                    self._lock_gravity_by_attach_weapon = False
+                                    if assert_break(isBreak):
+                                        return
+                                    _node.detach(duple_model_center)
+                                    self._OnHandDown(False)
+                                    self.active_weapon.deleteCopyModel(duple_model_center)
+                                    self.unLockHandHvatAnimation(left=1, right=1, update=True)
+
+                                if to_attach_weapon == 'Left':
+                                    self.active_weapon.setVisibleModel(duple_model_hl)
+                                    self.active_weapon.deleteCopyModel(duple_model_hr)
+                                    self.model.Rhand = None
+                                elif to_attach_weapon == 'Right':
+                                    self.active_weapon.setVisibleModel(duple_model_hr)
+                                    self.active_weapon.deleteCopyModel(duple_model_hl)
+                                    self.model.Lhand = None
+                                self.LhandAttachTo(None, 0.2)
+                                self.RhandAttachTo(None, 0.2, on_to_down_t_rl)
+                                return
+
+                        hand_provider_R = duple_model_center.node('HP_Rhand')
+                        hand_provider_L = duple_model_center.node('HP_Lhand')
+                        hand_provider_R.blend_factor_hand = 1.0
+                        hand_provider_L.blend_factor_hand = 1.0
+                        hand_provider_R.disableDrawInReflection = True
+                        hand_provider_L.disableDrawInReflection = True
+                        self.LhandAttachTo(hand_provider_L, 0.3)
+                        self.RhandAttachTo(hand_provider_R, 0.3, on_to_center_t_rl)
+                        if to_attach_weapon == 'Left':
+                            self.active_weapon.setVisibleModel(duple_model_hr)
+                            self.lockHandHvatAnimation(left=0, right=1, update=True)
+                        elif to_attach_weapon == 'Right':
+                            self.active_weapon.setVisibleModel(duple_model_hl)
+                            self.lockHandHvatAnimation(left=1, right=0, update=True)
+                    elif to_attach_weapon in ('Left', 'Right'):
+                        self.model.Lhand = None
+                        self.model.Rhand = None
+                        duple_model_hr = self.active_weapon.createCopyModelWeapon()
+                        if to_attach_weapon == 'Left':
+                            self.model.Lhand = duple_model_hr
+                        else:
+                            self.model.Rhand = duple_model_hr
+                        self.lockHandHvatAnimation(left=1, right=0, update=True)
+                        self.active_weapon.setVisibleModel(duple_model_hr)
+                        self.LhandAttachTo(None, blend_time)
+                        self.RhandAttachTo(None, blend_time, self._OnHandDown)
+                        self.blendHandOffset(duple_model_hr, from_=1, to_=0, interval=blend_time * 0.5)
+                    self.active_weapon.isBelly = self.active_weapon and False
+            elif to_attach_weapon == 'PistolHolster':
+                self.model.Lhand = None
+                self.model.Rhand = None
+                duple_model_b = self.active_weapon.createCopyModelWeapon()
+                duple_model_h = self.active_weapon.createCopyModelWeapon()
+                self.model.Pistol = duple_model_b
+                self.model.Rhand = duple_model_h
+                self.LhandAttachTo(None, blend_time)
+                hand_provider = duple_model_b.node('HP_Rhand')
+                hand_provider.blend_factor_hand = 1.0
+                hand_provider.disableDrawInReflection = True
+
+                def _OnPistolDown(isBreak = False):
+                    if assert_break(isBreak):
+                        return
+                    else:
+                        self.active_weapon.deleteCopyModel(self.model.Rhand)
+                        self.model.Rhand = None
+                        self.active_weapon.setVisibleModel(self.model.Pistol)
+                        self.RhandAttachTo(None, 0.233, self._OnHandDown)
+                        return
+
+                self.RhandAttachTo(hand_provider, 0.3, _OnPistolDown)
+                self.active_weapon.setVisibleModel(duple_model_h)
+                self.lockHandHvatAnimation(left=1, right=1, update=True)
+            elif to_attach_weapon == 'Belly2':
+                if not self.model.belly:
+                    print 'WARNING Belly2 for empty Belly', self.BellyItemID
+                self.model.Lhand = None
+                self.model.Rhand = None
+                duple_model_h = self.active_weapon.createCopyModelWeapon()
+                self.lockHandHvatAnimation(left=1, right=1, update=True)
+                duple_model_b2 = self._attachBelly2weaponModel()
+                self.model.Rhand = duple_model_h
+                self.LhandAttachTo(None, blend_time)
+                hand_provider = duple_model_b2.node('HP_Rhand')
+                hand_provider.blend_factor_hand = 1.0
+                hand_provider.disableDrawInReflection = True
+                self.RhandAttachTo(hand_provider, 0.2, self._OnBelly2Down)
+                BigWorld.callback(0.0, partial(sounds.playSound, 'guns/weapon_change', self.model))
+                self.active_weapon.setVisibleModel(duple_model_h)
+                self.__hand_belly_pose()
+            elif to_attach_weapon == 'Belly':
+                self.model.Lhand = None
+                self.model.Rhand = None
+                self.model.belly = None
+                duple_model_b = self.active_weapon.createCopyModelWeapon()
+                duple_model_h = self.active_weapon.createCopyModelWeapon()
+                self.model.belly = duple_model_b
+                self.model.Rhand = duple_model_h
+                self.LhandAttachTo(None, blend_time)
+                hand_provider = duple_model_b.node('HP_Rhand')
+                hand_provider.blend_factor_hand = 1.0
+                hand_provider.disableDrawInReflection = True
+                self.RhandAttachTo(hand_provider, 0.3, self._OnBellyDown)
+                self.active_weapon.setVisibleModel(duple_model_h)
+                self.active_weapon.isBelly = True
+                BigWorld.callback(0.0, partial(sounds.playSound, 'guns/weapon_change', self.model))
+                self.lockHandHvatAnimation(left=1, right=1, update=True)
+                self.__hand_belly_pose()
+            elif to_attach_weapon == 'Track':
+                self._hand_wepon_providers_recreted = False
+                if prev_to_attach_weapon == 'Belly2' and self._belly2model:
+                    self._to_track_progress = True
+                    belly_nand = self._belly2model.node('HP_Rhand')
+                    belly_nand.blend_factor_hand = 1.0
+                    belly_nand.disableDrawInReflection = True
+                    self.RhandAttachTo(belly_nand, 0.3, self._OnBelly2HandToTrack)
+                    if self.active_weapon and self.active_weapon._left_hilt_launcher_fl_inv:
+                        belly_nand_l = self._belly2model.node('HP_Lhand', self.active_weapon._left_hilt_launcher_fl_inv)
+                    else:
+                        belly_nand_l = self._belly2model.node('HP_Lhand')
+                    belly_nand_l.blend_factor_hand = 1.0
+                    belly_nand_l.disableDrawInReflection = True
+                    self.LhandAttachTo(belly_nand_l, 0.8)
+                    self.__hand_belly_pose()
+                elif prev_to_attach_weapon == 'Belly' and self.model.belly:
+                    self._to_track_progress = True
+                    belly_nand = self.model.belly.node('HP_Rhand')
+                    belly_nand.blend_factor_hand = 1.0
+                    belly_nand.disableDrawInReflection = True
+                    self.RhandAttachTo(belly_nand, 0.3, self._OnBellyHandToTrack)
+                    if self.active_weapon and self.active_weapon._left_hilt_launcher_fl_inv:
+                        belly_nand_l = self.model.belly.node('HP_Lhand', self.active_weapon._left_hilt_launcher_fl_inv)
+                    else:
+                        belly_nand_l = self.model.belly.node('HP_Lhand')
+                    belly_nand_l.blend_factor_hand = 1.0
+                    belly_nand_l.disableDrawInReflection = True
+                    self.LhandAttachTo(belly_nand_l, 0.8)
+                    self.__hand_belly_pose()
+                elif prev_to_attach_weapon == 'PistolHolster' and self.model.Pistol:
+                    pist_nand = self.model.Pistol.node('HP_Rhand')
+                    pist_nand.blend_factor_hand = 1.0
+                    pist_nand.disableDrawInReflection = True
+                    self.RhandAttachTo(pist_nand, 0.3, self._OnPistolHandToTrack)
+                    self.LhandAttachTo(self.left_weapon_prov, 0.8)
+                else:
+                    if prev_to_attach_weapon in ('Left', 'Right'):
+                        self.model.fix_weapon_left_to_right()
+                    if not self.h_crawl_left_hand_anim:
+                        self._check_left_hand_free_and_track(self.model.Lhand, blend_time=blend_time)
+                    else:
+                        self.h_need_attach_left_after_crawl = True
+                    if not self.h_crawl_left_hand_anim and self.model.Lhand and left_hand_free:
+
+                        def on_to_weaopn(isBreak = False):
+                            if assert_break(isBreak):
+                                return
+                            else:
+                                self.model.Lhand = None
+                                self._check_left_hand_free_and_track(blend_time=blend_time)
+                                self._OnHandToWeapon(isBreak)
+                                return
+
+                        self.LhandAttachTo(self.left_weapon_prov, blend_time)
+                        self.RhandAttachTo(self.right_weapon_prov, blend_time, on_to_weaopn)
+                    else:
+                        self.RhandAttachTo(self.right_weapon_prov, blend_time, self._OnHandToWeapon)
+                    self.__lock_progress_by_on_hand_weapon = True
+                    self.onChangeManipulateWeapon()
+                self.unLockHandHvatAnimation(left=1, right=1, update=True)
+                if self.active_weapon:
+                    self.active_weapon.isBelly = False
+            elif to_attach_weapon == 'TEST_NONE':
+                if self.active_weapon:
+                    self.active_weapon.setVisibleModel(None)
+                self.LhandAttachTo(None, blend_time)
+                self.RhandAttachTo(None, blend_time)
+            elif to_attach_weapon == 'TEST_TRACK_R_FREE':
+                if self.active_weapon:
+                    self.LhandAttachTo(self.left_weapon_prov, blend_time)
+                self.RhandAttachTo(None, blend_time)
+            self.forceDrawModel()
+            return
+
+    def getNodeNameActiveWeaponAttached(self):
+        att_nodes = {'Left': 'Lhand',
+         'Right': 'Rhand',
+         'Belly': 'belly'}
+        return att_nodes.get(self._weapon_to_attached, None)
+
+    def _attachBelly2weaponModel(self, set_visible = False):
+        duple_model_b2 = self.active_weapon.createCopyModelWeapon()
+        matroffs = Matrix()
+        matroffs.setRotateYPR((0.1, 0.2, 0.3))
+        matroffs.translation = (0.05, 0.05, 0.15)
+        if self._belly2:
+            self._belly2.attachments = []
+        self._belly2 = self.model.node('HP_belly', matroffs)
+        duple_model_b2.origin('HP_belly')
+        self._belly2.attach(duple_model_b2)
+        self._belly2model = duple_model_b2
+        if set_visible:
+            self.active_weapon.setVisibleModel(duple_model_b2)
+        return duple_model_b2
+
+    def _OnHandToAnimHand(self, isBreak = False):
+        if assert_break(isBreak):
+            return
+        else:
+            self.model.Lhand = None
+            self.model.Rhand = None
+            duple_model = self.active_weapon.createCopyModelWeapon()
+            if self._weapon_to_attached == 'Left':
+                self.model.Lhand = duple_model
+                self.LhandAttachTo(None, 0.3, self._OnHandDown)
+                self.RhandAttachTo(None, 0.2)
+            elif self._weapon_to_attached == 'Right':
+                self.model.Rhand = duple_model
+                self.LhandAttachTo(None, 0.2)
+                self.RhandAttachTo(None, 0.3, self._OnHandDown)
+            self.active_weapon.setVisibleModel(duple_model)
+            return
+
+    def _OnBellyHandToAnimHand(self, isBreak = False):
+        if isBreak:
+            self._belly_to_right_played = False
+        if assert_break(isBreak):
+            return
+        else:
+            self.model.belly = None
+            self.model.Lhand = None
+            self.model.Rhand = None
+            duple_model = self.active_weapon.createCopyModelWeapon()
+            if self._weapon_to_attached == 'Left':
+                self.model.Lhand = duple_model
+            elif self._weapon_to_attached == 'Right':
+                self.model.Rhand = duple_model
+            self.active_weapon.setVisibleModel(duple_model)
+            self.LhandAttachTo(None, 0.2)
+            self.RhandAttachTo(None, 0.3, self._OnHandDown)
+            self.__hand_belly_pose_stop()
+            return
+
+    def _OnBelly2HandToTrack(self, isBreak = False):
+        self._to_track_progress = False
+        if assert_break(isBreak):
+            return
+        else:
+            self.model.Lhand = None
+            self.model.Rhand = None
+            duple_model = self.active_weapon.createCopyModelWeapon()
+            self.model.Rhand = duple_model
+            self.active_weapon.setVisibleModel(duple_model)
+            self._check_left_hand_free_and_track()
+            self.RhandAttachTo(self.right_weapon_prov, 0.222, self._OnHandToWeaponFromBelly2)
+            self.__hand_belly_pose_stop()
+            return
+
+    def _OnPistolHandToTrack(self, isBreak = False):
+        self._to_track_progress = False
+        if assert_break(isBreak):
+            return
+        else:
+            self.model.Lhand = None
+            self.model.Rhand = None
+            duple_model = self.active_weapon.createCopyModelWeapon()
+            self.model.Rhand = duple_model
+            self.active_weapon.setVisibleModel(duple_model)
+            self._check_left_hand_free_and_track()
+            self.RhandAttachTo(self.right_weapon_prov, 0.222, self._OnHandToWeaponFromPistol)
+            self.__hand_belly_pose_stop()
+            return
+
+    def _OnBellyHandToTrack(self, isBreak = False):
+        self._to_track_progress = False
+        if assert_break(isBreak):
+            return
+        else:
+            self.model.Lhand = None
+            self.model.Rhand = None
+            duple_model = self.active_weapon.createCopyModelWeapon()
+            self.model.Rhand = duple_model
+            self.active_weapon.setVisibleModel(duple_model)
+            self._check_left_hand_free_and_track()
+            self.RhandAttachTo(self.right_weapon_prov, 0.222, self._OnHandToWeaponFromBelly)
+            self.__hand_belly_pose_stop()
+            return
+
+    def _OnHandToWeaponFromPistol(self, isBreak = False):
+        self._to_track_progress = False
+        if assert_break(isBreak):
+            return
+        else:
+            self.model.Rhand = None
+            self.model.Pistol = None
+            self.active_weapon.setVisibleModel(self.active_weapon_model)
+            self._setHeapTagertVisible(True)
+            self.__hand_belly_pose_stop()
+            return
+
+    def _OnHandToWeaponFromBelly(self, isBreak = False):
+        self._to_track_progress = False
+        if assert_break(isBreak):
+            return
+        else:
+            self.model.Rhand = None
+            self.model.belly = None
+            self.active_weapon.setVisibleModel(self.active_weapon_model)
+            self._setHeapTagertVisible(True)
+            self.__hand_belly_pose_stop()
+            return
+
+    def _OnHandToWeaponFromBelly2(self, isBreak = False):
+        self._to_track_progress = False
+        if assert_break(isBreak):
+            return
+        else:
+            self.active_weapon.deleteCopyModel(self.model.Rhand)
+            self.active_weapon.deleteCopyModel(self._belly2model)
+            self.model.Rhand = None
+            self._belly2model = None
+            if self._belly2:
+                self._belly2.attachments = []
+            self._belly2 = None
+            self.active_weapon.setVisibleModel(self.active_weapon_model)
+            self._setHeapTagertVisible(True)
+            self.__hand_belly_pose_stop()
+            return
+
+    def _OnBellyDown(self, isBreak = False):
+        if assert_break(isBreak):
+            return
+        else:
+            try:
+                if self.model.belly and self.model.Rhand and getattr(self, 'tracker_belly', None):
+                    self.tracker_belly.pushByModels(self.model.belly, self.model.Rhand)
+            except Exception:
+                traceback.print_exc()
+
+            self.model.Rhand = None
+            self.active_weapon.setVisibleModel(self.model.belly)
+            self.RhandAttachTo(None, 0.333, self._OnHandDown)
+            return
+
+    def _OnBelly2Down(self, isBreak = False):
+        if assert_break(isBreak):
+            return
+        else:
+            try:
+                if self._belly2model and self.model.Rhand and getattr(self, 'tracker_belly', None):
+                    self.tracker_belly.pushByModels(self._belly2model, self.model.Rhand)
+            except Exception:
+                traceback.print_exc()
+
+            self.active_weapon.deleteCopyModel(self.model.Rhand)
+            self.model.Rhand = None
+            self.active_weapon.setVisibleModel(self._belly2model)
+            self.RhandAttachTo(None, 0.233, self._OnHandDown)
+            return
+
+    def _OnHandDown(self, isBreak = False):
+        """\xd1\x80\xd1\x83\xd0\xba\xd0\xb8 \xd0\xbf\xd0\xb5\xd1\x80\xd0\xb5\xd1\x88\xd0\xbb\xd0\xb8 \xd0\xb8\xd0\xb7 \xd0\xbe\xd1\x80\xd1\x83\xd0\xb6\xd0\xb5\xd0\xb9\xd0\xbd\xd0\xbe\xd0\xb3\xd0\xbe \xd0\xbf\xd1\x80\xd0\xb8\xd0\xbb\xd0\xb8\xd0\xbf\xd0\xb0\xd0\xbd\xd0\xb8\xd1\x8f \xd0\xb2 \xd0\xb0\xd0\xbd\xd0\xb8\xd0\xbc\xd0\xb0\xd1\x86\xd0\xb8\xd1\x8e"""
+        self._left_to_right_played = False
+        self._belly_to_right_played = False
+        if assert_break(isBreak):
+            return
+        if not self._hand_gravity_enabled:
+            if self._canEnableHandGravity():
+                self._enableHandGravity(True)
+        self.__hand_belly_pose_stop()
+        if self.active_weapon and self._weapon_to_attached == 'Right':
+            self.unLockHandHvatAnimation(right=1, update=True)
+
+    def _OnHandToWeapon(self, isBreak = False):
+        self.__lock_progress_by_on_hand_weapon = False
+        self._to_track_progress = False
+        if assert_break(isBreak):
+            return
+        else:
+            self.model.Lhand = None
+            self.model.Rhand = None
+            self.model.ThrowRight = None
+            self.active_weapon.setVisibleModel(self.active_weapon_model)
+            self.active_weapon.clearCopyModel()
+            self._setHeapTagertVisible(True)
+            self.__hand_belly_pose_stop()
+            self.onHandToWeaponComplete()
+            self.onChangeManipulateWeapon()
+            return
+
+    def _onHandGravityOn(self, isBreak = False):
+        if assert_break(isBreak):
+            return
+
+    def _onHandGravityOFF(self, isBreak = False):
+        if assert_break(isBreak):
+            return
+
+    def UpdateWeaponIcon(self):
+        pass
+
+    def onLeaveWorld(self):
+        if self._weapon_reloader:
+            self._weapon_reloader.onAvatarDestroyed()
+            self._weapon_reloader = None
+        self._belly2model = None
+        if self._belly2:
+            self._belly2.attachments = []
+        self._belly2 = None
+        return
+
+    def pushTrackerLock(self, weapon_to = None, lock_track_torso = False, lock_track_head = False, lock_track_foot = False, comment = 'empty'):
+        """
+                \xd0\xbf\xd0\xbe\xd0\xbc\xd0\xb5\xd1\x81\xd1\x82\xd0\xb8\xd1\x82\xd1\x8c \xd0\xbe\xd1\x80\xd1\x83\xd0\xb6\xd0\xb8\xd0\xb5 \xd0\xb2 \xd0\xbd\xd1\x83\xd0\xb6\xd0\xbd\xd1\x83\xd1\x8e \xd1\x80\xd1\x83\xd0\xba\xd1\x83, \xd0\xb7\xd0\xb0\xd0\xb1\xd0\xbb\xd0\xbe\xd0\xba\xd0\xb8\xd1\x80\xd0\xbe\xd0\xb2\xd0\xb0\xd1\x82\xd1\x8c \xd1\x82\xd1\x80\xd0\xb5\xd0\xba\xd0\xb5\xd1\x80 \xd1\x81\xd0\xbf\xd0\xb8\xd0\xbd\xd1\x8b,\xd0\xb3\xd0\xbe\xd0\xbb\xd0\xbe\xd0\xb2\xd1\x8b
+                \xd0\xb0\xd1\x80\xd0\xb3\xd1\x83\xd0\xbc\xd0\xb5\xd0\xbd\xd1\x82\xd1\x8b:
+                        weapon_to = "Belly|Belly2|Left|Right|Belly-or-Right
+                                        |Belly-Belly2-PistolHolster|Belly-Belly2-Right"  \xd0\xbf\xd1\x80\xd0\xb8\xd1\x86\xd0\xb5\xd0\xbf\xd0\xb8\xd1\x82\xd1\x8c \xd0\xbe\xd1\x80\xd1\x83\xd0\xb6\xd0\xb8\xd0\xb5 \xd0\xba
+                                \xd0\xb5\xd1\x81\xd0\xbb\xd0\xb8 None - \xd0\xbe\xd1\x80\xd1\x83\xd0\xb6\xd0\xb8\xd0\xb5 \xd0\xbf\xd1\x80\xd0\xb8\xd0\xb0\xd1\x82\xd0\xb0\xd1\x87\xd0\xb8\xd1\x82\xd1\x81\xd1\x8f \xd0\xb8\xd0\xb7 \xd1\x81\xd0\xb2\xd0\xbe\xd0\xb8\xd1\x85 \xd0\xbd\xd0\xb0\xd1\x81\xd1\x82\xd1\x80\xd0\xbe\xd0\xb5\xd0\xba \xd0\xbe\xd1\x82 \xd1\x81\xd0\xbe\xd1\x81\xd1\x82\xd0\xbe\xd1\x8f\xd0\xbd\xd0\xb8\xd1\x8f
+                                \xd0\xb5\xd1\x81\xd0\xbb\xd0\xb8  "Belly-or-Right" \xd0\xbf\xd1\x80\xd0\xb8 \xd1\x81\xd0\xb2\xd0\xbe\xd0\xb1\xd0\xbe\xd0\xb4\xd0\xbd\xd0\xbe\xd0\xbc \xd0\xbf\xd1\x83\xd0\xb7\xd0\xb5 \xd0\xbd\xd0\xb0 \xd0\xbf\xd1\x83\xd0\xb7\xd0\xbe, \xd0\xbb\xd0\xb8\xd0\xb1\xd0\xbe \xd0\xb2 \xd0\xbf\xd1\x80\xd0\xb0\xd0\xb2\xd1\x83\xd1\x8e \xd1\x80\xd1\x83\xd0\xba\xd1\x83
+                                \xd0\xb5\xd1\x81\xd0\xbb\xd0\xb8  "Belly-Belly2-PistolHolster" \xd0\xbd\xd0\xb0 \xd0\xbf\xd1\x83\xd0\xb7\xd0\xbe(\xd0\xbf\xd1\x83\xd0\xb7\xd0\xbe2), \xd0\xbb\xd0\xb8\xd0\xb1\xd0\xbe \xd0\xb2 \xd0\xbf\xd0\xb8\xd1\x81\xd0\xbe\xd0\xbb\xd0\xb5\xd1\x82 \xd0\xb2 \xd0\xba\xd0\xbe\xd0\xb1\xd1\x83\xd1\x80\xd1\x83
+        
+                        lock_track_torso - \xd0\xb2\xd1\x8b\xd0\xba\xd0\xbb\xd1\x8e\xd1\x87\xd0\xb8\xd1\x82\xd1\x8c \xd1\x82\xd1\x80\xd0\xb5\xd0\xba\xd0\xb5\xd1\x80\xd1\x8b \xd1\x81\xd0\xbf\xd0\xb8\xd0\xbd\xd1\x8b
+                        lock_track_foot - \xd0\xb2\xd1\x8b\xd0\xba\xd0\xbb\xd1\x8e\xd1\x87\xd0\xb8\xd1\x82\xd1\x8c \xd1\x82\xd1\x80\xd0\xb5\xd0\xba\xd0\xb5\xd1\x80\xd1\x8b \xd0\xbd\xd0\xbe\xd0\xb3
+                        lock_track_head - \xd0\xb2\xd1\x8b\xd0\xba\xd0\xbb\xd1\x8e\xd1\x87\xd0\xb8\xd1\x82\xd1\x8c \xd1\x82\xd1\x80\xd0\xb5\xd0\xba\xd0\xb5\xd1\x80\xd1\x8b \xd0\xb3\xd0\xbe\xd0\xbb\xd0\xbe\xd0\xb2\xd1\x8b
+                        comment - \xd0\xb4\xd0\xbb\xd1\x8f \xd0\xb4\xd0\xb5\xd0\xb1\xd0\xb0\xd0\xb3\xd0\xb0
+                return
+                        lock_id - \xd0\xb4\xd0\xbb\xd1\x8f popTrackerLock
+        
+        """
+        lock_id = idgenerator.next()
+        self.pushTrackerLockByName(lock_id, weapon_to=weapon_to, lock_track_torso=lock_track_torso, lock_track_foot=lock_track_foot, lock_track_head=lock_track_head, comment=comment)
+        return lock_id
+
+    def hasTrackerLockByName(self, name):
+        return name in self._tracker_locks
+
+    def pushTrackerLockByName(self, name, weapon_to = None, lock_track_torso = False, lock_track_head = False, lock_track_foot = False, comment = 'empty', print_error = True):
+        """
+        \xd1\x82\xd0\xbe\xd0\xb6\xd0\xb5 \xd1\x87\xd1\x82\xd0\xbe \xd0\xb8 pushTrackerLock, \xd0\xbd\xd0\xbe \xd1\x81 \xd0\xbf\xd0\xbe\xd0\xbf\xd1\x82\xd0\xbe\xd1\x8f\xd0\xbd\xd0\xbd\xd1\x8b\xd0\xbc \xd0\xb8\xd0\xb4-\xd0\xb8 \xd0\xbc\xd0\xb5\xd0\xbd\xd0\xb5\xd0\xbc
+        """
+        if name in self._tracker_locks and print_error:
+            print 'WARNING! pushTrackerLockByName name %r already used!' % name
+            print self
+            traceback.print_stack()
+        if weapon_to == 'Belly-or-Right':
+            weapon_to = 'Belly' if self.canAttachWeaponBelly() else 'Right'
+        elif weapon_to == 'Belly-Belly2':
+            weapon_to = 'Right'
+            if self.active_weapon and not self.active_weapon.isPistol():
+                weapon_to = 'Belly2' if self.BellyItemID else 'Belly'
+        elif weapon_to == 'Belly-Belly2-PistolHolster':
+            weapon_to = 'Right'
+            if self.active_weapon and not self.active_weapon.isPistol():
+                weapon_to = 'Belly2' if self.BellyItemID else 'Belly'
+            elif self.active_weapon and self.active_weapon.isPistol():
+                weapon_to = 'PistolHolster'
+        elif weapon_to == 'Belly-Belly2-Right':
+            weapon_to = 'Right'
+            if self.active_weapon and not self.active_weapon.isPistol():
+                weapon_to = 'Belly2' if self.BellyItemID else 'Belly'
+        info = {'weapon_to': weapon_to,
+         'lock_track_torso': lock_track_torso,
+         'lock_track_foot': lock_track_foot,
+         'lock_track_head': lock_track_head,
+         'comment': comment}
+        self._tracker_locks[name] = info
+        self._updateTrackerLocks()
+        return name
+
+    def popTrackerLock(self, lock_id):
+        """
+                \xd1\x81\xd0\xbd\xd1\x8f\xd1\x82\xd1\x8c \xd0\xb1\xd0\xbb\xd0\xbe\xd0\xba\xd0\xb8\xd1\x80\xd0\xbe\xd0\xb2\xd0\xba\xd1\x83 \xd1\x82\xd1\x80\xd0\xb5\xd0\xba\xd0\xb5\xd1\x80\xd1\x83 \xd1\x81\xd0\xbf\xd0\xb8\xd0\xbd\xd1\x8b,\xd0\xb3\xd0\xbe\xd0\xbb\xd0\xbe\xd0\xb2\xd1\x8b \xd0\xb8 \xd0\xb2\xd0\xb5\xd1\x80\xd0\xbd\xd1\x83\xd1\x82\xd1\x8c \xd0\xbe\xd1\x80\xd1\x83\xd0\xb6\xd0\xb8\xd0\xb5\xd0\xb2 \xd1\x81\xd1\x82\xd0\xb0\xd1\x80\xd0\xbe\xd0\xb5 \xd0\xbc\xd0\xb5\xd1\x81\xd1\x82\xd0\xbe
+                lock_id - \xd0\xb3\xd0\xb5\xd0\xbd\xd0\xb5\xd1\x80\xd0\xb8\xd1\x80\xd1\x83\xd0\xb5\xd1\x82\xd1\x81\xd1\x8f \xd0\xb2 pushTrackerLock
+        """
+        lock = None
+        if not lock_id:
+            print 'WARNING! popTrackerLock not lock_id!  len _tracker_locks:', len(self._tracker_locks)
+            print self
+            traceback.print_stack()
+        if not lock_id and self._tracker_locks:
+            self._tracker_locks.keys()[-1]
+        lock = self._tracker_locks.pop(lock_id, None)
+        if lock:
+            self._updateTrackerLocks()
+        return lock
+
+    def forceClearTrackerLock(self):
+        """
+        \xd0\xbd\xd0\xb5\xd0\xb8\xd1\x81\xd0\xbf\xd0\xbe\xd0\xbb\xd1\x8c\xd0\xb7\xd0\xbe\xd0\xb2\xd0\xb0\xd1\x82\xd1\x8c
+        """
+        self._tracker_locks.clear()
+        self._updateTrackerLocks()
+
+    def _updateTrackerLocks(self):
+        lock_torso = False
+        lock_foot = False
+        lock_head = False
+        weapon_to = None
+        has_lock = bool(self._tracker_locks)
+        for lock in self._tracker_locks.values():
+            if lock['lock_track_torso']:
+                lock_torso = True
+            if lock['lock_track_head']:
+                lock_head = True
+            if lock['lock_track_foot']:
+                lock_foot = True
+            if lock['weapon_to']:
+                weapon_to = lock['weapon_to']
+
+        self._todo_useanim_lock_torso = lock_torso
+        self._todo_useanim_lock_head = lock_head
+        self._todo_useanim_lock_foot = lock_foot
+        if lock_torso or lock_head or lock_foot:
+            self.isUseItemAnimationPlayed = lambda : 1
+        else:
+            self.isUseItemAnimationPlayed = lambda : 0
+        self.updateBlendNodeByImpacting(only_factor=True)
+        if self._by_anim_weapon_to != weapon_to or self._by_anim_has_lock != has_lock:
+            self._by_anim_weapon_to = weapon_to
+            self._by_anim_has_lock = has_lock
+            self.__check()
+        return

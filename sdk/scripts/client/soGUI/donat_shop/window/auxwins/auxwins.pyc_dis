@@ -1,0 +1,279 @@
+# Embedded file name: ./client/soGUI/donat_shop/window/auxwins/auxwins.py
+from Localization import lc
+import GUI
+from ui.panel import Panel
+from basewin import BaseWin, EventType as WinET
+from prepaymentwin import PrepaymentWin
+from pickpaymentwin import PickPaymentWin, EventType as PickET
+from textfieldwin import TextfieldWin
+from tooltip import Tooltip
+
+class Mode:
+    Shop, Paint = range(2)
+
+
+class Auxwins(Panel):
+    _instances = {}
+    _modes_stack = []
+
+    @staticmethod
+    def push_mode(mode):
+        Auxwins.pop_mode(mode)
+        Auxwins._modes_stack.append(mode)
+
+    @staticmethod
+    def pop_mode(mode):
+        if mode in Auxwins._modes_stack:
+            Auxwins._instances.get(mode)._hide_tooltip()
+            Auxwins._modes_stack.remove(mode)
+
+    @staticmethod
+    def _get_instance():
+        if not Auxwins._modes_stack:
+            return None
+        else:
+            return Auxwins._instances.get(Auxwins._modes_stack[-1])
+
+    def __init__(self, parent_comp, mode, depth = 0):
+        Auxwins._instances[mode] = self
+        comp = GUI.Window('soGUI/frame/paint/white.dds')
+        Panel.__init__(self, parent_comp, 'auxwins', depth=depth, component=comp)
+        comp.materialFX = 'BLEND'
+        comp.colour = (0, 0, 0, 150)
+        comp.visible = False
+        comp = GUI.Simple('soGUI/maps/loadingScreen/loadingCircle/loadingCircle.texanim')
+        comp.materialFX = 'BLEND'
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = comp.texture.width, comp.texture.height
+        comp.position = (0, 0, 0.1)
+        comp.visible = False
+        self.component.addChild(comp, 'load_circle')
+        self._all_wins = []
+        self._base_wins = []
+        self._textfield_wins = []
+        self._prepayment_win = None
+        self._pickpayment_win = None
+        self._tooltip = None
+        self._circle_channels = set()
+        self.change_interseption(intercept_buttons=True, intercept_moving=True, interscept_keys=True)
+        return
+
+    def _get_prepayment_win(self):
+        if not self._prepayment_win:
+            self._prepayment_win = PrepaymentWin(self.component, 'prepaymentwin')
+            self._prepayment_win.transform.set_pixel_mode((0.5, 0.5), (0.5, 0.5), (610, 306))
+            self._prepayment_win.add_listener(self._on_win_event)
+            self._all_wins.append(self._prepayment_win)
+        self._make_depth(self._prepayment_win)
+        return self._prepayment_win
+
+    def _get_pickpayment_win(self):
+        if not self._pickpayment_win:
+            self._pickpayment_win = PickPaymentWin(self.component, 'pickpaymentwin')
+            self._pickpayment_win.transform.set_pixel_mode((0.5, 0.5), (0.5, 0.5), (610, 340))
+            self._pickpayment_win.add_listener(self._on_win_event)
+            self._all_wins.append(self._pickpayment_win)
+        self._make_depth(self._pickpayment_win)
+        return self._pickpayment_win
+
+    def _make_depth(self, win):
+        depth = 1.0
+        for w in self._all_wins:
+            if w.visible:
+                depth -= 0.01
+
+        win.component.position[2] = depth
+        self.component.reSort()
+
+    def _get_textfield_win(self):
+        win = next((w for w in self._textfield_wins if not w.visible), None)
+        if not win:
+            win = TextfieldWin(self.component, 'tfwin' + str(len(self._textfield_wins)))
+            win.transform.set_pixel_mode((0.5, 0.5), (0.5, 0.5), (610, 306))
+            win.add_listener(self._on_win_event)
+            self._all_wins.append(win)
+            self._textfield_wins.append(win)
+        self._make_depth(win)
+        return win
+
+    def _get_free_win(self):
+        win = next((w for w in self._base_wins if not w.visible), None)
+        if not win:
+            win = BaseWin(self.component, 'bwin' + str(len(self._base_wins)))
+            win.transform.set_pixel_mode((0.5, 0.5), (0.5, 0.5), (610, 306))
+            win.add_listener(self._on_win_event)
+            self._all_wins.append(win)
+            self._base_wins.append(win)
+        self._make_depth(win)
+        return win
+
+    def _on_win_event(self, event_type, data):
+        if event_type in (WinET.OnShow, WinET.OnHide):
+            self._update_visibility()
+        elif event_type == PickET.OnPaymentPicked:
+            self._get_prepayment_win().change_payment_type(data['payment_type'])
+
+    def handleMouseEnterEvent(self, comp):
+        Panel.handleMouseEnterEvent(self, comp)
+        return True
+
+    def handleMouseLeaveEvent(self, comp):
+        Panel.handleMouseLeaveEvent(self, comp)
+        return True
+
+    def handleMouseButtonEvent(self, component, event):
+        Panel.handleMouseButtonEvent(self, component, event)
+        return True
+
+    def handleMouseEvent(self, component, event):
+        Panel.handleMouseEvent(self, component, event)
+        return True
+
+    def _update_visibility(self):
+        load_visible = bool(self._circle_channels)
+        self.component.load_circle.visible = load_visible
+        self.component.visible = load_visible or any((w.visible for w in self._all_wins))
+
+    def _show_tooltip(self, text):
+        if not self._tooltip:
+            self._tooltip = Tooltip(self.component.parent, depth=0.001)
+        self._tooltip.show(text)
+        return self._tooltip
+
+    def _hide_tooltip(self):
+        if self._tooltip:
+            self._tooltip.hide()
+
+    def _show_buy_cancel_payment_win(self, agree_callback, payment_type):
+        win = self._get_prepayment_win()
+        win.show(payment_type, agree_callback, self._on_payment_click)
+
+    def _on_payment_click(self):
+        win = self._get_pickpayment_win()
+        win.show()
+
+    @staticmethod
+    def show_tooltip(text):
+        return Auxwins._get_instance()._show_tooltip(text)
+
+    @staticmethod
+    def hide_tooltip():
+        instance = Auxwins._get_instance()
+        if instance:
+            return instance._hide_tooltip()
+
+    @staticmethod
+    def has_load():
+        return bool(Auxwins._get_instance()._circle_channels)
+
+    @staticmethod
+    def show_load(show, channel = None):
+        instance = Auxwins._get_instance()
+        if show:
+            instance._circle_channels.add(channel)
+        elif channel in instance._circle_channels:
+            instance._circle_channels.remove(channel)
+        instance._update_visibility()
+
+    @staticmethod
+    def show_activate_boost_win(agree_callback):
+        win = Auxwins._get_instance()._get_free_win()
+        btns_data = ({'text': lc('StoreHouse.shopitem.CANCEL')}, {'text': lc('StoreHouse.shopitem.OK'),
+          'callback': agree_callback,
+          'visual': 'soGUI/frame/buttons/donatbutton_red.json'})
+        win.show(lc('StoreHouse.shopitem.BOOSTWARNING'), btns_data)
+
+    @staticmethod
+    def show_custom(message, btns_data):
+        win = Auxwins._get_instance()._get_free_win()
+        win.show(message, btns_data)
+
+    @staticmethod
+    def show_ok_cancel_message(message, ok_callback):
+        win = Auxwins._get_instance()._get_free_win()
+        btns_data = ({'text': lc('StoreHouse.mainscreen.OK'),
+          'callback': ok_callback}, {'text': lc('StoreHouse.bin.CANCEL')})
+        win.show(message, btns_data)
+
+    @staticmethod
+    def show_ok_message(message, callback = None):
+        win = Auxwins._get_instance()._get_free_win()
+        btns_data = ({'text': lc('StoreHouse.mainscreen.OK'),
+          'callback': callback},)
+        win.show(message, btns_data)
+
+    @staticmethod
+    def show_tf_message(message, btns_data):
+        win = Auxwins._get_instance()._get_textfield_win()
+        win.show(message, btns_data)
+
+    @staticmethod
+    def show_buy_cancel_win(agree_callback):
+        win = Auxwins._get_instance()._get_free_win()
+        btns_data = ({'text': lc('StoreHouse.bin.CANCEL'),
+          'sound': 'ui/inventory/item_drop'}, {'text': lc('StoreHouse.bin.COMMIT_BUY'),
+          'callback': agree_callback,
+          'sound': 'ui/weapon_mod/approve',
+          'visual': 'soGUI/frame/buttons/donatbutton_red.json'})
+        win.show(lc('StoreHouse.bin.SURE_BUY'), btns_data)
+
+    @staticmethod
+    def show_buy_cancel_vk_win(agree_callback):
+        win = Auxwins._get_instance()._get_free_win()
+        btns_data = ({'text': lc('StoreHouse.bin.CANCEL'),
+          'sound': 'ui/inventory/item_drop'}, {'text': lc('StoreHouse.bin.CONTINUE'),
+          'callback': agree_callback,
+          'sound': 'ui/weapon_mod/approve',
+          'visual': 'soGUI/frame/buttons/donatbutton_red.json'})
+        win.show(lc('StoreHouse.bin.SURE_BUY_VKPLAY'), btns_data)
+
+    @staticmethod
+    def show_buy_cancel_steam_win(agree_callback):
+        win = Auxwins._get_instance()._get_free_win()
+        btns_data = ({'text': lc('StoreHouse.bin.CANCEL'),
+          'sound': 'ui/inventory/item_drop'}, {'text': lc('StoreHouse.bin.CONTINUE'),
+          'callback': agree_callback,
+          'sound': 'ui/weapon_mod/approve',
+          'visual': 'soGUI/frame/buttons/donatbutton_red.json'})
+        win.show(lc('StoreHouse.bin.SURE_BUY_STEAM'), btns_data)
+
+    @staticmethod
+    def show_buy_cancel_payment_win(agree_callback, payment_type):
+        Auxwins._get_instance()._show_buy_cancel_payment_win(agree_callback, payment_type)
+
+    @staticmethod
+    def show_refill_cancel_win(agree_callback, refill_count):
+
+        def agree_with_args():
+            agree_callback(refill_count)
+
+        win = Auxwins._get_instance()._get_free_win()
+        btns_data = ({'text': lc('StoreHouse.bin.CANCEL')}, {'text': lc('StoreHouse.store.REFILL'),
+          'callback': agree_with_args,
+          'visual': 'soGUI/frame/buttons/donatbutton_red.json'})
+        win.show(lc('DonatShop.window.bin.refill').format(refill_count), btns_data)
+
+    @staticmethod
+    def handle_esc():
+        instance = Auxwins._get_instance()
+        if not instance:
+            return False
+        if not instance._all_wins:
+            return False
+        for i in range(len(instance._all_wins) - 1, -1, -1):
+            win = instance._all_wins[i]
+            if win and win.visible:
+                win.hide()
+                return True
+
+        return False
+
+    def hide_all(self):
+        for w in self._all_wins:
+            w.hide()
+
+        self._circle_channels.clear()
+        self._hide_tooltip()
+        self._update_visibility()

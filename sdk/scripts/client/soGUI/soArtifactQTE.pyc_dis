@@ -1,0 +1,1056 @@
+# Embedded file name: ./client/soGUI/soArtifactQTE.py
+import BigWorld
+import GUI
+import BWPersonality
+import traceback
+import Keys
+from copy import deepcopy
+import Math
+import ItemsUtils
+import sounds_manager as sounds
+from Helpers.PyGUI.PyGUIBase import PyGUIBase
+from soGUI.soButton import soButton
+from Helpers.BWCoroutine import BWMemberCoroutine, BWWaitForPeriod, BWWaitForCoroutine
+from Localization import lc
+from Helpers.PyGUI import PyGUIEvent
+from functools import partial
+from ChatChannelConfig import CHANNEL_CONSTS
+from Helpers.PyGUI.DraggableComponent import DraggableComponent
+from soGUI.GUIPositions import GUIPositions
+import math
+import math_bw
+GREEN_COLOR = (0, 255, 0, 255)
+RED_COLOR = (255, 0, 0, 255)
+NOISE_ALPHA = 32
+IN_RANGE_FREQUENCY = 1.0
+IN_RANGE_FADE_SPEED = 1.1
+OUT_RANGE_FREQUENCY = 2.5
+OUT_RANGE_FADE_SPEED = 3.0
+
+class soArtifactPoint(PyGUIBase):
+    factoryString = 'soGUI.soArtifactPoint'
+
+    def __init__(self, component, parent = None):
+        PyGUIBase.__init__(self, component)
+        component.script = self
+        self.parent = parent
+        self.artifactID = -1
+        self.in_range = False
+        self.onClick = lambda : None
+        self._listen_out_range = False
+        self._frequency = OUT_RANGE_FREQUENCY
+        self.setupRoot()
+        self.setupVisual()
+        self.setupAlphaShader()
+        self.setupSelector()
+        self.blinkLoop().run()
+        self.colorLoop().run()
+
+    def setupRoot(self):
+        cmp = self.component
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.horizontalAnchor = 'CENTER'
+        cmp.verticalAnchor = 'CENTER'
+        cmp.width = 25
+        cmp.height = 25
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.textureName = ''
+        cmp.mouseButtonFocus = True
+
+    def setupVisual(self):
+        cmp = GUI.Simple('')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'CLIP'
+        cmp.horizontalAnchor = cmp.verticalAnchor = 'CENTER'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.width = 23
+        cmp.height = 23
+        cmp.position = (0.0, 0.0, 0.1)
+        cmp.materialFX = 'BLEND'
+        cmp.textureName = 'soGUI/frame/artifact_extractor/artifactPoint.dds'
+        self.component.addChild(cmp, 'visual')
+
+    def setupSelector(self):
+        cmp = GUI.Simple('soGUI/frame/artifact_extractor/selector.dds')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'CLIP'
+        cmp.horizontalAnchor = cmp.verticalAnchor = 'CENTER'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.width = 25
+        cmp.height = 25
+        cmp.colour = (255, 255, 255, 255)
+        cmp.position = (0.0, 0.0, 0.0)
+        cmp.materialFX = 'BLEND'
+        cmp.visible = False
+        self.component.addChild(cmp, 'selector')
+
+    def setupAlphaShader(self):
+        shader = GUI.AlphaShader()
+        shader.mode = 'ALL'
+        shader.speed = OUT_RANGE_FADE_SPEED
+        shader.alpha = 1.0
+        self.component.visual.addShader(shader, 'fader')
+
+    def setID(self, id):
+        self.artifactID = id
+
+    def getID(self):
+        return self.artifactID
+
+    def handleMouseButtonEvent(self, comp, event):
+        if not event.isMouseButton():
+            return False
+        down = event.isKeyDown()
+        key = event.key
+        if key == Keys.KEY_LEFTMOUSE:
+            if down:
+                self.onClick()
+                return True
+        return False
+
+    def select(self):
+        self.component.selector.visible = True
+
+    def deselect(self):
+        self.component.selector.visible = False
+
+    def listenOutRange(self, value):
+        self._listen_out_range = value
+
+    @BWMemberCoroutine
+    def colorLoop(self):
+        yield BWWaitForPeriod(0.5)
+        while self.component.visible:
+            yield BWWaitForPeriod(0.1)
+            anomaly = BigWorld.entities.get(self.artifactID, None)
+            player = BigWorld.player()
+            if not anomaly or not player:
+                break
+            art_vect = anomaly.position - BigWorld.player().position
+            dist = art_vect.length
+            in_range = dist < ItemsUtils.EXTRACTION_RANGE
+            if in_range != self.in_range:
+                self.parent.on_range_change(self)
+                self.in_range = in_range
+            self._frequency = IN_RANGE_FREQUENCY if in_range else OUT_RANGE_FREQUENCY
+            self.component.visual.fader.speed = IN_RANGE_FADE_SPEED if in_range else OUT_RANGE_FADE_SPEED
+            if self._listen_out_range and not self.in_range:
+                self.parent.onPointOutRange(self.artifactID)
+            show_range = ItemsUtils.DETECTOR_RANGE
+            matrix = Math.Matrix()
+            matrix.setRotateYPR((-player.yaw, 0, 0))
+            pos = matrix.applyVector(art_vect) / show_range
+            self.component.position = (pos[0], pos[2], 0.0)
+
+        return
+
+    @BWMemberCoroutine
+    def blinkLoop(self):
+        yield BWWaitForPeriod(1.8)
+        while self.component.visible:
+            self.component.visual.fader.alpha = 0
+            self.parent._play_sound('items/mgd/art_flashing')
+            yield BWWaitForPeriod(self._frequency)
+            self.component.visual.fader.alpha = 1.0
+            self.component.visual.fader.reset()
+
+
+class soArtifactQTE(PyGUIBase, DraggableComponent, GUIPositions):
+    factoryString = 'soGUI.soArtifactQTE'
+    EVENT_SELECT = 0
+    EVENT_SCANNED = 2
+    EVENT_CLOSED = 3
+    EVENT_SCAN_RESULT = 4
+    EVENT_RESTART = 5
+    STATUS_IDLE = 0
+    STATUS_PLAY = 1
+    STATUS_FAIL = 2
+    STATUS_PREPARATION = 3
+    STATUS_WIN = 4
+    NOTIFY_ERROR_DIST = 10
+    NOTIFY_START_GAME = 20
+    KEYMAP = {Keys.KEY_UPARROW: 'soGUI/frame/artifact_extractor/key_up.dds',
+     Keys.KEY_DOWNARROW: 'soGUI/frame/artifact_extractor/key_down.dds',
+     Keys.KEY_LEFTARROW: 'soGUI/frame/artifact_extractor/key_left.dds',
+     Keys.KEY_RIGHTARROW: 'soGUI/frame/artifact_extractor/key_right.dds',
+     Keys.KEY_1: 'soGUI/frame/artifact_extractor/key_1.dds',
+     Keys.KEY_2: 'soGUI/frame/artifact_extractor/key_2.dds',
+     Keys.KEY_3: 'soGUI/frame/artifact_extractor/key_3.dds',
+     Keys.KEY_4: 'soGUI/frame/artifact_extractor/key_4.dds',
+     Keys.KEY_5: 'soGUI/frame/artifact_extractor/key_5.dds',
+     Keys.KEY_6: 'soGUI/frame/artifact_extractor/key_6.dds',
+     Keys.KEY_7: 'soGUI/frame/artifact_extractor/key_7.dds',
+     Keys.KEY_8: 'soGUI/frame/artifact_extractor/key_8.dds',
+     Keys.KEY_9: 'soGUI/frame/artifact_extractor/key_9.dds',
+     Keys.KEY_0: 'soGUI/frame/artifact_extractor/key_0.dds'}
+
+    def __init__(self, component):
+        PyGUIBase.__init__(self, component)
+        DraggableComponent.__init__(self, True, True, True, xoffset=0.5, yoffset=0.5)
+        GUIPositions.__init__(self)
+        component.script = self
+        self._spotlineLoop_id = 0
+        self.sliderMP = None
+        self.spotlineMP = None
+        self._restart_coroutine = None
+        self._no_battery_coroutine_handler = None
+        self._screen_coroutine = None
+        self._intencity = (0.0, 1.0)
+        self.is_on = False
+        self.sliderData = None
+        self.QTEdata = {}
+        self.keyData = None
+        self.selectorData = None
+        self._fuel_full = False
+        self.status = soArtifactQTE.STATUS_IDLE
+        self.points = {}
+        self._deltaposition = [0, 0]
+        self._clbID = 0
+        self.setupRoot()
+        self.setupContent()
+        return
+
+    def setupRoot(self):
+        cmp = self.component
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'CLIP'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'CENTER'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.position = (-1.0, 0.0, 0.0)
+        cmp.width = 388
+        cmp.height = 700
+        cmp.textureName = ''
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.dragFocus = True
+        cmp.moveFocus = True
+
+    def setupContent(self):
+        cmp = GUI.Simple('soGUI/frame/artifact_extractor/back.dds')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.width = 388
+        cmp.height = 700
+        cmp.position = (0, 0, 1.0)
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        self.component.addChild(cmp, 'background')
+        grab_button = soButton(GUI.Window())
+        comp = grab_button.component
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'BOTTOM')
+        comp.width, comp.height = (82, 50)
+        comp.position = (0.02, -0.77, 0.1)
+        grab_button.initVSC('soGUI/elements/button_extractor.xml')
+        grab_button.onBound()
+        grab_button.setVisualState('normal')
+        grab_button.onClick = self._on_grab_click
+        grab_button.soundControlName = 'MZAButton'
+        self.component.background.addChild(comp, 'grab_button')
+        cmp = GUI.Window('')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.width = 217
+        cmp.height = 217
+        cmp.position = (87, 120, 0.5)
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        self.component.addChild(cmp, 'radarHolder')
+        comp = GUI.Window()
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.width, comp.height = (1.38, 1.42)
+        comp.position = (0, 0.12, 0.0)
+        comp.filterType = 'LINEAR'
+        comp.materialFX = 'SOLID'
+        comp.colour = (255, 255, 255, 255)
+        self.component.addChild(comp, 'screen')
+        cmp = GUI.Window('soGUI/frame/artifact_extractor/radarNet.dds')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.width = 272
+        cmp.height = 304
+        cmp.position = (58, 62, 0.9)
+        cmp.materialFX = 'BLEND'
+        self.component.addChild(cmp, 'radarNet')
+        comp = GUI.Window('soGUI/frame/artifact_extractor/battery_back.dds')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('RIGHT', 'TOP')
+        comp.width, comp.height = comp.texture.width, comp.texture.height
+        comp.position = (260, 0, 0.5)
+        comp.colour = (0, 255, 0, 255)
+        comp.materialFX = 'BLEND'
+        self.component.radarNet.addChild(comp, 'battery_level')
+        comp = GUI.Window()
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.width, comp.height = (36, 13)
+        comp.position = (8, 5, 0.5)
+        comp.materialFX = 'BLEND'
+        self.component.radarNet.battery_level.addChild(comp, 'battery_level_container')
+        comp = GUI.Window('soGUI/frame/artifact_extractor/battery_segment.dds')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'CENTER')
+        comp.width, comp.height = (2, 2)
+        comp.position = (-1, 0, 0.5)
+        comp.colour = (0, 255, 0, 255)
+        comp.materialFX = 'BLEND'
+        self.component.radarNet.battery_level.battery_level_container.addChild(comp, 'filler')
+        comp = GUI.Window()
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.width, comp.height = (2, 2)
+        comp.position = (0, 0, 0.9)
+        comp.textureName = 'textures/misc/other/white_noise/mza_noise.texanim'
+        comp.filterType = 'LINEAR'
+        comp.materialFX = 'BLEND'
+        comp.colour = (255,
+         255,
+         255,
+         NOISE_ALPHA)
+        self.component.screen.addChild(comp, 'noise')
+        comp = GUI.Window('textures/default/white.dds')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.width, comp.height = (2, 2)
+        comp.position = (0, 0, 0.5)
+        comp.materialFX = 'BLEND'
+        comp.visible = False
+        self.component.screen.addChild(comp, 'whiteblock')
+        comp = GUI.Window('textures/default/black.dds')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'BOTTOM')
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.width, comp.height = (2, 2)
+        comp.position = (0, 1, 0.4)
+        comp.materialFX = 'SOLID'
+        comp.visible = False
+        self.component.screen.addChild(comp, 'black_up')
+        comp = GUI.Window('textures/default/black.dds')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'TOP')
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.width, comp.height = (2, 2)
+        comp.position = (0, -1, 0.4)
+        comp.materialFX = 'SOLID'
+        comp.visible = False
+        self.component.screen.addChild(comp, 'black_down')
+        cmp = GUI.Simple('textures/default/white.dds')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.width = 23
+        cmp.height = 15
+        cmp.position = (287, 66, 0.05)
+        cmp.colour = (150, 0, 0, 255)
+        cmp.materialFX = 'BLEND'
+        self.component.addChild(cmp, 'red_indicator')
+        self._red_ind_shad = GUI.AlphaShader()
+        self._red_ind_shad.start = -0.0
+        self._red_ind_shad.speed = 0.5
+        self._red_ind_shad.stop = 0.5
+        self._red_ind_shad.mode = 'ALL'
+        self._red_ind_shad.alpha = 0.0
+        cmp.addShader(self._red_ind_shad)
+        cmp = GUI.Simple('textures/default/black.dds')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'CLIP'
+        cmp.widthMode = cmp.heightMode = 'CLIP'
+        cmp.horizontalAnchor = 'CENTER'
+        cmp.verticalAnchor = 'CENTER'
+        cmp.width = 2
+        cmp.height = 2
+        cmp.position = (0, 0, 0.1)
+        cmp.materialFX = 'BLEND'
+        self.component.screen.addChild(cmp, 'dark_fon')
+        cmp = GUI.Simple('textures/default/black.dds')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'CLIP'
+        cmp.widthMode = cmp.heightMode = 'CLIP'
+        cmp.horizontalAnchor = 'CENTER'
+        cmp.verticalAnchor = 'CENTER'
+        cmp.width = 2
+        cmp.height = 2
+        cmp.colour = (0, 0, 0, 255)
+        cmp.position = (0, 0, 0.55)
+        cmp.materialFX = 'BLEND'
+        cmp.visible = False
+        self.component.screen.addChild(cmp, 'nobatterycontainer')
+        cmp = GUI.Simple('soGUI/frame/artifact_extractor/battery_low.dds')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'CLIP'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.horizontalAnchor = 'CENTER'
+        cmp.verticalAnchor = 'CENTER'
+        cmp.width = cmp.texture.width
+        cmp.height = cmp.texture.height
+        cmp.position = (0.05, 0.3, 0.5)
+        cmp.colour = (255, 0, 0, 255)
+        cmp.materialFX = 'BLEND'
+        self.component.screen.nobatterycontainer.addChild(cmp, 'image')
+        cmp = GUI.Text('')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.horizontalAnchor = 'RIGHT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.font = 'RobotoCondensedRegular_16.font'
+        cmp.materialFX = 'BLEND'
+        cmp.position = (198, 2, 0.5)
+        self.component.radarNet.addChild(cmp, 'text_fuel')
+        cmp = GUI.Simple('soGUI/frame/artifact_extractor/button_light_01.dds')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.width = 40
+        cmp.height = 9
+        cmp.position = (86, 580, 0.01)
+        cmp.colour = (0, 0, 0, 0)
+        cmp.materialFX = 'BLEND'
+        cmp.visible = False
+        self.component.addChild(cmp, 'button_light1')
+        cmp = GUI.Simple('soGUI/frame/artifact_extractor/button_light_01.dds')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.width = 40
+        cmp.height = 9
+        cmp.position = (261, 580, 0.01)
+        cmp.colour = (0, 0, 0, 0)
+        cmp.materialFX = 'BLEND'
+        cmp.visible = False
+        self.component.addChild(cmp, 'button_light2')
+        cmp = GUI.Simple('soGUI/frame/artifact_extractor/lamp_bottom_01.dds')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.width = 32
+        cmp.height = 32
+        cmp.position = (181, 646, 0.01)
+        cmp.colour = (255, 0, 0, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.visible = False
+        self.component.addChild(cmp, 'lamp_bottom')
+        cmp = GUI.Simple('soGUI/frame/artifact_extractor/infos.dds')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.width = 249
+        cmp.height = 187
+        cmp.position = (68, 366, 0.9)
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        self.component.addChild(cmp, 'infoBar')
+        comp = GUI.Text('')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'CLIP')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.font = 'RobotoCondensedRegular_16.font'
+        comp.materialFX = 'BLEND'
+        comp.position = (78, -0.25, 0.1)
+        comp.multiline = True
+        self.component.infoBar.addChild(comp, 'help')
+        cmp = GUI.Simple('soGUI/frame/artifact_extractor/spotLine.dds')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'CLIP'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'BOTTOM'
+        cmp.width = 217
+        cmp.height = 124
+        cmp.position = (-1.0, 1.0, 0.4)
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        self.component.radarHolder.addChild(cmp, 'spotLine')
+        self.spotlineMP = Math.Matrix()
+        self.spotlineMP.translation = (0.0, 0.0, 0.0)
+        shader = GUI.MatrixShader()
+        shader.eta = 0
+        shader.blend = True
+        shader.target = self.spotlineMP
+        self.component.radarHolder.spotLine.addShader(shader, 'mover')
+        cmp = GUI.Window()
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.width = 227
+        cmp.height = 23
+        cmp.position = (80, 377, 0.5)
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        self.component.addChild(cmp, 'sliderHolder')
+        cmp = GUI.Simple('soGUI/frame/artifact_extractor/slider.dds')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'CLIP'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.horizontalAnchor = 'CENTER'
+        cmp.verticalAnchor = 'TOP'
+        cmp.width = 14
+        cmp.height = 23
+        cmp.position = (-1.0, 1.0, 0.8)
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        self.component.sliderHolder.addChild(cmp, 'timeSlider')
+        for i in xrange(5):
+            cmp = GUI.Simple('')
+            cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+            cmp.widthMode = cmp.heightMode = 'PIXEL'
+            cmp.horizontalAnchor = 'LEFT'
+            cmp.verticalAnchor = 'TOP'
+            cmp.width = 38
+            cmp.height = 38
+            cmp.position = (80 + i * 48, 392, 0.9)
+            cmp.colour = (255, 255, 255, 255)
+            cmp.materialFX = 'BLEND'
+            self.component.addChild(cmp, 'key' + str(i))
+
+        hintBox = soButton(GUI.Window())
+        comp = hintBox.component
+        comp.horizontalPositionMode = comp.verticalPositionMode = 'PIXEL'
+        comp.widthMode = comp.heightMode = 'PIXEL'
+        comp.horizontalAnchor = 'LEFT'
+        comp.verticalAnchor = 'TOP'
+        comp.colour = (130, 130, 130, 255)
+        comp.materialFX = 'BLEND'
+        comp.width = 25
+        comp.height = 25
+        comp.position = (294, 15, 0.0)
+        hintBox.initVSC('soGUI/elements/helpBox.xml')
+        hintBox.onBound()
+        hintBox.setVisualState('normal')
+        self.component.addChild(comp, 'hintBox')
+        closeBox = soButton(GUI.Window())
+        cmp = closeBox.component
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.height = cmp.width = 25
+        cmp.position = (320, 15, 0.0)
+        closeBox.initVSC('soGUI/elements/closeBox.xml')
+        closeBox.onBound()
+        closeBox.setVisualState('normal')
+        closeBox.onClick = self._on_close_click
+        self.component.addChild(cmp, 'closeBox')
+
+    def _on_close_click(self):
+        self.hide()
+        BWPersonality.GUICore.setMouseAltState(False)
+        BWPersonality.GUICore.setBestCursor()
+
+    def _updateFuelIndicator(self):
+        player = BigWorld.player()
+        ae = getattr(player, 'artefactExtractor', None)
+        if not ae:
+            return
+        else:
+            item_dict = ae.item_dict
+            count = ItemsUtils.GetBatteryLevel(item_dict)
+            max_count = ItemsUtils.GetMaxBatteryLevel(item_dict)
+            off = count <= 0
+            if not off and self.component.red_indicator.visible:
+                player.cell.append_to_battery_consumers(item_dict['complexItemID'])
+            self.component.red_indicator.visible = off
+            if not self._screen_coroutine:
+                self.component.screen.dark_fon.visible = off
+            level_ratio = float(count) / max_count
+            self.component.radarNet.text_fuel.text = '%.1f%%' % (100.0 * level_ratio)
+            self.component.radarNet.battery_level.battery_level_container.filler.width = math_bw.clamp(level_ratio) * 2
+            if off:
+                self._red_ind_shad.alpha = 1.0
+                self._red_ind_shad.reset()
+                self._red_ind_shad.alpha = 0.0
+            self.component.button_light1.visible = not off
+            self.component.button_light2.visible = not off
+            self.is_on = not off
+            self._fuel_full = not off
+            if self._first_show_trigger:
+                self._first_show_trigger = False
+                if off:
+                    self._no_battery_coroutine_handler = self._no_battery_coroutine()
+                    self._no_battery_coroutine_handler.run()
+            return
+
+    def renderContents(self, slider = True, points = True, keyBinds = True, select = True, status = True):
+        try:
+            self._updateFuelIndicator()
+        except:
+            traceback.print_exc()
+
+        if slider:
+            cmp = self.component.sliderHolder.timeSlider
+            hPos = self.sliderData * 2.0 - 1.0
+            cmp.position = (hPos, 1.0, 0.8)
+        if not self._fuel_full and self.points:
+            self._clearPoints()
+        self.component.radarHolder.spotLine.visible = self._fuel_full
+        points = True
+        if points:
+            for anomaly_id, point_comp in self.points.items():
+                if anomaly_id not in self.QTEdata:
+                    point_comp.visible = False
+                    self.component.radarHolder.delChild(point_comp)
+                    del self.points[anomaly_id]
+
+            if self._fuel_full:
+                for anomaly_id, anomaly_pos in self.QTEdata.items():
+                    if anomaly_id not in self.points:
+                        pointObj = soArtifactPoint(GUI.Window(), self)
+                        if self.status == self.STATUS_PLAY:
+                            anomaly = BigWorld.entities.get(anomaly_id)
+                            if anomaly:
+                                dist = (anomaly.position - BigWorld.player().position).length
+                                in_range = dist < ItemsUtils.EXTRACTION_RANGE
+                                if in_range:
+                                    pointObj.in_range = True
+                                    ae = getattr(BigWorld.player(), 'artefactExtractor', None)
+                                    if anomaly_id and ae and ae.choosen_anomaly == anomaly_id:
+                                        pointObj._listen_out_range = True
+                        cmp = pointObj.component
+                        cmp.visual.colour = self._compile_color()
+                        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'CLIP'
+                        self.component.radarHolder.addChild(cmp, 'point' + str(anomaly_id))
+                        pointObj.onBound()
+                        pointObj.setID(anomaly_id)
+                        pointObj.onClick = partial(self.processPoint, anomaly_id)
+                        self.points[anomaly_id] = cmp
+                        cmp.position = (anomaly_pos[0], anomaly_pos[1], 0.0)
+
+        if keyBinds:
+            if len(self.keyData) < 5:
+                for i in xrange(5):
+                    cmp = self.component.__getattribute__('key' + str(i))
+                    cmp.visible = False
+
+            i = 0
+            for key_name, key_visible, key_presses in self.keyData:
+                cmp = self.component.__getattribute__('key' + str(i))
+                cmp.textureName = self.KEYMAP[key_name]
+                cmp.visible = key_visible
+                cmp.colour[3] = 255 if key_presses else 100
+                i += 1
+
+        if select:
+            if hasattr(self.component.radarHolder, 'point' + str(self.selectorData)):
+                cmp = self.component.radarHolder.__getattribute__('point' + str(self.selectorData))
+                cmp.script.select()
+        self._update_ui()
+        return
+
+    def _update_ui(self):
+        lb_comp = self.component.lamp_bottom
+        text_comp = self.component.infoBar.help
+        if self.status == self.STATUS_PREPARATION:
+            text_comp.text = lc('soArtifactQTE.HELP_PLAY')
+            lb_comp.visible = True
+        elif self.status == self.STATUS_PLAY:
+            text_comp.text = lc('soArtifactQTE.HELP_PLAY')
+            lb_comp.visible = True
+        elif self.status == self.STATUS_FAIL:
+            text_comp.text = lc('soArtifactQTE.HELP_PLAY')
+            lb_comp.visible = False
+        elif self.status == self.STATUS_WIN:
+            text_comp.text = lc('soArtifactQTE.HELP_SUCCESS')
+            lb_comp.visible = False
+        elif self.status == self.STATUS_IDLE:
+            if not self.points:
+                lb_comp.visible = False
+                text_comp.text = lc('soArtifactQTE.HELP_NONE')
+            elif any((p.script.in_range for p in self.points.values())):
+                text_comp.text = lc('soArtifactQTE.HELP_GRAB')
+                lb_comp.visible = True
+            else:
+                text_comp.text = lc('soArtifactQTE.HELP_COME')
+                lb_comp.visible = False
+
+    def onGameNotify(self, notify_id, data = None):
+        if notify_id == self.NOTIFY_ERROR_DIST:
+            self.onGameStatus(self.STATUS_FAIL)
+        elif notify_id == self.NOTIFY_START_GAME:
+            for anomaly_id, point_comp in self.points.items():
+                listen_out_range = data == anomaly_id
+                point_comp.script.listenOutRange(listen_out_range)
+
+    def on_range_change(self, point):
+        self.renderContents()
+
+    def onPointOutRange(self, anomaly_id):
+        self.points[anomaly_id].script.listenOutRange(False)
+        player = BigWorld.player()
+        ae = getattr(player, 'artefactExtractor', None)
+        if not ae:
+            return
+        else:
+            ae.stopGame()
+            self.onGameNotify(self.NOTIFY_ERROR_DIST)
+            player.putMessage(CHANNEL_CONSTS.SYSTEM, lc('soArtifactQTE.ERROR_DIST'))
+            return
+
+    def _compile_color(self):
+        colour = list(math_bw.lerp_rgb_colors(GREEN_COLOR, RED_COLOR, self._intencity[0]))
+        colour[3] = self._intencity[1] * 255
+        return tuple(colour)
+
+    def _set_colours(self, intensity, alpha):
+        self._intencity = (intensity, alpha)
+        colour = self._compile_color()
+        self.component.radarNet.colour = colour
+        self.component.infoBar.help.colour = colour
+        self.component.radarNet.text_fuel.colour = colour
+        self.component.infoBar.colour = colour
+        self.component.sliderHolder.timeSlider.colour = colour
+        self.component.radarHolder.spotLine.colour = colour
+        self.component.radarNet.battery_level.colour = colour
+        self.component.radarNet.battery_level.battery_level_container.filler.colour = colour
+        for p in self.points.values():
+            p.visual.colour = colour
+
+    @BWMemberCoroutine
+    def _fail_twinkling(self):
+        fail_twinkle_count = 2.5
+        fail_twinkle_time = 0.5
+        twinkle_delay = 1.0
+        on_time = 1.5
+
+        def twinkle_phase_to_intensity(phase):
+            return abs(math.sin(phase * fail_twinkle_count * math.pi))
+
+        time_elapsed = 0.0
+        while time_elapsed < fail_twinkle_time:
+            time_elapsed = min(time_elapsed + BigWorld.getTimeDelta(), fail_twinkle_time)
+            phase = time_elapsed / fail_twinkle_time
+            intensity = twinkle_phase_to_intensity(phase)
+            self._set_colours(intensity, 1.0)
+            yield BWWaitForPeriod(0)
+
+        self._set_colours(1.0, 1.0)
+        yield BWWaitForPeriod(twinkle_delay)
+        yield BWWaitForCoroutine(self._screen_effect(False))
+        alpha = 0.0
+        while alpha < 1.0:
+            alpha = min(1.0, alpha + BigWorld.getTimeDelta() / on_time)
+            self._set_colours(0.0, alpha * alpha)
+            yield BWWaitForPeriod(0)
+
+        self._set_colours(0.0, 1.0)
+        self.onGameStatus(self.STATUS_IDLE)
+        self._clearPoints()
+        self._restart_coroutine = None
+        BWPersonality.GUICore.artifactQTEEvent(self.EVENT_RESTART, None)
+        return
+
+    @BWMemberCoroutine
+    def _win_delay(self):
+        yield BWWaitForPeriod(2.0)
+        self.onGameStatus(self.STATUS_IDLE)
+        self._clearPoints()
+        self._restart_coroutine = None
+        BWPersonality.GUICore.artifactQTEEvent(self.EVENT_RESTART, None)
+        return
+
+    def onGameStatus(self, status, data = None):
+        STATUSMAP_BTN = {self.STATUS_IDLE: (255, 0, 0, 0),
+         self.STATUS_PREPARATION: (255, 255, 0, 255),
+         self.STATUS_PLAY: (255, 0, 0, 0),
+         self.STATUS_FAIL: (255, 0, 0, 255),
+         self.STATUS_WIN: (0, 255, 0, 255)}
+        self.component.button_light1.colour = STATUSMAP_BTN[status]
+        self.component.button_light2.colour = STATUSMAP_BTN[status]
+        if self._restart_coroutine:
+            self._restart_coroutine.stop()
+        self._restart_coroutine = None
+        if status == self.STATUS_FAIL:
+            self._restart_coroutine = self._fail_twinkling()
+            self._restart_coroutine.run()
+        elif status == self.STATUS_WIN:
+            self._play_sound('items/mgd/succeed')
+            self._restart_coroutine = self._win_delay()
+            self._restart_coroutine.run()
+        return
+
+    def update(self):
+        data = BWPersonality.GUICore.artifactQTEDataSection
+        slider, points, keyBinds, select, status = (False,
+         False,
+         False,
+         False,
+         False)
+        if self.sliderData != data['slider']:
+            self.sliderData = data['slider']
+            slider = True
+        if self.QTEdata != data['QTEdata']:
+            self.QTEdata = deepcopy(data['QTEdata'])
+            points = True
+        if self.keyData != data['keyData']:
+            self.keyData = deepcopy(data['keyData'])
+            keyBinds = True
+        if self.selectorData != data['selector']:
+            self.selectorData = data['selector']
+            select = True
+        if self.status != data['QTEStatus']:
+            self.status = data['QTEStatus']
+            status = True
+        self.renderContents(slider, points, keyBinds, select, status)
+
+    def processPoint(self, anomaly_id):
+        if self.status not in (self.STATUS_PLAY, self.STATUS_PREPARATION, self.STATUS_FAIL) and not self._restart_coroutine:
+            BWPersonality.GUICore.artifactQTEEvent(self.EVENT_SELECT, anomaly_id)
+
+    def _on_grab_click(self):
+        if self.status == self.STATUS_IDLE:
+            ae = getattr(BigWorld.player(), 'artefactExtractor', None)
+            if ItemsUtils.GetBatteryLevel(ae.item_dict) <= 0:
+                if not self._screen_coroutine and not self._restart_coroutine and not self._no_battery_coroutine_handler:
+                    self._no_battery_coroutine_handler = self._no_battery_coroutine()
+                    self._no_battery_coroutine_handler.run()
+                    return
+        if self.status not in (self.STATUS_PLAY, self.STATUS_PREPARATION, self.STATUS_FAIL):
+            anomaly_id = next((a_id for a_id, p in self.points.items() if p.script.in_range), None)
+            if anomaly_id and not self._restart_coroutine:
+                BWPersonality.GUICore.artifactQTEEvent(self.EVENT_SELECT, anomaly_id)
+        return
+
+    def show(self):
+        self._first_show_trigger = True
+        if self.component.parent is None:
+            BWPersonality.GUICore.worldLayer.addChild(self.component, 'artifactQTE')
+        self.component.visible = True
+        GUIPositions.show(self)
+        self.spotlineLoop()
+        BWPersonality.GUICore.setBestCursor()
+        self.component.radarNet.text_fuel.text = ''
+        self._red_ind_shad.alpha = 0.0
+        self._red_ind_shad.reset()
+        self._red_ind_shad.alpha = 0.0
+        self._set_colours(0.0, 1.0)
+        self.component.screen.dark_fon.visible = True
+        self.component.screen.nobatterycontainer.visible = False
+        self.component.screen.dark_fon.colour[-1] = 255
+        return
+
+    def hide(self):
+        self.spotlineStop()
+        self.component.visible = False
+        self._fuel_full = False
+        self.component.red_indicator.visible = True
+        self.component.screen.dark_fon.visible = True
+        self.component.screen.nobatterycontainer.visible = False
+        self.component.button_light1.visible = False
+        self.component.button_light2.visible = False
+        self._clearPoints()
+        self.QTEdata = {}
+        self.is_on = False
+        BWPersonality.GUICore.setBestCursor()
+        BWPersonality.GUICore.artifactQTEEvent(self.EVENT_CLOSED, None)
+        if self._screen_coroutine:
+            self._screen_coroutine.stop()
+        self._screen_coroutine = None
+        if self._restart_coroutine:
+            self._restart_coroutine.stop()
+        self._restart_coroutine = None
+        if self._no_battery_coroutine_handler:
+            self._no_battery_coroutine_handler.stop()
+        self._no_battery_coroutine_handler = None
+        self._set_colours(0.0, 1.0)
+        return
+
+    @property
+    def is_on(self):
+        return getattr(self, '_is_on', False)
+
+    @is_on.setter
+    def is_on(self, value):
+        if self.is_on == value:
+            return
+        self._is_on = value
+        if self._screen_coroutine:
+            self._screen_coroutine.stop()
+        self._screen_coroutine = self._screen_effect(self.is_on)
+        self._screen_coroutine.run()
+
+    @BWMemberCoroutine
+    def _no_battery_coroutine(self):
+        self.component.screen.nobatterycontainer.visible = True
+        yield BWWaitForCoroutine(self._screen_effect(True))
+        yield BWWaitForPeriod(2.0)
+        yield BWWaitForCoroutine(self._screen_effect(False))
+        self.component.screen.nobatterycontainer.visible = False
+        self._no_battery_coroutine_handler = None
+        return
+
+    @BWMemberCoroutine
+    def _screen_effect(self, is_on):
+        if not hasattr(self.component, 'screen'):
+            self._screen_coroutine = None
+            return
+        else:
+            animation_scale = 1
+            dark_fon = self.component.screen.dark_fon
+            whiteblock = self.component.screen.whiteblock
+            black_up = self.component.screen.black_up
+            black_down = self.component.screen.black_down
+            if is_on:
+                self._play_sound('items/mgd/turn_off')
+                open_period = 0.3 / animation_scale
+                fade_period = 0.1 / animation_scale
+
+                def state_by_phase(phase):
+                    dark_fon.visible = True
+                    black_up.visible = True
+                    whiteblock.visible = True
+                    black_down.visible = True
+                    whiteblock.colour[-1] = 255
+                    black_up.position[1] = 0.01
+                    black_down.position[1] = -0.01
+                    dark_fon.colour[-1] = phase * 255
+
+                phase = 1.0
+                state_by_phase(phase)
+                while phase > 0.0:
+                    phase = max(0.0, phase - BigWorld.getTimeDelta() / fade_period)
+                    state_by_phase(phase)
+                    yield BWWaitForPeriod(0)
+
+                state_by_phase(phase)
+
+                def state_by_phase(phase):
+                    dark_fon.visible = False
+                    black_up.visible = True
+                    whiteblock.visible = True
+                    black_down.visible = True
+                    whiteblock.colour[-1] = phase * 255
+                    black_up.position[1] = 1.0 - phase + 0.01
+                    black_down.position[1] = -1 + phase - 0.01
+
+                phase = 1.0
+                state_by_phase(phase)
+                while phase > 0.0:
+                    phase = max(0.0, phase - BigWorld.getTimeDelta() / open_period)
+                    state_by_phase(phase)
+                    yield BWWaitForPeriod(0)
+
+                state_by_phase(phase)
+                dark_fon.visible = False
+                whiteblock.visible = False
+                black_up.visible = False
+                black_down.visible = False
+            else:
+                self._play_sound('items/mgd/turn_off')
+                close_period = 0.3 / animation_scale
+                fade_period = 0.1 / animation_scale
+
+                def state_by_phase(phase):
+                    dark_fon.visible = False
+                    black_up.visible = True
+                    whiteblock.visible = True
+                    black_down.visible = True
+                    whiteblock.colour[-1] = phase * 255
+                    black_up.position[1] = 1.0 - phase + 0.01
+                    black_down.position[1] = -1 + phase - 0.01
+
+                phase = 0.0
+                state_by_phase(phase)
+                while phase < 1.0:
+                    phase = min(1.0, phase + BigWorld.getTimeDelta() / close_period)
+                    state_by_phase(phase)
+                    yield BWWaitForPeriod(0)
+
+                state_by_phase(phase)
+
+                def state_by_phase(phase):
+                    dark_fon.visible = True
+                    black_up.visible = True
+                    whiteblock.visible = True
+                    black_down.visible = True
+                    dark_fon.colour[-1] = phase * 255
+
+                phase = 0.0
+                state_by_phase(phase)
+                while phase < 1.0:
+                    phase = min(1.0, phase + BigWorld.getTimeDelta() / fade_period)
+                    state_by_phase(phase)
+                    yield BWWaitForPeriod(0)
+
+                state_by_phase(phase)
+                dark_fon.visible = True
+                whiteblock.visible = False
+                black_up.visible = False
+                black_down.visible = False
+            self._screen_coroutine = None
+            return
+
+    @property
+    def visible(self):
+        return self.component.visible
+
+    def _clearPoints(self):
+        for anomaly_id, point_comp in self.points.items():
+            point_comp.visible = False
+            self.component.radarHolder.delChild(point_comp)
+
+        self.points = {}
+
+    def scanComplete(self):
+        BWPersonality.GUICore.artifactQTEEvent(self.EVENT_SCANNED, None)
+        return
+
+    def spotlineStop(self):
+        if self._spotlineLoop_id:
+            BigWorld.cancelCallback(self._spotlineLoop_id)
+        self._spotlineLoop_id = 0
+
+    def _play_sound(self, path):
+        if BWPersonality.GUICore.isVisibleLoaderGUI():
+            return
+        if not self.visible or not self.is_on:
+            return
+        sounds.playSound(path)
+
+    def spotlineLoop(self):
+        """ (???) \xd0\xa1\xd0\xbe\xd0\xbf\xd1\x80\xd0\xbe\xd0\xb3\xd1\x80\xd0\xb0\xd0\xbc\xd0\xbc\xd0\xb0 \xd0\xbe\xd1\x82\xd0\xb2\xd0\xb5\xd1\x87\xd0\xb0\xd1\x8e\xd1\x89\xd0\xb0\xd1\x8f \xd0\xb7\xd0\xb0 \xd1\x86\xd0\xb8\xd0\xba\xd0\xbb \xd0\xbf\xd0\xbe\xd0\xb8\xd1\x81\xd0\xba\xd0\xb0 \xd0\xbf\xd1\x80\xd0\xb5\xd0\xb4\xd0\xbc\xd0\xb5\xd1\x82\xd0\xb0."""
+        pixStartPoint = self.component.radarHolder.localToScreen((0, 0))
+        startPoint = pixStartPoint[1]
+        pixEndPoint = self.component.radarHolder.localToScreen((0, self.component.radarHolder.height + self.component.radarHolder.spotLine.height))
+        offset = startPoint - pixEndPoint[1]
+        self.spotlineStop()
+
+        def __tick():
+            if not self.component.visible:
+                return
+            if self.is_on:
+                self._play_sound('items/mgd/search')
+                self.spotlineMP.translation = (0, 0, 0)
+                self.component.radarHolder.spotLine.mover.reset()
+                self.component.radarHolder.spotLine.mover.eta = 1.2
+                self.spotlineMP.translation = (0, -offset, 0)
+            self._spotlineLoop_id = BigWorld.callback(2.5, __tick)
+            self.scanComplete()
+
+        __tick()
+
+    def _loop_test_line(self):
+        self.component.radarHolder.spotLine.mover
+
+    @PyGUIEvent('hintBox', 'onClick')
+    def onHintBox(self):
+        """\xd0\xa1\xd1\x80\xd0\xb0\xd0\xb1\xd0\xb0\xd1\x82\xd1\x8b\xd0\xb2\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xbf\xd0\xb5\xd1\x80\xd0\xb5\xd0\xbc\xd0\xb5\xd1\x89\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5\xd0\xbc \xd0\xbd\xd0\xb0\xd0\xb6\xd0\xb0\xd1\x82\xd0\xb8\xd0\xb8 \xd0\xba\xd0\xbd\xd0\xbe\xd0\xbf\xd0\xba\xd0\xb8-\xd0\xbf\xd0\xbe\xd0\xb4\xd1\x81\xd0\xba\xd0\xb0\xd0\xb7\xd0\xba\xd0\xb8."""
+        BWPersonality.GUICore.openGUIHelp('soArtifactQTE')
+
+    def stopDragging(self):
+        GUIPositions.stopDragging(self)
+        DraggableComponent.stopDragging(self)
+
+    def handleMouseButtonEvent(self, comp, event):
+        if not event.isMouseButton():
+            return False
+        return DraggableComponent.handleMouseButtonEvent(self, comp, event)

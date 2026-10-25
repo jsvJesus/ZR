@@ -1,0 +1,529 @@
+# Embedded file name: ./client/soGUI/PaintGUI/PaintDummy.py
+import StalkerModel
+from Items import ItemsCatalog
+import ItemsUtils
+import BigWorld
+from Math import Matrix, Vector3
+from DummyImitator import DummyImitator
+from Helpers.PyGUI.PyGUIBase import PyGUIBase
+import Keys
+import math
+import math_bw
+import clweapon
+from weapon_attachment import WeaponAttachment
+import UCManager
+from functools import partial
+DEBUG = False
+LIMIT_ANGLES = [(-0.9, 0.9), (0.2, 0.5)]
+LIMIT_DIST = [1, 5]
+HEIGHT_LIMITS = [0.3, 1.7]
+SCROLL_SENSIVITY = 0.001
+Y_SENSIVITY = 0.002
+X_SENSIVITY = 0.005
+PAN_SENSIVITY = 0.002
+START_HEIGHT = 1.0
+AMBIENT_COLOR = (0.4, 0.4, 0.4, 1)
+LIGHTS = [{'color': (0.8, 0.8, 0.8, 1),
+  'position': (-0.5, 2.6, 1.3),
+  'inner': 1.0,
+  'outer': 4.5},
+ {'color': (0.7, 0.7, 0.7, 0),
+  'position': (-1.0, 2.1, -0.5),
+  'inner': 0.6,
+  'outer': 4.0},
+ {'color': (0.8, 0.8, 0.8, 0),
+  'position': (1.0, 1.8, 1.0),
+  'inner': 0.6,
+  'outer': 4.0},
+ {'color': (0.8, 0.8, 0.8, 1),
+  'position': (1.0, 2.3, -0.9),
+  'inner': 0.6,
+  'outer': 4.0}]
+
+class State:
+
+    def __init__(self):
+        self._active = False
+
+    def on_item_painted(self, complex_item):
+        pass
+
+    def on_leave(self):
+        self._active = False
+
+    def on_enter(self):
+        self._active = True
+
+    def clear(self):
+        pass
+
+    def apply_renderer_models(self):
+        pass
+
+    def get_models(self):
+        return []
+
+
+class AvatarState(State):
+
+    def __init__(self, on_dummy_model_updated):
+        State.__init__(self)
+        self._dummy_imitator = DummyImitator()
+        self._dummy_imitator.position = Vector3(0, 0, 0)
+        self._dummy_imitator.on_model_updated = on_dummy_model_updated
+
+    def set_look(self, equipped_armor, equip_modes, personality, carrying_items):
+        self._dummy_imitator.set_look(equipped_armor, equip_modes, personality, carrying_items)
+
+    def put_item_on(self, complex_item):
+        return self._dummy_imitator.put_item_on(complex_item)
+
+    def put_item_off(self, complex_item):
+        return self._dummy_imitator.put_item_off(complex_item)
+
+    def on_item_painted(self, complex_item):
+        self._dummy_imitator.update_colors()
+
+    def get_weapon_item(self):
+        return self._dummy_imitator._weapon_item
+
+    def get_models(self):
+        self._dummy_imitator.model.visible = self._active
+        return [self._dummy_imitator.model]
+
+    def mr_updated(self):
+        self._dummy_imitator.on_model_in_world()
+
+    def compile_hash(self):
+        return self._dummy_imitator.compile_hash()
+
+    def on_enter(self):
+        State.on_enter(self)
+        self._dummy_imitator.model.visible = True
+
+    def on_leave(self):
+        State.on_leave(self)
+        self._dummy_imitator.model.visible = False
+
+    def clear(self):
+        self._dummy_imitator.clear()
+
+
+class WeaponState(State):
+
+    def __init__(self, weapon_item_provider):
+        State.__init__(self)
+        self._weapon_item_provider = weapon_item_provider
+        self._weapon_model = None
+        self._weapon = None
+        return
+
+    def on_item_painted(self, complex_item):
+        self._update_weapon_colors()
+
+    def _update_weapon_colors(self):
+        if not self._weapon:
+            return
+        complex_item = self._weapon_item_provider()
+        if not complex_item:
+            return
+
+        def apply_color(complex_item):
+            if ItemsUtils.is_sub_item(complex_item):
+                item_id = complex_item['itemID']
+                inconstant_params = ItemsUtils.GetSubItemInconstanParams(complex_item)
+            else:
+                item_id = complex_item['complexItemID']
+                inconstant_params = ItemsUtils.GetComplexItemInconstanParams(complex_item)
+            colorise_a = inconstant_params.get(ItemsCatalog.INC_COLORISE_A, 0)
+            colorise_b = inconstant_params.get(ItemsCatalog.INC_COLORISE_B, 0)
+            attach = self._weapon.findAttach(item_id)
+            WeaponAttachment.update_color(attach.getItemType(), (colorise_a, colorise_b), attach.getModel())
+
+        apply_color(complex_item)
+        for subitem in complex_item.get('itemList', []):
+            apply_color(subitem)
+
+    def get_models(self):
+        weapon_item = self._weapon_item_provider()
+        if not weapon_item:
+            return []
+        self._weapon = clweapon.ClWeapon(weapon_item)
+        self._weapon_model = self._weapon.getModel()
+        self._weapon_model.position = (0, START_HEIGHT, 0)
+        scale = 1.3
+        self._weapon_model.newScaleTest = (scale, scale, scale)
+        self._weapon_model.scale = (scale, scale, scale)
+        self._weapon_model.visible = self._active
+        return [self._weapon_model]
+
+    def on_enter(self):
+        State.on_enter(self)
+        if self._weapon_model:
+            self._weapon_model.visible = True
+
+    def on_leave(self):
+        State.on_leave(self)
+        if self._weapon_model:
+            self._weapon_model.visible = False
+
+    def clear(self):
+        self._weapon_model = None
+        self._weapon = None
+        return
+
+
+class PartState(State):
+
+    def __init__(self, on_part_model_updated):
+        State.__init__(self)
+        self._on_part_model_updated = on_part_model_updated
+        self._part_model = None
+        self._part = None
+        return
+
+    def is_valid_item(self, complex_item):
+        item_type = complex_item['complexItemType']
+        item_class = ItemsCatalog.GetItemClass(item_type)
+        if item_class == ItemsCatalog.PART:
+            return True
+        if item_class == ItemsCatalog.CLOTH:
+            item_params = ItemsCatalog.GetItemParam(item_type)
+            return not bool(item_params.get('SlotType', []))
+        return False
+
+    def _compose_part(self):
+        item_params = ItemsCatalog.GetItemParam(self._part['complexItemType'])
+        if 'ModelPath' in item_params:
+            m = item_params['ModelPath']
+        else:
+            m = filter(None, item_params.get('ModelNames', {}).values())
+            if m:
+                m = m[0]
+        return BigWorld.Model(m or 'models/Test/sphere_small.model')
+
+    def _compose_cloth(self):
+        item_params = ItemsCatalog.GetItemParam(self._part['complexItemType'])
+        model_lst = item_params['ModelNames'].values()
+        return BigWorld.Model(*model_lst)
+
+    def set_item(self, complex_item):
+        self._part = complex_item
+        if self._part_model:
+            self._part_model.visible = False
+        if self._part:
+            item_type = complex_item['complexItemType']
+            item_class = ItemsCatalog.GetItemClass(item_type)
+            if item_class == ItemsCatalog.PART:
+                self._part_model = self._compose_part()
+                self._update_part_colors()
+                self._part_model.position = (0, START_HEIGHT, 0)
+            elif item_class == ItemsCatalog.CLOTH:
+                self._part_model = self._compose_cloth()
+                self._update_cloth_colors()
+                self._part_model.position = (0, START_HEIGHT - 3.2, 0)
+            else:
+                raise NotImplementedError
+            scale = 2
+            self._part_model.newScaleTest = (scale, scale, scale)
+            self._part_model.scale = (scale, scale, scale)
+            self._on_part_model_updated()
+        else:
+            self._part_model = None
+        return
+
+    def has_item(self):
+        return bool(self._part)
+
+    def on_item_painted(self, complex_item):
+        if not self._part_model or not self._part or self._part['complexItemID'] != complex_item['complexItemID']:
+            return
+        item_class = ItemsCatalog.GetItemClass(self._part['complexItemType'])
+        if item_class == ItemsCatalog.PART:
+            self._update_part_colors()
+        elif item_class == ItemsCatalog.CLOTH:
+            self._update_cloth_colors()
+        else:
+            raise NotImplementedError
+
+    def _update_part_colors(self):
+        inconstant_params = ItemsUtils.GetComplexItemInconstanParams(self._part)
+        colorise_a = inconstant_params.get(ItemsCatalog.INC_COLORISE_A, 0)
+        colorise_b = inconstant_params.get(ItemsCatalog.INC_COLORISE_B, 0)
+        WeaponAttachment.update_color(self._part['complexItemType'], (colorise_a, colorise_b), self._part_model)
+
+    def _update_cloth_colors(self):
+        item_params = ItemsCatalog.GetItemParam(self._part['complexItemType'])
+        tint = item_params.get('Tint')
+        if not tint:
+            return
+        for mater, tint in item_params['Tint'].items():
+            setattr(self._part_model, mater, tint)
+
+        colorise = ItemsUtils.getItemColorise(self._part)
+        if colorise:
+            colors, tintid, dayEnd = colorise
+            colors = ItemsUtils.listColorsToColor4_4(colors)
+            for mater, tint in item_params['Tint'].items():
+                StalkerModel.setColoredTexture(self._part_model, mater, tintid, colors)
+
+        emblem = ItemsUtils.get_item_emblem_unsafe(self._part)
+        if emblem:
+            if ItemsUtils.is_textured_emblem(emblem):
+                StalkerModel.set_dye(self._part_model, mater, emblem)
+            else:
+
+                def on_icon_loaded(mater, image_id, feed_name, texture):
+                    StalkerModel.setFeed(self._part_model, None, mater, feed_name, texture)
+                    return
+
+                for mater, tint in item_params['Tint'].items():
+                    UCManager.ucmanager.loadImg(emblem, partial(on_icon_loaded, mater))
+
+    def on_enter(self):
+        State.on_enter(self)
+        if self._part_model:
+            self._part_model.visible = True
+
+    def on_leave(self):
+        State.on_leave(self)
+        if self._part_model:
+            self._part_model.visible = False
+
+    def get_models(self):
+        if self._part_model:
+            self._part_model.visible = self._active
+            return [self._part_model]
+        else:
+            return []
+
+    def clear(self):
+        self._part_model = None
+        self._part = None
+        return
+
+
+class PaintDummy(PyGUIBase):
+    """ \xd0\xbc\xd1\x83\xd0\xb6\xd0\xb8\xd0\xba \xd0\xb2 \xd0\xbe\xd0\xb4\xd0\xb5\xd0\xb6\xd0\xb4\xd0\xb5 \xd0\xb4\xd0\xbb\xd1\x8f \xd1\x80\xd0\xb0\xd0\xb7\xd0\xb4\xd0\xb5\xd0\xb2\xd0\xb0\xd0\xbd\xd0\xb8\xd1\x8f
+            \xd0\xb2\xd1\x8b\xd0\xb7\xd1\x8b\xd0\xb2\xd0\xb0\xd1\x82\xd1\x8c do_reposition \xd1\x80\xd1\x83\xd0\xba\xd0\xb0\xd0\xbc\xd0\xb8
+    """
+
+    def __init__(self, component):
+        PyGUIBase.__init__(self, component)
+        self.component.script = self
+        self._recompile_dummy_trigger = 0
+        self.component.moveFocus = True
+        self.component.mouseButtonFocus = True
+        self._mouse_rotate_captured = False
+        self._mouse_pan_captured = False
+        self._angle = [1.2, LIMIT_ANGLES[1][0]]
+        self._radius = 2
+        self._height = START_HEIGHT
+        self._debug_model = None
+        self._mr = None
+        self._show_weapon_only = False
+        self._matrix_provider = Matrix()
+        self._avatar_state = AvatarState(self._on_dummy_model_updated)
+        self._weapon_state = WeaponState(self._avatar_state.get_weapon_item)
+        self._part_state = PartState(self._on_part_model_updated)
+        self._states = (self._avatar_state, self._weapon_state, self._part_state)
+        self._cur_state = None
+        return
+
+    def compile_hash(self):
+        result = self._avatar_state.compile_hash()
+        if self._part_state._part:
+            result += self._part_state._part['complexItemID']
+        return result
+
+    def _on_dummy_model_updated(self):
+        self._recompile_models()
+
+    def _on_part_model_updated(self):
+        self._recompile_models()
+
+    def _recompile_models(self):
+        if self._mr:
+            self._mr.models = []
+            models = []
+            for s in self._states:
+                models.extend(s.get_models())
+
+            self._mr.models = models
+            self._avatar_state.mr_updated()
+
+    @property
+    def state(self):
+        return self._cur_state
+
+    @state.setter
+    def state(self, value):
+        if self._cur_state == value:
+            return
+        if self._cur_state:
+            self._cur_state.on_leave()
+        self._cur_state = value
+        if self._cur_state:
+            self._cur_state.on_enter()
+
+    def is_avatar_mode(self):
+        return self._cur_state == self._avatar_state
+
+    def show_weapon_only_mode(self, value):
+        self._show_weapon_only = value
+        if self._part_state.has_item():
+            self.state = self._part_state
+        elif value:
+            self.state = self._weapon_state
+        else:
+            self.state = self._avatar_state
+
+    def _update_models(self):
+        if self._mr:
+            models = [self._dummy_imitator.model]
+            weapon_item = self._dummy_imitator._weapon_item
+            if self._part_model:
+                models.append(self._part_model)
+            if weapon_item:
+                self._weapon = clweapon.ClWeapon(weapon_item)
+                self._weapon_model = self._weapon.getModel()
+                self._weapon_model.position = (0, START_HEIGHT, 0)
+                scale = 1.3
+                self._weapon_model.newScaleTest = (scale, scale, scale)
+                self._weapon_model.scale = (scale, scale, scale)
+                models.append(self._weapon_model)
+            else:
+                self._weapon_model = None
+                self._weapon = None
+            if DEBUG:
+                self._debug_model = BigWorld.Model('models/test/xyz.model')
+                models.append(self._debug_model)
+                for l in LIGHTS:
+                    m = BigWorld.Model('models/test/xyz.model')
+                    m.position = l['position']
+                    models.append(m)
+
+            else:
+                self._debug_model = None
+            self._mr.models = []
+            if all(models):
+                self._mr.models = models
+                self._dummy_imitator.on_model_in_world()
+        return
+
+    def set_look(self, equipped_armor, equip_modes, personality, carrying_items):
+        self._avatar_state.set_look(equipped_armor, equip_modes, personality, carrying_items)
+        self.state = self._avatar_state
+
+    def handleMouseEvent(self, comp, event):
+        if not BigWorld.isKeyDown(Keys.KEY_RIGHTMOUSE):
+            self._mouse_rotate_captured = False
+        if not BigWorld.isKeyDown(Keys.KEY_LEFTMOUSE):
+            self._mouse_pan_captured = False
+
+        def _update_angle_limits():
+            smooth = (self._height - HEIGHT_LIMITS[0]) / (HEIGHT_LIMITS[1] - HEIGHT_LIMITS[0])
+            limit0 = math_bw.lerp(LIMIT_ANGLES[0][0], LIMIT_ANGLES[1][0], 1 - smooth)
+            limit1 = math_bw.lerp(LIMIT_ANGLES[0][1], LIMIT_ANGLES[1][1], smooth)
+            self._angle[1] = math_bw.clamp(self._angle[1], limit0, limit1)
+
+        if self._mouse_rotate_captured:
+            self._angle[0] -= event.dx * X_SENSIVITY
+            self._angle[1] += event.dy * Y_SENSIVITY
+            _update_angle_limits()
+        elif self._mouse_pan_captured:
+            self._height = math_bw.clamp((self._height + event.dy * PAN_SENSIVITY), *HEIGHT_LIMITS)
+            _update_angle_limits()
+        elif event.dz:
+            self._radius = math_bw.clamp((self._radius - event.dz * SCROLL_SENSIVITY), *LIMIT_DIST)
+        else:
+            return False
+        self._update_cam_matrix()
+        return True
+
+    def _update_cam_matrix(self):
+        look_pos = Vector3(0, self._height, 0)
+        if self._debug_model:
+            self._debug_model.position = look_pos
+        cam_pos = Vector3(math.cos(self._angle[0]), 0, math.sin(self._angle[0]))
+        cam_pos *= math.cos(self._angle[1])
+        cam_pos[1] = math.sin(self._angle[1])
+        cam_pos *= self._radius
+        cam_pos += look_pos
+        self._matrix_provider.lookAt(cam_pos, look_pos - cam_pos, (0, 1, 0))
+
+    def handleMouseButtonEvent(self, comp, event):
+        if event.key == Keys.KEY_RIGHTMOUSE and event.isKeyDown():
+            self._mouse_rotate_captured = True
+        if event.key == Keys.KEY_LEFTMOUSE and event.isKeyDown():
+            self._mouse_pan_captured = True
+        return True
+
+    def put_item_on(self, complex_item):
+        if self._part_state.is_valid_item(complex_item):
+            self._part_state.set_item(complex_item)
+            self.state = self._part_state
+            return (False, [])
+        else:
+            self._part_state.set_item(None)
+            result = self._avatar_state.put_item_on(complex_item)
+            if self._avatar_state.get_weapon_item():
+                self.state = self._weapon_state
+            else:
+                self.state = self._avatar_state
+            return result
+
+    def put_item_off(self, complex_item):
+        if self._part_state.is_valid_item(complex_item):
+            self._part_state.set_item(None)
+            return (False, [])
+        else:
+            self._part_state.set_item(None)
+            result = self._avatar_state.put_item_off(complex_item)
+            if self._avatar_state.get_weapon_item():
+                self.state = self._weapon_state
+            else:
+                self.state = self._avatar_state
+            return result
+
+    def on_item_painted(self, complex_item):
+        for s in self._states:
+            s.on_item_painted(complex_item)
+
+    def on_item_emblemed(self, complex_item):
+        self.on_item_painted(complex_item)
+
+    def reset_camera(self):
+        self._angle = [1.2, LIMIT_ANGLES[1][0]]
+        self._radius = 2
+        self._height = START_HEIGHT
+        self._update_cam_matrix()
+
+    def do_reposition(self):
+        self._clear()
+        width, height = BigWorld.screenSize()
+        self._mr = BigWorld.PyModelRenderer(int(width), int(height))
+        self._mr.addAmbientColor(AMBIENT_COLOR)
+        for light_data in LIGHTS:
+            self._mr.addOmniLight(light_data['color'], light_data['position'], light_data['inner'], light_data['outer'])
+
+        self._mr.viewMatrix = self._matrix_provider
+        self._mr.dynamic = True
+        self.component.texture = self._mr.texture
+
+    def on_hide(self):
+        self._clear()
+
+    def _clear(self):
+        if self._mr:
+            for s in self._states:
+                s.clear()
+
+            self._debug_model = None
+            self._mr.dynamic = False
+            self._mr.models = []
+            for _ in xrange(len(LIGHTS)):
+                self._mr.delOmniLight(0)
+
+        self._mr = None
+        return

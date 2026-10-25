@@ -1,0 +1,232 @@
+# Embedded file name: ./client/DungeonButton.py
+import FX
+import json
+import time
+import sounds_manager as sounds
+import ResMgr
+import BigWorld
+import Constants
+import ItemsUtils
+import Helpers.Caps
+import BWPersonality
+from Localization import lc
+from functools import partial
+from soGUI.soInworldMarkers import soInworldMarker
+from Constants import MESSAGE_TYPES as MT
+section = ResMgr.openSection('scripts/common/EnumProps/DungeonButton.json')
+CONFIG = json.loads(section.asBinary)['model_index']['values']
+
+class DungeonButton(BigWorld.Entity):
+    """docstring for  DungeonButton"""
+
+    def __init__(self):
+        BigWorld.Entity.__init__(self)
+        self._model_path = next((model for index, model in CONFIG if index == self.model_index), None)
+        self.filter = BigWorld.NoneFilter()
+        self.callback_id = None
+        self.interact_callback_id = None
+        self.press_callback_id = None
+        self.press_sound = None
+        self.name = lc(self.displayName)
+        self.start_use_time = 0
+        self.update_targetCaps()
+        return
+
+    def prerequisites(self):
+        if self._model_path:
+            return [self._model_path]
+        return []
+
+    def onEnterWorld(self, prereqs):
+        if self._model_path:
+            scale = self.scale
+            self.model = prereqs[self._model_path]
+            self.model.scale = (scale, scale, scale)
+            self.model.newScaleTest = (scale, scale, scale)
+            self.model.visible = True
+            self.model.isObstacle = True
+            self.model.position = self.position
+            self.model.yaw = self.yaw
+            self.set_pressed(None)
+        self.update_targetCaps()
+        result = BWPersonality.settings.keyBindings.updateHook(self)
+        if result:
+            BigWorld.player().setControlLock(Constants.ControlLockTypes.INTERACT, True)
+            BigWorld.player().update_turn_states()
+        return
+
+    def onLeaveWorld(self):
+        result = BWPersonality.settings.keyBindings.unregisterHook(self)
+        if result:
+            BigWorld.player().setControlLock(Constants.ControlLockTypes.INTERACT, False)
+            BigWorld.player().update_turn_states()
+
+    def get_interaction_dist(self):
+        if not self.targetCaps:
+            return 0
+        return self.interactive_dist
+
+    def get_hightlight(self, distance):
+        if distance > self.get_interaction_dist():
+            return None
+        else:
+            return True
+
+    def get_target_mark(self, distance):
+        if distance > self.get_interaction_dist():
+            return None
+        else:
+            return soInworldMarker.MARKER_USE
+
+    def set_activated(self, old_value):
+        if self.callback_id:
+            BigWorld.cancelCallback(self.callback_id)
+            self.callback_id = None
+        if self.delay:
+            self.callback_id = BigWorld.callback(self.delay, self.on_active_changed)
+        else:
+            self.on_active_changed()
+        self.update_targetCaps()
+        return
+
+    def set_pressed(self, old_value):
+        if self.pressed:
+            if self.tint_dye and self.on_pressed:
+                setattr(self.model, self.tint_dye, self.on_pressed)
+        self.on_active_changed()
+
+    def get_duration(self):
+        mult = max(1, BigWorld.player().get_perk_action_val('USING_DEVICES', device_type=self.use_perk))
+        return self.time_to_use / mult
+
+    def update_targetCaps(self):
+        self.targetCaps = [Helpers.Caps.CAP_INTERACT]
+        if not self.interact_non_active and not self.activated:
+            self.targetCaps = [Helpers.Caps.CAP_EXCLUDE]
+
+    def interact(self, player):
+        if self.activated:
+            if self.key_item_type:
+                if ItemsUtils.GetFirstComplexItemByType(player, self.key_item_type) is None:
+                    key_name = ItemsUtils.GetItemName(self.key_item_type, fGetShortName=True)
+                    message = lc('ServerClientMessages.Door_NEED_KEY').format(key_name)
+                    BWPersonality.gpd.sendHightMessageTimed(message, 15, MT.DUNGEON)
+                    return
+            if self.time_to_use:
+                BWPersonality.settings.keyBindings.registerHook(self)
+                self.start_use_time = time.time()
+                duration = self.get_duration()
+                BWPersonality.GUICore.cast_bar.runCast(duration)
+                self.press_callback_id = BigWorld.callback(duration, self.on_win)
+                player.setControlLock(Constants.ControlLockTypes.INTERACT, True)
+                player.update_turn_states()
+                if self.use_sound:
+                    self.press_sound = sounds.getSound(self.use_sound, model=self.model)
+                    self.press_sound.play()
+                if self.animation_press:
+                    player.playAnimationByServer(self.animation_press, 0)
+                    player.pushTrackerLockByName('dungeonButtonInteract', 'Belly-Belly2-PistolHolster', lock_track_head=True, print_error=False)
+                if self.model_animation_press:
+                    self.model.action(self.model_animation_press)()
+                return
+            self.on_win()
+            if self.animation_use:
+                player.playAnimationByServer(self.animation_use, 0, callback=self.end_user_anim)
+                player.pushTrackerLockByName('dungeonButtonInteract', 'Belly-Belly2-PistolHolster', lock_track_head=True, print_error=False)
+        else:
+            self.on_fail()
+        if not self.toggle or not self.activated:
+            self.interact_callback()
+        return
+
+    def end_user_anim(self):
+        BigWorld.player().popTrackerLock('dungeonButtonInteract')
+        if self.animation_press:
+            action = getattr(BigWorld.player().model, self.animation_press, None)
+            if action:
+                action.stop()
+        return
+
+    def on_win(self):
+        player = BigWorld.player()
+        self.on_end_press()
+        if not player:
+            return
+        self.cell.activate(player.id)
+
+    def on_fail(self):
+        self.on_end_press()
+        message = lc(self.fail_message) if self.fail_message else lc('Items.GUIStrings.INACTIVE')
+        BWPersonality.gpd.sendHightMessageTimed(message, 15, MT.DUNGEON)
+        BWPersonality.GUICore.cast_bar.interruptCast()
+
+    def on_end_press(self):
+        if self.press_callback_id:
+            BigWorld.cancelCallback(self.press_callback_id)
+            self.press_callback_id = None
+        BigWorld.player().setControlLock(Constants.ControlLockTypes.INTERACT, False)
+        BigWorld.player().update_turn_states()
+        BWPersonality.settings.keyBindings.clearHook()
+        if self.press_sound:
+            self.press_sound.stop()
+        if self.fail_sound:
+            sounds.playSound(self.fail_sound, self.model)
+        if self.animation_use or self.animation_press:
+            self.end_user_anim()
+        if self.model_animation_press:
+            self.model.action(self.model_animation_press).stop()
+        return
+
+    def interact_callback(self):
+        if self.interact_callback_id:
+            BigWorld.cancelCallback(self.interact_callback_id)
+        if self.on_pressed:
+            if self.tint_dye:
+                setattr(self.model, self.tint_dye, self.on_pressed)
+            if getattr(self.model, self.on_pressed, None):
+                self.model.action(self.on_pressed)()
+        self.interact_callback_id = BigWorld.callback(0.5, partial(self.set_pressed, None))
+        return
+
+    def on_active_changed(self):
+        if self.pressed:
+            return
+        else:
+            if self.activated:
+                if self.on_actived:
+                    if self.tint_dye:
+                        setattr(self.model, self.tint_dye, self.on_actived)
+                    if getattr(self.model, self.on_actived, None):
+                        self.model.action(self.on_actived)()
+            elif self.on_deactived:
+                if self.tint_dye:
+                    setattr(self.model, self.tint_dye, self.on_deactived)
+                if getattr(self.model, self.on_deactived, None):
+                    self.model.action(self.on_deactived)()
+            self.callback_id = None
+            return
+
+    def get_hightlight_model(self):
+        return self.model
+
+    def actionHook(self, actionName, okayToGo, event):
+        if okayToGo is None:
+            return True
+        elif actionName == 'ViewEntitiesNPC':
+            return True
+        elif actionName == 'InteractObject':
+            if event.isKeyDown():
+                return False
+            if self.start_use_time:
+                if self.get_duration() <= time.time() - self.start_use_time:
+                    self.on_win()
+                else:
+                    self.on_fail()
+            BWPersonality.settings.keyBindings.clearHook()
+            return True
+        else:
+            return True
+            self.on_fail()
+            self.start_use_time = None
+            BWPersonality.settings.keyBindings.clearHook()
+            return False

@@ -1,0 +1,182 @@
+# Embedded file name: ./client/Fabric/WeaponTrack.py
+from DrawPrimitivesUtils import gdrawMatr, one_draw_line
+from Math import Vector3, Matrix
+import math_bw
+from random import uniform
+import math
+
+class WeaponTrack:
+
+    def __init__(self, node_info, config):
+        self.config = config
+        self.node_info = node_info
+        self.node_info.smoothed_accel = self.config['smooth']
+        self.node_info.randomness = self.config['randomness']
+        self.node_info.spring = self.config['spring']
+        self.node_info.max_force = self.config['max_force']
+        self.node_info.mass = self.config['mass']
+        self.node_info.dump = self.config['dump']
+        self.node_info.jump_impulse_param = self.config.get('jump_impulse')
+        self.node_info.jump_impulse = None
+        self.node_info.axis_sensivity = self.config['axis_sensivity']
+        self.node_info.clamp_angle = self.config.get('clamp_angle')
+        self.node_info.translate_disp = self.config.get('translation_disp')
+        self.node_info.rotate_disp = self.config.get('rotation_disp')
+        self.node_info.push_model_delta = None
+        self.node_info.blend_back_matrix = None
+        self.node_info.blend_back_factor = None
+        return
+
+    def on_jump(self, avatar):
+        self.node_info.jump_impulse = 1.0
+
+    def blendFromModel(self, in_model, node_name):
+        self.node_info.blend_back_matrix = Matrix(in_model.node(node_name))
+        self.node_info.blend_back_factor = 1.0
+
+    def pushByModels(self, model_belly, model_in_hand):
+        matr_belly = Matrix(model_belly.matrix)
+        matr_hand = Matrix(model_in_hand.matrix)
+        self.node_info.push_model_delta = (matr_belly.translation - matr_hand.translation) * self.config['belly_push']
+
+
+class WeaponTrackDebug:
+    MAX_DTIME = 0.15
+
+    def __init__(self, node_info, config):
+        node_info.pTick = self.pTick
+        node_info.pDraw = self.pDraw
+        self.config = config
+        self.smoothed_accel = math_bw.SmoothVector(self.config['smooth'])
+        self.push_model_delta = None
+        self.blend_back = None
+        self.ticks_before_draw = 0
+        self.reset_values()
+        self.rotate_disp = config.get('rotation_disp')
+        self.translate_disp = config.get('translation_disp')
+        self._jump_impulse = None
+        self.last_dtime = 0
+        return
+
+    def reset_values(self):
+        self.prev_pos = None
+        self.prev_velocity = None
+        self.initial_value = Vector3(0, 0, 1)
+        self.value = Vector3(self.initial_value)
+        self.old_value = Vector3(self.value)
+        return
+
+    def calc_force(self, pos, prev_pos, dtime):
+        delta = pos - prev_pos
+        if self.push_model_delta:
+            delta += self.push_model_delta
+            self.push_model_delta = None
+        velocity = delta / dtime
+        if self.prev_velocity is None:
+            self.prev_velocity = Vector3(velocity)
+        accel = (velocity - self.prev_velocity) / dtime
+        self.smoothed_accel.smooth(accel)
+        self.prev_velocity = Vector3(velocity)
+        return self.smoothed_accel.value * 0.1
+
+    def get_spring_force(self, dtime):
+        return (self.initial_value - self.value) * self.config['spring']
+
+    def get_random_force(self, dtime, amplitude):
+        return Vector3(uniform(-amplitude, amplitude), uniform(-amplitude, amplitude), uniform(-amplitude, amplitude))
+
+    def apply_force(self, local_force, dtime):
+        self.value += local_force * dtime * dtime / self.config['mass'] * 100
+        self.value.normalise()
+
+    def pTick(self, dtime):
+        self.last_dtime = min(WeaponTrackDebug.MAX_DTIME, dtime)
+        self.ticks_before_draw += 1
+        if self.ticks_before_draw > 1 or self.last_dtime == WeaponTrackDebug.MAX_DTIME:
+            self.reset_values()
+
+    def pDraw(self, wind, bones):
+        self.ticks_before_draw = 0
+        parentWorld, parentLocal = bones[0][0]
+        childWorld, childLocal = bones[0][1]
+        childWorld_inv = Matrix(childWorld)
+        childWorld_inv.invert()
+        if self.config['debug']:
+            gdrawMatr(childWorld)
+        if self.prev_pos is None:
+            self.prev_pos = parentWorld.translation
+        force = self.calc_force(parentWorld.translation, self.prev_pos, self.last_dtime)
+        local_force = childWorld_inv.applyVector(force)
+        random_force = self.get_random_force(self.last_dtime, local_force.length * self.config['randomness'])
+        spring_force = self.get_spring_force(self.last_dtime)
+        total_force = local_force + spring_force + random_force
+        if self.config['max_force']:
+            total_force = math_bw.clamp_vector(total_force, 0, self.config['max_force'])
+        temp_value = Vector3(self.value)
+        seudo_velocity = self.value - self.old_value
+        self.apply_force(total_force, self.last_dtime)
+        dump = math_bw.clamp(self.last_dtime * self.config['dump'])
+        self.value = self.value + seudo_velocity * (1.0 - dump)
+        self.value.normalise()
+        self.old_value = temp_value
+        if self.config['debug']:
+            one_draw_line(childWorld.translation, childWorld.translation + childWorld.applyVector(self.value), color=(1, 1, 1, 1))
+        show_value = Vector3(self.value)
+        jump_sensivity = 1.0
+        jump_impulse_param = self.config.get('jump_impulse')
+        if self._jump_impulse > 0 and jump_impulse_param:
+            jump_sensivity = math.sin(self._jump_impulse * math.pi) * jump_impulse_param[0] + 1
+            self._jump_impulse -= self.last_dtime / jump_impulse_param[1]
+        x_sensivity = self.config['axis_sensivity'][0] * jump_sensivity
+        y_sensivity = self.config['axis_sensivity'][1] * jump_sensivity
+        show_value.x *= x_sensivity
+        show_value.y *= y_sensivity
+        if self.config['clamp_angle']:
+            clampx_show = self.config['clamp_angle'][0]
+            clampy_show = self.config['clamp_angle'][1]
+            if clampx_show:
+                show_value.y = math_bw.clamp(show_value.y, *clampx_show)
+                self.value.y = show_value.y / x_sensivity
+            if clampy_show:
+                show_value.x = math_bw.clamp(show_value.x, *clampy_show)
+                self.value.x = show_value.x / y_sensivity
+            show_value.z = abs(show_value.z)
+        if self.translate_disp:
+            disp_matrix_translation = Matrix()
+            disp_matrix_translation.setTranslate(self.translate_disp)
+            childLocal.preMultiply(disp_matrix_translation)
+        show_value.normalise()
+        local_axis = self.initial_value * show_value
+        m = Matrix().xfromAngleAxis(local_axis, math_bw.safe_asin(local_axis.length))
+        childLocal.preMultiply(m)
+        if self.rotate_disp:
+            disp_matrix_rotation = Matrix()
+            disp_matrix_rotation.setRotateYPR(self.rotate_disp)
+            childLocal.preMultiply(disp_matrix_rotation)
+        if self.config['debug']:
+            one_draw_line(childWorld.translation, childWorld.translation + childWorld.applyVector(show_value), color=(1, 1, 0, 1))
+        if self.blend_back:
+            self.blend_back[1] -= self.last_dtime * 8.0
+            m = Matrix(parentWorld)
+            m.invert()
+            m.preMultiply(self.blend_back[0])
+            m.blendMatrix(1.0 - self.blend_back[1], childLocal)
+            childLocal = m
+            if self.blend_back[1] <= 0.0:
+                self.blend_back = None
+        self.prev_pos = parentWorld.translation
+        return [[parentLocal, childLocal]]
+
+    def on_jump(self, avatar):
+        self._jump_impulse = 1.0
+
+    def blendFromModel(self, in_model, node_name):
+        self.blend_back = [Matrix(in_model.node(node_name)), 1.0]
+
+    def pushByModels(self, model_belly, model_in_hand):
+        matr_belly = Matrix(model_belly.matrix)
+        matr_hand = Matrix(model_in_hand.matrix)
+        self.push_model_delta = (matr_belly.translation - matr_hand.translation) * self.config['belly_push']
+
+    def destroy(self):
+        pass

@@ -1,0 +1,838 @@
+# Embedded file name: ./client/foot_tmp2.py
+import BigWorld
+import BWPersonality
+import Math
+from Math import Matrix, Vector3
+from Math import Matrix as M
+from Math import Vector3 as V3
+from bw_angle import Angle
+import math
+import time
+import traceback
+import Constants
+import player_speed_settings
+from draw_utils_extend import LinesHolder
+try:
+    from __debug.show_text_label import addText, resetAllText
+    from __debug.show_text_label import addText_Safe, resetAllText_Safe
+except ImportError:
+
+    def addText(*w, **kw):
+        pass
+
+
+    resetAllText = addText
+    addText_Safe = addText
+    resetAllText_Safe = addText
+
+import blend_vectors_inertion
+from blend_vectors_inertion import IntertionBlendVec3, LinearBlendVec3
+import tmp_blends
+drawer = LinesHolder(50)
+FOOT_ROLL_DISPLACEMENT = 0.4
+HIPS_ROLL_XY_DISPLACEMENT = 0.3
+HIPS_ROLL_Z_DISPLACEMENT = 0.7
+MATH_2PI = math.pi * 2
+pi = math.pi
+piP2 = math.pi / 2
+bones = 'Hips Pelvis LeftUpLeg LeftLeg LeftFoot LeftToeBase RightFoot'.split()
+
+def tri_normal(triangle):
+    tri_normal = (triangle[2] - triangle[0]) * (triangle[2] - triangle[1])
+    tri_normal.normalise()
+    return tri_normal
+
+
+def rotateMatrixTo(worldMatrNode, WorldFromPos, worldPointTo, limited = None, BLENDF = 1.0):
+    worldMatrNodeInv = Math.Matrix(worldMatrNode)
+    worldMatrNodeInv.invert()
+    localFrom = worldMatrNodeInv.applyPoint(WorldFromPos)
+    localTo = worldMatrNodeInv.applyPoint(worldPointTo)
+    localFrom.normalise()
+    localTo.normalise()
+    dotprod = max(min(localFrom.dot(localTo), 1), -1)
+    angle = math.acos(dotprod) * BLENDF
+    waxis = localFrom * localTo
+    waxis.normalise()
+    if limited:
+        if angle < limited[0]:
+            angle = limited[0]
+        if angle > limited[1]:
+            angle = limited[1]
+    return Math.Matrix().xfromAngleAxis(waxis, angle)
+
+
+def rotateMatrixToByPlane(worldMatrNode, WorldFromPos, worldPointTo, palne_matr, limited = None, BLENDF = 1.0, debug = False):
+    if BLENDF <= 0.001:
+        return Matrix()
+    pos = worldMatrNode.applyToOrigin()
+    new_dir = worldPointTo - pos
+    new_dir.normalise()
+    vector_up = -palne_matr.applyToAxis(0).crossProduct(new_dir)
+    new_world = Math.Matrix()
+    new_world.lookAt(pos, new_dir, vector_up)
+    new_world.invert()
+    worldMatrNode_inv = Matrix(worldMatrNode)
+    worldMatrNode_inv.invert()
+    new_world.postMultiply(worldMatrNode_inv)
+    if BLENDF >= 0.998:
+        return new_world
+    bl_matrix = Matrix()
+    bl_matrix.blendMatrix(BLENDF, new_world)
+    return bl_matrix
+
+
+def getSubPointCircleMethod(lenghtBone1, lenghtBone2, distToTarget):
+    errorcode = 1
+    if distToTarget > lenghtBone1 + lenghtBone2 or distToTarget < abs(lenghtBone1 - lenghtBone2):
+        subPoint2d = Math.Vector3((0.0, 0.0, 1.0))
+        errorcode = 0
+    else:
+        a = (lenghtBone1 * lenghtBone1 - lenghtBone2 * lenghtBone2 + distToTarget * distToTarget) / (2 * distToTarget)
+        h = math.sqrt(lenghtBone1 * lenghtBone1 - a * a)
+        x0 = 0.0
+        y0 = 0.0
+        x1 = 0.0
+        y1 = distToTarget
+        x2 = x0 + a * (x1 - x0) / distToTarget
+        y2 = y0 + a * (y1 - y0) / distToTarget
+        x3a = x2 - h * (y1 - y0) / distToTarget
+        y3a = y2 + h * (x1 - x0) / distToTarget
+        subPoint2d = Math.Vector3(0.0, -x3a, y3a)
+        subPoint2d.normalise()
+    if subPoint2d[2] > 0.8:
+        subPoint2d[2] = 0.8
+    if subPoint2d[1] < 0.2:
+        subPoint2d[1] = 0.2
+    return (subPoint2d, errorcode)
+
+
+class TorsoX(object):
+    """docstring for ClassName"""
+
+    def __init__(self, entitiy):
+        self.entitiy = entitiy
+        self._dxdy_sum = Vector3()
+        self._add_z_by_roll = tmp_blends.AcceleratedBlendCls()
+        self._add_xy_by_roll = tmp_blends.AcceleratedBlendCls()
+        self._hips_z_bl = tmp_blends.AcceleratedBlendCls()
+        self._angle_rotate_bl = tmp_blends.AcceleratedBlendCls()
+        self._lastPos = None
+        self._hispLR = 0
+        self._rLen = 0
+        self._model_delta_wCurwLastY = 0
+        self.timer_push_phys_crawl = 0
+        self._draw_count = 0
+        self._hispF = 0
+        self._isLadderFound = False
+        self.slope = None
+        self.slopeTreshold = math.radians(41.0)
+        return
+
+    def onLeaveWorld(self):
+        self.entitiy = None
+        return
+
+    def getSaveState(self):
+        """
+        \xd0\xbc\xd0\xbe\xd0\xb4\xd0\xb5\xd0\xbb\xd1\x8c \xd1\x81\xd0\xb5\xd0\xb9\xd1\x87\xd0\xb0\xd1\x81 \xd1\x83\xd0\xbd\xd0\xb8\xd1\x87\xd1\x82\xd0\xbe\xd0\xb6\xd0\xb8\xd1\x82\xd1\x81\xd1\x8f, \xd1\x81\xd0\xbe\xd1\x85\xd1\x80\xd0\xb0\xd0\xbd\xd1\x8f\xd0\xb5\xd0\xbc \xd1\x81\xd0\xbe\xd1\x82\xd0\xbe\xd1\x8f\xd0\xbd\xd0\xb8\xd1\x8f
+        """
+        data = {}
+        data['_angle_rotate_bl'] = self._angle_rotate_bl.getCurrentValue()
+        data['_add_z_by_roll'] = self._add_z_by_roll.getCurrentValue()
+        data['_hips_z_bl'] = self._hips_z_bl.getCurrentValue()
+        data['_angle_rotate_bl'] = self._angle_rotate_bl.getCurrentValue()
+        data['angle_rotate_bl_valueTo_'] = self._angle_rotate_bl.valueTo_
+        data['_test_add_z_by_roll_valueTo_'] = self._add_z_by_roll.valueTo_
+        data['hips_z_bl_valueTo_'] = self._hips_z_bl.valueTo_
+        data['angle_rotate_bl_valueTo_'] = self._angle_rotate_bl.valueTo_
+        data['l_foot'] = self.entitiy.foots[0].getSaveStateFoot()
+        data['r_foot'] = self.entitiy.foots[1].getSaveStateFoot()
+        return data
+
+    def restoreState(self, data):
+        """
+        \xd0\xbc\xd0\xbe\xd0\xb4\xd0\xb5\xd0\xbb\xd1\x8c \xd1\x81\xd0\xb5\xd0\xb9\xd1\x87\xd0\xb0\xd1\x81 \xd1\x81\xd0\xbe\xd0\xb7\xd0\xb4\xd0\xb0\xd0\xbb\xd0\xb0\xd1\x81\xd1\x8c, \xd0\xb2\xd0\xbe\xd1\x81\xd1\x82\xd0\xb0\xd0\xbd\xd0\xbe\xd0\xb2\xd0\xb8\xd0\xbc \xd1\x81\xd0\xbe\xd1\x82\xd0\xbe\xd1\x8f\xd0\xbd\xd0\xb8\xd1\x8f
+        """
+        self._angle_rotate_bl.setCurrentValue(data['_angle_rotate_bl'])
+        self._add_z_by_roll.setCurrentValue(data['_add_z_by_roll'])
+        self._hips_z_bl.setCurrentValue(data['_hips_z_bl'])
+        self._angle_rotate_bl.setCurrentValue(data['_angle_rotate_bl'])
+        self._angle_rotate_bl.setValueTo(data['angle_rotate_bl_valueTo_'])
+        self._add_z_by_roll.setValueTo(data['_test_add_z_by_roll_valueTo_'])
+        self._hips_z_bl.setValueTo(data['hips_z_bl_valueTo_'])
+        self._angle_rotate_bl.setValueTo(data['angle_rotate_bl_valueTo_'])
+        self.entitiy.foots[0].restoreStateFoot(data['l_foot'])
+        self.entitiy.foots[1].restoreStateFoot(data['r_foot'])
+
+    def updateCameraOffset(self, dz):
+        if self.entitiy == BigWorld.player():
+            cam = BigWorld.camera()
+            if hasattr(cam, 'hipsOffset'):
+                if self.entitiy.isFPSmode():
+                    cam.hipsOffset = cam.hipsOffset * 0.99
+                else:
+                    cam.hipsOffset = dz * 0.9
+
+    def collBox(self, pos, min_h, max_h, width = 0.1, debugDraw = 0):
+        pos = pos
+        m = Matrix()
+        m.setRotateYPR((0, math.pi / 2, 0))
+        v0 = Math.Vector3(pos) + m.applyVector((-width, -width, 0))
+        v1 = Math.Vector3(pos) + m.applyVector((width, -width, 0))
+        v2 = Math.Vector3(pos) + m.applyVector((width, width, 0))
+        v3 = Math.Vector3(pos) + m.applyVector((-width, width, 0))
+        for direction, maxDrop in [(Vector3(0, -1, 0), abs(min_h)), (Vector3(0, 1, 0), abs(max_h))]:
+            dest = pos + direction * maxDrop
+            res = BigWorld.collideBox(self.entitiy.spaceID, v0, v2, v1, v3, direction, dest, maxDrop)
+            collision_advance = maxDrop
+            if res:
+                p_collde, triangle, materialKind, collisionFlags, collision_advance = res
+                return pos + direction * collision_advance
+
+    def coll(self, center, min_h, max_h, debugDraw = 0):
+        min_position = center + Vector3(0, min_h, 0)
+        res = BigWorld.collide(self.entitiy.spaceID, center, min_position)
+        if res:
+            return res[0]
+        max_position = center + Vector3(0, max_h, 0)
+        resmax = BigWorld.collide(self.entitiy.spaceID, center, max_position)
+        if resmax:
+            return resmax[0]
+        else:
+            return None
+
+    def resetHipsDir(self):
+        self.lastHipsNoraml = Vector3(0, 1, 0)
+        self.lastaddHips = Vector3(0, 0, 0)
+
+    lastHipsNoraml = (0, 1, 0)
+    lastaddHips = (0, 0, 0)
+
+    def getHipsCollide(self, hipsWS, modelMatrix):
+        """@ret (add_pos_hips, normal, inair) """
+        MAX_H = 1.5
+        MIN_H = -1.0
+        add_pos_hips = Vector3(0, 0, 0)
+        normal = Vector3(0, 1, 0)
+        pos_hips = hipsWS.translation
+        res = self.collBox(pos_hips, MIN_H, MAX_H, width=0.1)
+        vL = modelMatrix.applyVector((-0.1, 0, 0.5))
+        resWL = self.collBox(vL + pos_hips, MIN_H, MAX_H, width=0.1)
+        vR = modelMatrix.applyVector((0.1, 0, 0.5))
+        resWR = self.collBox(vR + pos_hips, MIN_H, MAX_H, width=0.1)
+        if res and resWL and resWR:
+            normal = (res - resWL) * (res - resWR)
+            normal.normalise()
+        elif not resWL and not resWR:
+            normal = modelMatrix.applyVector((0, 0.5, 0.5))
+            normal.normalise()
+        else:
+            normal = Vector3(self.lastHipsNoraml)
+        if res:
+            coll_offset = res - modelMatrix.translation
+            add_pos_hips = Vector3(0, coll_offset[1], 0)
+        dt = self.lastHipsNoraml - normal
+        normal = self.lastHipsNoraml - dt * 0.1
+        normal.normalise()
+        self.lastHipsNoraml = normal
+        dt = self.lastaddHips - add_pos_hips
+        add_pos_hips = self.lastaddHips - dt * 0.1
+        self.lastaddHips = add_pos_hips
+        return (add_pos_hips, normal, res and resWL and not resWR)
+
+    crawl_mode = False
+    crouch_mode = False
+
+    def setCrawlMode(self, crouching_or_crawling, is_dead):
+        self.crawl_mode = crouching_or_crawling == Constants.CRAWLING
+        self.crouch_mode = crouching_or_crawling == Constants.CROUCHING
+        if self.crawl_mode or is_dead:
+            self.entitiy.torso_nodeinfo.pHipsTransformAtPython = self.pHipsTransformAtPythonCrawl
+        else:
+            self.entitiy.torso_nodeinfo.pHipsTransformAtPython = self.pHipsTransformAtPythonStay
+        if is_dead:
+            self.crawl_mode = True
+            self.crouch_mode = False
+        self.lastHipsNoraml = Vector3(0, 1, 0)
+        self.lastaddHips = Vector3(0, 0, 0)
+        lf = self.entitiy.foots[0]
+        rf = self.entitiy.foots[1]
+        lf.crawl_mode = self.crawl_mode
+        rf.crawl_mode = self.crawl_mode
+        if crouching_or_crawling == Constants.CRAWLING:
+            lf.maxup = rf.maxup = Math.Vector3(0, 0.6, 0)
+            lf.maxdown = rf.maxdown = Math.Vector3(0, -0.9, 0)
+            directedNormal = Math.Vector3((0, 1, 1))
+            directedNormal.normalise()
+            self.entitiy.torso_nodeinfo.directedNormalTagertBlend = directedNormal
+        elif crouching_or_crawling == Constants.CROUCHING:
+            lf.maxup = rf.maxup = Math.Vector3(0, 0.1, 0)
+            lf.maxdown = rf.maxdown = Math.Vector3(0, -0.5, 0)
+            self.entitiy.torso_nodeinfo.directedNormalTagertBlend = (0, 1, 0)
+        else:
+            lf.maxup = rf.maxup = Math.Vector3(0, 0.5, 0)
+            lf.maxdown = rf.maxdown = Math.Vector3(0, -0.5, 0)
+            self.entitiy.torso_nodeinfo.directedNormalTagertBlend = (0, 1, 0)
+
+    def _slopeChange(self, status, addmsg = ''):
+        if self.slope != status:
+            self.slope = status
+            self.entitiy.slopeNotifer(self.slope)
+
+    def postTrackedTorsoCallback(self, blendFaktorCurr_, blendFaktorFootCurr_, angleYawTo_, anglePitchTo_, modelMatrix, directedNodeMatrix, p_head_matrix, p_pre_hips, directedNormal_):
+        self._draw_count += 1
+        if self._draw_count > 1:
+            return
+        else:
+            if blendFaktorCurr_ > 1.0:
+                blendFaktorCurr_ = 1.0
+            if blendFaktorFootCurr_ > 1.0:
+                blendFaktorFootCurr_ = 1.0
+            pos = self.entitiy.position + (0, 2, 0)
+            addPitch = 0
+            directionPhys = None
+            lf = self.entitiy.foots[0]
+            rf = self.entitiy.foots[1]
+            if not lf._isLadderFound:
+                x = rf._isLadderFound
+                if x != self._isLadderFound:
+                    self._isLadderFound = x
+                    self.entitiy.ladderNotifer(x)
+                if self._lastPos:
+                    modelpos = modelMatrix.applyToOrigin()
+                    direction = modelpos - self._lastPos
+                    direction[1] = 0
+                    if not direction.length:
+                        if not self.crawl_mode:
+                            self._slopeChange(None)
+                    if direction.length:
+                        direction.normalise()
+                        directionPhys = direction
+                        res = BigWorld.collide(self.entitiy.spaceID, modelpos + direction * 0.5 + Math.Vector3(0, 2, 0), modelpos + direction - Math.Vector3(0, 2, 0))
+                        if res:
+                            v_ = res[1]
+                            normal = (v_[2] - v_[0]) * (v_[2] - v_[1])
+                            normal.normalise()
+                            slopeangle = math.acos(min(1.0, max(-1.0, directionPhys.dot(normal)))) - math.radians(90)
+                            if slopeangle > self.slopeTreshold:
+                                if not self.crawl_mode:
+                                    self._slopeChange('UP')
+                            elif slopeangle < -self.slopeTreshold:
+                                if not self.crawl_mode:
+                                    self._slopeChange('DOWN', 'slopeangle:%.2f' % slopeangle)
+                            elif not self.crawl_mode:
+                                self._slopeChange(None)
+                            delta = res[0][1] - modelpos[1]
+                            addPitch = delta
+                        if direction.dot(modelMatrix.applyToAxis(2)) < 0:
+                            addPitch = -addPitch
+                MAXPITCH = 0.6
+                MINPITCH = -0.6
+                addPitch = min(MAXPITCH, max(MINPITCH, addPitch))
+                self._lastPos = modelMatrix.applyToOrigin()
+                if self.entitiy._inAir or self.entitiy._ignorGravityAnimation or self.crawl_mode or self.crouch_mode:
+                    dz = self.entitiy.torso_nodeinfo.addHips[2] * 0.9
+                else:
+                    dz = min(self.entitiy.foots[0].needDiffHipsZbl.getCurrentValue(), self.entitiy.foots[1].needDiffHipsZbl.getCurrentValue())
+                dz = dz * blendFaktorFootCurr_
+                tmp_matr_hisp = Matrix()
+                tmp_matr_hisp.setRotateYPR((-angleYawTo_, 0, 0))
+                tmp_matr_hisp.invert()
+                mn = abs(angleYawTo_) * self.entitiy._hips_offset_by_rotate
+                self._hispF = -tmp_matr_hisp.applyToAxis(0)[0] * mn
+                self._hispLR = -tmp_matr_hisp.applyToAxis(0)[2] * mn
+                self._hispF = max(-0.5, min(0.5, self._hispF))
+                self._hispLR = max(-0.5, min(0.5, self._hispLR))
+                if not self.entitiy._inAir:
+                    if not self.entitiy._ignorGravityAnimation:
+                        if not self.crawl_mode:
+                            if not self.crouch_mode:
+                                dz -= math.sqrt(self._hispF ** 2 + self._hispLR ** 2)
+                            hips_speed_step_up = (0.0007, 0.9)
+                            hips_speed_step_dw = (0.0007, 0.9)
+                            if self.entitiy.torso_nodeinfo.addHips[2] > dz:
+                                self._hips_z_bl.accelerationStep_ = hips_speed_step_dw[0]
+                            else:
+                                self._hips_z_bl.accelerationStep_ = hips_speed_step_up[0]
+                            dz = max(-1.0, min(1.0, dz))
+                            self._hips_z_bl.setValueTo(dz)
+                            dz = self._hips_z_bl.getCurrentValue()
+                            dxdy = (Math.Vector3(lf.dxdy) + Math.Vector3(rf.dxdy)) * -0.5
+                            isLadderFound = lf._isLadderFound or rf._isLadderFound
+                            force_dxdy = False
+                            found_one_foot_in_air = False
+                            force_dxdy = lf.collide_ground != rf.collide_ground and True
+                            vector = lf.getPushVectorNoCollide(self.entitiy.model.position) or rf.getPushVectorNoCollide(self.entitiy.model.position)
+                            found_one_foot_in_air = vector and True
+                            self.entitiy._pushing_with_tilt2 = vector * 1.5
+                    found_one_foot_in_air or (dxdy.length > 0.17 or force_dxdy) and not isLadderFound and dxdy.normalise()
+                    self.entitiy._pushing_with_tilt2 = dxdy * 0.5
+                    print 'Set tilt 2dxdy for', dxdy * 0.5, 'orig = ', dxdy
+                else:
+                    self.entitiy._pushing_with_tilt2 = None
+            dz = max(-2.0, min(2.0, dz))
+            dz += self._add_z_by_roll.getCurrentValue() * HIPS_ROLL_Z_DISPLACEMENT
+            xy_by_roll = self._add_xy_by_roll.getCurrentValue() * HIPS_ROLL_XY_DISPLACEMENT
+            addHips = [self._hispLR * blendFaktorCurr_ + xy_by_roll, self._hispF * blendFaktorCurr_, dz]
+            self.updateCameraOffset(dz)
+            self.entitiy.torso_nodeinfo.addHips = tuple(addHips)
+            return
+
+    def onAM_testDeltaYawNotifer(self, delta_wCurwLastY, rLen, dTime):
+        self._rLen = rLen
+        self._model_delta_wCurwLastY = delta_wCurwLastY
+
+    def pHipsTransformAtPythonStay(self, addHips_, mPrimaryNodeWS, mPrimaryNodeLS, modelMatrix, parentNode_ws):
+        """ c++> \xd1\x82\xd1\x80\xd0\xb0\xd0\xbd\xd1\x84\xd0\xbe\xd1\x80\xd0\xbc\xd0\xb0\xd1\x86\xd0\xb8\xd1\x8f \xd1\x85\xd0\xb8\xd0\xbf\xd1\x81\xd0\xb0 \xd0\xb4\xd0\xbb\xd1\x8f \xd1\x81\xd0\xbe\xd1\x81\xd1\x82\xd0\xbe\xd1\x8f\xd0\xbd\xd0\xb8\xd1\x8f \xd1\x81\xd1\x82\xd0\xbe\xd1\x8f
+        """
+        d_yaw = self._model_delta_wCurwLastY * player_speed_settings.MODEl_ROLL.MOUSE_WEIGHT
+        if self._rLen <= player_speed_settings.MODEl_ROLL.MIN_SPEED:
+            rLenMod = 0
+        elif self._rLen >= player_speed_settings.MODEl_ROLL.MAX_SPEED:
+            rLenMod = 1.0
+        else:
+            range_ = player_speed_settings.MODEl_ROLL.MAX_SPEED - player_speed_settings.MODEl_ROLL.MIN_SPEED
+            dspeed = self._rLen - player_speed_settings.MODEl_ROLL.MIN_SPEED
+            rLenMod = dspeed / range_
+        angle_rotate = min(player_speed_settings.MODEl_ROLL.MAX_ANGLE, abs(d_yaw)) * rLenMod
+        if d_yaw > 0:
+            angle_rotate *= -1
+        old_angle_rotate = angle_rotate
+        self._angle_rotate_bl.setValueTo(angle_rotate * 100)
+        self._angle_rotate_bl.accelerationStep_ = player_speed_settings.MODEl_ROLL.SMOOTH_STEP
+        self._angle_rotate_bl.accelerationPorog_ = player_speed_settings.MODEl_ROLL.SMOOTH_POROG
+        angle_rotate = self._angle_rotate_bl.getCurrentValue() * 0.01
+        if abs(angle_rotate) > abs(old_angle_rotate):
+            self._angle_rotate_bl.accelerationStep_ = player_speed_settings.MODEl_ROLL.SMOOTH_STEP_BACK
+            self._angle_rotate_bl.accelerationPorog_ = player_speed_settings.MODEl_ROLL.SMOOTH_POROG_BACK
+        add_to = Vector3(angle_rotate * 0.5, 0, -abs(angle_rotate) * 0.5)
+        posp = parentNode_ws.translation
+        m_addhips = Matrix()
+        m_addhips.setTranslate(addHips_ + add_to)
+        rootWS = Matrix(mPrimaryNodeLS)
+        rootWS.invert()
+        rootWS.postMultiply(mPrimaryNodeWS)
+        finalWS = Matrix(rootWS)
+        finalWS.preMultiply(m_addhips)
+        finalWS.preMultiply(mPrimaryNodeLS)
+        rootWSinv = Matrix(rootWS)
+        rootWSinv.invert()
+        out_m = Matrix(finalWS)
+        out_m.postMultiply(rootWSinv)
+        local_inv = Matrix(mPrimaryNodeLS)
+        local_inv.invert()
+        out_m.postMultiply(local_inv)
+        deb_rotate = Matrix()
+        deb_rotate.setRotateYPR((angle_rotate, 0.0, 0.0))
+        out_m.preMultiply(deb_rotate)
+        return (out_m, parentNode_ws)
+
+    IF_AIR_STAND_ELSE_CR_SLOPE = True
+
+    def pHipsTransformAtPythonCrawl(self, addHips_, mPrimaryNodeWS, mPrimaryNodeLS, modelMatrix, parentNode_ws):
+        """ c++> \xd1\x82\xd1\x80\xd0\xb0\xd0\xbd\xd1\x84\xd0\xbe\xd1\x80\xd0\xbc\xd0\xb0\xd1\x86\xd0\xb8\xd1\x8f \xd1\x85\xd0\xb8\xd0\xbf\xd1\x81\xd0\xb0 \xd0\xb4\xd0\xbb\xd1\x8f \xd1\x81\xd0\xbe\xd1\x81\xd1\x82\xd0\xbe\xd1\x8f\xd0\xbd\xd0\xb8\xd1\x8f \xd0\xbb\xd0\xb5\xd0\xb6\xd0\xb0, \xd0\xbf\xd1\x80\xd0\xb8\xd0\xb6\xd0\xb0\xd1\x82\xd1\x8c \xd0\xbc\xd0\xbe\xd0\xb4\xd0\xb5\xd0\xbb\xd1\x8c\xd0\xba\xd1\x83 \xd0\xba \xd0\xb7\xd0\xb5\xd0\xbc\xd0\xbb\xd0\xb5
+        """
+        pos_hips = mPrimaryNodeWS.translation
+        mtmp = Math.Matrix()
+        point_collide = pos_hips
+        add_pos_hips, normal, in_air = self.getHipsCollide(mPrimaryNodeWS, modelMatrix)
+        mtmp = Math.Matrix()
+        direction = (1, 0, 0)
+        mtmp.lookAt((0, 0, 0), normal, direction)
+        try:
+            mtmp.invert()
+        except:
+            print '>>>>>>', normal
+            return (Matrix(), parentNode_ws)
+
+        mToNormalCoord = Math.Matrix()
+        mToNormalCoord.setRotateYPR((piP2, 0, piP2))
+        mtmp.preMultiply(mToNormalCoord)
+        tagert = Math.Matrix()
+        tagert.setTranslate(mPrimaryNodeWS.translation + (0, 0, 0))
+        trot = Math.Matrix()
+        trot.setRotateYPR((mPrimaryNodeWS.yaw, mPrimaryNodeWS.pitch, mPrimaryNodeWS.roll))
+        trot.postMultiply(mtmp)
+        tagert.preMultiply(trot)
+        mToTagert = Matrix(mPrimaryNodeWS)
+        mToTagert.invert()
+        mToTagert.preMultiply(tagert)
+        return (mToTagert, parentNode_ws)
+
+    def onTick(self, dTime, blendFaktorCurr_, blendFaktorCurrFoot_):
+        self._draw_count = 0
+        z_from_roll = 0.0
+        if self.entitiy.IsAvatarStand():
+            z_from_roll = abs(self.entitiy.torso_nodeinfo.addRoll) * -0.15
+        self._add_z_by_roll.setValueTo(z_from_roll * blendFaktorCurr_)
+        self._add_z_by_roll.updateBlend(dTime)
+        self._add_xy_by_roll.setValueTo(self.entitiy.torso_nodeinfo.addRoll * blendFaktorCurr_)
+        self._add_xy_by_roll.updateBlend(dTime)
+        self._hips_z_bl.updateBlend(dTime)
+        self._angle_rotate_bl.updateBlend(dTime)
+        for f in self.entitiy.foots:
+            f.onFootTick(dTime, blendFaktorCurr_, blendFaktorCurrFoot_)
+
+
+ENABLE_DYNAMIC_GEOMETRY_FIX = True
+ENABLE_FOOT_COLLIDE = True
+ENABLE_FOOT_DXDY = True
+ENABLE_FOOT_NORMAL = True
+
+class Foot(object):
+
+    def __init__(self, name, step_name, entitiy, tagerDebug = None):
+        self.entitiy = entitiy
+        self.name = name
+        self.isLeft = name == 'Left'
+        self.crawl_mode = False
+        self.step_name = step_name
+        self._cashe = (Matrix(), Matrix(), Matrix())
+        self.tagerDebug = tagerDebug
+        self.tagerDebugFactor = 0
+        self._draw_count = 0
+        self.needDiffHipsZbl = tmp_blends.AcceleratedBlendCls(step=0.1, porog=0.3)
+        self.plane_leg_bl = tmp_blends.HalfBlend(0.05)
+        self.foot_limit_bl = tmp_blends.HalfBlend(0.05)
+        self.lastPosByAnimG = None
+        self.lastPosByAnim = None
+        self.ground_normal = None
+        self.collide_ground = True
+        self._isLadderFound = False
+        self.dxdy = Vector3(0, 0, 0)
+        self.dxdy_need = Vector3(0, 0, 0)
+        self._dxdy_bl = IntertionBlendVec3(7, 0.5)
+        self.maxup = Math.Vector3(0, 0.1, 0)
+        self.maxdown = Math.Vector3(0, -0.49, 0)
+        self._drawer = LinesHolder(50)
+        self._prev_point = None
+        self._fix_add_height = 0
+        return
+
+    def onLeaveWorld(self):
+        self.entitiy = None
+        return
+
+    def getSaveStateFoot(self):
+        data = {}
+        data['needDiffHipsZbl'] = self.needDiffHipsZbl.getCurrentValue()
+        data['plane_leg_bl'] = self.plane_leg_bl.getCurrentValue()
+        data['foot_limit_bl'] = self.foot_limit_bl.getCurrentValue()
+        data['_dxdy_bl'] = self._dxdy_bl.getCurrentValue()
+        data['needDiffHipsZbl_valueTo_'] = self.needDiffHipsZbl.valueTo_
+        data['plane_leg_bl_valueTo_'] = self.plane_leg_bl.valueTo_
+        data['foot_limit_bl_valueTo_'] = self.foot_limit_bl.valueTo_
+        data['_dxdy_bl_valueTo_'] = self._dxdy_bl.valueTo_
+        data['dxdy'] = Vector3(self.dxdy)
+        data['dxdy_need'] = Vector3(self.dxdy_need)
+        data['_isLadderFound'] = self._isLadderFound
+        data['ground_normal'] = self.ground_normal
+        data['collide_ground'] = self.collide_ground
+        data['lastPosByAnimG'] = self.lastPosByAnimG
+        data['lastPosByAnim'] = self.lastPosByAnim
+        return data
+
+    def restoreStateFoot(self, data):
+        self.needDiffHipsZbl.setCurrentValue(data['needDiffHipsZbl'])
+        self.plane_leg_bl.setCurrentValue(data['plane_leg_bl'])
+        self.foot_limit_bl.setCurrentValue(data['foot_limit_bl'])
+        self._dxdy_bl.setCurrentValue(data['_dxdy_bl'])
+        self.needDiffHipsZbl.setValueTo(data['needDiffHipsZbl_valueTo_'])
+        self.plane_leg_bl.setValueTo(data['plane_leg_bl_valueTo_'])
+        self.foot_limit_bl.setValueTo(data['foot_limit_bl_valueTo_'])
+        self._dxdy_bl.setValueTo(data['_dxdy_bl_valueTo_'])
+        self.dxdy = data['dxdy']
+        self.dxdy_need = data['dxdy_need']
+        self._isLadderFound = data['_isLadderFound']
+        self.ground_normal = data['ground_normal']
+        self.collide_ground = data['collide_ground']
+        self.lastPosByAnimG = data['lastPosByAnimG']
+        self.lastPosByAnim = data['lastPosByAnim']
+
+    def getPushVectorNoCollide(self, player_position):
+        """\xd0\x95\xd1\x81\xd0\xbb\xd0\xb8 \xd1\x8d\xd1\x82\xd0\xb0 \xd0\xbd\xd0\xbe\xd0\xb3\xd0\xb0 \xd0\xb2 \xd0\xb2\xd0\xbe\xd0\xb7\xd0\xb4\xd1\x83\xd1\x85\xd0\xb5(\xd0\xbd\xd0\xb5\xd1\x82 \xd0\xba\xd0\xbe\xd0\xbb\xd0\xb8\xd0\xb7\xd0\xb8\xd0\xb8) \xd0\xb2\xd0\xbe\xd0\xb7\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82\xd1\x81\xd1\x8f \xd0\xb2\xd0\xb5\xd0\xba\xd1\x82\xd0\xbe\xd1\x80
+                \xd0\xba\xd1\x83\xd0\xb4\xd0\xb0 \xd0\xbd\xd1\x83\xd0\xb6\xd0\xbd\xd0\xbe \xd1\x82\xd0\xbe\xd0\xbb\xd0\xba\xd0\xbd\xd1\x83\xd1\x82\xd1\x8c \xd1\x84\xd0\xb8\xd0\xb7\xd0\xb8\xd0\xba\xd1\x83 \xd0\xb8\xd0\xb3\xd1\x80\xd0\xbe\xd0\xba\xd0\xb0
+        """
+        if self.collide_ground:
+            return False
+        if not self.lastPosByAnim:
+            return False
+        v = self.lastPosByAnim - player_position
+        v[1] = 0
+        v.normalise()
+        return v
+
+    def onFootTick(self, dTime, blendFaktorCurr_, blendFaktorCurrFoot_):
+        self._draw_count = 0
+        dx = self.entitiy.xTorso._add_xy_by_roll.getCurrentValue()
+        m = Matrix(self.entitiy.model.matrix)
+        m.translation = (0, 0, 0)
+        if self.isLeft:
+            if dx < -0.01:
+                dx = 0.0
+            dx = dx * FOOT_ROLL_DISPLACEMENT
+        else:
+            if dx > 0.01:
+                dx = 0.0
+            dx = dx * FOOT_ROLL_DISPLACEMENT
+        self._dxdy_bl.setValueTo(self.dxdy_need + m.applyPoint((-dx, 0, 0)))
+        self._dxdy_bl.updateBlend(dTime)
+        self.dxdy = self._dxdy_bl.getCurrentValue()
+        self.needDiffHipsZbl.updateBlend(dTime)
+        self.plane_leg_bl.updateBlend(dTime)
+        self.foot_limit_bl.updateBlend(dTime)
+
+    def call(self, zBLENDF, yawHipsDelta, pithHipsDelata, mwPreHipsNode_, mwPrePelvisNode_, mwPreUpLegNode_, mwPreLegNode_, mwPreFootNode_, mwHipsNode, mwPelvisNode, mwUpLegNode, mwLegNode, mwFootNode, lHipsNode, lPelvisNode, lUpLegNode, lLegNode, lFootNode, modelMatrix):
+        if self._fix_scale_matrix:
+            zBLENDF = 1
+        self._draw_count += 1
+        if self._draw_count > 1:
+            return self._cashe
+        else:
+            spaceID = self.entitiy.spaceID
+            footPosByAnim = mwPreFootNode_.applyToOrigin()
+            footPosNeed = Math.Vector3(footPosByAnim)
+            if self.tagerDebug:
+                footPosNeed = Math.Matrix(self.tagerDebug).translation
+                footPosNeed = (footPosNeed - footPosByAnim) * self.tagerDebugFactor + footPosByAnim
+            if not self.lastPosByAnimG:
+                self.lastPosByAnimG = footPosNeed
+            footPosByAnim = Math.Vector3(footPosNeed)
+            anim_height_w = footPosByAnim[1]
+            self.lastPosByAnim = footPosByAnim
+            modelPosition = modelMatrix.applyToOrigin()
+            footHeight = footPosByAnim[1] - modelPosition[1]
+            footPosByAnimAndUp = Math.Vector3(footPosByAnim)
+            footPosByAnimAndUp[1] = modelPosition[1] + self._fix_add_height
+            self._fix_add_height = 0
+            maxup = self.maxup
+            maxdown = self.maxdown
+
+            def findCollide(footPosByAnimAndUp):
+                pre_foot_inv = Matrix(mwPreFootNode_)
+                pre_foot_inv.invert()
+                dir_model = modelMatrix.applyToAxis(2) * 10
+                f = 0.0
+                tmp_ret = None
+                max_posints = 30
+                ladder_found = False
+                for i in xrange(max_posints):
+                    R = f * 0.01
+                    x = R * math.cos(f)
+                    y = R * math.sin(f)
+                    f += 0.9
+                    if self.isLeft and x > 0.1:
+                        continue
+                    elif not self.isLeft and x < -0.1:
+                        continue
+                    point = Math.Vector3(x, 0, y)
+                    point = modelMatrix.applyVector(point)
+                    p1 = point + footPosByAnimAndUp + maxup
+                    p2 = point + footPosByAnimAndUp + maxdown
+                    ignoreflags = 0
+                    materialKind = 139
+                    res = BigWorld.collideIgnoreFlags(spaceID, p1, p2, [materialKind], ignoreflags)
+                    hit, tri, mat_id, coll_flags, ladder_found_in_hit = res
+                    if not ladder_found:
+                        ladder_found = ladder_found_in_hit
+                        if hit:
+                            normal = tri_normal(tri)
+                            normal = normal.dot(Vector3(0, 1, 0)) < 0 and normal * -1
+                        ct = (hit, normal, ladder_found)
+                        return (ct, (point.x, 0, point.y))
+
+                ct = (None, None, ladder_found)
+                return (ct, (0, 0, 0))
+
+            ct = (None, None, False)
+            dxdy = Vector3(0, 0, 0)
+            if self.entitiy._inAir or self.entitiy._ignorGravityAnimation:
+                pass
+            else:
+                if ENABLE_FOOT_COLLIDE:
+                    ct, dxdy = findCollide(footPosByAnimAndUp)
+                if ENABLE_DYNAMIC_GEOMETRY_FIX:
+                    self._drawer.clear()
+                    if ct and ct[0]:
+                        hit, normal, ladder_found = ct
+                        if self._prev_point:
+                            if self._prev_point.flatDistSqrTo(hit) < 0.1:
+                                self._fix_add_height = hit.y - self._prev_point.y
+                        self._prev_point = Vector3(hit)
+                if not ENABLE_FOOT_DXDY:
+                    dxdy = Vector3(0, 0, 0)
+            self.dxdy_need = dxdy
+            footPosNeed[0] += self.dxdy[0]
+            footPosNeed[2] += self.dxdy[2]
+            point_collide, normal, isLadderFound = ct
+            if not ENABLE_FOOT_NORMAL:
+                normal = None
+            self._isLadderFound = isLadderFound
+            if not point_collide:
+                self.collide_ground = False
+                if not self.entitiy.physicsIsJump() and (self.entitiy.xTorso.slope or self._isLadderFound):
+                    anim_height_w = (footPosByAnimAndUp + maxdown)[1]
+                else:
+                    anim_height_w = footPosByAnim[1]
+            else:
+                if anim_height_w > point_collide[1] + footHeight:
+                    anim_height_w = point_collide[1] + footHeight
+                    footPosNeed[1] = anim_height_w
+                else:
+                    hips_dz = self.entitiy.torso_nodeinfo.addHips[2]
+                    anim_height_w = point_collide[1] + footHeight
+                    footPosNeed[1] = anim_height_w
+                self.ground_normal = normal
+                self.collide_ground = True
+            dl = Vector3(self.dxdy).length
+            footPosNeed[1] = anim_height_w - dl * 0.1
+            if self.crawl_mode:
+
+                def getUpByCollideLeg(foot, leg):
+                    direct = leg - foot
+                    max_h = 0
+                    for x in xrange(1, 10):
+                        add = direct * (x / 10.0)
+                        start = foot + add + (0, 0.3, 0)
+                        end = foot + add + (0, -0.09, 0)
+                        res = BigWorld.collide(self.entitiy.spaceID, start, end)
+                        if res:
+                            add_to_foot = res[0][1] - foot[1] + 0.09
+                            if add_to_foot > max_h:
+                                max_h = add_to_foot
+
+                    return max_h
+
+                add_to_foot = getUpByCollideLeg(footPosNeed, mwPreLegNode_.applyToOrigin())
+                footPosNeed[1] += min(0.5, add_to_foot)
+            needdZ = footPosNeed[1] - footPosByAnim[1]
+            targetPos = footPosNeed
+            self.plane_leg_bl.setValueTo(self.entitiy._leg_rotate_inside)
+            if self.isLeft:
+                if yawHipsDelta > 0.01:
+                    self.plane_leg_bl.setValueTo(self.entitiy._leg_rotate_outside)
+            elif yawHipsDelta < -0.01:
+                self.plane_leg_bl.setValueTo(self.entitiy._leg_rotate_outside)
+            self.needDiffHipsZbl.setValueTo(needdZ + self._fix_add_height)
+            if ENABLE_DYNAMIC_GEOMETRY_FIX:
+                val = self.needDiffHipsZbl.getCurrentValue()
+                self.needDiffHipsZbl.setCurrentValue(val + self._fix_add_height)
+            targetPos[1] = footPosByAnim[1] + self.needDiffHipsZbl.getCurrentValue()
+            self.lastPosByAnimG = targetPos
+            mrotateLegToPlane = rotateMatrixTo(mwUpLegNode, mwUpLegNode.applyToOrigin() + mwUpLegNode.applyToAxis(2), targetPos)
+            plane = Math.Matrix(mwHipsNode)
+            plane.preMultiply(lPelvisNode)
+            tmplUpLegNode = Math.Matrix(lUpLegNode)
+            tmplUpLegNode.preMultiply(mrotateLegToPlane)
+            plane.preMultiply(tmplUpLegNode)
+            plane_fw = Math.Matrix()
+            fw_dir = targetPos - plane.translation
+            fw_dir.normalise()
+            up_leg = mwPreLegNode_.applyToOrigin() - mwPreUpLegNode_.applyToOrigin()
+            down_leg = mwPreLegNode_.applyToOrigin() - mwPreFootNode_.applyToOrigin()
+            fw_up = up_leg + down_leg
+            fw_up.normalise()
+            plane_fw.lookAt(plane.translation, fw_dir, fw_up)
+            plane_fw.invert()
+            if self.plane_leg_bl.getCurrentValue() > 0:
+                plane.blendMatrix(self.plane_leg_bl.getCurrentValue(), plane_fw)
+            newUpLegPos = mwUpLegNode.applyToOrigin()
+            lenghtBone1 = (mwPreUpLegNode_.applyToOrigin() - mwPreLegNode_.applyToOrigin()).length
+            lenghtBone2 = (mwPreLegNode_.applyToOrigin() - mwPreFootNode_.applyToOrigin()).length
+            distToTarget = (targetPos - newUpLegPos).length
+            subPoint2d, errorcircle = getSubPointCircleMethod(lenghtBone1, lenghtBone2, distToTarget)
+            subPoint2d.normalise()
+            subPoint2d = subPoint2d * lenghtBone1
+            subPoint3d = plane.applyPoint(subPoint2d)
+            mrotateUpLeg = rotateMatrixToByPlane(mwUpLegNode, mwLegNode.applyToOrigin(), subPoint3d, plane, BLENDF=zBLENDF)
+            if self._fix_scale_matrix:
+                mrotateUpLeg.preMultiply(self._fix_scale_matrix)
+            newWordlLegNode = Math.Matrix(mwHipsNode)
+            newWordlLegNode.preMultiply(lPelvisNode)
+            newWordlLegNode.preMultiply(lUpLegNode)
+            newWordlLegNode.preMultiply(mrotateUpLeg)
+            newWordlLegNode.preMultiply(lLegNode)
+            newWordlFoot = Math.Matrix(newWordlLegNode)
+            newWordlFoot.preMultiply(lFootNode)
+            mrotateLeg = rotateMatrixToByPlane(newWordlLegNode, newWordlFoot.applyToOrigin(), targetPos, plane, BLENDF=zBLENDF)
+            if self._fix_scale_matrix:
+                mrotateLeg.preMultiply(self._fix_scale_matrix)
+            newWordlFoot = Math.Matrix(newWordlLegNode)
+            newWordlFoot.preMultiply(mrotateLeg)
+            newWordlFoot.preMultiply(lFootNode)
+            self.foot_limit_bl.setValueTo(self.entitiy._foot_rotate_limit)
+            tmp_foot_limit = self.foot_limit_bl.getCurrentValue()
+            flimited = (-tmp_foot_limit, tmp_foot_limit)
+            direc = 2
+            mrotateFoot = rotateMatrixTo(newWordlFoot, newWordlFoot.applyToOrigin() + newWordlFoot.applyToAxis(direc), newWordlFoot.applyToOrigin() + mwPreFootNode_.applyToAxis(direc), limited=flimited, BLENDF=zBLENDF)
+            newWordlFoot2 = Math.Matrix(newWordlFoot)
+            newWordlFoot2.preMultiply(mrotateFoot)
+            direc = 1
+            mrotateFoot1 = rotateMatrixTo(newWordlFoot2, newWordlFoot2.applyToOrigin() + newWordlFoot2.applyToAxis(direc), newWordlFoot2.applyToOrigin() + mwPreFootNode_.applyToAxis(direc), limited=flimited, BLENDF=zBLENDF)
+            mrotateFoot.preMultiply(mrotateFoot1)
+            lUpLegNode.preMultiply(mrotateUpLeg)
+            lLegNode.preMultiply(mrotateLeg)
+            lFootNode.preMultiply(mrotateFoot)
+            self._cashe = (lUpLegNode, lLegNode, lFootNode)
+            return self._cashe
+
+    _fix_scale_matrix = None
+
+    def setFixScaleMatrix(self, matrix):
+        self._fix_scale_matrix = matrix
+
+
+def torsopCallBacklookAtPython_(angleYawTo_, anglePitchTo_, blendFactorCurr_, blendFaktorCurrFoot_, addRollResult_, addPitchResult_, addYawResult_, PrimaryNode, parentWS, acc, waxisPitch, waxisYaw, lookAtInWSOriginal, lookAtInWS, dirInWS, listnodes):
+    ret_list = []
+    first_worldTransform = listnodes[0][0]
+    first_localTr = listnodes[0][1]
+    parentWS = Matrix(first_localTr)
+    parentWS.invert()
+    parentWS.postMultiply(first_worldTransform)
+    for node in listnodes:
+        worldTransform, localTr, yaw_weight_blended, pitch_weight_blended, roll_weight_blended, yaw_value, pitch_value, roll_value = node
+        inverse = Matrix(worldTransform)
+        inverse.preMultiply(acc)
+        inverse.invert()
+        axisYawLS = inverse.applyVector(waxisYaw)
+        axisPitchLS = inverse.applyVector(waxisPitch)
+        inverse_clear = Matrix(worldTransform)
+        inverse_clear.invert()
+        axisYawLS = inverse_clear.applyVector(waxisYaw)
+        rotateTransform = Matrix().xfromAngleAxis(axisPitchLS, anglePitchTo_ * pitch_weight_blended * blendFactorCurr_)
+        localTr.preMultiply(rotateTransform)
+        acc.postMultiply(rotateTransform)
+        rotateTransform = Matrix().xfromAngleAxis(axisYawLS, angleYawTo_ * yaw_weight_blended * blendFactorCurr_)
+        localTr.preMultiply(rotateTransform)
+        acc.postMultiply(rotateTransform)
+        parentWS.preMultiply(localTr)
+        inverse = Matrix(parentWS)
+        inverse.invert()
+        v_fwd = Vector3()
+        v_fwd.setPitchYaw(0, lookAtInWS.yaw)
+        axisRollLS = inverse.applyVector(v_fwd)
+        axisRollLS.normalise()
+        rotateTransform = Matrix().xfromAngleAxis(axisRollLS, addRollResult_ * roll_weight_blended * blendFactorCurr_)
+        localTr.preMultiply(rotateTransform)
+        acc.postMultiply(rotateTransform)
+        parentWS.preMultiply(rotateTransform)
+        ret_list.append(localTr)
+
+    return ret_list
+
+
+def reinit(p = None):
+    if not p:
+        p = BigWorld.player()
+    if not p:
+        raise
+    p.foots = [Foot('Left', 'Lstep', p, None), Foot('Right', 'Rstep', p, None)]
+    p.xTorso = TorsoX(p)
+    p.fniLeft.pCallBackTestPython = p.foots[0].call
+    p.fniRight.pCallBackTestPython = p.foots[1].call
+    p.torso_nodeinfo.postTrackedTorsoCallback = p.xTorso.postTrackedTorsoCallback
+    p.torso_nodeinfo.pCallBackTickPython = p.xTorso.onTick
+    p.torso_nodeinfo.pHipsTransformAtPython = p.xTorso.pHipsTransformAtPythonStay
+    p.updateCrawlMode()
+    return

@@ -1,0 +1,133 @@
+# Embedded file name: ./client/Victim.py
+import BigWorld
+from generic.victimdamager import GenericVictim
+from ArmorCollider import ArmorCollider
+from Config.Damage import SourceTypes
+from Math import Matrix
+import traceback
+_base_matrices = {}
+
+class Victim(GenericVictim):
+    respawned_recently = False
+    last_grenade_damage = 0
+    AVATAR_BASE_MODEL_ID = 0
+
+    def getCurrentModel(self):
+        return self.model
+
+    def __createBoxAttachment(self, box_name, min_bounds, max_bounds, transform = None):
+        box = BigWorld.BoxAttachment()
+        box.name = box_name
+        box.minBounds = min_bounds
+        box.maxBounds = max_bounds
+        if transform:
+            box.localTransform = transform
+        return box
+
+    def attach_collider_box(self, box_name, node_name, body_zone, min_bounds, max_bounds, transform):
+        if box_name == 'None':
+            box_name = node_name
+            print 'Victim (ERROR): empty box name', node_name, body_zone, self
+            traceback.print_stack()
+        box = self.__createBoxAttachment(box_name, min_bounds, max_bounds, transform)
+        try:
+            node = self.getCurrentModel().node(node_name)
+        except Exception as e:
+            model = self.getCurrentModel()
+            print '\nERROR FOR', self, model, repr(node_name)
+            if model:
+                print model.sources
+            traceback.print_stack()
+            traceback.print_exc()
+            return
+
+        node.attach(box)
+        self.skeletonCollider.addCollider(box)
+        self.colliderNames[box_name] = body_zone
+        self.collider_nodes[box_name] = (node_name, node)
+        self.collider_boxes[box_name] = box
+        self.last_grenade_damage = 0
+
+    def add_collider(self):
+        self.clearColliders()
+        self.canBeHurtByBullets = self.invulnerable or not not self.canTakeDamage
+        self.skeletonCollider = BigWorld.SkeletonCollider()
+
+    def set_invulnerable(self, old_value):
+        self.canBeHurtByBullets = self.invulnerable or not not self.canTakeDamage
+
+    def set_canTakeDamage(self, old_value):
+        self.canBeHurtByBullets = self.invulnerable or not not self.canTakeDamage
+
+    def clearColliders(self):
+        try:
+            if getattr(self, 'collider_nodes', None):
+                for box_name, (node_name, node) in self.collider_nodes.items():
+                    box = self.collider_boxes[box_name]
+                    node.detach(box)
+
+        except Exception:
+            traceback.print_exc()
+
+        if getattr(self, 'skeletonCollider', None):
+            self.skeletonCollider.clearColliders()
+            self.skeletonCollider = None
+        self.colliderNames = {}
+        self.collider_nodes = {}
+        self.collider_boxes = {}
+        return
+
+    def on_damaged(self, source_data, damagetaken_data):
+        GenericVictim.on_damaged(self, source_data, damagetaken_data)
+        if source_data['type'] == SourceTypes.GRENADE:
+            self.last_grenade_damage = damagetaken_data['health_decrement']
+
+    def on_grenaded(self, grenade_position, collided_id, collision_data):
+        self.on_grenade_damaged(self.last_grenade_damage, grenade_position, collided_id, collision_data)
+
+    def on_grenade_damaged(self, damage, grenade_position, collided_id, collision_data):
+        pass
+
+    def get_node_by_body_zone(self, body_zone):
+        if not hasattr(self, 'colliderNames'):
+            return None
+        else:
+            for box_name, box_body_zone in self.colliderNames.iteritems():
+                if box_body_zone == body_zone:
+                    node_name, node = self.collider_nodes[box_name]
+                    return node
+
+            return None
+
+    def on_heal(self, old_value, new_value, max_value):
+        self.clear_blood(new_value / max_value)
+
+    def override_client_damage_calculation(self, *args, **kargs):
+        return False
+
+    def _get_base_model_matrix(self, box_name):
+        model_id = self.get_wound_base_model_id()
+        base_matrices = _base_matrices.get(model_id)
+        if not base_matrices:
+            base_matrices = {}
+            if getattr(self, 'active_transform', False) and self.active_transform.isCustomModel:
+                model_path = str(self.active_transform.getModelPath())
+            elif model_id == Victim.AVATAR_BASE_MODEL_ID:
+                model_path = 'characters2/basemodel/StalkerBase2.model'
+            else:
+                model_path = str(self.get_model_path()[:-6]) + '.model'
+            base_model = BigWorld.Model(model_path)
+            base_model.position = (0, 0, 0)
+            base_model.visibleAttachments = True
+            name_T_node = {}
+            for bn, (node_name, node_real) in self.collider_nodes.items():
+                if bn in self.collider_boxes:
+                    real_box = self.collider_boxes[bn]
+                    name_T_node[bn] = base_model.node(node_name, real_box.localTransform)
+
+            base_model.forceDraw()
+            for bn, t_node in name_T_node.items():
+                base_matrices[bn] = Matrix(t_node)
+
+            _base_matrices[model_id] = base_matrices
+        return base_matrices.get(box_name)

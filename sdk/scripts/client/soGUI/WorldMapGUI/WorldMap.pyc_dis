@@ -1,0 +1,476 @@
+# Embedded file name: ./client/soGUI/WorldMapGUI/WorldMap.py
+from Helpers.PyGUI.PyGUIBase import PyGUIBase
+from Helpers.PyGUI.DraggableComponent import DraggableComponent
+from Localization import lc
+import GUI
+from soGUI.soButton import soButton
+import BWPersonality
+import functools
+from soGUI.soDropDownList import soDropDownList2
+from maputils import config_parser
+from SpaceMap import SpaceMap
+import BigWorld
+from collections import defaultdict
+from ChatChannelConfig import CHANNEL_CONSTS
+from Math import Vector3
+from add_mark_win import AddMarkWin
+from maputils.MarksData import MarksData
+from marks_filter import MarksFilter
+from Helpers.PyGUI.PyGUIBase import Interceptor
+import space_utils
+import sounds_manager
+from soGUI.GUIPositions import GUIPositions
+
+class WorldMap(PyGUIBase, DraggableComponent, GUIPositions):
+    """ \xd0\xb8\xd0\xbd\xd1\x82\xd0\xb5\xd1\x80\xd1\x84\xd0\xb5\xd0\xb9\xd1\x81 \xd0\xba\xd0\xb0\xd1\x80\xd1\x82\xd1\x8b \xd0\xbc\xd0\xb8\xd1\x80\xd0\xb0 """
+    ON_COLOR = (255, 255, 255, 255)
+    OFF_COLOR = (255, 255, 255, 100)
+
+    def __init__(self, parent_layer):
+        component = GUI.Window()
+        parent_layer.addChild(component, 'soWorldMapGUI')
+        PyGUIBase.__init__(self, component)
+        DraggableComponent.__init__(self, True, True, True)
+        GUIPositions.__init__(self)
+        component.script = self
+        self._members_marks = []
+        self._prev_player_data = (None, None, None)
+        self._cur_space_map = None
+        self._maps = {}
+        self._setup_content()
+        self._marks_data = None
+        self._add_mark_win = AddMarkWin()
+        self._add_mark_win.component.position = (0, 0, 0.05)
+        parent_layer.addChild(self._add_mark_win.component, 'soWorldMapGUI.addmarkcomponent')
+        return
+
+    def _setup_content(self):
+        self.component.widthMode, self.component.heightMode = ('PIXEL', 'PIXEL')
+        self.component.horizontalPositionMode, self.component.verticalPositionMode = ('CLIP', 'CLIP')
+        self.component.width, self.component.height = BWPersonality.settings.GUISettings.getMapSize()
+        self.component.horizontalAnchor, self.component.verticalAnchor = ('CENTER', 'CENTER')
+        self.component.position = (0, 0, 0.1)
+        self.component.visible = False
+        comp = GUI.Frame2('soGUI/frame/basic_frame_1.dds')
+        comp.materialFX = 'BLEND'
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+        comp.width, comp.height = (2, 2)
+        comp.position = (0, 0, 1)
+        self.component.addChild(comp, 'background_frame')
+        comp = GUI.Text()
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.font = 'RobotoCondensedRegular_16.font'
+        comp.position = (14, 5, 0.3)
+        self.component.addChild(comp, 'iLabel')
+        btn = soButton(GUI.Window())
+        btn.initVSC('soGUI/elements/closeBox.xml')
+        btn.onClick = self.hide
+        comp = btn.component
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('RIGHT', 'TOP')
+        comp.position.z = 0.2
+        comp.width, comp.height = (18, 18)
+        btn.onBound()
+        btn._updateVisualState()
+        self.component.addChild(comp, 'closeBox')
+        btn = soButton(GUI.Window())
+        comp = btn.component
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.width, comp.height = (18, 18)
+        comp.position.z = 0.2
+        btn.initVSC('soGUI/elements/helpBox.xml')
+        btn.onBound()
+        btn.setVisualState('normal')
+        btn.onClick = functools.partial(BWPersonality.GUICore.openGUIHelp, 'soGPSMap')
+        self.component.addChild(comp, 'hintBox')
+        self._ddl = soDropDownList2(GUI.Window(), width=250, height=25)
+        self._ddl.onSelectedElement = self._on_space_selected
+        self._ddl.onClickArrow = self._on_space_menu_arrow_click
+        comp = self._ddl.component
+        comp.horizontalPositionMode = comp.verticalPositionMode = 'PIXEL'
+        comp.widthMode = comp.heightMode = 'PIXEL'
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.position = (14, 30, 0.05)
+        self.component.addChild(comp, 'spaces_ddl')
+        comp = GUI.Window()
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'PIXEL')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'TOP')
+        comp.position = (0, 0, 1)
+        self.component.addChild(comp, 'spacemap_container')
+        comp = GUI.Simple('soGUI/frame/map/map_mask.dds')
+        comp.materialFX = 'BLEND'
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.width, comp.height = (2.01, 2.01)
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+        comp.position = (0, 0, 0.2)
+        self.component.spacemap_container.addChild(comp, 'foreframe')
+        self._ddl.onBound()
+        comp = GUI.Simple('textures/misc/other/white_noise/white_noise_01/white_noise_01.texanim')
+        comp.materialFX = 'BLEND'
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+        comp.position = (0, 0, 0.21)
+        self.component.spacemap_container.addChild(comp, 'nomap')
+        comp.visible = False
+        Interceptor(comp)
+        comp = GUI.Window('soGUI/frame/map/zoom_map_out.dds')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('RIGHT', 'TOP')
+        comp.materialFX = 'BLEND'
+        comp.width, comp.height = comp.texture.width, comp.texture.height * 0.25
+        comp.position = (0, 28, 0.1)
+        btn = soButton(comp)
+        btn.initVSC('soGUI/frame/map/scroll_map_button.xml')
+        btn.onBound()
+        btn.setVisualState('normal')
+        btn.onClick = functools.partial(self._zoom_map, -1)
+        self.component.addChild(comp, 'zoomOut')
+        comp = GUI.Window('soGUI/frame/map/zoom_map_in.dds')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('RIGHT', 'TOP')
+        comp.materialFX = 'BLEND'
+        comp.width, comp.height = comp.texture.width, comp.texture.height * 0.25
+        comp.position = (0, 28, 0.1)
+        btn = soButton(comp)
+        btn.initVSC('soGUI/frame/map/scroll_map_button.xml')
+        btn.onBound()
+        btn.setVisualState('normal')
+        btn.onClick = functools.partial(self._zoom_map, 1)
+        self.component.addChild(comp, 'zoomIn')
+        comp = GUI.Window('soGUI/frame/map/player_location.dds')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.materialFX = 'BLEND'
+        comp.width, comp.height = comp.texture.width, comp.texture.height * 0.25
+        comp.position = (270, 30, 0.1)
+        btn = soButton(comp)
+        btn.initVSC('soGUI/frame/map/scroll_map_button.xml')
+        btn.onBound()
+        btn.setVisualState('normal')
+        btn.onClick = self._center_map_on_player
+        self.component.addChild(comp, 'centerPlayer')
+        self._filter_set = MarksFilter(self.component)
+        self.size_changed()
+
+    def set_marks_data(self, marks_data):
+        if self._marks_data:
+            self._marks_data.remove_listener(self._on_marks_data_event)
+        self._marks_data = marks_data
+        if self._marks_data:
+            self._marks_data.add_listener(self._on_marks_data_event)
+
+    def _zoom_map(self, direction):
+        if self._cur_space_map:
+            self._cur_space_map.zoom(direction)
+
+    def _center_map_on_player(self):
+        space_name = self._delegate.getSpaceName()
+        self._set_ddl_selection(space_name)
+        if self._cur_space_map:
+            self._cur_space_map.center_on_player()
+
+    def show_space(self, space_name):
+        self._set_ddl_selection(space_name)
+        if self._ddl.getSelection()[1] != space_name:
+            return
+        if self._cur_space_map:
+            self._cur_space_map.center_on_player()
+
+    def center_on_position(self, space_name, position):
+        self._set_ddl_selection(space_name)
+        if self._ddl.getSelection()[1] != space_name:
+            raise ValueError('space map not found', space_name)
+        if self._cur_space_map:
+            self._cur_space_map.center_on_position(position)
+
+    def center_map_on_npc(self, npc_id, space_name):
+        self._set_ddl_selection(space_name)
+        if self._ddl.getSelection()[1] != space_name:
+            raise ValueError('space map not found', space_name)
+        if self._cur_space_map:
+            self._cur_space_map.center_on_npc(npc_id)
+
+    def _set_ddl_selection(self, value):
+        if self._ddl.getSelection()[1] != value:
+            self._ddl.setSelectionByValue(value)
+
+    def size_changed(self):
+        self.onParentSizeChanged(None)
+        return
+
+    def onParentSizeChanged(self, component):
+        self.component.width, self.component.height = BWPersonality.settings.GUISettings.getMapSize()
+        win_width, win_height = self.component.width, self.component.height
+        self.component.closeBox.position = (win_width - 6, 6, 0.2)
+        self.component.hintBox.position = (win_width - 48, 6, 0.2)
+        self.component.zoomIn.position.x = win_width - 34
+        self.component.zoomOut.position.x = win_width - 6
+        self._filter_set.on_size_changed()
+        smc = self.component.spacemap_container
+        smc.width, smc.height = win_width - 4, win_height - 60
+        smc.position.y = 58
+        comp = self.component.spacemap_container.nomap
+        ratio = float(comp.texture.width) / comp.texture.height
+        width, height = smc.width + 1, smc.height + 1
+        if float(width) / height > ratio:
+            height = width / ratio
+        else:
+            width = height * ratio
+        comp.width, comp.height = width, height
+
+    def show(self, delegate, center_on_player = True):
+        if self.visible:
+            return
+        self.component.iLabel.text = lc('soGPSMap.soGUI.WINDOW_CAPTION') + BWPersonality.get_action_key('GlobalMap')
+        self._delegate = delegate
+        self.component.visible = True
+        self.update_visible_spaces()
+        self._tick()
+        self._delegate.on_world_map_switch(True)
+        if center_on_player:
+            self._center_map_on_player()
+        GUIPositions.show(self)
+
+    def reset_position(self):
+        """ \xd1\x81\xd0\xb1\xd1\x80\xd0\xb0\xd1\x81\xd1\x8b\xd0\xb2\xd0\xb0\xd0\xb5\xd1\x82 \xd1\x81\xd0\xbe\xd1\x85\xd1\x80\xd0\xb0\xd0\xbd\xd1\x91\xd0\xbd\xd0\xbd\xd1\x8b\xd0\xb5 \xd0\xbf\xd0\xbe\xd0\xbb\xd0\xbe\xd0\xb6\xd0\xb5\xd0\xbd\xd0\xb8\xd1\x8f \xd0\xbe\xd0\xba\xd0\xbe\xd0\xbd """
+        self.component.position = (0, 0, 0.1)
+
+    def stopDragging(self):
+        GUIPositions.stopDragging(self)
+        DraggableComponent.stopDragging(self)
+
+    def _on_space_selected(self, space_name):
+        self._nomap_mode(False)
+        prev_map = self._cur_space_map
+        spacemap_container = self.component.spacemap_container
+        for name, child in spacemap_container.children:
+            if name.startswith('map_'):
+                child.visible = False
+
+        if space_name not in self._maps:
+            sm = SpaceMap(spacemap_container, space_name, self._get_player_data, self, self._filter_set)
+            self._maps[space_name] = sm
+            self._update_members_marks()
+        if prev_map:
+            prev_map.on_hide()
+            prev_map.component.visible = False
+        self._cur_space_map = self._maps[space_name]
+        self._cur_space_map.on_show(self._delegate.getSpaceName() == space_name, self._marks_data)
+        self._cur_space_map.component.visible = True
+
+    def get_visible_world_coords(self):
+        return self._cur_space_map and self._cur_space_map.get_visible_world_coords()
+
+    def get_visible_texture_coords(self):
+        return self._cur_space_map and self._cur_space_map.get_visible_texture_coords()
+
+    def _on_marks_data_event(self, event_type, data):
+        space_name = data.get('spacename')
+        if event_type == MarksData.WANTED_MARK_CHANGED:
+            wanted = data['wantedmark']
+            for sn, space_map in self._maps.iteritems():
+                if wanted and sn == wanted[0]:
+                    self._maps[space_name].set_wanted_mark(wanted[1])
+                else:
+                    space_map.clear_wanted_mark()
+
+        if space_name not in self._maps:
+            return
+        if event_type == MarksData.EVENT_NPC_VISITED:
+            npc_id = data['npc_id']
+            self._maps[space_name].add_npc_marks([npc_id])
+        elif event_type == MarksData.EVENT_QUESTMARK_CHANGED:
+            if data['is_active']:
+                self._maps[space_name].add_questmark(data['quest_id'])
+            else:
+                self._maps[space_name].del_questmark(data['quest_id'])
+        elif event_type == MarksData.EVENT_CTRIGGER_VISITED:
+            ctrigger_id = data['ctrigger']
+            self._maps[space_name].add_ctrigger_marks([ctrigger_id])
+        elif event_type == MarksData.EVENT_NPC_DELETED:
+            npc_ids = data['npc_ids']
+            self._maps[space_name].del_npc_mark(npc_ids)
+        elif event_type == MarksData.EVENT_CTRIGGER_DELETED:
+            ctrigger_ids = data['ctriggers']
+            self._maps[space_name].del_ctrigger_mark(ctrigger_ids)
+        elif event_type == MarksData.TARGET_MARK_CHANGED:
+            player_name = BigWorld.player().name
+            target = data['targetmark']
+            if target:
+                space_name, position = target
+                BWPersonality.settings.set_target_data(player_name, space_name, list(position), flush=True)
+                for sn, space_map in self._maps.iteritems():
+                    if sn == space_name:
+                        continue
+                    space_map.clear_target_mark()
+
+            else:
+                BWPersonality.settings.del_target_data(player_name, flush=True)
+        elif event_type == MarksData.EVENT_PVP_FLAGS_UPDATED:
+            blue_pos, red_pos = data['bluepos'], data['redpos']
+            self._maps[space_name].update_pvp_flags(blue_pos, red_pos)
+        elif event_type == MarksData.EVENT_PLAYER_DIE:
+            position = data['position']
+            self._maps[space_name].add_die_mark(position)
+        elif event_type == MarksData.EVENT_PLAYER_UNDIE:
+            position = data['position']
+            self._maps[space_name].del_die_mark(position)
+        elif event_type == MarksData.EVENT_CORPSE_ADDED:
+            self._maps[space_name].add_corpse_mark(data['name'], data['position'])
+        elif event_type == MarksData.EVENT_CORPSE_REMOVED:
+            self._maps[space_name].del_corpse_mark(data['name'])
+
+    def update_visible_spaces(self):
+        visited_spaces_names = []
+        for space_id in self._delegate.visited_spaces:
+            space_name = space_utils.get_long_space_name_by_id(space_id)
+            if space_name:
+                visited_spaces_names.append(space_name)
+
+        elements = filter(lambda s: config_parser.has_space(s), visited_spaces_names)
+        elements = filter(lambda d: bool(d[1]), ((s, config_parser.get_map_localized_name(s)) for s in elements))
+        self._ddl.clear()
+        if not elements:
+            return
+        else:
+            if not self._ddl.addElements(elements):
+                s = set()
+                for e in elements:
+                    if e[1] in s:
+                        print 'WorldMap (ERROR): space local name duplications', e
+                    s.add(e[1])
+
+                raise RuntimeError
+            space_name = self._delegate.getSpaceName()
+            space_id = space_utils.get_space_id_by_name(space_name[7:])
+            if config_parser.has_space(space_name) and space_id in self._delegate.visited_spaces:
+                self._set_ddl_selection(space_name)
+            else:
+                self._set_ddl_selection(None)
+                self._nomap_mode(True)
+            return
+
+    def _nomap_mode(self, value):
+        self.component.spacemap_container.nomap.visible = value
+        if value:
+            if not getattr(self, '_sound_nomap', None):
+                self._sound_nomap = sounds_manager.playSound('ui/map/no_signal')
+        else:
+            self._stop_sound_nomap()
+        return
+
+    def _stop_sound_nomap(self):
+        if getattr(self, '_sound_nomap', None):
+            self._sound_nomap.stop()
+            self._sound_nomap = None
+        return
+
+    def _tick(self):
+        if not self.visible:
+            return
+        player_data = (self._delegate.position, self._delegate.yaw, self._delegate.spaceID)
+        if self._prev_player_data != player_data:
+            if self._cur_space_map:
+                if self._prev_player_data[0] != player_data[0] or self._prev_player_data[1] != player_data[1]:
+                    self._cur_space_map.on_player_changed()
+                if self._prev_player_data[2] != player_data[2]:
+                    self._on_space_changed(self._delegate.getSpaceName())
+            self._prev_player_data = player_data
+        BigWorld.callback(0, self._tick)
+
+    def marks_count_on_space(self, space_name):
+        all_marks = self._marks_data.personal_marks.get(space_name, [])
+        return len(all_marks)
+
+    def request_create_personal_mark0(self, position, space_name, text, mark_type, color):
+        new_mark = {'spaceName': space_name,
+         'position': Vector3(position[0], 0, position[1]),
+         'notes': text,
+         'flags': mark_type,
+         'color': color}
+        BigWorld.player().request_create_personal_mark1(position, space_name, new_mark)
+
+    def request_delete_personal_mark0(self, note):
+        BigWorld.player().request_delete_personal_mark1(note)
+
+    def update_party_members(self, members_data):
+        self._members_marks = members_data
+        self._update_members_marks()
+
+    def _update_members_marks(self):
+        members_marks = defaultdict(list)
+        for member_data in self._members_marks:
+            space_name = self._delegate.get_space_name(member_data['space_id'])
+            members_marks[space_name].append(member_data)
+
+        for space_name, space_map in self._maps.items():
+            space_map.update_members_marks(members_marks[space_name])
+
+    def world_teleport(self, position, space_name):
+        self._delegate.world_teleport_from_map(position, space_name)
+
+    def show_error(self, error_text):
+        self._delegate.putMessage(CHANNEL_CONSTS.SYSTEM, error_text)
+
+    def _on_space_changed(self, space_name):
+        if config_parser.has_space(space_name):
+            self._set_ddl_selection(space_name)
+
+    def handleMouseButtonEvent(self, comp, event):
+        return DraggableComponent.handleMouseButtonEvent(self, comp, event)
+
+    def handleDragStartEvent(self, cmp):
+        self.component.spaces_ddl.script.showList(False)
+        return True
+
+    def show_add_mark_win(self, callback, init_note_data = None):
+        self._add_mark_win.show(callback, init_note_data=init_note_data)
+
+    def on_target_mark_created(self, space_name, position):
+        self._marks_data.set_target_mark(space_name, position)
+
+    def on_target_mark_deleted(self):
+        self._marks_data.delete_target_mark()
+
+    def hide(self):
+        self._add_mark_win.hide()
+        if not self.visible:
+            return
+        else:
+            self.component.spaces_ddl.script.showList(False)
+            self.component.visible = False
+            self._delegate.on_world_map_switch(False)
+            self._delegate = None
+            if self._cur_space_map:
+                self._cur_space_map.on_hide()
+                self._cur_space_map.component.visible = False
+                self._cur_space_map = None
+            self._stop_sound_nomap()
+            BWPersonality.GUICore.setBestCursor()
+            return
+
+    @property
+    def visible(self):
+        return self.component.visible
+
+    def _get_player_data(self):
+        if not self._delegate:
+            return
+        return {'position': self._delegate.position,
+         'yaw': self._delegate.yaw,
+         'color': (255, 255, 255, 255)}
+
+    def _on_space_menu_arrow_click(self, list_active):
+        sounds_manager.playSound('ui/map/map_choose')

@@ -1,0 +1,755 @@
+# Embedded file name: ./client/authentication/auth_client.py
+import json
+import BWPersonality
+import BigWorld
+import ResMgr
+import hashlib
+import os
+import zipfile
+from time import time
+from Localization import get_lang_short
+from Localization import get_reg_url
+from Settings import Settings
+from utils import force_utf8, force_unicode, Listenable
+from auth_common import ACCOUNT_TYPE
+from auth_common import TYPE_CONFIRM_ACC
+from auth_common import ONLINE_GAME_SERVER_STATUS
+from auth_common import ClientAuthStatus
+from auth_common import AuthEntity
+from auth_common import AHOST
+import steam_client_api
+import copy
+import traceback
+import base64
+import random
+import locale
+from auth_client_req import BgReq, a_hosts
+from Constants import EMBD_PAYMENT_TYPE
+from Localization import lc, get_lang_short
+
+def _clear_lt(data):
+    if type(data) == dict:
+        d = copy.deepcopy(data)
+        for k in 'tptoken lt temp_token'.split():
+            if k in data:
+                d[k] = str(d[k])[:15] + '...'
+
+        return d
+    return data
+
+
+def _get_servers():
+    SERVERS_LIST_PATH = 'scripts/client/data/servers_config.json'
+    pds = ResMgr.openSection(SERVERS_LIST_PATH)
+    dct = json.loads(pds.asBinary)
+    for info in dct['release_servers'] + dct['developers_servers']:
+        raise info['name'] or AssertionError
+        raise info['SERVTAG'] or AssertionError
+        raise info['host'] or AssertionError
+        raise info['uid'] or AssertionError
+
+    return dct
+
+
+_ALL_SERVERS = _get_servers()
+SETGS_KEY = 'LOGIN_GAME_TOKEN'
+
+def _get_utmlacode(text):
+    text = text.strip()
+    text = os.path.splitext(text)[0]
+    data = text.split('_')
+    if len(data) < 3:
+        return ''
+    code = data[2]
+    code = code.split('(', 1)[0]
+    code = code.split(' ', 1)[0]
+    return code
+
+
+_fullhw = None
+
+def _get_fullhw():
+    global _fullhw
+    if not _fullhw:
+        import Account
+        salt_hw = random.randint(1000, 9999)
+        name = '%s\n%s' % (os.environ.get('COMPUTERNAME'), os.environ.get('USERNAME'))
+        try:
+            name = name.decode(locale.getpreferredencoding(), 'ignore').encode('utf-8', 'ignore')
+        except Exception:
+            traceback.print_exc()
+            name = repr(name)
+
+        jdata = json.dumps({'hwid': BigWorld.getbase(int(salt_hw)),
+         'salt_hw': str(salt_hw),
+         'compname': name,
+         'mac': Account.ID_COMP})
+        _fullhw = base64.b64encode(jdata.encode())
+    return _fullhw
+
+
+class AlreadyIsOnline(RuntimeError):
+    pass
+
+
+class ModeIncorrect(RuntimeError):
+    pass
+
+
+class EventType():
+    OnStartConnect, OnConnect, OnDisconnect, OnErrorConnect, OnBan, OnServersInfoUpdate, onRequired2faCode, OnError2fa, OnOtpFaChanged = ((r, 'auth_event') for r in range(9))
+
+
+class _Auth(Listenable, AuthEntity):
+
+    def hhh(self):
+        return _get_fullhw()
+
+    def __init__(self):
+        Listenable.__init__(self)
+        self.servers_list = {}
+        self.servers_info = []
+        self._status = ClientAuthStatus.OFFLINE
+        self._steam_ticket = None
+        self._last_req = None
+        self._save_enable = False
+        self._ignore_close_web = False
+        self._utmlacode = ''
+        self._utm = {}
+        self._reset()
+        self._update_utmlacode()
+        return
+
+    def _update_utmlacode(self):
+        self._utmlacode = ''
+        file_path = os.path.abspath('../utmlacode.t')
+        if os.path.isfile(file_path):
+            try:
+                lifetime = time() - os.path.getmtime(file_path)
+                if lifetime > 259200:
+                    print 'REM utmlacode', lifetime, repr(file_path)
+                    os.remove(file_path)
+                    return
+                self._utmlacode = _get_utmlacode(open(file_path).read())
+                print '_utmlacode:', repr(self._utmlacode)
+            except:
+                traceback.print_exc()
+
+        if not self._utmlacode:
+            return
+
+        def onReq(data):
+            print 'update_utmlacode', self._utmlacode, data
+            self._utm = data
+
+        BgReq('/apiclient_v2/getlautm', onReq, self._printErr, launcher_code=self._utmlacode)
+
+    def autoconnect(self):
+        self._reset()
+        self._load()
+        if not self._status == ClientAuthStatus.OFFLINE:
+            raise AssertionError
+            not self.login and steam_client_api.STEAM_MODE and self.authenticationSteamMygames()
+        elif self.login_game_token and self.LoginID:
+            self._check_lt()
+
+    def showRegisterWindow(self):
+        url = get_reg_url()
+        url = url.rstrip('?')
+        url += '?'
+        params = ''
+        defutm = [('utm_source', 'in_game'), ('utm_medium', 'game'), ('utm_campaign', 'reg')]
+        if BWPersonality.IS_RT_LAUNCHER:
+            defutm = [('utm_source', 'in_game_rt'), ('utm_medium', 'game'), ('utm_campaign', 'reg')]
+        for key, v in defutm:
+            if key in self._utm:
+                v = force_utf8(self._utm[key])
+            if params:
+                params += '&'
+            params += '%s=%s' % (key, v)
+
+        url += params
+        print time(), 'reg params:%r' % url
+        BWPersonality.GUICore.showWebEmbdeded(True, force_unicode(url))
+
+    def _reset(self):
+        self._steam_ticket = ''
+        self._login = ''
+        self._login_game_token = ''
+        self._actype = -1
+        self._LoginID = 0
+        self._visblename = ''
+        self._ac_access_level = 0
+        self._hw = 0
+        self._TEMP_T_KEY = ''
+        self._TEMP_T_KEY_2 = ''
+        self._2fa_enter_code = None
+        self._2fa_typeconfirm = None
+        self._2fa_sent_to = None
+        self._2fa_temp_token = None
+        self._2fa_enbl2faTkn = None
+        self._2fa_send_code_cooldown = 0
+        self._2fa_code_attempts_left = 0
+        return
+
+    def _load(self):
+        data = Settings().getEncruptedData(SETGS_KEY)
+        if not data:
+            self._save_enable = False
+            return
+        self._login = data['login']
+        self._login_game_token = data['login_game_token']
+        self._actype = data['actype']
+        self._LoginID = data['LoginID']
+        self._ac_access_level = data.get('ac_access_level', 0)
+        self._save_enable = True
+
+    def _save(self):
+        if not self.LoginID or not self._save_enable:
+            Settings().delSettings(SETGS_KEY, flush=True)
+            return
+        if self._actype in (ACCOUNT_TYPE.STEAM, ACCOUNT_TYPE.MG):
+            return
+        data = {'login': self._login,
+         'login_game_token': self._login_game_token,
+         'actype': self._actype,
+         'LoginID': self._LoginID,
+         'ac_access_level': self._ac_access_level}
+        Settings().saveEncruptedData(SETGS_KEY, data)
+
+    def _check_lt(self):
+        print '_check_lt'
+        if self._status != ClientAuthStatus.OFFLINE:
+            return
+        if not self.LoginID:
+            return
+        self._status = ClientAuthStatus.WAIT
+        self.onStartConnect()
+        self._stop_req()
+        self._last_req = BgReq('/apiclient_v2/check_lt', self._onReq, self._onErr, LoginID=self.LoginID, lt=self.login_game_token, fullhw=_get_fullhw(), hwid_crc=self.hwid_crc)
+
+    def getServerInfo(self, server_uid):
+        return self.servers_info.get(server_uid, {})
+
+    def getCurrnetServerInfo(self):
+        return self.getServerInfo(self.last_server_uid)
+
+    def getHost(self, server_uid):
+        info = self.getServerInfo(server_uid)
+        return info['host']
+
+    def onStartConnect(self):
+        print 'AUTH: onStartConnect', (self._login, self._actype, self._LoginID)
+        self.notify_listeners(EventType.OnStartConnect)
+
+    def onConnect(self):
+        print 'AUTH: onConnect ', self.LoginID, self.login
+        data = {'login_id': self.LoginID,
+         'login': self.login}
+        self.notify_listeners(EventType.OnConnect, data)
+
+    def onRequired2faCode(self):
+        print 'AUTH: onRequired2faCode ', self.LoginID, self.login
+        data = {'login_id': self.LoginID,
+         'login': self.login,
+         '2fa_typeconfirm': self._2fa_typeconfirm,
+         '2fa_sent_to': self._2fa_sent_to,
+         '2fa_send_code_cooldown': self._2fa_send_code_cooldown + 10,
+         '2fa_code_attempts_left': self._2fa_code_attempts_left,
+         '2fa_can_resend_code': self._2fa_code_attempts_left > 1}
+        self.notify_listeners(EventType.onRequired2faCode, data)
+
+    def onErrorConnect(self, msg):
+        print 'AUTH: onErrorConnect', repr(msg)
+        data = {'msg': msg}
+        self.notify_listeners(EventType.OnErrorConnect, data)
+
+    def onErrorMsg(self, msg):
+        print 'AUTH: onErrorMsg', repr(msg)
+        data = {'msg': msg}
+        self.notify_listeners(EventType.OnError2fa, data)
+
+    def onDisconnect(self):
+        print 'AUTH: onDisconnect'
+        self.notify_listeners(EventType.OnDisconnect)
+        BWPersonality.GUICore.on_disconnect()
+
+    def onBan(self, ban_time_left, pub_reason):
+        print 'AUTH: onBan', ban_time_left, repr(pub_reason)
+        data = {'ban_time_left': ban_time_left,
+         'pub_reason': pub_reason}
+        self.notify_listeners(EventType.OnBan, data)
+
+    def is_connected(self):
+        return bool(self.LoginID)
+
+    def onServersInfoUpdate(self):
+        data = {'servers': self.servers_list}
+        self.notify_listeners(EventType.OnServersInfoUpdate, data)
+
+    def onChangeType2FA(self):
+        print 'onChangeType2FA', self.isOTP2FA
+        self.notify_listeners(EventType.OnOtpFaChanged)
+
+    def _kick(self):
+        self._status = ClientAuthStatus.OFFLINE
+        self.onDisconnect()
+
+    def enter2faCode(self, code):
+        print 'enter2faCode', repr(code)
+        raise code or AssertionError
+        raise self.LoginID or AssertionError
+        raise self._2fa_temp_token or AssertionError
+
+        def callback(data):
+            print 'enter2faCode callback', _clear_lt(data)
+            if 'error' in data:
+                self.onErrorMsg(data['error'])
+            if 'send_code_cooldown' in data:
+                self._2fa_send_code_cooldown = data.get('send_code_cooldown', 0)
+            if 'code_attempts_left' in data:
+                self._2fa_code_attempts_left = data.get('code_attempts_left', 0)
+            if data.get('kick'):
+                self._kick()
+                return
+            if 'lt' in data or 'temp_token' in data:
+                self._onReq(data)
+            else:
+                raise self._status == ClientAuthStatus.WAIT2FA or AssertionError
+                self.onRequired2faCode()
+
+        self._last_req = BgReq('/apiclient_v2/check_2fa_code', callback, self._onErr, LoginID=self.LoginID, temp_token=self._2fa_temp_token, fullhw=_get_fullhw(), hwid_crc=self.hwid_crc, code=code)
+
+    def change2faType(self):
+        if not self.LoginID:
+            raise AssertionError
+            raise self._2fa_temp_token or AssertionError
+            raise self._2fa_typeconfirm in (TYPE_CONFIRM_ACC.PHONE, TYPE_CONFIRM_ACC.EMAIL) or AssertionError
+            newtypeconfirm = TYPE_CONFIRM_ACC.PHONE
+            newtypeconfirm = self._2fa_typeconfirm == TYPE_CONFIRM_ACC.PHONE and TYPE_CONFIRM_ACC.EMAIL
+        print 'change2faType', self._2fa_typeconfirm, '->', newtypeconfirm
+
+        def callback(data):
+            print 'change2faType callback', _clear_lt(data)
+            if 'error' in data:
+                self.onErrorMsg(data['error'])
+            if data.get('kick'):
+                self._kick()
+                return
+            if 'lt' in data or 'temp_token' in data:
+                self._onReq(data)
+            elif self._status == ClientAuthStatus.WAIT2FA:
+                self.onRequired2faCode()
+
+        self._last_req = BgReq('/apiclient_v2/change_type_2fa', callback, self._onErr, LoginID=self.LoginID, temp_token=self._2fa_temp_token, hwid_crc=self.hwid_crc, typeconfirm=newtypeconfirm)
+
+    def resend2faCode(self):
+        print 'resend2faCode'
+        raise self.LoginID or AssertionError
+        raise self._2fa_temp_token or AssertionError
+
+        def callback(data):
+            print 'change2faType callback', _clear_lt(data)
+            if 'error' in data:
+                self.onErrorMsg(data['error'])
+            if data.get('kick'):
+                self._kick()
+                return
+            if 'lt' in data or 'temp_token' in data:
+                self._onReq(data)
+            elif self._status == ClientAuthStatus.WAIT2FA:
+                self.onRequired2faCode()
+
+        self._last_req = BgReq('/apiclient_v2/resend_2fa_code', callback, self._onErr, LoginID=self.LoginID, temp_token=self._2fa_temp_token, hwid_crc=self.hwid_crc)
+
+    def logout(self, disconnect = False):
+        if self._TEMP_T_KEY and self._TEMP_T_KEY_2:
+            BgReq('/apiclient_v2/canceltempkey', tempTkey=self._TEMP_T_KEY, tempTkey2=self._TEMP_T_KEY_2)
+        self._reset()
+        self._save()
+        self._stop_req()
+        self._status = ClientAuthStatus.OFFLINE
+        if disconnect and BigWorld.server():
+            BigWorld.disconnect()
+        self.onDisconnect()
+        if getattr(self, '_btid', 0):
+            BigWorld.cancelCallback(self._btid)
+
+    def authenticationLoginPasw(self, login, pasw):
+        if self._status != ClientAuthStatus.OFFLINE:
+            raise AlreadyIsOnline()
+        self.last_login = login
+        hpasw = hashlib.sha1(u'|'.join([login, pasw])).hexdigest()
+        self._status = ClientAuthStatus.WAIT
+        self.onStartConnect()
+        self._stop_req()
+        self._last_req = BgReq('/apiclient_v2/auth', self._onReq, self._onErr, fullhw=_get_fullhw(), login=login, hpasw=hpasw, hwid_crc=self.hwid_crc, platform_id=BWPersonality.get_cur_plafrom_id())
+
+    def authenticationButton(self, button_id = ACCOUNT_TYPE.VK):
+        if self._status != ClientAuthStatus.OFFLINE:
+            raise AlreadyIsOnline()
+        urlpath = ACCOUNT_TYPE.btns_url.get(button_id)
+        if not urlpath:
+            raise ValueError('Error button_id %r' % button_id)
+        self._status = ClientAuthStatus.WAIT
+        self.onStartConnect()
+
+        def ontempkey(data):
+            self._TEMP_T_KEY = data['TEMP_T_KEY']
+            self._TEMP_T_KEY_2 = data['TEMP_T_KEY_2']
+            self._ignore_close_web = False
+            burl = a_hosts.getSiteHost() + urlpath + '?tempTkey=' + force_utf8(self._TEMP_T_KEY)
+            burl += '&lang=' + force_utf8(get_lang_short())
+            burl += '&utmlacode=' + self._utmlacode
+            BWPersonality.GUICore.showWebEmbdeded(True, burl, close_callback=_onCloseWeb, open_external_callback=_onOpenExtrWeb)
+
+        def _onCloseWeb(*e):
+            if self._ignore_close_web:
+                return
+            print '_onCloseWeb'
+            self._run_check_btn_timer(0.1)
+
+        def _onOpenExtrWeb(*e):
+            print '_onOpenExtrWeb'
+            self._run_check_btn_timer(10.0)
+            self._ignore_close_web = True
+            BWPersonality.GUICore.showWebEmbdeded(False)
+
+        self._stop_req()
+        self._last_req = BgReq('/apiclient_v2/gettempkey', ontempkey, self._onErr, platform_id=BWPersonality.get_cur_plafrom_id())
+
+    def authenticationSteamMygames(self, create_new = True):
+        if self._status != ClientAuthStatus.OFFLINE:
+            raise AlreadyIsOnline()
+        if not steam_client_api.STEAM_MODE:
+            raise ModeIncorrect()
+        print 'authenticationSteamMygames', steam_client_api.MYGAMES_MODE, steam_client_api.api.getSteamID()
+        self._status = ClientAuthStatus.WAIT
+        self.onStartConnect()
+
+        def continuecheck(success):
+            if not success:
+                self._onErr('STEAM ERROR')
+                return
+            urlpath = '/apiclient_v2/steam/auth'
+            if steam_client_api.MYGAMES_MODE:
+                urlpath = '/apiclient_v2/mygames/auth'
+            self._stop_req()
+            if not self._steam_ticket:
+                self._steam_ticket = steam_client_api.api.steam_auth_ticket
+            raise self._steam_ticket or AssertionError
+            self._last_req = BgReq(urlpath, self._onReq, self._onErr, fullhw=_get_fullhw(), steamid=steam_client_api.api.getSteamID(), steam_ticket=self._steam_ticket, hwid_crc=self.hwid_crc, platform_id=BWPersonality.get_cur_plafrom_id())
+
+        self._steam_ticket = steam_client_api.api.getAuthTicket(validate_callback=continuecheck, create_new=create_new)
+
+    def updateServersInfo(self):
+        BgReq('/apiclient_v2/servers', self._updateServersInfo, self._printErr)
+
+    @property
+    def hwid_crc(self):
+        if not self._hw:
+            import Account
+            text = repr(os.environ.get('COMPUTERNAME'))
+            text += repr(os.environ.get('USERNAME'))
+            text += repr(os.path.abspath('.'))
+            text += repr(Account.ID_COMP)
+            self._hw = abs(zipfile.crc32(text))
+        return self._hw
+
+    @property
+    def last_login(self):
+        return Settings().getSetting('username')
+
+    @last_login.setter
+    def last_login(self, value):
+        return Settings().setSetting('username', value)
+
+    @property
+    def last_server_uid(self):
+        return Settings().getSetting('last_server_uid')
+
+    @last_server_uid.setter
+    def last_server_uid(self, value):
+        return Settings().setSetting('last_server_uid', value)
+
+    @property
+    def login(self):
+        return self._login
+
+    @property
+    def LoginID(self):
+        return self._LoginID
+
+    @property
+    def embd_payment_type(self):
+        if not Settings().getSetting('embd_payment_type'):
+            types = {}
+            if type(types) != dict:
+                types = {}
+            value = types.get(self.LoginID, EMBD_PAYMENT_TYPE.UKASSA)
+            value = value not in EMBD_PAYMENT_TYPE.keys() and EMBD_PAYMENT_TYPE.UKASSA
+        return value
+
+    @embd_payment_type.setter
+    def embd_payment_type(self, value):
+        if not Settings().getSetting('embd_payment_type'):
+            types = {}
+            types = type(types) != dict and {}
+        types[self.LoginID] = value
+        Settings().setSetting('embd_payment_type', types)
+
+    @property
+    def login_game_token(self):
+        return self._login_game_token
+
+    @property
+    def ac_access_level(self):
+        return self._ac_access_level
+
+    @property
+    def actype(self):
+        return self._actype
+
+    @property
+    def icon_path(self):
+        return ACCOUNT_TYPE.ddspath.get(self._actype, '')
+
+    @property
+    def visible_name(self):
+        if self.actype in (ACCOUNT_TYPE.STEAM, ACCOUNT_TYPE.MG):
+            return steam_client_api.api.getPersonaName()
+        return self._visblename
+
+    @property
+    def visible_name_mask(self):
+        if self.actype in (ACCOUNT_TYPE.STEAM, ACCOUNT_TYPE.MG):
+            return steam_client_api.api.getPersonaName()
+        name = force_unicode(self._visblename)
+        if '@' in name:
+            try:
+                addr, host = name.split('@', 1)
+                if len(addr) < 3:
+                    addr = addr[:1] + '***'
+                elif len(addr) < 5:
+                    addr = addr[:3] + '***'
+                else:
+                    addr = addr[0:3] + '***' + addr[-3:]
+                name = addr + '@' + host
+            except Exception as er:
+                print 'warn: auth._visblename', er
+
+        elif len(name) < 3:
+            name = name[:1] + '***'
+        elif len(name) < 5:
+            name = name[:3] + '***'
+        else:
+            name = name[0:3] + '***' + name[-3:]
+        return force_utf8(name)
+
+    @property
+    def save_enable(self):
+        return self._save_enable
+
+    @save_enable.setter
+    def save_enable(self, value):
+        self._save_enable = bool(value)
+        self._save()
+
+    @property
+    def is_enable_steam_button(self):
+        return bool(not steam_client_api.MYGAMES_MODE and steam_client_api.STEAM_MODE)
+
+    @property
+    def is_auth_mirror(self):
+        return False
+
+    @property
+    def is_enable_mygames_button(self):
+        return bool(steam_client_api.MYGAMES_MODE)
+
+    @property
+    def status(self):
+        return self._status
+
+    @property
+    def status_text(self):
+        return '[%s]' % self._status + ClientAuthStatus._dict.get(self._status, '???')
+
+    @property
+    def status_is_wait(self):
+        return self.status == ClientAuthStatus.WAIT
+
+    @property
+    def status_is_offline(self):
+        return self.status == ClientAuthStatus.OFFLINE
+
+    @property
+    def status_is_online(self):
+        return self.status == ClientAuthStatus.ONLINE
+
+    @property
+    def url_2fa_otp_enable(self):
+        if not self.LoginID:
+            return ''
+        if not BigWorld.server():
+            return ''
+        if self._2fa_typeconfirm not in (TYPE_CONFIRM_ACC.PHONE, TYPE_CONFIRM_ACC.EMAIL):
+            return ''
+        if not self.last_server_uid:
+            return ''
+        if not self._2fa_enbl2faTkn:
+            return ''
+        return AHOST + '/twofa/enable2fa?lang=%s&server_uid=%s&enbl2faTkn=%s' % (get_lang_short(), self.last_server_uid, self._2fa_enbl2faTkn)
+
+    @property
+    def isOTP2FA(self):
+        return self._2fa_typeconfirm == TYPE_CONFIRM_ACC.OTP2FA
+
+    def enable2FAOTP(self):
+        if not BigWorld.server():
+            return lc('Account.auth.enable2fa.ERROR_NO_SERVER')
+        if self._2fa_typeconfirm == TYPE_CONFIRM_ACC.OTP2FA:
+            return lc('Account.auth.enable2fa.ERROR_ALREADY_OTP2FA')
+        url = self.url_2fa_otp_enable
+        if not url:
+            return lc('Account.auth.ERROR_ENABLE_OTP')
+
+        def _on_update_callback(data):
+            print '_on_update_callback', data
+            if self.status_is_online:
+                self._2fa_typeconfirm = data.get('typeconfirm', 0)
+                self.onChangeType2FA()
+
+        def _update_otp_status(*e):
+            if self.status_is_online and self.login_game_token:
+                BgReq('/apiclient_v2/check_2fa_status', _on_update_callback, self._printErr, LoginID=self.LoginID, lt=self.login_game_token, fullhw=_get_fullhw(), hwid_crc=self.hwid_crc)
+
+        BWPersonality.GUICore.showWebEmbdeded(True, url, close_callback=_update_otp_status)
+        return ''
+
+    def __repr__(self):
+        return str(self)
+
+    def __str__(self):
+        if self.status_is_online:
+            return 'AUTH(%s[%s])' % (self.login, self.LoginID)
+        elif self.status_is_wait:
+            return 'AUTH(WAIT...)'
+        else:
+            return 'AUTH(OFFLINE)'
+
+    def _run_check_btn_timer(self, delay = 0.1):
+        if getattr(self, '_btid', 0):
+            BigWorld.cancelCallback(self._btid)
+        self._btid = BigWorld.callback(delay, self._check_btn_timer)
+
+    def _check_btn_timer(self):
+        print '_check_btn_timer', self._TEMP_T_KEY
+        if not self._TEMP_T_KEY:
+            return
+        if not self._TEMP_T_KEY_2:
+            return
+        if self._status != ClientAuthStatus.WAIT:
+            self._TEMP_T_KEY = ''
+            return
+
+        def on_check_btn_auth(data):
+            print 'on_check_btn_auth', data
+            error = data.get('error')
+            if error == 'waitkey':
+                self._run_check_btn_timer(5.0)
+                return
+            if error:
+                self._onErr(error)
+                return
+            if self._status != ClientAuthStatus.WAIT:
+                raise ValueError('status = %s' % self._status)
+            self._onReq(data)
+            self._TEMP_T_KEY = ''
+            self._TEMP_T_KEY_2 = ''
+
+        self._stop_req()
+        self._last_req = BgReq('/apiclient_v2/check_btn_auth', on_check_btn_auth, self._onErr, fullhw=_get_fullhw(), tempTkey=self._TEMP_T_KEY, tempTkey2=self._TEMP_T_KEY_2, hwid_crc=self.hwid_crc)
+
+    def _stop_req(self):
+        if self._last_req:
+            self._last_req.stop()
+        self._last_req = None
+        return
+
+    def _onReq(self, data):
+        print 'Auth _onReq', _clear_lt(data)
+        self._lastdata = data
+        if data.get('error') or not data.get('success'):
+            self._onErr(data.get('error', 'SERVER_ERROR'))
+            return
+        elif not data.get('login') or not data.get('LoginID'):
+            self._onErr('SERVER_ERROR')
+            return
+        elif data.get('banned'):
+            self._status = ClientAuthStatus.OFFLINE
+            self.onDisconnect()
+            self.onBan(data.get('ban_time_left'), force_utf8(data.get('ban_pubreason')))
+            return
+        else:
+            self._login = force_utf8(data['login'])
+            self._visblename = force_utf8(data['visblename'])
+            self._LoginID = int(data['LoginID'])
+            self._actype = int(data['actype'])
+            self._ac_access_level = int(data.get('ac_access_level', 0))
+            self._login_game_token = force_utf8(data.get('lt', ''))
+            self._created = int(data.get('created', 0))
+            self._survh = force_utf8(data.get('survh', ''))
+            self._2fa_enter_code = data.get('enter_code', False)
+            self._2fa_typeconfirm = data.get('typeconfirm', 0)
+            self._2fa_sent_to = force_utf8(data.get('sent_to', ''))
+            self._2fa_temp_token = data.get('temp_token', None)
+            self._2fa_enbl2faTkn = data.get('enbl2faTkn', None)
+            self._2fa_send_code_cooldown = data.get('send_code_cooldown', 0)
+            self._2fa_code_attempts_left = data.get('code_attempts_left', 0)
+            if self._save_enable:
+                self._save()
+            if self._2fa_enter_code:
+                self._status = ClientAuthStatus.WAIT2FA
+                self.onRequired2faCode()
+            else:
+                self._status = ClientAuthStatus.ONLINE
+                self.onConnect()
+                self._updateServersInfo(data['servers'])
+            return
+
+    def _onErr(self, msg):
+        print '_onErr:', repr(msg)
+        self._stop_req()
+        self._status = ClientAuthStatus.OFFLINE
+        self._reset()
+        self.onDisconnect()
+        self.onErrorConnect(msg)
+
+    def _printErr(self, msg):
+        print '_printErr:', repr(msg)
+
+    def _updateServersInfo(self, servinfo):
+        self.servers_info = {}
+        self.servers_list = []
+        self._hosts = {}
+        servers = list(_ALL_SERVERS['release_servers'])
+        if self.ac_access_level:
+            servers += _ALL_SERVERS['developers_servers']
+        for info in servers:
+            server_name = info['uid']
+            info['color_status'] = servinfo.get(server_name, ONLINE_GAME_SERVER_STATUS.OFFLINE)
+            self.servers_list.append(info)
+            self.servers_info[server_name] = info
+
+        self.onServersInfoUpdate()
+
+    def fini(self):
+        if self._last_req:
+            self._last_req.stop()
+            self._last_req.join()
+
+
+authcl = _Auth()
+BigWorld.auth = authcl
+__import__('__main__').auth = authcl

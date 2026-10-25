@@ -1,0 +1,100 @@
+# Embedded file name: ./client/soundudo_modeludo_holder.py
+import BigWorld
+from HideModelUDO import HideModelUDO
+from SoundNode import SoundNode
+from functools import partial
+
+class SoundUDOModelUDOHolder:
+
+    def __init__(self):
+        self._undefined_udos = list(self.targetNodes)
+        self._deactivated_sound_nodes = []
+        self._deactivated_models = []
+        self._activated_sound_nodes = []
+        self._activated_models = []
+        self._activated = False
+
+    def setActivated(self, val):
+        self._activated = val
+        self._update_content()
+
+    def onEnterWorld(self, prereqs):
+        self._start_poll_nodes(90)
+
+    def onLeaveWorld(self):
+        self._update_content()
+        for sound_node in self._deactivated_sound_nodes:
+            sound_node.destroyFromTrigger()
+
+        del self._deactivated_sound_nodes[:]
+
+    def _start_poll_nodes(self, attempts):
+        if attempts <= 0:
+            return
+        if self.isDestroyed:
+            return
+        pending_udos = []
+        for i in xrange(len(self._undefined_udos) - 1, -1, -1):
+            if self._undefined_udos[i].__class__.__name__ == 'UserDataObjectRef':
+                continue
+            pending_udos.append(self._undefined_udos[i])
+            del self._undefined_udos[i]
+
+        for udo_ref in pending_udos:
+            class_name = udo_ref.__class__.__name__
+            if class_name == 'SoundNodeUDO':
+                self._create_sound_node_from_udo(udo_ref)
+            elif class_name == 'HideModelUDO':
+                HideModelUDO.parse_model(udo_ref, self._on_model_udo_parsed)
+            else:
+                raise NotImplementedError
+
+        if self._undefined_udos:
+            BigWorld.callback(1.0, partial(self._start_poll_nodes, attempts - 1))
+
+    def set_activated(self, old_value):
+        self._update_content()
+
+    def _create_sound_node_from_udo(self, udo_ref):
+        node_id = SoundNode.create_from_udo(udo_ref, self.spaceID)
+
+        def wait_for_entity():
+            if self.isDestroyed:
+                return
+            sound_node = BigWorld.entities.get(node_id)
+            if not sound_node:
+                BigWorld.callback(0, wait_for_entity)
+                return
+            self._deactivated_sound_nodes.append(sound_node)
+            self._update_content()
+
+        wait_for_entity()
+
+    def _on_model_udo_parsed(self, model, item, model_path):
+        if not self.isDestroyed:
+            self._deactivated_models.append(model)
+            self._update_content()
+
+    def _update_content(self):
+        if self._activated and not self.isDestroyed:
+            for sound_node in self._deactivated_sound_nodes:
+                sound_node.activateFromTrigger()
+                self._activated_sound_nodes.append(sound_node)
+
+            self._deactivated_sound_nodes = []
+            for model in self._deactivated_models:
+                self.addModel(model)
+                self._activated_models.append(model)
+
+            self._deactivated_models = []
+        else:
+            for sound_node in self._activated_sound_nodes:
+                sound_node.deactivateFromTrigger()
+                self._deactivated_sound_nodes.append(sound_node)
+
+            self._activated_sound_nodes = []
+            for model in self._activated_models:
+                self.delModel(model)
+                self._deactivated_models.append(sound_node)
+
+            self._activated_models = []

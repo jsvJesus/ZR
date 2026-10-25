@@ -1,0 +1,85 @@
+# Embedded file name: ./client/Helpers/antiddos_client.py
+import base64
+import hashlib
+import traceback
+import requests
+from datetime import datetime
+from time import time
+import threading
+import BigWorld
+DISABLE = True
+CLIENT_PUBL = 'CLBUB1'
+SERVS_ANTID = ['http://k-mmap.stalker.so:8840', 'http://hz-app-v1.stalker.so:8840', 'http://gsteam.stalker.so:8840']
+
+def hash_msg(token):
+    hhash = hashlib.md5(token + '---' + CLIENT_PUBL).hexdigest()[:6]
+    return hhash
+
+
+def send_antid(srv):
+    print '\n%s ADDCl 0: %s\n' % (datetime.now(), srv)
+    r1 = requests.post(srv + '/client1', timeout=5, data=dict(pubkey=CLIENT_PUBL))
+    res1 = r1.json
+    print '\n%s ADDCl 1: %s\n' % (datetime.now(), repr(res1))
+    salt = res1['s']
+    token = res1['token']
+    hs = hash_msg(token)
+    r2 = requests.post(srv + '/client2', timeout=5, data=dict(pubkey=CLIENT_PUBL, token=base64.encodestring(token), hs=hs, s=salt))
+    res2 = r2.json
+    print '\n%s ADDCl 2: %s\n' % (datetime.now(), repr(res2))
+    return res2['status'] == True
+
+
+class _AntiDDoSManager:
+
+    def __init__(self):
+        self._tid = 0
+        self._t = 0
+
+    def start(self):
+        if DISABLE:
+            return
+        if not self._tid:
+            self._loop()
+
+    def register_antid(self):
+        if DISABLE:
+            return
+        for srv in SERVS_ANTID:
+            try:
+                success = send_antid(srv)
+                if success:
+                    print '\n%s ADDCl OK: %s\n' % (datetime.now(), srv)
+                    return
+            except Exception as err:
+                print '\n%s ADDCl ERROR: %s %s\n' % (datetime.now(), srv, err)
+                traceback.print_exc()
+
+    def on_game_err_connect(self):
+        if DISABLE:
+            return
+        dt = time() - self._t
+        if dt > 30:
+            print '%s ADDC4 force' % datetime.now()
+            self.thread_register_antid()
+
+    def thread_register_antid(self):
+        if DISABLE:
+            return
+        self._t = time()
+        self._th = threading.Thread(target=self.register_antid)
+        self._th.start()
+
+    def fini(self):
+        if self._tid:
+            BigWorld.cancelCallback(self._tid)
+        self._tid = 0
+
+    def _loop(self):
+        if DISABLE:
+            return
+        self._tid = BigWorld.callback(3600, self._loop)
+        self.thread_register_antid()
+
+
+antiddos = _AntiDDoSManager()

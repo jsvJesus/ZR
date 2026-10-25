@@ -1,0 +1,240 @@
+# Embedded file name: ./common/bwhttp.py
+"""
+
+"""
+import _bwhttp
+import ResMgr
+import json
+import time
+import traceback
+from utils import force_utf8
+from urlparse import urlparse
+from collections import defaultdict
+_CERTS_PATH = 'scripts/common/bwhttp.crt'
+_READ_WRITE_TIMEOUT = 9
+if not hasattr(_bwhttp, '_inited'):
+
+    def init():
+        _bwhttp.SetSSLCertificates(ResMgr.openSection(_CERTS_PATH).asBinary)
+        _bwhttp.SetReadWriteTimeout(_READ_WRITE_TIMEOUT)
+
+
+    init()
+    _bwhttp._inited = True
+
+def myurlencode(in_dict):
+    if not in_dict:
+        return ''
+    out = []
+    for k, v in in_dict.items():
+        if type(v) not in (list, tuple):
+            v = [v]
+        for subv in v:
+            out.append(force_utf8(k) + '=' + force_utf8(subv))
+
+    return '?' + '&'.join(out)
+
+
+class _Info:
+    _start = defaultdict(int)
+    _end = defaultdict(int)
+    _t = time.time()
+    _s = 0
+    _e = 0
+
+    def _convert_url(self, url):
+        if type(url) in (list, tuple):
+            return ''.join(url)
+        return str(url)
+
+    def start(self, url):
+        self._start[self._convert_url(url)] += 1
+        self._s += 1
+
+    def end(self, url):
+        self._end[self._convert_url(url)] += 1
+        self._e += 1
+
+    def fail(self, url):
+        self._end[self._convert_url(url)] += 1
+        self._e += 1
+
+    def info(self):
+        t = (time.time() - self._t) / 60.0
+        res = 'HTTP all wait:%s s:%s e:%s  rpm:%.5f' % (self._s - self._e,
+         self._e,
+         self._s,
+         self._e / t)
+        return res
+
+    def showFullInfo(self):
+        all_keys = set(self._start.keys())
+        all_keys.update(self._end.keys())
+        for k in sorted(all_keys):
+            print 'HTTP wait:', self._start[k] - self._end[k], self._end[k], self._start[k], k
+
+
+_info = _Info()
+
+def showDebugInfo(printtoout = False, full = False):
+    if full:
+        _info.showFullInfo()
+    res = _info.info()
+    if printtoout:
+        print res
+    return res
+
+
+def isOverloaded():
+    wait = _info._e - _info._s
+    if wait > 50:
+        return True
+    return False
+
+
+def _convert(dictionary):
+    _lst = []
+    for k, v in dictionary.items():
+        _lst.append((force_utf8(k), force_utf8(v)))
+
+    return _lst
+
+
+def _get_host_path(url):
+    if type(url) in (list, tuple):
+        host, path = url
+        host = host.rstrip('/')
+    else:
+        parsed_uri = urlparse(url)
+        host = '{uri.scheme}://{uri.netloc}'.format(uri=parsed_uri)
+        path = parsed_uri.path
+    return (force_utf8(host), force_utf8(path or '/'))
+
+
+def get(url, callback = None, errorCallback = None, headers = {}, args = {}, params = {}):
+    host, path = _get_host_path(url)
+    if args:
+        path += myurlencode(args)
+
+    def _callback(*w):
+        _info.end(url)
+        if callback:
+            callback(*w)
+
+    def _errorCallback(*w):
+        _info.fail(url)
+        try:
+            if errorCallback:
+                errorCallback(*w)
+        except:
+            print 'ERROR GET:', url, w
+            traceback.print_exc()
+
+    _info.start(url)
+    _bwhttp.Get(host, path, _convert(headers), _convert(params), _callback, _errorCallback)
+
+
+def post(url, callback = None, errorCallback = None, headers = {}, args = {}, params = {}, body = '', multiform = []):
+    host, path = _get_host_path(url)
+    if args:
+        path += myurlencode(args)
+    if params and (body or multiform) or body and (params or multiform) or multiform and (params or body):
+        raise ValueError("post request can't have params and body or multiform params together")
+    _multiform = []
+    for data in multiform:
+        dataLen = len(data)
+        if dataLen < 3:
+            newData = (data[0],
+             data[1],
+             '',
+             '')
+        elif dataLen < 4:
+            newData = (data[0],
+             data[1],
+             data[2],
+             '')
+        else:
+            newData = (data[0],
+             data[1],
+             data[2],
+             data[3])
+        _multiform.append(newData)
+
+    def _callback(*w):
+        _info.end(url)
+        if callback:
+            callback(*w)
+
+    def _errorCallback(*w):
+        _info.fail(url)
+        try:
+            if errorCallback:
+                errorCallback(*w)
+        except:
+            print 'ERROR POST:', url, w
+            traceback.print_exc()
+
+    _info.start(url)
+    _bwhttp.Post(host, path, _convert(headers), _convert(params), _multiform, body, _callback, _errorCallback)
+
+
+def _merge_dict(args, params):
+    d = {}
+    if args:
+        d.update(args)
+    if params:
+        d.update(params)
+    return d
+
+
+def json_get(url, callback, critical_callback = None, args = {}, params = {}, headers = {}):
+
+    def _callback(resCode, headers, body):
+        if resCode >= 400:
+            return _onError('%s:%s' % (resCode, body))
+        if not callback:
+            return
+        try:
+            data = json.loads(body)
+        except Exception as err:
+            return _onError('ERROR json:%s' % err)
+
+        try:
+            callback(data, _merge_dict(args, params))
+        except:
+            print 'ERROR FOR:', callback, args, params, data
+            traceback.print_stack()
+            traceback.print_exc()
+            raise
+
+    def _onError(errorString):
+        if critical_callback:
+            return critical_callback(url, errorString, _merge_dict(args, params))
+        print 'json_get ERROR:', url, errorString, args
+
+    get(url, callback=_callback, errorCallback=_onError, args=args, params=params, headers=headers)
+
+
+def json_post(url, callback, critical_callback = None, args = {}, params = {}, headers = {}, data = None):
+
+    def _callback(resCode, headers, body):
+        if resCode >= 400:
+            return _onError('%s:%s' % (resCode, body))
+        if not callback:
+            return
+        try:
+            data = json.loads(body)
+        except Exception as err:
+            return _onError('ERROR json:%s' % err)
+
+        callback(data, _merge_dict(args, params))
+
+    def _onError(errorString):
+        if critical_callback:
+            return critical_callback(url, errorString, _merge_dict(args, params))
+        print 'json_post ERROR:', repr(url), repr(errorString), args
+
+    body = ''
+    if data:
+        body = json.dumps(data)
+    post(url, callback=_callback, errorCallback=_onError, args=args, params=params, headers=headers, body=body)

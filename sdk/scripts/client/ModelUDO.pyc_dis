@@ -1,0 +1,166 @@
+# Embedded file name: ./client/ModelUDO.py
+import Math
+import BigWorld
+import traceback
+from spinner_object import *
+from client_utils import set_pos_dir_model
+from client_utils import check_player_inside_entity
+from Math import Matrix
+from Helpers.BWCoroutine import BWCoroutine, BWWaitForPeriod
+
+class ModelUDO(BigWorld.UserDataObject):
+
+    def __init__(self):
+        BigWorld.UserDataObject.__init__(self)
+        self.model = None
+        self.callback_id = None
+        self.active = False
+        self.isObstacle = True
+        self.init_anim = True
+        self._to_anim = False
+        self._spinner_speed = 0
+        self._spinner_coro = None
+        self.is_need_check_player_inside = True
+        if self.event_phase == -1:
+            self.init_anim = False
+            self.activate()
+        return
+
+    def deactivate(self, force = False):
+        if not self.event_end_remove and not force:
+            return
+        else:
+            self.cancel_callbacks()
+            self.active = False
+            self._to_anim = False
+            self._spinner_speed = 0
+            if self.model:
+                BigWorld.delModel(self.model)
+                self.model = None
+            for next_udo in self.next_udos:
+                next_udo.deactivate()
+
+            return
+
+    def setObstacle(self, value):
+        self.isObstacle = value
+        if self.model:
+            self.model.isObstacle = value
+
+    def activate(self, time = 0, to_anim = True, spinner_speed = 0):
+        self._to_anim = to_anim
+        self._spinner_speed = spinner_speed
+        self.cancel_callbacks()
+        self.play_anim()
+        if not to_anim:
+            self._stop_spinner()
+        if self.active:
+            return
+        self.active = True
+        if self.delay <= time:
+            self.on_activated(time - self.delay)
+        else:
+            self.callback_id = BigWorld.callback(self.delay - time, self.on_activated)
+
+    def cancel_callbacks(self):
+        if self.callback_id:
+            BigWorld.cancelCallback(self.callback_id)
+            self.callback_id = None
+        return
+
+    def play_anim(self):
+        if not self.init_anim:
+            return
+        elif not self.model:
+            return
+        elif not self._to_anim:
+            return
+        else:
+            if self._spinner_speed:
+                self._run_spinner()
+            elif self.animation:
+                action = self.model.action(self.animation)
+                if action:
+                    frame_rate = self.animation_speed * action.frameRate
+                    action(0, None, 0, -1, -1, frame_rate)
+            return
+
+    def _run_spinner(self):
+        if self._spinner_coro:
+            self._spinner_coro.stop()
+        self._spinner_coro = self.__spinner_coro(self)
+        self._spinner_coro.run()
+
+    def _stop_spinner(self):
+        if self._spinner_coro:
+            self._spinner_coro.stop()
+
+    @BWCoroutine
+    def __spinner_coro(self):
+        speed = self._spinner_speed * MATH_PI / 180.0
+        self._spinner = Spinner(1, 0, 0, speed, Matrix(self.model.matrix))
+        while True:
+            yield BWWaitForPeriod(LOOP_INTERVAL)
+            if not self.model:
+                break
+            if not self._spinner_speed:
+                break
+            matrix = self._spinner.get_new_matrix()
+            if not matrix:
+                print '[ERROR] stop loop. not matrix', self
+                break
+            scale_matrix = Matrix()
+            scale_matrix.setScale((self.scale, self.scale, self.scale))
+            matrix.preMultiply(scale_matrix)
+            self.model.setWorldTransform(matrix)
+
+        self._spinner_coro = None
+        return
+
+    @property
+    def matrix(self):
+        rotation_matrix = Math.Matrix()
+        roll, pitch, yaw = self.direction
+        rotation_matrix.setRotateYPR((yaw, pitch, roll))
+        translation_matrix = Math.Matrix()
+        translation_matrix.setTranslate(self.position)
+        total_matrix = Math.Matrix()
+        total_matrix.postMultiply(rotation_matrix)
+        total_matrix.postMultiply(translation_matrix)
+        return total_matrix
+
+    def on_activated(self, time = 0):
+        if not self.model_path:
+            raise ValueError('ERROR Model path [{0}]'.format(self.model_path))
+
+        def apply_tint(model, tint):
+            return
+            if tint:
+                tint = tint.split()
+                try:
+                    setattr(model, tint[0], tint[1])
+                except:
+                    traceback.print_exc()
+
+        def onLoad(model):
+            if not self.active:
+                return
+            self.model = model
+            if not model:
+                return
+            model.isObstacle = self.isObstacle
+            set_pos_dir_model(model, self.position, (self.yaw, self.pitch, self.roll))
+            model.scale = Math.Vector3(self.scale, self.scale, self.scale)
+            model.newScaleTest = Math.Vector3(self.scale, self.scale, self.scale)
+            apply_tint(model, self.tint)
+            BigWorld.addModel(self.model)
+            self.play_anim()
+            self.init_anim = True
+            if self.is_need_check_player_inside:
+                needed_player_pos = check_player_inside_entity(self)
+                if needed_player_pos:
+                    BigWorld.player().cell.request_modeludo_teleport(needed_player_pos)
+
+        BigWorld.fetchModel(self.model_path, onLoad)
+        for next_udo in self.next_udos:
+            next_udo.activate(time)

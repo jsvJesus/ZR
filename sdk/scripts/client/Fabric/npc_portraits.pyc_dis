@@ -1,0 +1,272 @@
+# Embedded file name: ./client/Fabric/npc_portraits.py
+"""
+*\xd0\x94\xd0\xbb\xd1\x8f \xd0\xb7\xd0\xb0\xd0\xbf\xd1\x83\xd1\x81\xd0\xba\xd0\xb0 \xd0\xbf\xd0\xbe\xd1\x81\xd1\x82\xd0\xbe\xd0\xb1\xd1\x80\xd0\xb0\xd0\xb1\xd0\xbe\xd1\x82\xd0\xba\xd0\xb8 \xd0\xbd\xd0\xb5\xd0\xbe\xd0\xb1\xd1\x85\xd0\xbe\xd0\xb4\xd0\xb8\xd0\xbc python 3.8, \xd0\xb1\xd0\xb8\xd0\xb1\xd0\xbb\xd0\xb8\xd0\xbe\xd1\x82\xd0\xb5\xd0\xba\xd0\xb0 pillow (\xd0\xb2 \xd0\xba\xd0\xbe\xd0\xbd\xd1\x81\xd0\xbe\xd0\xbb\xd0\xb8 'pip install pillow')
+"""
+from random import uniform
+from functools import partial
+import os
+import shutil
+import ResMgr
+import json
+import StalkerModel
+import BWPersonality
+from soGUI.PaintGUI.PaintDummy import LIGHTS
+import GUI
+from EquipSlotsConfigs import EquipSlotTypes as EST
+from AvatarDummyModelLoader import AvatarDummyModelLoader
+AvatarDummyModelLoader.USE_CACHE = False
+from DummyRotating import DummyRotating
+from xml.etree import ElementTree as ET
+import BigWorld
+import subprocess
+from Items import ItemsCatalog
+dummy = None
+rot_yaw_disp = 0.4
+look_yaw_dips = 0.4
+look_pitch_disp = 0.2
+image_size = 96
+overwrite = False
+ignore_cant_acquaint = True
+NPC_DATA_PATH = 'scripts/common/data/AdditionalNPCParametersData.json'
+NPC_PORTRAITS_DIR = '../res/scripts/client/data/npc_portraits/'
+NPC_PORTRAITS_NOT_PROCESSED_DIR = '../res/scripts/client/data/npc_portraits_not_processed/'
+NPC_PORTRAITS_PROCESS_SCRIPT_PATH = '../res/scripts/client/__debug/npc_portraits_process/run.py'
+
+def apply_face(face_parts, callback):
+    global dummy
+    for slot_type, slot_data in face_parts.items():
+        EST.set_slot_data(dummy, slot_type, slot_data)
+
+    def on_load_model(model):
+        dummy.clearTrakers()
+        dummy.model = model
+        dummy.createTrakers()
+        dummy.create_face_customizer(BWPersonality.GUICore.loginFlash.on_face_changed)
+        DummyRotating().init_motor(dummy, position=dummy.position)
+        try:
+            StalkerModel.update_hairs(dummy)
+        except:
+            pass
+
+        callback(model, None)
+        return
+
+    dummy._model_loader.get_model(on_load_model)
+
+
+def apply_npc(npc_name, npc_param, callback):
+    if ignore_cant_acquaint and not npc_param.get('can_acquaint', False):
+        callback(None, 'cant_acquaint')
+        return
+    elif not npc_param.get('have_voice', False):
+        callback(None, 'not_have_voice')
+        return
+    else:
+        if not overwrite:
+            if os.path.exists(NPC_PORTRAITS_DIR + '%s.dds' % npc_name):
+                callback(None, 'exists_already')
+                return
+            if os.path.exists(NPC_PORTRAITS_NOT_PROCESSED_DIR + '%s.dds' % npc_name):
+                callback(None, 'exists_already')
+                return
+        head_preset_name = npc_param.get('head_preset_name')
+        if not head_preset_name:
+            callback(None, u'\u043d\u0435 \u0443\u043a\u0430\u0437\u0430\u043d head_preset_name')
+            return
+        preset_path = os.path.join('headpresets', head_preset_name + '.fcd')
+        head_section = ResMgr.openSection(preset_path)
+        if head_section is None:
+            callback(None, u'\u043e\u0442\u0441\u0443\u0442\u0441\u0442\u0432\u0443\u0435\u0442 \u0444\u0430\u0439\u043b headpresets')
+            return
+        elif 'chunk' not in npc_param or 'space' not in npc_param:
+            callback(None, u'\u043d\u0435 \u0443\u043a\u0430\u0437\u0430\u043d Space')
+            return
+        chunk_folder = os.path.join('spaces', npc_param['space'])
+        chunk_path = os.path.join('spaces', npc_param['space'], npc_param['chunk'] + '.chunk')
+        global_chunk_path = os.path.join(os.getcwd(), '../res', chunk_path)
+        if os.path.exists(global_chunk_path):
+            found = True
+        else:
+            found = False
+            global_chunk_folder = os.path.join(os.getcwd(), '../res', chunk_folder)
+            for root, dirs, files in os.walk(global_chunk_folder):
+                for file in files:
+                    if file == npc_param['chunk'] + '.chunk':
+                        found = True
+                        global_chunk_path = os.path.normpath(os.path.join(root, file))
+                        cap_path = os.path.normpath(os.path.join(os.getcwd(), '../res'))
+                        chunk_path = global_chunk_path[len(cap_path) + 1:]
+
+        chunk_section = ResMgr.openSection(chunk_path)
+        if chunk_section is None:
+            callback(None, u'\u0442\u0430\u043a\u043e\u0433\u043e \u0447\u0430\u043d\u043a\u0430 \u043d\u0435 \u0441\u0443\u0449\u0435\u0441\u0442\u0432\u0443\u0435\u0442')
+            return
+        tree = ET.ElementTree(ET.fromstring(chunk_section.asBinary))
+        root = tree.getroot()
+        personality, face_parts = json.loads(head_section.asBinary)
+        dummy.character = None
+        dummy._chosen_equipped_armor = EST.get_default_equipped_armor()
+        dummy._chosen_colorise_emblems = []
+        dummy._chosen_modes = 0
+        dummy._chosen_personality = {'face': [],
+         'hairs': 255,
+         'moustache': 255,
+         'beard': 255,
+         'haircolor': 0,
+         'skincolor': 0,
+         'eyescolor': 0,
+         'age': 0,
+         'details': 0,
+         'unshaven': 0,
+         'brows': {'style': 0,
+                   'position': 0,
+                   'rotation': 0},
+         'mark': {'id': 0,
+                  'color': 0}}
+        dummy.personality = personality
+        found = False
+        for child in root.findall('entity'):
+            if child.find('type').text.strip() != 'NPC':
+                continue
+            props = child.find('properties')
+            if not props:
+                continue
+            chunk_npc_name = props.find('npcName')
+            if chunk_npc_name is None:
+                continue
+            if chunk_npc_name.text.strip() != npc_name:
+                continue
+            found = True
+            equipped_armor = props.find('NPCEquippedArmor')
+            if equipped_armor is not None:
+                for item in equipped_armor.getchildren():
+                    item_type = int(item.find('itemType').text.strip())
+                    item_params = ItemsCatalog.GetItemParam(item_type)
+                    for slot_type in item_params.get('SlotType', []):
+                        EST.set_slot_data(dummy, slot_type, {'itemID': -1,
+                         'itemType': item_type})
+
+            break
+
+        if not found:
+            callback(None, u'\u041d\u0418\u041f \u0432 \u0447\u0430\u043d\u043a\u0435 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d')
+            return
+        apply_face(face_parts, callback)
+        return
+
+
+def on_load(model, comment):
+    index[0] += 1
+    next_index = index[0]
+    cur_name = last_name[0]
+    if next_index >= len(iterate_data):
+        load_next_foo = None
+    else:
+        npc_name = iterate_data[next_index][0]
+        last_name[0] = npc_name
+        load_next_foo = partial(apply_npc, npc_name, iterate_data[next_index][1], on_load)
+
+    def on_wait(name):
+        mr.texture.saveToDisk(NPC_PORTRAITS_NOT_PROCESSED_DIR + '%s.png' % name, 'PNG')
+        if load_next_foo:
+            BigWorld.callback(0.1, load_next_foo)
+        else:
+            print 'image generation ended'
+            end_callback()
+
+    if not model:
+        if cur_name and comment not in ('exists_already', 'cant_acquaint'):
+            print '  npc portraits: model not created', repr(cur_name), comment.encode('utf8')
+        if load_next_foo:
+            BigWorld.callback(0, load_next_foo)
+        else:
+            print 'image generation ended'
+            end_callback()
+        return
+    else:
+        print '[DEBUG] current npc', next_index - 1, repr(cur_name)
+        mr.externalEmbodiments = [model]
+        mr.render()
+        if not hasattr(BigWorld, 'npc_portraits_cache'):
+            BigWorld.npc_portraits_cache = DummyRotating().get_rotation()
+        look_yaw, look_pitch, rot_yaw = BigWorld.npc_portraits_cache
+        lw = look_yaw + uniform(-look_yaw_dips, look_yaw_dips)
+        lp = look_pitch + uniform(-look_pitch_disp, look_pitch_disp)
+        ry = rot_yaw + uniform(-rot_yaw_disp, rot_yaw_disp)
+        DummyRotating().set_rotation(lw, lp, ry)
+        BigWorld.callback(3.0, partial(on_wait, cur_name))
+        return
+
+
+def create_renderer():
+    BWPersonality.GUICore.generalLayer.delChild('debug_image')
+    mr = BigWorld.PyModelRenderer(image_size, image_size)
+    mr.useMaxBlendAlpha = True
+    mr.nearPlane = 0.01
+    mr.farPlane = 10
+    mr.fov = 0.7
+    mr.viewMatrix = dummy.viewMatrix
+    mr.backgroundColor = (0, 0, 0, 0)
+    mr.addAmbientColor((0.078, 0.118, 0.157, 1))
+    for light_data in LIGHTS:
+        mr.addOmniLight(light_data['color'], light_data['position'] + dummy.position, light_data['inner'], light_data['outer'])
+
+    mr.dynamic = True
+    comp = GUI.Simple('')
+    comp.colour = (255, 255, 255, 255)
+    comp.materialFX = 'SOLID'
+    comp.filterType = 'LINEAR'
+    comp.horizontalAnchor, comp.verticalAnchor = ('RIGHT', 'BOTTOM')
+    comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+    comp.width, comp.height = image_size, image_size
+    comp.position = (1, -1, 0)
+    comp.texture = mr.texture
+    BWPersonality.GUICore.generalLayer.addChild(comp, 'debug_image')
+    return mr
+
+
+def _run(completion_callback):
+    global last_name
+    global iterate_data
+    global mr
+    global end_callback
+    global index
+
+    def on_finish():
+        cmd = 'C:/python38/python.exe %s' % NPC_PORTRAITS_PROCESS_SCRIPT_PATH
+        subprocess.Popen(cmd)
+        completion_callback()
+
+    end_callback = on_finish
+    if os.path.exists(NPC_PORTRAITS_NOT_PROCESSED_DIR):
+        shutil.rmtree(NPC_PORTRAITS_NOT_PROCESSED_DIR)
+    os.makedirs(NPC_PORTRAITS_NOT_PROCESSED_DIR)
+    npc_params = json.loads(ResMgr.openSection(NPC_DATA_PATH).asBinary)
+    index = [-1]
+    last_name = [None]
+    iterate_data = npc_params.items()
+    print '[DEBUG] all npc', len(iterate_data)
+    mr = create_renderer()
+    on_load(None, None)
+    return
+
+
+def run(completion_callback):
+    global dummy
+    dummy = BigWorld.player().dummy
+    dummy.viewMatrix = BigWorld.camera().matrix
+    _run(completion_callback)
+
+
+def run_with_dummy(completion_callback, d):
+    global dummy
+    dummy = d
+    from Math import Matrix, Vector3
+    m_res = Matrix()
+    m_res.setTranslate(dummy.position + Vector3(0.5, 1.8, -0.1))
+    m_rot = Matrix()
+    m_rot.setRotateYPR((-1.36336, 0.227308, 0))
+    m_res.preMultiply(m_rot)
+    m_res.invert()
+    dummy.viewMatrix = m_res
+    _run(completion_callback)

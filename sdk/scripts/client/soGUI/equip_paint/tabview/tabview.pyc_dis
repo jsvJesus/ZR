@@ -1,0 +1,230 @@
+# Embedded file name: ./client/soGUI/equip_paint/tabview/tabview.py
+from utils import Listenable
+import Keys
+import GUI
+from ui.text import calc_needed_font
+from Helpers.PyGUI.PyGUIBase import Interceptor
+from sounds_manager import playSound
+
+class ButtonET:
+    OnClick, = ((r, 'conttabbutton') for r in range(1))
+
+
+class Button(Interceptor, Listenable):
+
+    def __init__(self, component, header_text):
+        Listenable.__init__(self)
+        Interceptor.__init__(self, component)
+        self._hovered = False
+        self._active = False
+        comp = GUI.Text(header_text)
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.position = (0, 0, 0.5)
+        self._txt = comp
+        self.component.addChild(comp)
+        self._setup()
+        self._update_visual()
+
+    def _setup(self):
+        pass
+
+    def do_reposition(self, font):
+        self._txt.font = font
+        return self._txt.stringDimensions(self._txt.text)[0]
+
+    def _update_visual(self):
+        if self.active:
+            self._txt.colour = (255, 255, 255, 255)
+        elif self._hovered:
+            self._txt.colour = (178, 178, 178, 255)
+        else:
+            self._txt.colour = (128, 128, 128, 255)
+
+    def handleMouseEnterEvent(self, comp):
+        playSound('ui/equip_modification/hover')
+        self._hovered = True
+        self._update_visual()
+        return True
+
+    def handleMouseEvent(self, comp, event):
+        return False
+
+    def handleMouseLeaveEvent(self, comp):
+        self._hovered = False
+        self._update_visual()
+        return True
+
+    def handleMouseButtonEvent(self, comp, event):
+        if event.key == Keys.KEY_LEFTMOUSE and event.isKeyDown():
+            data = {'button': self}
+            self.notify_listeners(ButtonET.OnClick, data)
+        return True
+
+    @property
+    def active(self):
+        return self._active
+
+    @active.setter
+    def active(self, value):
+        if self._active == value:
+            return
+        self._active = value
+        self._update_visual()
+
+
+class ViewET:
+    OnHeightChanged, = ((r, 'equipview') for r in range(1))
+
+
+class View(Listenable):
+
+    def __init__(self, component):
+        Listenable.__init__(self)
+        self.component = component
+
+    def do_reposition(self, reposition_data):
+        pass
+
+    @property
+    def height(self):
+        return self.component.height
+
+    @height.setter
+    def height(self, value):
+        if self.height != value:
+            self.component.height = value
+            self.notify_listeners(ViewET.OnHeightChanged)
+
+    def on_active_changed(self, active):
+        pass
+
+
+class TabViewET:
+    OnHeightChanged, = ((r, 'equiptabview') for r in range(1))
+
+
+class TabView(Listenable):
+
+    def __init__(self, component):
+        Listenable.__init__(self)
+        self.component = component
+        self._btns = []
+        self._views = []
+        self._active = None
+        self._caption_height = 0.0
+        for page in self._create_pages():
+            comp = GUI.Window()
+            comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+            comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+            comp.ha, comp.va = ('LEFT', 'TOP')
+            btn = self._create_button(comp, page['header'])
+            btn.add_listener(self._on_btn_event)
+            self._btns.append(btn)
+            self.component.addChild(comp)
+            self._views.append(page['view'])
+            page['view'].add_listener(self._on_view_event)
+
+        return
+
+    def _on_view_event(self, event_type, data):
+        if event_type == ViewET.OnHeightChanged:
+            self._update_height()
+
+    def _update_height(self):
+        height = self._caption_height
+        for v in self._views:
+            if v.component.visible:
+                height += v.height
+
+        self.height = height
+
+    @property
+    def height(self):
+        return self.component.height
+
+    @height.setter
+    def height(self, value):
+        if self.height == value:
+            return
+        self.component.height = value
+        self.notify_listeners(TabViewET.OnHeightChanged)
+
+    def _create_button(self, component, header):
+        return Button(component, header)
+
+    def _create_view_comp(self):
+        comp = GUI.Window()
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('LEFT', 'TOP')
+        comp.visible = False
+        self.component.addChild(comp)
+        return comp
+
+    def _create_pages(self):
+        return []
+
+    def _on_btn_event(self, event_type, data):
+        if event_type == ButtonET.OnClick:
+            if self.active != data['button']:
+                self.active = data['button']
+
+    def _do_btn_reposition(self, btns, button_text_widths, width, height):
+        pos_x = 0
+        margin = height * 0.2
+        for btn, btn_width in zip(btns, button_text_widths):
+            comp = btn.component
+            comp.height = height
+            comp.position = (pos_x, 0, 0.5)
+            comp.width = btn_width
+            pos_x += comp.width + margin
+
+    def do_reposition(self, reposition_data):
+        self._caption_height = reposition_data['header_height']
+        font_size = reposition_data['font_size']
+        font = calc_needed_font(font_size)
+        button_text_widths = [ btn.do_reposition(font) for btn in self._btns ]
+        self._do_btn_reposition(self._btns, button_text_widths, self.component.width, self._caption_height)
+        for view in self._views:
+            comp = view.component
+            comp.width = self.component.width
+            comp.position = (0, self._caption_height, 0.5)
+            view.do_reposition(reposition_data)
+
+        if not self.active and self._btns:
+            self.active = self._btns[0]
+        self._update_height()
+
+    def _on_active_changed(self, active, prev_active):
+        pass
+
+    def get_active_view(self):
+        if not self._active:
+            return None
+        else:
+            index = self._btns.index(self._active)
+            return self._views[index]
+
+    @property
+    def active(self):
+        return self._active
+
+    @active.setter
+    def active(self, value):
+        if self._active == value:
+            return
+        if self._active:
+            self._active.active = False
+            view = self.get_active_view()
+            view.component.visible = False
+            view.on_active_changed(False)
+        prev_active = self._active
+        self._active = value
+        if self._active:
+            self._active.active = True
+            view = self.get_active_view()
+            view.component.visible = True
+            view.on_active_changed(True)
+        self._update_height()
+        self._on_active_changed(self._active, prev_active)

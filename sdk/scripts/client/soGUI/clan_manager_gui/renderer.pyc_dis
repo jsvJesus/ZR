@@ -1,0 +1,141 @@
+# Embedded file name: ./client/soGUI/clan_manager_gui/renderer.py
+from Localization import lc
+from datetime import datetime
+import GUI
+import json
+import colorCodes as cc
+from soGUI.textMoney import getColorMoney
+from utils import groupNumber
+import ItemsUtils
+from collections import defaultdict
+from soGUI.soTextField import soTextField3
+
+class Renderer:
+
+    def __init__(self, comp):
+        self.component = comp
+        comp = GUI.Frame2('soGUI/frame/con_frame.dds')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+        comp.colour = (255, 255, 255, 255)
+        comp.materialFX = 'BLEND'
+        comp.width, comp.height = (2, 2)
+        comp.position = (0, 0, 0.9)
+        self.component.addChild(comp)
+        comp = GUI.Simple('soGUI/frame/journal/load_anim/load_pips')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = comp.texture.width, comp.texture.height
+        comp.position = (0, 0, 0.1)
+        comp.visible = False
+        self.component.addChild(comp, 'pip')
+        left, right, bottom, top = (8, 0, 8, 8)
+        width = self.component.width - left - right
+        height = self.component.height - bottom - top
+        comp = GUI.Window()
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = width, height
+        comp.position = (left, top, 0)
+        self.component.addChild(comp)
+        self._txt = soTextField3(comp, width=width, height=height, textWidth=width - 16)
+
+    def set_data(self, data):
+        data = json.loads(data)['data']
+        if not data:
+            self._txt.setText(u'', immidiate=False)
+            return
+        else:
+            texts = []
+            money_letter = lc('GUI.rub')
+            p_letter = lc('GUI.DonateBase.hist.p')
+            taken_text = lc('GUI.DonateBase.hist.taken')
+            given_text = lc('GUI.DonateBase.hist.given')
+            guard_local_text = lc('GUI.DonateBase.hist.guard')
+            data_by_date = defaultdict(list)
+            for md in data['money']:
+                date_time = datetime.fromtimestamp(md['ts'])
+                date_time = date_time.replace(microsecond=0, second=0, minute=0)
+                md['is_money'] = True
+                data_by_date[date_time].append(md)
+
+            for itd in data['items']:
+                date_time = datetime.fromtimestamp(itd['ts'])
+                date_time = date_time.replace(microsecond=0, second=0, minute=0)
+                itd['is_money'] = False
+                data_by_date[date_time].append(itd)
+
+            class AccumulatedActions:
+
+                def __init__(self):
+                    self._items = []
+
+                def append(self, data):
+                    if not self._items:
+                        self._items.append(data)
+                        return
+                    if (self._items[0]['c'] > 0) != (data['c'] > 0) or self._items[0]['av'] != data['av']:
+                        self.purge()
+                        self._items.append(data)
+                        return
+                    for item in self._items:
+                        if item['i'] == data['i']:
+                            item['c'] += data['c']
+                            return
+
+                    self._items.append(data)
+
+                def purge(self):
+                    if not self._items:
+                        return
+                    action = given_text if self._items[0]['c'] > 0 else taken_text
+                    item_name = ItemsUtils.GetItemName(self._items[0]['i'])
+                    hlink = u'<hlink={0};INFO:TYPE:{1};>'.format(item_name, self._items[0]['i'])
+                    text = u'{0}{1} {2}{3}: {4} {5} {6}{7}'.format(cc.highlighted_xml, self._items[0]['av'], cc.active_xml, dtime.strftime('%d.%m.%Y'), action, hlink, abs(self._items[0]['c']), p_letter)
+                    for i in range(1, len(self._items)):
+                        data = self._items[i]
+                        item_name = ItemsUtils.GetItemName(data['i'])
+                        hlink = u'<hlink={0};INFO:TYPE:{1};>'.format(item_name, data['i'])
+                        text += u', {0} {1}{2}'.format(hlink, abs(data['c']), p_letter)
+
+                    if not texts:
+                        text = '<font=RobotoCondensedRegular_16.font>' + text
+                    texts.append(text)
+                    self._items = []
+
+            accumulated_actions = AccumulatedActions()
+            guard_text = 'changes_guard_system avatar:'
+            sorted_data = sorted(data_by_date.items())
+            for dtime, data_list in sorted_data[:100]:
+                for data in data_list:
+                    action = None
+                    if data['av'].startswith(guard_text):
+                        accumulated_actions.purge()
+                        data['av'] = data['av'][len(guard_text):]
+                        if 'dm' in data:
+                            data['dm'] = -data['dm']
+                            action = guard_local_text
+                    if data['is_money']:
+                        accumulated_actions.purge()
+                        money = abs(data['dm'])
+                        if not action:
+                            action = given_text if data['dm'] > 0 else taken_text
+                        text = u'{0}{1}. {2}{3}: {4} {5}{6} {7}'.format(cc.highlighted_xml, data['av'], cc.active_xml, dtime.strftime('%d.%m.%Y'), action, cc.rgba_to_xml(getColorMoney(money)), groupNumber(money, sep="'"), money_letter)
+                        if not texts:
+                            text = '<font=RobotoCondensedRegular_16.font>' + text
+                        texts.append(text)
+                    else:
+                        accumulated_actions.append(data)
+
+                accumulated_actions.purge()
+
+            self._txt.setText(u'\n\n'.join(texts), immidiate=False)
+            return
+
+    def set_loading(self, value):
+        self.component.pip.visible = value
+        if value:
+            self._txt.setText(u'', immidiate=True)

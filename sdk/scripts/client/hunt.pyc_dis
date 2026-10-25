@@ -1,0 +1,149 @@
+# Embedded file name: ./client/hunt.py
+import BigWorld
+from functools import partial
+import BWPersonality
+from hunt_utils import OrderState as OS, NotifyCodes as NC
+from Localization import lc
+from CharacterUtils import CharacterConst
+from ChatChannelConfig import CHANNEL_CONSTS
+
+class Hunt(object):
+    _last_killer_avatar_data = None
+    _last_iswanted_data = (None, None)
+    tracked_wanted = None
+
+    def __init__(self):
+        self.tracked_wanted = None
+        return
+
+    def request_hunt_track(self, name):
+        if self.tracked_wanted != name:
+            self.tracked_wanted = name
+            self.base.subscribe_wanted_notifications0(name or u'')
+            self.on_hunt_track_wanted_changed()
+
+    _hunt_wanted_notify_cid = 0
+
+    def hunt_wanted_notify(self, space_id, position):
+        if self.isDestroyed:
+            return
+        if self._hunt_wanted_notify_cid:
+            BigWorld.cancelCallback(self._hunt_wanted_notify_cid)
+            self._hunt_wanted_notify_cid = 0
+        if self.inPVPinstance:
+            self.on_hunt_track_wanted_changed()
+            self._hunt_wanted_notify_cid = BigWorld.callback(5, partial(self.hunt_wanted_notify, space_id, position))
+            return
+        self.on_hunt_notification_got0(space_id, position)
+
+    def on_death(self, source_data):
+        """ \xd0\xbf\xd1\x80\xd0\xb8\xd1\x85\xd0\xbe\xd0\xb4\xd0\xb8\xd1\x82 \xd0\xb4\xd0\xbe on_die_by_avatar """
+        self._last_killer_avatar_data = None
+        return
+
+    def on_die_by_avatar(self, kill_data):
+        """ \xd0\xbf\xd1\x80\xd0\xb8\xd1\x85\xd0\xbe\xd0\xb4\xd0\xb8\xd1\x82 \xd0\xbf\xd0\xbe\xd1\x81\xd0\xbb\xd0\xb5 on_death """
+        self._last_killer_avatar_data = dict(kill_data)
+        self._last_killer_avatar_data['ordered'] = False
+        if self.last_killer_avatar_name == self._last_iswanted_data[0] and self._order_state == OS.NoUndefined:
+            self._last_killer_avatar_data['order_state'] = OS.NoMature if self._last_iswanted_data[1] else OS.NoSimple
+
+    def on_got_iswanted(self, name, is_wanted):
+        """ \xd0\xbf\xd1\x80\xd0\xb8\xd1\x85\xd0\xbe\xd0\xb4\xd0\xb8\xd1\x82 \xd0\xbf\xd0\xbe\xd1\x81\xd0\xbb\xd0\xb5 on_death """
+        self._last_iswanted_data = (name, is_wanted)
+        if self.last_killer_avatar_name == self._last_iswanted_data[0] and self._order_state == OS.NoUndefined:
+            self._last_killer_avatar_data['order_state'] = OS.NoMature if self._last_iswanted_data[1] else OS.NoSimple
+
+    @property
+    def last_killer_avatar_name(self):
+        return self._last_killer_avatar_data and self._last_killer_avatar_data['killer_name']
+
+    @property
+    def last_killer_clan_name(self):
+        return self._last_killer_avatar_data and self._last_killer_avatar_data['killer_clan'] or ''
+
+    @property
+    def _order_state(self):
+        return self._last_killer_avatar_data and self._last_killer_avatar_data['order_state']
+
+    def localize_order_state(self):
+        order_state = self._order_state
+        if order_state == OS.Ordered:
+            return lc('PlayerAvatar.client.YouOrdered')
+        if order_state == OS.HighKarma:
+            return lc('PlayerAvatar.client.HighKarma')
+        if order_state == OS.NoMature:
+            return lc('PlayerAvatar.client.AlreadyOrdered')
+        if order_state in (OS.NoSimple, OS.NoUndefined):
+            return lc('PlayerAvatar.client.AnnouncementArrest')
+        if order_state == OS.CoClan:
+            return lc('PlayerAvatar.client.ClanKiller')
+        if order_state == OS.LowKarma:
+            return lc('PlayerAvatar.client.NotEnoughtKillerKarma').format(CharacterConst.PK_KARMA_PER_AGGR)
+        return lc('PlayerAvatar.client.YouCantOrder')
+
+    def can_submit_offender(self):
+        win = BWPersonality.GUICore.startSubmitOffender
+        if win and win.component.visible:
+            return False
+        return self.last_killer_avatar_name and self._order_state in (OS.NoSimple, OS.NoMature, OS.NoUndefined) and not self._last_killer_avatar_data['ordered']
+
+    def submit_offender0(self, price):
+        self.cell.submit_offender1(price, self.last_killer_avatar_name, self.last_killer_clan_name)
+        if self._last_killer_avatar_data:
+            self._last_killer_avatar_data['ordered'] = True
+
+    def donate_offender0(self, wanted_name, price):
+        self.cell.donate_offender1(wanted_name, price)
+
+    def hunt_notify(self, code, str_args, int_args):
+        if code == NC.WantedNotWanted:
+            text = lc('Codes.HunterResponses.OFFENDER_REMOVE').format(str_args[0])
+            wanted, = str_args
+            if self.tracked_wanted == wanted:
+                self.request_hunt_track(None)
+        elif code == NC.WantedNotFound:
+            text = lc('Codes.HunterResponses.WANTED_NOT_FOUND').format(str_args[0])
+        elif code == NC.KillerWanted:
+            text = lc('Codes.HunterResponses.WANTED_THIS_I')
+        elif code == NC.MaxWanted:
+            text = lc('Codes.HunterResponses.MAX_OFFENFER')
+        elif code == NC.SubscriptionOk:
+            text = lc('Codes.HunterResponses.SUBSCRIPTION_OK').format(str_args[0], *int_args)
+        elif code == NC.SubmitOk:
+            text = lc('Codes.HunterResponses.SUBMIT_OK')
+        elif code == NC.WantedKilledImprisoned:
+            wanted, victim = str_args
+            cost, hunt_len = int_args
+            text = lc('Codes.HunterResponses.WANTEDKILLEDANDIMPRISONED_OK').format(wanted, cost, hunt_len, victim)
+            if self.tracked_wanted == wanted:
+                self.request_hunt_track(None)
+        elif code == NC.MinPrice:
+            text = lc('Codes.HunterResponses.MIN_PRICE')
+        elif code == NC.NoMoney:
+            text = lc('Codes.HunterResponses.NO_CREDITNUMBER')
+        elif code == NC.OrderCompleted:
+            text = lc('Codes.HunterResponses.WANTED_REMOVE').format(str_args[0])
+        elif code == NC.SelfImprisoned:
+            text = lc('Codes.HunterResponses.YOU_KILLED_AND_IMPRISONED').format(str_args[0])
+        elif code == NC.HuntAlready:
+            text = lc('Codes.HunterResponses.HUNT_ALREADY')
+        elif code == NC.WantedOnline:
+            text = lc('Codes.HunterResponses.WANTED_ONLINE')
+        elif code == NC.WantedOffline:
+            text = lc('Codes.HunterResponses.WANTED_OFFLINE')
+        elif code == NC.DonateSelf:
+            text = lc('Codes.HunterResponses.DONATE_SELF')
+        elif code == NC.VictimWanted:
+            text = lc('Codes.HunterResponses.VICTIM_WANTED')
+        else:
+            raise NotImplementedError((code, str_args, int_args))
+        self.putMessage(CHANNEL_CONSTS.SYSTEM, text)
+        bb = BWPersonality.GUICore.soBulletinBoard
+        if bb:
+            bb.hunt_notify(code, str_args, int_args)
+        return
+
+    def onFinishDead(self):
+        if self.can_submit_offender():
+            self.showSubmitOffenderDialog()

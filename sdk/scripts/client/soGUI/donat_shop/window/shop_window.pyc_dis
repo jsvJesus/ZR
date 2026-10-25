@@ -1,0 +1,220 @@
+# Embedded file name: ./client/soGUI/donat_shop/window/shop_window.py
+from utils import Listenable
+from ui.button import Button
+from ui.panel import Panel
+import GUI
+import BWPersonality
+from Helpers.PyGUI.PyGUIBase import Interceptor
+from Localization import lc
+from tab_panel import TabPanel, TabType
+from win_ui.tab_view import EventType as TabviewET
+from functools import partial
+from bin_animator import BinAnimator
+from balance_ui import BalanceUi, EventType as BalanceET
+from auxwins.auxwins import Auxwins, Mode as AuxMode
+from Helpers.PyGUI import Utils
+from soGUI.donat_shop.window.win_ui.item_view import ItemView
+from soGUI.StorehouseGUI.InfoWin import InfoWin
+from soGUI.donat_shop.window.element import Tickable
+from dust import Dust
+import sounds_manager as sm
+from soGUI.login.tooltip import TextFieldTooltip
+
+class EventType:
+    OnShopVisible, OnStoreVisible = ((r, 'shopwindow') for r in range(2))
+
+
+class ShopWindow(Interceptor, Listenable, Tickable):
+
+    def __init__(self, shop_model, store_model, bin_model, state_model):
+        Listenable.__init__(self)
+        Tickable.__init__(self)
+        self._state_model = state_model
+        self._repositions = []
+        comp = GUI.Window()
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.height, comp.width = (2, 2)
+        comp.position = (0, 0, 0.05)
+        comp.script = self
+        comp.visible = False
+        Interceptor.__init__(self, comp, interscept_keys=True)
+        self.change_interseption(intercept_buttons=True, intercept_moving=True, interscept_keys=True)
+        BWPersonality.GUICore.generalLayer.addChild(comp, 'storehouse_screen')
+        comp = GUI.Window('soGUI/frame/donatshop/background.dds')
+        comp.materialFX = 'SOLID'
+        self._panel = Panel(self.component, 'background', component=comp, depth=0.95)
+        self._panel.transform.set_clip_mode((0, 0, 1, 1))
+        self._panel.transform.apply_mode()
+        self.component.addChild(TextFieldTooltip('ShopWin', 400).component)
+        comp = GUI.Window('soGUI/frame/paint/blue.dds')
+        comp.materialFX = 'BLEND'
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.position = (0, 0, 0.95)
+        self._panel.component.addChild(comp)
+        self._dust = Dust(comp)
+        self._tab_btns = []
+        b = Button(self._panel.component, 'shop_btn')
+        b.tab_type = TabType.Shop
+        b.transform.set_pixel_mode((0.5, 0.5), (0, 0), (180, 40), pixel_pos=(258, 32))
+        b.set_visual('soGUI/frame/buttons/shoptab_button.json')
+        b.set_text(lc('DonatShop.window.shopbtn'))
+        b.on_click = partial(self._on_btn_tab_click, TabType.Shop)
+        self._tab_btns.append(b)
+        b = Button(self._panel.component, 'stor_btn')
+        b.tab_type = TabType.Store
+        b.transform.set_pixel_mode((0.5, 0.5), (0, 0), (180, 40), pixel_pos=(469, 32))
+        b.set_visual('soGUI/frame/buttons/shoptab_button.json')
+        b.set_text(lc('DonatShop.window.storebtn'))
+        b.on_click = partial(self._on_btn_tab_click, TabType.Store)
+        stor_btn_component = b.component
+        self._tab_btns.append(b)
+        stor_btn_component.isClip = False
+        b = Button(self._panel.component, 'bin_btn')
+        b.tab_type = TabType.Bin
+        b.transform.set_pixel_mode((0.5, 0.5), (0, 0), (240, 40), pixel_pos=(701, 32))
+        b.set_visual('soGUI/frame/buttons/shoptab_button.json')
+        b.set_text(lc('DonatShop.window.binbtn'))
+        b.on_click = partial(self._on_btn_tab_click, TabType.Bin)
+        bin_btn_component = b.component
+        self._tab_btns.append(b)
+        bin_btn_component.isClip = False
+        comp = GUI.Window('soGUI/frame/donatshop/headlight.dds')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('CENTER', 'TOP')
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.position = (0, 0, 0.9)
+        self.component.addChild(comp, 'btnhighlight')
+        self._tab_view = TabPanel(self._panel.component, self.component, 'tab_view', shop_model, store_model, bin_model, state_model)
+        self._tab_view.transform.set_clip_mode((0, 0, 1, 1), pixel_anchors=(0, 60, 0, 0))
+        self._tab_view.add_listener(self._on_tabview_event)
+        self._bin_animator = BinAnimator(bin_btn_component, self.component, bin_model)
+        self._stor_animator = BinAnimator(stor_btn_component, self.component, store_model)
+        self._balance_ui = BalanceUi(self._panel.component, shop_model)
+        self._balance_ui.transform.set_pixel_mode((1, 0), (1, 0), (600, 64), pixel_pos=(-98, 0))
+        self._balance_ui.add_listener(self._on_balance_event)
+        self._auxwins = Auxwins(self.component, AuxMode.Shop)
+        self._auxwins.transform.set_clip_mode((0, 0, 1, 1))
+        self._repositions.append(self._auxwins)
+        fade_color = (255, 255, 255, 150)
+        comp = GUI.Window('soGUI/frame/paint/black.dds')
+        comp.colour = fade_color
+        comp.materialFX = 'BLEND'
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.width, comp.height = (2, 2)
+        comp.position = (0, 0, 0.1)
+        self.component.addChild(comp, 'infowin')
+        self._info_win = InfoWin(comp)
+        btnclose = Button(self.component, 'btnclose')
+        btnclose.set_visual('soGUI/frame/buttons/wincross.json')
+        btnclose.transform.set_pixel_mode((1, 0), (1, 0), (36, 36), pixel_pos=(-16, 16))
+        btnclose.component.frame.filterType = 'LINEAR'
+        btnclose.on_click = self.hide
+        self._repositions.append(btnclose)
+
+    def _on_tabview_event(self, event_type, data):
+        if event_type == TabviewET.OnTabShown:
+            if self._tab_view.tab_type == TabType.Shop:
+                self.notify_listeners(EventType.OnShopVisible)
+            elif self._tab_view.tab_type == TabType.Store:
+                self.notify_listeners(EventType.OnStoreVisible)
+            self._update_tab_buttons()
+
+    def _on_btn_tab_click(self, tab_type):
+        sm.playSound('ui/journal/tab_click')
+        self._tab_view.tab_type = tab_type
+
+    def _on_balance_event(self, event_type, data):
+        if event_type == BalanceET.OnCurrencyClicked:
+            self._state_model.switch_currency_request()
+
+    def show(self, tab_type):
+        if not self.component.visible:
+            self.component.visible = True
+            self._tab_view.tab_type = tab_type
+            self._on_show()
+
+    def scroll_to_premiums(self):
+        self._tab_view.scroll_to_premiums()
+
+    def can_tick(self):
+        return Utils.is_visible_in_hierarchy(self.component)
+
+    def on_tick(self):
+        self._tab_view.on_tick()
+
+    def _update_tab_buttons(self):
+        for b in self._tab_btns:
+            if self._tab_view.tab_type == b.tab_type:
+                b.set_enabled(False)
+                comp = self.component.btnhighlight
+                bcomp = b.component
+                comp.position[0] = bcomp.position[0] + bcomp.width * 0.5
+                ratio = float(comp.width) / comp.height
+                comp.width = b.component.width * 2
+                comp.height = comp.width / ratio
+            else:
+                b.set_enabled(True)
+
+    def _on_show(self):
+        Auxwins.push_mode(AuxMode.Shop)
+        self._bin_animator.on_show()
+        self._auxwins.hide_all()
+        self._tab_view.on_show()
+        self._update_tab_buttons()
+        self._balance_ui.on_show()
+        BWPersonality.GUICore.setBestCursor()
+        BWPersonality.GUICore.updateSoundVolumeIngameMenu()
+        self._dust.on_show()
+        self._align_animators()
+        self.start_tick()
+
+    def _on_hide(self):
+        if InfoWin.instance and InfoWin.instance.visible:
+            InfoWin.instance.hide()
+        self.stop_tick()
+        self._tab_view.on_hide()
+        self._auxwins.hide_all()
+        self._dust.on_hide()
+        ItemView._texture_cache.clear()
+        BWPersonality.GUICore.updateSoundVolumeIngameMenu()
+        Auxwins.pop_mode(AuxMode.Shop)
+
+    def _align_animators(self):
+
+        def align(animator):
+            size = 34
+            parent_comp = animator.component.parent
+            width = parent_comp.script._text.get_string_width() / animator.transform.pixel_ratio
+            animator.transform.set_pixel_mode((0.5, 0.5), (0.5, 0.5), (size * 2, size), pixel_pos=(width * 0.5 + 32, 0))
+
+        align(self._bin_animator)
+        align(self._stor_animator)
+
+    def do_reposition(self):
+        self._panel.transform.apply_mode()
+        self._update_tab_buttons()
+        for r in self._repositions:
+            r.transform.apply_mode()
+
+        if InfoWin.instance:
+            self._info_win.do_reposition()
+        self._dust.do_reposition()
+        self._align_animators()
+
+    def handle_esc(self):
+        return self._tab_view.handle_esc()
+
+    def hide(self):
+        if self.component.visible:
+            self.component.visible = False
+            self._on_hide()
+
+    @property
+    def visible(self):
+        return self.component.visible

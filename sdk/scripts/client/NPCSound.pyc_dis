@@ -1,0 +1,371 @@
+# Embedded file name: ./client/NPCSound.py
+import BigWorld
+import time
+import random
+from functools import partial
+from sounds_manager import getSound
+import _BWSound
+from Localization import lc
+from utils import plog
+import NPCSoundUtils
+from NPCSoundUtils import SPEECH_DATA, DEFAULT_BOT_SPEECH_DELAY, nature_id2name, nature_id2speech_delay, nature_id2speech_second_chance
+
+class NPCSound:
+    MID_REP, GOOD_REP, BAD_REP = (0, 1, 2)
+
+    def __init__(self):
+        self.is_speaking = False
+        self._type_rep = NPCSound.MID_REP
+        self._speech_sound = None
+        self._say_cb_id = 0
+        self._last_speech_type = None
+        return
+
+    def _switch_controller(self, is_speaking):
+        if hasattr(self, 'face_controller'):
+            self.face_controller.switch_node_info(is_speaking)
+        self.is_speaking = is_speaking
+
+    def _play_anim(self):
+        if hasattr(self.model, 'speech'):
+            self.model.speech()
+
+    def _stop_anim(self):
+        """
+        \xd0\xbf\xd0\xbb\xd0\xb0\xd0\xb2\xd0\xbd\xd0\xbe \xd0\xbf\xd1\x80\xd0\xb5\xd1\x80\xd0\xb2\xd0\xb0\xd1\x82\xd1\x8c \xd0\xbb\xd0\xb8\xd1\x86\xd0\xb5\xd0\xb2\xd1\x83\xd1\x8e \xd0\xb0\xd0\xbd\xd0\xb8\xd0\xbc\xd0\xb0\xd1\x86\xd0\xb8\xd1\x8e
+        """
+        if self.isDestroyed:
+            return
+        else:
+            if self._speech_sound:
+                if hasattr(self.model, 'speech'):
+                    self.model.speech.stop()
+                BigWorld.callback(0.2, partial(self._switch_controller, False))
+                self._speech_sound = None
+            return
+
+    def _stop_anim_and_sound_force(self):
+        """
+        \xd1\x80\xd0\xb5\xd0\xb7\xd0\xba\xd0\xbe \xd0\xbf\xd1\x80\xd0\xb5\xd1\x80\xd0\xb2\xd0\xb0\xd1\x82\xd1\x8c \xd0\xbb\xd0\xb8\xd1\x86\xd0\xb5\xd0\xb2\xd1\x83\xd1\x8e \xd0\xb0\xd0\xbd\xd0\xb8\xd0\xbc\xd0\xb0\xd1\x86\xd0\xb8\xd1\x8e \xd0\xb8 \xd0\xb7\xd0\xb2\xd1\x83\xd0\xba
+        """
+        if self._speech_sound:
+            self._speech_sound.stop()
+            if hasattr(self.model, 'speech'):
+                self.model.speech.stop()
+            self._switch_controller(False)
+            self._speech_sound = None
+        return
+
+    def _get_phrase_by_speech_type(self, speech_type, nature_name):
+        """
+        \xd0\xb2\xd0\xbe\xd0\xb7\xd0\xb2\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xbd\xd0\xb0\xd0\xb7\xd0\xb2\xd0\xb0\xd0\xbd\xd0\xb8\xd0\xb5 sound-\xd0\xbe\xd0\xb1\xd1\x8a\xd0\xb5\xd0\xba\xd1\x82\xd0\xb0,text
+        """
+        _tmp = ['enemy_bots', nature_name, NPCSoundUtils.SPEECH_TYPE_TO_NAME[speech_type]]
+        speech_id = '/'.join(_tmp)
+        phrases = self._get_phrases(speech_id, to_print=True)
+        if not phrases:
+            return
+        if self._is_debug_speech_npc_seq:
+            if self._debug_phrase_index >= len(phrases):
+                self._debug_phrase_index = 0
+            phrase_id = phrases[self._debug_phrase_index]
+            sound_name = 'npc/%s/%s' % (speech_id, phrase_id)
+            self._debug_phrase_index += 1
+            BigWorld.player().systemMsgChat(sound_name)
+        else:
+            phrase_id = random.choice(phrases)
+            sound_name = 'npc/%s/%s' % (speech_id, phrase_id)
+        text = lc('Speech.%s.%s' % (speech_id.replace('/', '.'), phrase_id))
+        return (sound_name, text)
+
+    def _show_subtitles(self, text, duration):
+        if not text or duration <= 0:
+            return
+        from soGUI.SubsWindow import instance as subs_window
+        subs_window.output_subs('%s' % text, duration)
+
+    def _say_phrase(self, sound_name, text):
+        if self.isDestroyed:
+            return
+        if self._say_cb_id:
+            BigWorld.cancelCallback(self._say_cb_id)
+            self._say_cb_id = 0
+        pref = '_say_phrase ({0})'.format(self)
+        if not self.model:
+            print '[ERROR] {0} | no model'.format(pref)
+            return
+        if not hasattr(self.model, 'speech'):
+            print '[WARNING] {0} | no speech'.format(pref)
+        if self.is_speaking:
+            self._stop_anim_and_sound_force()
+            self._say_cb_id = BigWorld.callback(0.2, partial(self._say_phrase, sound_name, text))
+            return
+        sound = getSound(sound_name, model=self.model)
+        if not sound:
+            print '[ERROR] {0} | {1} | not sound'.format(pref, sound_name)
+            return
+        try:
+            _fsound = _BWSound.Event('event:/' + sound_name)
+            duration = _fsound.duration
+        except:
+            print '[ERROR] {0} | {1} | not duration'.format(pref, sound_name)
+            return
+
+        self._switch_controller(True)
+        sound.set_end_callback(self._stop_anim)
+        self._play_anim()
+        sound.play()
+        self._speech_sound = sound
+        player = BigWorld.player()
+        if not player or self.position.distTo(player.position) > NPCSoundUtils.SPEECH_TEXT_MAX_DIST:
+            return
+        self._show_subtitles(text, duration)
+
+    def on_speech_event(self, speech_type):
+        if self.isDestroyed:
+            return
+        player = BigWorld.player()
+        if not player or not player.worldLoadStatusCode or self.position.distTo(player.position) > NPCSoundUtils.SPEECH_SOUND_MAX_DIST:
+            return
+        if self.is_speaking:
+            if speech_type == self._last_speech_type:
+                return
+        nature_id = self.getAdditionalParam('nature')
+        if nature_id not in NPCSoundUtils.BOT_NATURE_IDS:
+            return
+        now = time.time()
+        if NPCSoundUtils.SPEECH_NPC_DEBUG or self._is_debug_speech_npc_seq:
+            tts, count = (0, 0)
+        else:
+            tts, count = player._speech_type2tts.get(speech_type, (0, 0))
+        if now > tts:
+            max_count = NPCSoundUtils.SPEECH_TYPE_TO_COUNT.get(speech_type, 1)
+            count += 1
+            if count >= max_count:
+                count = 0
+                tts = now + nature_id2speech_delay.get(nature_id, DEFAULT_BOT_SPEECH_DELAY)
+            player._speech_type2tts[speech_type] = (tts, count)
+            nature_name = nature_id2name.get(nature_id)
+            result = self._get_phrase_by_speech_type(speech_type, nature_name)
+            if result:
+                self._say_phrase(*result)
+            self._last_speech_type = speech_type
+        return True
+
+    def on_speech_event_string(self, speech_sound):
+        if not speech_sound:
+            return
+        sound = getSound(speech_sound, model=self.model)
+        if not sound:
+            print '[ERROR] {0} | not sound'.format(speech_sound)
+            return
+        from Subtitles import Subtitles
+        text, _, _ = Subtitles.get_subtitle(speech_sound)
+        self._say_phrase(speech_sound, text)
+
+    def _get_sound_by_speech_id(self, speech_id, to_print = None):
+        """
+        \xd0\xb2\xd0\xbe\xd0\xb7\xd0\xb2\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 sound-\xd0\xbe\xd0\xb1\xd1\x8a\xd0\xb5\xd0\xba\xd1\x82,duration,text
+        """
+        speech_id_keys = speech_id.split('/')
+        phrases = self._get_phrases(speech_id, to_print)
+        if not phrases:
+            return
+        if self._is_debug_speech_npc_seq:
+            phrase_id = phrases[self._debug_phrase_index]
+        else:
+            phrase_id = random.choice(phrases)
+        sound_name = 'npc/%s/%s' % (speech_id, phrase_id)
+        sound_name = sound_name.lower()
+        sound = getSound(sound_name, model=self.model)
+        if not sound:
+            print '[ERROR] {0} | not sound'.format(sound_name)
+            return
+        try:
+            _fsound = _BWSound.Event('event:/' + sound_name)
+            duration = _fsound.duration
+        except:
+            print '[ERROR] {0} | not duration'.format(sound_name)
+            return
+
+        if speech_id_keys[2] == 'first':
+            text = lc('Speech.%s.%s' % (speech_id.replace('/', '.'), phrase_id))
+        elif speech_id_keys[2] == 'next':
+            text = lc('Speech.etc.%s' % phrase_id)
+        else:
+            text = lc('Speech.usual.%s.%s.%s' % (speech_id_keys[1][2:], '.'.join(speech_id_keys[3:]), phrase_id))
+        return (sound, duration, text)
+
+    def _play_sound(self, sound, end_callback):
+        if self.isDestroyed:
+            return
+        self._switch_controller(True)
+        sound.set_end_callback(end_callback)
+        self._play_anim()
+        sound.play()
+        self._speech_sound = sound
+
+    def _say(self, speech_id, is_unique_npc):
+        if self.isDestroyed:
+            return
+        else:
+            if self._say_cb_id:
+                BigWorld.cancelCallback(self._say_cb_id)
+                self._say_cb_id = 0
+            pref = '_say ({0})'.format(self)
+            if not self.model:
+                print '[ERROR] {0} | no model'.format(pref)
+                return
+            if not hasattr(self.model, 'speech'):
+                print '[WARNING] {0} | no speech'.format(pref)
+            if self.is_speaking:
+                self._stop_anim_and_sound_force()
+                self._say_cb_id = BigWorld.callback(0.2, partial(self._say, speech_id, is_unique_npc))
+                return
+            speech = self._get_sound_by_speech_id(speech_id, to_print=True)
+            if not speech:
+                return
+            duration = speech[1]
+            text = speech[2]
+            speech2 = None
+            if not is_unique_npc and speech_id.split('/')[-2] == 'hi':
+                nature_id = self.getAdditionalParam('nature')
+                speech_second_chance = nature_id2speech_second_chance.get(nature_id, 1.0)
+                rand = random.random()
+                if rand <= speech_second_chance:
+                    speech2 = self._get_sound_by_speech_id(speech_id + '_2', to_print=False)
+            if speech2:
+                duration += speech2[1]
+                text += ' ' + speech2[2]
+                callback_sound1 = partial(self._play_sound, speech2[0], self._stop_anim)
+            else:
+                callback_sound1 = self._stop_anim
+            self._show_subtitles(text, duration)
+            self._play_sound(speech[0], callback_sound1)
+            return duration
+
+    def npc_say(self, sub_str, is_unique_npc):
+        if not self.getAdditionalParam('have_voice'):
+            return
+        elif self._is_aggressive():
+            return
+        else:
+            if self._type_rep == NPCSound.GOOD_REP:
+                type_rep = 'good'
+            elif self._type_rep == NPCSound.MID_REP:
+                type_rep = 'mid'
+            else:
+                type_rep = 'bad'
+            if is_unique_npc:
+                npc_name = self.npcName
+                speech_id = 'unique/{0}/{1}/{2}/{3}'.format(npc_name, 'first', sub_str, type_rep)
+            else:
+                nature_id = self.getAdditionalParam('nature')
+                nature_name = NPCSoundUtils.nature_id2name.get(nature_id, NPCSoundUtils.DEFAULT_NATURE_NAME)
+                voice_type = self.getAdditionalParam('voice_type')
+                if voice_type is None:
+                    voice_type = NPCSoundUtils.DEFAULT_VOICE_TYPE
+                speech_id = 'usual/{0}/{1}/{2}/{3}'.format(nature_name, voice_type, sub_str, type_rep)
+            self._say(speech_id, is_unique_npc)
+            return
+
+    def _get_phrases(self, speech_id, to_print = None):
+        metadata_val = SPEECH_DATA
+        speech_id_keys = speech_id.split('/')
+        for k in speech_id_keys:
+            metadata_val = metadata_val.get(k)
+            if not metadata_val:
+                break
+
+        if not metadata_val:
+            if to_print:
+                print '[ERROR] no metadata by speech_id: {0}'.format(speech_id)
+            return []
+        return metadata_val
+
+    _is_debug_speech_npc_seq = None
+
+    def debug_speech_npc_unique(self):
+        """
+        \xd0\xbf\xd0\xbe\xd1\x81\xd0\xbb\xd0\xb5\xd0\xb4\xd0\xbe\xd0\xb2\xd0\xb0\xd1\x82\xd0\xb5\xd0\xbb\xd1\x8c\xd0\xbd\xd1\x8b\xd0\xb9 \xd0\xb2\xd1\x8b\xd0\xb7\xd0\xbe\xd0\xb2 \xd0\xb2\xd1\x81\xd0\xb5\xd1\x85 \xd1\x84\xd1\x80\xd0\xb0\xd0\xb7 \xd1\x83\xd0\xbd\xd0\xb8\xd0\xba\xd0\xb0\xd0\xbb\xd1\x8c\xd0\xbd\xd0\xbe\xd0\xb3\xd0\xbe NPC
+        """
+        from NPCSoundUtils import UNIQUE_NPC_NAMES
+        npc_name = self.npcName
+        if npc_name not in UNIQUE_NPC_NAMES:
+            print '[ERROR] npc_name not in UNIQUE_NPC_NAMES:', [npc_name]
+            return
+        else:
+            self._is_debug_speech_npc_seq = True
+            self._debug_phrase_index = 0
+            if getattr(self, '_debug_speech_npc_seq_cid', None):
+                BigWorld.cancelCallback(self._debug_speech_npc_seq_cid)
+
+            def get_speech_ids():
+                result = []
+                for sub_str in ('hi', 'bye'):
+                    for type_rep in ('good', 'mid', 'bad'):
+                        speech_id = 'unique/{0}/{1}/{2}/{3}'.format(npc_name, 'first', sub_str, type_rep)
+                        phrases = self._get_phrases(speech_id, to_print=True)
+                        for i, phrase_id in enumerate(phrases):
+                            result.append((speech_id,
+                             phrase_id,
+                             i,
+                             len(phrases)))
+
+                return result
+
+            speech_ids = get_speech_ids()
+            n = len(speech_ids)
+            self._unique_index = 0
+            plog('[DEBUG] npc_name=%s speech_ids(%s)', npc_name, n)
+
+            def _end():
+                self._is_debug_speech_npc_seq = False
+
+            def run_next_phase():
+                if self._unique_index >= n:
+                    _end()
+                    return
+                speech_id, phrase_id, phrase_index, phrase_count = speech_ids[self._unique_index]
+                self._unique_index += 1
+                self._debug_phrase_index = phrase_index
+                duration = self._say(speech_id, is_unique_npc=True)
+                plog('[DEBUG] %s/%s speech_id=%s phrase_id=%s (%s/%s) duration=%s', self._unique_index, n, speech_id, phrase_id, phrase_index + 1, phrase_count, duration)
+                if not duration:
+                    _end()
+                    return
+                self._debug_speech_npc_seq_cid = BigWorld.callback(duration + 0.5, run_next_phase)
+
+            run_next_phase()
+            return
+
+    def debug_speech_npc_seq(self):
+        """
+        \xd0\xbf\xd0\xbe\xd1\x81\xd0\xbb\xd0\xb5\xd0\xb4\xd0\xbe\xd0\xb2\xd0\xb0\xd1\x82\xd0\xb5\xd0\xbb\xd1\x8c\xd0\xbd\xd1\x8b\xd0\xb9 \xd0\xb2\xd1\x8b\xd0\xb7\xd0\xbe\xd0\xb2 \xd1\x84\xd1\x80\xd0\xb0\xd0\xb7 \xd0\xbf\xd0\xbe \xd0\xba\xd0\xb0\xd0\xb6\xd0\xb4\xd0\xbe\xd0\xbc\xd1\x83 speech_type
+        """
+        print 'debug_speech_npc_seq', self, self.position
+        self._is_debug_speech_npc_seq = True
+        self._debug_phrase_index = 0
+        if getattr(self, '_debug_speech_npc_seq_cid', None):
+            BigWorld.cancelCallback(self._debug_speech_npc_seq_cid)
+        speech_types = sorted(NPCSoundUtils.SPEECH_TYPE_TO_NAME.keys())
+        n_tests_on_speech_type = 5
+        self._debug_index_speech_type = 0
+        self._debug_index_test_on_speech_type = 0
+        time_on_test = 5
+
+        def run_test():
+            if self._debug_index_test_on_speech_type >= n_tests_on_speech_type:
+                self._debug_index_test_on_speech_type = 0
+                self._debug_phrase_index = 0
+                self._debug_index_speech_type += 1
+            if self._debug_index_speech_type >= len(speech_types):
+                self._is_debug_speech_npc_seq = False
+                return
+            speech_type = speech_types[self._debug_index_speech_type]
+            self.on_speech_event(speech_type)
+            self._debug_index_test_on_speech_type += 1
+            self._debug_speech_npc_seq_cid = BigWorld.callback(time_on_test, run_test)
+
+        run_test()
+        return

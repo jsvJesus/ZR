@@ -1,0 +1,319 @@
+# Embedded file name: ./client/soGUI/health_bar/main_health_bar.py
+from Localization import lc
+import math
+from Helpers.PyGUI.PyGUIBase import DragWin
+import BigWorld
+import colorCodes as cc
+from Helpers.PyGUI import Utils
+import GUI
+from time import time
+import BWPersonality
+from math_bw import move_towards
+from PremiumAccountConfigs import PREMIUM_OFF, ClientSimpleConfigs
+from soGUI.GUIPositions import GUIPositions
+from health_bar import HealthBar
+from Helpers.BWCoroutine import BWMemberCoroutine, BWWaitForPeriod
+from Helpers.PyGUI.PyGUIBase import Interceptor
+import BoosterConfigParser
+
+class PremBoost(Interceptor):
+
+    def __init__(self, component):
+        Interceptor.__init__(self, component)
+        self._prem_id = PREMIUM_OFF
+        self._boost_id = None
+        self.prem_end_time, self.boost_end_time = (None, None)
+        self._client_configs = ClientSimpleConfigs()
+        comp = GUI.Window()
+        comp.materialFX = 'BLEND'
+        comp.wm, comp.hm = ('CLIP', 'CLIP')
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.filterType = 'LINEAR'
+        comp.width, comp.height = (2, 2)
+        comp.position = (0, 0, 0.5)
+        self.component.addChild(comp, 'bstimage')
+        return
+
+    def handleMouseEnterEvent(self, comp):
+
+        def get_prem_time_string(end_time):
+            rem_time = int(end_time - (time() - BWPersonality.gpd.time_diff))
+            real_days = int(rem_time) / 86400
+            days = int(math.ceil(rem_time / 86400))
+            hours = int(rem_time) / 3600
+            minutes = int(rem_time) / 60
+            if real_days >= 1:
+                result = cc.inactive_xml + lc('extendedGUI.PremiumPanel.days') + ' ' + lc('extendedGUI.PremiumPanel.toEnd') + ': ' + cc.active_xml + str(days)
+            elif hours >= 1:
+                result = cc.inactive_xml + lc('extendedGUI.PremiumPanel.hours') + ' ' + lc('extendedGUI.PremiumPanel.toEnd') + ': ' + cc.active_xml + str(hours)
+            else:
+                result = cc.inactive_xml + lc('extendedGUI.PremiumPanel.minutes') + ' ' + lc('extendedGUI.PremiumPanel.toEnd') + ': ' + cc.active_xml + str(minutes)
+            return result
+
+        text = []
+        if self.prem_id != PREMIUM_OFF and self.prem_end_time > 0:
+            config = self._client_configs.get_premium_config(self.prem_id)
+            text.append(lc(config['description']))
+            text.append(get_prem_time_string(self.prem_end_time))
+        if self.boost_id and self.boost_end_time > 0:
+            config = BoosterConfigParser.get_config(self.boost_id)
+            text.append(lc(config['description']))
+            text.append(get_prem_time_string(self.boost_end_time))
+        text = '\n'.join(text)
+        if text:
+            BWPersonality.GUICore.showToolTip(cc.active_xml + text, delay=0)
+        return True
+
+    def handleMouseLeaveEvent(self, comp):
+        if BWPersonality.GUICore.toolTip:
+            BWPersonality.GUICore.toolTip.hide()
+        return True
+
+    @property
+    def prem_id(self):
+        return self._prem_id
+
+    @prem_id.setter
+    def prem_id(self, value):
+        if self._prem_id == value:
+            return
+        self._prem_id = value
+        self._update_content()
+
+    @property
+    def boost_id(self):
+        return self._boost_id
+
+    @boost_id.setter
+    def boost_id(self, value):
+        if self._boost_id == value:
+            return
+        self._boost_id = value
+        self._update_content()
+
+    def _update_content(self):
+        prem_image, boost_image = (None, None)
+        if self.prem_id == PREMIUM_OFF:
+            if self.boost_id:
+                boost_config = BoosterConfigParser.get_config(self.boost_id)
+                boost_image = boost_config.get('icon_path_small')
+        else:
+            prem_image = self._client_configs.get_premium_config(self.prem_id).get('icon_path_small')
+            if self.boost_id:
+                boost_config = BoosterConfigParser.get_config(self.boost_id)
+                boost_image = boost_config.get('icon_path_with_prem_small')
+        comp = self.component
+        if prem_image or boost_image:
+            comp.visible = True
+            if not prem_image:
+                comp.textureName = boost_image
+                comp.bstimage.textureName = boost_image and boost_image
+                comp.bstimage.visible = True
+            else:
+                comp.bstimage.visible = False
+        else:
+            comp.visible = False
+        return None
+
+    def reset(self):
+        pass
+
+
+class MainHealthBar(HealthBar, GUIPositions):
+    factoryString = 'soGUI.soHealthBar'
+    EVENT_CONTEXT = 0
+
+    def __init__(self):
+        HealthBar.__init__(self)
+        self.reset_position()
+        GUIPositions.__init__(self)
+        comp = GUI.Window()
+        comp.materialFX = 'BLEND'
+        comp.ha, comp.va = ('LEFT', 'TOP')
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.filterType = 'LINEAR'
+        comp.width, comp.height = (48, 48)
+        comp.position = (0, 4, 0.2)
+        comp.visible = False
+        self.component.addChild(comp, 'premboost')
+        self._premboost = PremBoost(comp)
+        comp = GUI.Simple('soGUI/maps/Icons/ability/icon_perk_boost_perception.dds')
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('LEFT', 'TOP')
+        comp.materialFX = 'BLEND'
+        comp.width, comp.height = (48, 48)
+        comp.position = (0, 0, 0.1)
+        comp.visible = False
+        self.component.addChild(comp, 'ninja')
+        comp = GUI.Text(u'', 'RobotoCondensedRegular_16.font')
+        comp.colour = (220, 220, 220, 160)
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.position = (0, -0.1, 0.1)
+        self.component.hpbarback.addChild(comp, 'text')
+        self._virtual_hp = None
+        self._hp_coroutine = None
+        return
+
+    def _on_init(self):
+        HealthBar._on_init(self)
+        self.virtual_hp = self.hp_value
+        self._premboost._update_content()
+
+    def _on_hp_changed(self):
+        self._update_text()
+        self._check_hp_coroutine()
+
+    @property
+    def virtual_hp(self):
+        return self._virtual_hp
+
+    @virtual_hp.setter
+    def virtual_hp(self, value):
+        if value == self._virtual_hp:
+            return
+        self._virtual_hp = value
+        self._update_text()
+
+    def _update_text(self):
+        if self._virtual_hp is None:
+            self.component.hpbarback.text.visible = False
+        else:
+            self.component.hpbarback.text.visible = True
+            self.component.hpbarback.text.text = '{0}/{1}'.format(int(self._virtual_hp), int(self.hp_max))
+        return
+
+    def _check_hp_coroutine(self):
+        if not Utils.is_visible_in_hierarchy(self.component) or self.virtual_hp is None or self.virtual_hp == self._hp_value:
+            run_coroutine = False
+        else:
+            run_coroutine = True
+        if run_coroutine:
+            if not self._hp_coroutine:
+                self._hp_coroutine = self._align_text_coroutine()
+                self._hp_coroutine.run()
+        elif self._hp_coroutine:
+            self._hp_coroutine.stop()
+            self._hp_coroutine = None
+        return
+
+    @BWMemberCoroutine
+    def _align_text_coroutine(self):
+        while True:
+            if self.virtual_hp == self.hp_value:
+                break
+            speed = BigWorld.getTimeDelta() * max(200, abs(self.virtual_hp - self.hp_value) * 5)
+            self.virtual_hp = move_towards(self.virtual_hp, self.hp_value, speed)
+            yield BWWaitForPeriod(0.0)
+
+        self.virtual_hp = self.hp_value
+        self._hp_coroutine = None
+        return
+
+    @property
+    def prem_id(self):
+        return self._premboost.prem_id
+
+    @prem_id.setter
+    def prem_id(self, value):
+        if self._premboost.prem_id != value:
+            self._premboost.prem_id = value
+            if self._inited:
+                self._do_reposition()
+
+    @property
+    def boost_id(self):
+        return self._premboost.boost_id
+
+    @boost_id.setter
+    def boost_id(self, value):
+        if self._premboost.boost_id != value:
+            self._premboost.boost_id = value
+            if self._inited:
+                self._do_reposition()
+
+    def _do_reposition(self):
+        hp_stretch, sp_stretch = HealthBar._do_reposition(self)
+        comp = self.component
+        comp.width, comp.height = (430, 58)
+        pos_x = 50 if self._premboost.component.visible else 4
+        comp = self.component.hpbarback
+        comp.position = (pos_x, 26, 0.7)
+        comp.width, comp.height = 300 * hp_stretch, 18
+        comp = self.component.name
+        comp.position = (pos_x, 0, 0.5)
+        comp = self.component.spbarback
+        comp.position = (pos_x, 46, 0.7)
+        comp.width, comp.height = 300 * sp_stretch, 4
+        comp = self.component.leader
+        comp.position[0] = pos_x + self.component.hpbarback.width
+        pos_x += max(self.component.hpbarback.width, self.component.spbarback.width)
+        width = pos_x + 4
+        if self.component.width != width:
+            self.component.width = width
+            GUIPositions.on_size_changed(self)
+
+    def reset_position(self):
+        x, y = (3, 3)
+        sw, sh = BigWorld.screenSize()
+        x, y = float(x - sw / 2) / (sw / 2), float(sh / 2 - y) / (sh / 2)
+        self.component.position = (x, y, 0.9)
+
+    def _reset_values(self):
+        HealthBar._reset_values(self)
+        self.virtual_hp = None
+        self._premboost.reset()
+        if self._hp_coroutine:
+            self._hp_coroutine.stop()
+            self._hp_coroutine = None
+        return
+
+    def show(self):
+        HealthBar.show(self)
+        GUIPositions.show(self)
+
+    def on_context_menu(self):
+        BWPersonality.GUICore.playerFrameEvent(MainHealthBar.EVENT_CONTEXT, None)
+        return
+
+    def update(self):
+        data = BWPersonality.GUICore.healthDataSection
+        self.hp_max = data['maxhealth']
+        self.hp_value = data['abshealth']
+        self.sp_max = data['maxstamina']
+        self.sp_value = data['absstamina']
+        self.name = data['name']
+        self.apply_name_color(True, data['namecolor']['karma'], data['namecolor']['agrflag'])
+
+    def doReposition(self):
+        pass
+
+    def onBound(self):
+        pass
+
+    def set_ninja(self, ninja):
+        self.component.ninja.visible = ninja
+
+    def set_leader_mark(self, value):
+        self.is_leader = value
+
+    def set_premium(self, prem_id):
+        self.prem_id = prem_id
+
+    def set_booster(self, boost_id):
+        self.boost_id = boost_id
+
+    def reset(self):
+        self.is_leader = False
+
+    def set_premium_time(self, end_time):
+        self._premboost.prem_end_time = end_time
+
+    def set_booster_time(self, end_time):
+        self._premboost.boost_end_time = end_time
+
+    def stopDragging(self):
+        GUIPositions.stopDragging(self)
+        DragWin.stopDragging(self)

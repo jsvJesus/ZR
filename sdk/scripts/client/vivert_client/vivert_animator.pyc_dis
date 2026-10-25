@@ -1,0 +1,193 @@
+# Embedded file name: ./client/vivert_client/vivert_animator.py
+from math_bw import clamp, lerpclamp, inverse_lerpclam
+from Math import Vector3
+from itertools import chain
+import BigWorld
+from utils import Destructable
+gi = BigWorld.getGeometricInstance()
+
+class Animation:
+    fade_speed = 5.0
+
+    def __init__(self, anim_id, framerate_provider, min_frame, max_frame):
+        self._min_frame, self._max_frame = min_frame, max_frame
+        self._frames_count = self._max_frame - self._min_frame
+        self._framerate_provider = framerate_provider
+        self.anim_id = anim_id
+        self.weight = 0.0
+        self._frame = 0.0
+        self.frame = self._frame + self._min_frame
+
+    def tick_up(self):
+        self.weight = clamp(self.weight + BigWorld.getTimeDelta() * Animation.fade_speed)
+        self._tick()
+
+    def tick_down(self):
+        self.weight = clamp(self.weight - BigWorld.getTimeDelta() * Animation.fade_speed)
+        self._tick()
+
+
+class LoopAnimation(Animation):
+
+    def _tick(self):
+        self._frame = (self._frame + BigWorld.getTimeDelta() * self._framerate_provider()) % self._frames_count
+        self.frame = self._frame + self._min_frame
+
+
+class SingleAnimation(Animation):
+
+    def is_completed(self):
+        return self._frame == self._frames_count
+
+    def _tick(self):
+        self._frame = min(self._frame + BigWorld.getTimeDelta() * self._framerate_provider(), self._frames_count)
+        self.frame = self._frame + self._min_frame
+
+
+class Track:
+
+    def __init__(self):
+        self._animations = []
+        self._target_animation = None
+        self._controller = None
+        return
+
+    def initialize(self, controller):
+        self._controller = controller
+
+
+class LoopTrack(Track):
+
+    def set_animation(self, anim_id, framerate_provider):
+        if anim_id is not None:
+            if not next((anim for anim in self._animations if anim.anim_id == anim_id), None):
+                min_frame, max_frame, _ = self._controller.getRange(anim_id)
+                self._animations.append(LoopAnimation(anim_id, framerate_provider, min_frame, max_frame))
+        self._target_animation = anim_id
+        return
+
+    def on_tick(self):
+        for i in range(len(self._animations) - 1, -1, -1):
+            animation = self._animations[i]
+            if animation.anim_id == self._target_animation:
+                animation.tick_up()
+            else:
+                animation.tick_down()
+                if animation.weight == 0:
+                    del self._animations[i]
+
+
+class SingleTrack(Track):
+
+    def set_animation(self, anim_id, framerate_provider):
+        if not self._controller:
+            return
+        else:
+            if anim_id is not None:
+                min_frame, max_frame, _ = self._controller.getRange(anim_id)
+                self._animations.append(SingleAnimation(anim_id, framerate_provider, min_frame, max_frame))
+            self._target_animation = anim_id
+            return
+
+    def on_tick(self):
+        for i in range(len(self._animations) - 1, -1, -1):
+            animation = self._animations[i]
+            if animation.is_completed() or animation.anim_id != self._target_animation:
+                animation.tick_down()
+                if animation.weight == 0:
+                    del self._animations[i]
+            else:
+                animation.tick_up()
+
+
+class VivertAnimator(Destructable):
+
+    def __init__(self, vivert):
+        Destructable.__init__(self)
+        self._vivert = vivert
+        self._controller = None
+        self._base_track = LoopTrack()
+        self._rotate_track = LoopTrack()
+        self._fight_track = SingleTrack()
+        self._last_actions = []
+        return
+
+    def _idle_framerate(self):
+        return 30
+
+    def _fight_framerate(self):
+        return 30
+
+    def _walk_framerate(self):
+        speed = self._velocity.length
+        ratio = inverse_lerpclam(0.1, 3, speed)
+        return lerpclamp(20, 70, ratio)
+
+    def _rotate_framerate(self):
+        ratio = inverse_lerpclam(0.1, 3, self._yaw_speed)
+        return lerpclamp(10, 30, ratio)
+
+    def draw_strike(self):
+        self._fight_track.set_animation('Vivert_AttackPaws1', self._fight_framerate)
+
+    def on_tick(self):
+        if not self._controller:
+            if not self._model:
+                return
+            self._controller = BigWorld.ActionController(self._model)
+            self._controller.attach()
+            self._base_track.initialize(self._controller)
+            self._rotate_track.initialize(self._controller)
+            self._fight_track.initialize(self._controller)
+        speed = self._velocity.length
+        if speed <= 0.2:
+            self._base_track.set_animation('Vivert_Idle', self._idle_framerate)
+        else:
+            velocity_direction = Vector3(self._velocity)
+            if velocity_direction >= 0:
+                self._base_track.set_animation('Vivert_WalkForward', self._walk_framerate)
+            else:
+                self._base_track.set_animation('Vivert_WalkBackward', self._walk_framerate)
+        yaw_anim_value = 0.1
+        if self._yaw_speed >= yaw_anim_value:
+            self._rotate_track.set_animation('Vivert_TurnLeft', self._rotate_framerate)
+        elif self._yaw_speed <= -yaw_anim_value:
+            self._rotate_track.set_animation('Vivert_TurnRight', self._rotate_framerate)
+        else:
+            self._rotate_track.set_animation(None, self._rotate_framerate)
+        self._base_track.on_tick()
+        self._rotate_track.on_tick()
+        self._fight_track.on_tick()
+        self._last_actions[:] = []
+        max_fight_weight = 0.0
+        for anim in self._fight_track._animations:
+            self._last_actions.append((anim.anim_id, anim.frame, anim.weight))
+            self._controller.addAction(anim.anim_id, anim.frame, anim.weight)
+            max_fight_weight = max(max_fight_weight, anim.weight)
+
+        base_weight = clamp(1.0 - max_fight_weight)
+        for anim in chain(self._base_track._animations, self._rotate_track._animations):
+            self._last_actions.append((anim.anim_id, anim.frame, anim.weight * base_weight))
+            self._controller.addAction(anim.anim_id, anim.frame, anim.weight * base_weight)
+
+        return
+
+    @property
+    def _model(self):
+        return self._vivert.model
+
+    @property
+    def _position(self):
+        return Vector3(self._vivert._filter.position)
+
+    @property
+    def _rotation(self):
+        return Vector3(self._vivert._filter.rotation)
+
+    @property
+    def _velocity(self):
+        return Vector3(self._vivert._filter.velocity)
+
+    @property
+    def _yaw_speed(self):
+        return self._vivert._filter.yaw_speed

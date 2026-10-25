@@ -1,0 +1,109 @@
+# Embedded file name: ./common/Config/SpacesConfig.py
+import json
+import Config
+from time import gmtime
+from copy import deepcopy
+SPACES_PATH = 'scripts/common/data/space_weather.json'
+DEFAULT_START_GLOBAL_TIME = '12:00'
+DEFAULT_START_LOCAL_TIME = '12:00'
+DEFAULT_PERIOD_DURATION = 3.5
+SECONDS_IN_DAY = 86400
+DEFAULT_WEATHER = 'Clear'
+try:
+    import ResMgr
+    dataSection = ResMgr.openSection(SPACES_PATH)
+    spaces = json.loads(dataSection.asBinary)
+except ImportError:
+    configPath = Config.__file__
+    parts = configPath.split('\\')
+    efConfigPath = '\\'.join(parts[:-2]) + '\\data\\space_weather.json'
+    s = open(efConfigPath, 'r').read()
+    spaces = json.loads(s)
+
+if 'default' not in spaces:
+    spaces['default'] = {'start_global_time': '12:00',
+     'start_local_time': '11:00',
+     'period_duration': 0.1,
+     'default_weather': 'Clear',
+     'periods': {'0:00': [[['Night_Clear', 'Night_Cloudy1'], 1]],
+                 '12:00': [[['Clear', 'Rainy_Light'], 1]]}}
+for space_name, space_data in spaces.items():
+    sync_name = space_data.get('sync')
+    if sync_name:
+        parent_copy = deepcopy(spaces[sync_name])
+        if 'sync_children' in parent_copy:
+            del parent_copy['sync_children']
+        parent_copy['sync_parent'] = sync_name
+        spaces[space_name] = parent_copy
+        if 'sync_children' not in spaces[sync_name]:
+            spaces[sync_name]['sync_children'] = []
+        spaces[sync_name]['sync_children'].append(space_name)
+
+SPACE_PERIODS = {}
+
+def getInitialSpaceTime(space_name):
+
+    def calcParam(start_time, period_duration, start_local_time):
+        sec_in_sec = SECONDS_IN_DAY / period_duration
+        dict_time = gmtime()
+        now_passed = dict_time.tm_hour * 3600 + dict_time.tm_min * 60
+        game_current_seconds = start_time - now_passed
+        passed_real_seconds_from_last_start = SECONDS_IN_DAY - game_current_seconds
+        passed_game_time_from_last_start = passed_real_seconds_from_last_start * sec_in_sec
+        passed_seconds = passed_game_time_from_last_start + start_local_time
+        passed_seconds = passed_seconds % SECONDS_IN_DAY
+        return (passed_seconds, sec_in_sec)
+
+    space = spaces.get(space_name, dict())
+    if not space:
+        print "SpaceConfig::getInitialSpaceTime Can't find config for space {0}. Using default value.".format(space_name)
+    start_time = space.get('start_global_time', DEFAULT_START_GLOBAL_TIME)
+    start_h, start_m = start_time.split(':')
+    start_time = int(start_h) * 3600 + int(start_m) * 60
+    period_duration = space.get('period_duration', DEFAULT_PERIOD_DURATION)
+    period_duration *= 3600
+    start_local_time = space.get('start_local_time', DEFAULT_START_LOCAL_TIME)
+    start_local_h, start_local_m = start_local_time.split(':')
+    start_local_time = int(start_local_h) * 3600 + int(start_local_m) * 60
+    return calcParam(start_time, period_duration, start_local_time)
+
+
+def getPeriodsOnSpaceName(space_name):
+    if not SPACE_PERIODS.has_key(space_name):
+        return SPACE_PERIODS['default']
+    return SPACE_PERIODS[space_name]
+
+
+def getDefaultWeather(space_name):
+    return spaces.get(space_name, {}).get('default_weather', DEFAULT_WEATHER)
+
+
+def getSyncRelation(space_name):
+    config = spaces.get(space_name) or {}
+    return (config.get('sync_parent', None), config.get('sync_children', []))
+
+
+def getVignetteValue(space_name):
+    return spaces.get(space_name, {}).get('vignette')
+
+
+def get_start_local_time(space_name):
+    return spaces.get(space_name, {}).get('start_local_time')
+
+
+for space_name, space_data in spaces.items():
+    periods_dict = space_data.get('periods', {})
+    time_periods = []
+    for period_name_time, weather_data in periods_dict.items():
+        try:
+            time_h, time_m = period_name_time.split(':')
+        except Exception as e:
+            print 'ERROR_SpaceConfig', period_name_time
+            raise e
+
+        period_time = int(time_h) * 3600 + int(time_m) * 60
+        period = dict(name=str(period_name_time), time=period_time, weather_data=weather_data)
+        time_periods.append(period)
+        time_periods.sort(key=lambda period: period['time'])
+
+    SPACE_PERIODS[space_name] = time_periods

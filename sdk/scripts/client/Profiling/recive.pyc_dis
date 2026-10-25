@@ -1,0 +1,615 @@
+# Embedded file name: ./client/Profiling/recive.py
+import socket
+import cPickle
+import sys
+import zlib
+import threading
+import copy
+import Tkinter
+from Tkinter import *
+import Tix
+import ttk
+import fasttree
+
+def generator_number():
+    x = 0
+    while 1:
+        x += 1
+        yield x
+
+
+generator_number = generator_number()
+
+class Reciver():
+    HEADER_SIZE = 5
+    MAX_BUFFER_SIZE = 32767 + HEADER_SIZE * 2 + 10
+    address = '127.0.0.1'
+    port = 7777
+    bENABLED_DEBUG_OUTPUT = False
+
+    def __init__(self):
+        self._semaphore = threading.Semaphore()
+        self._sock = None
+        self._listenthread = None
+        self._activelisten = False
+        self._data = {}
+        self._iternal_data = ''
+        self._segment_count = 0
+        return
+
+    def startListen(self):
+        if self._activelisten:
+            print 'Error, already listening'
+            return
+        self._activelisten = True
+        self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self._sock.bind((self.address, self.port))
+        self._sock.settimeout(1)
+        self._listenthread = threading.Thread(target=self._recvFunction)
+        self._listenthread.start()
+
+    def stopListen(self):
+        self._semaphore.acquire()
+        self._activelisten = False
+        self._semaphore.release()
+
+    def _getActiveListen(self):
+        self._semaphore.acquire()
+        val = self._activelisten
+        self._semaphore.release()
+        return val
+
+    def setData(self, data):
+        self._data = copy.deepcopy(data)
+
+    def getData(self):
+        return self._data
+
+    def _recvFunction(self):
+        HEADER_SIZE = self.HEADER_SIZE
+        while True:
+            data = ''
+            if not self._getActiveListen():
+                return
+            try:
+                data = self._sock.recv(self.MAX_BUFFER_SIZE)
+            except:
+                continue
+
+            segment_num = int(data[0:HEADER_SIZE])
+            segment_count = int(data[HEADER_SIZE:2 * HEADER_SIZE]) - 1
+            if (self._segment_count < segment_num or self._segment_count != segment_count) and self._segment_count != 0:
+                continue
+            if segment_num == 0:
+                self._segment_count = segment_count
+            self._iternal_data = self._iternal_data + data[2 * HEADER_SIZE:]
+            if segment_num != segment_count:
+                continue
+            self._segment_count = 0
+            data = self._iternal_data
+            self._iternal_data = ''
+            compressed = data[0:2] == 'C1'
+            try:
+                if compressed:
+                    data = data[2:]
+                    data = zlib.decompress(data)
+                data = cPickle.loads(data)
+            except:
+                data = {}
+
+            self.setData(data)
+
+
+___stat_params___ = {'MB': (1024 * 1024, 'MB', 2),
+ 'KB': (1024, 'KB', 2),
+ 'NONE': (1, '', -1)}
+
+def __getStatBySize__(str):
+    return ___stat_params___[str]
+
+
+class MemoryWindow():
+    updateTime = 1000
+    w = 700
+    h = 815
+    checkbutton_size = 100
+    avilableParams = [('sum', 'Sum Size'),
+     ('size', 'Size'),
+     ('peakSize', 'Peak Size'),
+     ('instances', 'Instances'),
+     ('peakInstances', 'Peak Instances'),
+     ('numberAdds', 'Add Count'),
+     ('numberSubs', 'Sub Count')]
+    paramsMultiplers = {'sum': __getStatBySize__('MB'),
+     'size': __getStatBySize__('MB'),
+     'peakSize': __getStatBySize__('MB'),
+     'instances': __getStatBySize__('NONE'),
+     'peakInstances': __getStatBySize__('NONE'),
+     'numberAdds': __getStatBySize__('NONE'),
+     'numberSubs': __getStatBySize__('NONE')}
+    data = {}
+    buttons = {}
+    checkbuttons = {}
+    checkbtns_vars = {}
+    context_menus = {}
+    check_list = None
+    frame = None
+    view_ctrl = None
+    sortColumn = '#0'
+    reverseSort = False
+    summary_id = False
+
+    def __init__(self):
+        self._reciver = Reciver()
+        self._root = Tix.Tk()
+        self._root.protocol('WM_DELETE_WINDOW', self.onDestroy)
+        ws = self._root.winfo_screenwidth()
+        hs = self._root.winfo_screenheight()
+        x = ws - self.w - 20
+        y = 50
+        self._root.bind('<Configure>', self.OnResize)
+        self._root.geometry('%dx%d+%d+%d' % (self.w,
+         self.h,
+         x,
+         y))
+        self.initInterface()
+        self._root.after(self.updateTime, self.updateAll)
+        self._reciver.startListen()
+        self._root.mainloop()
+
+    def onDestroy(self):
+        if self._reciver._getActiveListen():
+            self._reciver.stopListen()
+        self._root.destroy()
+
+    ____updateDataCache = {}
+
+    def alreadyCached(self, dc):
+        if len(self.____updateDataCache) != len(dc):
+            self.____updateDataCache = dc
+            return False
+        for key in dc:
+            if key not in self.____updateDataCache:
+                self.____updateDataCache = dc
+                return False
+
+        return True
+
+    def updateAll(self):
+        self.updateData()
+        self._root.after(self.updateTime, self.updateAll)
+
+    def updateData(self):
+        dc = self._reciver.getData()
+        temp_dc = {}
+        for key in dc:
+            temp_dc['All/' + key[0], key[1]] = dc[key]
+
+        dc = temp_dc
+        resolvedByTag = {}
+        resolved_dc = self._resolveInputDict(dc, resolvedByTag)
+        if not self.alreadyCached(dc):
+            data_list = self.dictToList(resolved_dc)
+            self.updateTree(data_list)
+        self.updateViewTree(resolved_dc, resolvedByTag)
+
+    def removeOldElements(self, data, selected_list, view_control):
+        if len(data) == 0:
+            return
+        toDeleteList = []
+        for data_element in data:
+            if data_element not in selected_list:
+                view_control.delete(data[data_element])
+                toDeleteList.append(data_element)
+
+        for data_element in toDeleteList:
+            del data[data_element]
+
+        return data
+
+    def resolveValue(self, name, value):
+        params = self.paramsMultiplers[name]
+        value = str(round(float(value) / float(params[0]), params[2])) + params[1]
+        if params[2] == -1:
+            value = value[:value.find('.')]
+        return value
+
+    ____updateViewTreeCache = {}
+
+    def updateViewTree(self, dc, raw_dict):
+        temp_selected = self.check_list.getselection('on')
+        selected = []
+        view = self.view_ctrl
+        for element in temp_selected:
+            new_element = self.getRealNameFromPathName(element)
+            selected.append(new_element)
+
+        self.removeOldElements(self.data, selected, view)
+        if len(selected) == 0:
+            self.____updateViewTreeCache = {}
+        time_in_avparams = 0
+        summary_dict = {}
+        for element in selected:
+            if not element:
+                continue
+            if element not in dc:
+                continue
+            if element in self.data:
+                el_id = view.exists(self.data[element]) or view.insert('', generator_number.next(), text=element)
+                self.data[element] = el_id
+            el_id = self.data[element]
+            summary_dict[element] = dc[element]
+            for tag in self.avilableParams:
+                name = tag[0]
+                if name in dc[element]:
+                    value = self.resolveValue(name, dc[element][name])
+                    bNeedUpdate = False
+                    CACHE_ID = name + str(el_id)
+                    if CACHE_ID in self.____updateViewTreeCache:
+                        cached_val = self.____updateViewTreeCache[CACHE_ID]
+                        if cached_val != value:
+                            bNeedUpdate = True
+                    else:
+                        self.____updateViewTreeCache[CACHE_ID] = value
+                        bNeedUpdate = True
+                    if bNeedUpdate:
+                        view.set(el_id, column=name, value=value)
+
+        temp_summary_dict = {}
+        tree = fasttree.Tree()
+        for element in summary_dict:
+            tree.add(element)
+
+        for element in summary_dict:
+            real_element = tree.getRootByName(element)
+            if real_element not in temp_summary_dict:
+                if real_element in summary_dict:
+                    temp_summary_dict[real_element] = summary_dict[real_element]
+
+        summary_data = {}
+        for key in temp_summary_dict:
+            summary_data = self._sumDicts(temp_summary_dict[key], summary_data)
+
+        if self.summary_id == False:
+            self.summary_id = view.insert('', generator_number.next(), text='#TOTAL')
+            view.move(self.summary_id, '', -1)
+        for tag in self.avilableParams:
+            if tag[0] in summary_data:
+                name = tag[0]
+                value = self.resolveValue(name, summary_data[tag[0]])
+                view.set(self.summary_id, column=name, value=value)
+            else:
+                view.set(self.summary_id, column=tag[0], value=0)
+
+        self._sortByColumn(self.sortColumn, dc, selected, view)
+
+    def updateTree(self, total_list):
+        check_list = self.check_list
+        hlist = self.check_list.hlist
+        for pairDict in total_list:
+            original_path = pairDict['path']
+            valid_path = self.getPathName(original_path)
+            name = original_path[original_path.rfind('/') + 1:]
+            data = pairDict['data']
+            if not hlist.has(hlist, valid_path):
+                hlist.add(valid_path, text=name)
+                check_list.setstatus(valid_path, 'off')
+
+        check_list.autosetmode()
+
+    def OnResize(self, event):
+        new_width = self._root.winfo_width()
+        new_height = self._root.winfo_height()
+        if new_width != self.w or new_height != self.h:
+            self.ResizeInterface(new_width, new_height)
+            self.ResizeInterface(new_width, new_height)
+
+    def isTreeCollapsed(self):
+        return self.check_list and int(self.check_list['width']) < 0
+
+    def ResizeInterface(self, new_width, new_height):
+        if new_width == 0:
+            new_width = 1
+        if new_height == 0:
+            new_height = 1
+        if not self.check_list:
+            return
+        if new_height == 1 or new_width == 1:
+            return
+        diff_x = new_width - self.w
+        diff_y = new_height - self.h
+        if int(self.check_list['width']) > 0:
+            self.check_list['width'] = self.w - 20
+        else:
+            setattr(self.check_list, 'old_width', int(self.w - 20))
+        if int(self.check_list['height']) > 0:
+            self.check_list['height'] = new_height / 2
+        else:
+            setattr(self.check_list, 'old_height', int(self.h / 2))
+        btn = self.buttons['HideTree']
+        btn.place_configure(x=btn.winfo_x() + diff_x, y=btn.winfo_y())
+        self.w = new_width
+        self.h = new_height
+        self.recalcCheckButtonPos()
+        rows = self.getCheckButtonRows(self.checkbutton_size)
+        start_y = 1
+        if not self.isTreeCollapsed():
+            start_y = self.h / 2 + 10
+        frame = self.frame
+        frame.place_configure(x=10, y=start_y + (rows + 1) * 25)
+        self.view_ctrl.pack_configure(anchor=CENTER, fill=BOTH, expand=True, in_=self.frame)
+        one_line_size = 40.0 / 800.0
+        size = int((self.h - (start_y + (rows + 1) * 25) - 30) * one_line_size)
+        self.view_ctrl.configure(height=size)
+        self.recalcViewTreeCols()
+
+    def hideTree(self, *e):
+        old_width = getattr(self.check_list, 'old_width', None)
+        old_height = getattr(self.check_list, 'old_height', None)
+        btn = self.buttons['HideTree']
+        if old_width != None and old_height != None:
+            self.check_list.old_width = None
+            self.check_list.old_height = None
+            self.check_list['width'] = old_width
+            self.check_list['height'] = old_height
+            btn['text'] = 'Hide Tree'
+            self.ResizeInterface(self.w, self.h)
+        else:
+            btn['text'] = 'Show Tree'
+            setattr(self.check_list, 'old_width', self.check_list['width'])
+            setattr(self.check_list, 'old_height', self.check_list['height'])
+            self.check_list['width'] = -100
+            self.check_list['height'] = -100
+            self.ResizeInterface(self.w, self.h)
+        return
+
+    def initInterface(self):
+        root = self._root
+        root.title('SO Remote Resource Counter')
+        btn = Button(root, text='Hide Tree')
+        btn.bind('<Button-1>', self.hideTree)
+        btn.place(x=self.w - 80, y=0)
+        self.buttons['HideTree'] = btn
+        for pair in self.avilableParams:
+            iternalName = pair[0]
+            interfaceName = pair[1]
+            var = Tix.IntVar()
+            var.set(1)
+            checkbutton = Tix.Tkinter.Checkbutton(root, text=interfaceName, variable=var, command=lambda : self.recalcViewTreeCols(True))
+            self.checkbuttons[iternalName] = checkbutton
+            self.checkbtns_vars[iternalName] = var
+
+        self.recalcCheckButtonPos()
+
+        def onClickToChecklist(*e):
+            self.updateData()
+
+        cl = Tix.CheckList(root, width=self.w - 20, height=self.h / 2, browsecmd=onClickToChecklist)
+
+        def has(self, element_path):
+            try:
+                self.item_exists(element_path, 0)
+                return True
+            except:
+                return False
+
+        cl.hlist.has = has
+        cl.place(x=10, y=30)
+        self.check_list = cl
+
+        def onRightClickTree(e):
+            x = e.x
+            y = e.y
+            item = cl.hlist.nearest(y)
+
+            def recursiveSelect(itemPath, status):
+                if itemPath != '':
+                    cl.setstatus(itemPath, status)
+                    childs = cl.hlist.info_children(itemPath)
+                    for child in childs:
+                        cl.setstatus(child, status)
+                        recursiveSelect(child, status)
+
+            if item != '':
+                status = cl.getstatus(item)
+                if status == 'off':
+                    status = 'on'
+                else:
+                    status = 'off'
+                recursiveSelect(item, status)
+                self.updateData()
+
+        cl.hlist.bind('<ButtonRelease-3>', onRightClickTree)
+        self.frame = Tix.Tkinter.Frame(root, width=self.w - 20, height=self.h / 2 - 20)
+        self.frame.configure(background='#FF0000')
+        columns = []
+        for pair in self.avilableParams:
+            iternalName = pair[0]
+            columns.append(iternalName)
+
+        tree = ttk.Treeview(self.frame, columns=columns, height=15)
+        vsb = ttk.Scrollbar(self.frame, orient='vertical', command=tree.yview)
+        vsb.pack(side='right', fill=BOTH)
+        tree.configure(yscrollcommand=vsb.set)
+        self.view_ctrl = tree
+        rows = self.getCheckButtonRows(self.checkbutton_size)
+        tree.pack(fill=BOTH, expand=True, in_=self.frame, anchor='center')
+        self.recalcViewTreeCols()
+        self.frame.place(x=10, y=self.h / 2 + (rows + 1) * 25 + 10)
+
+    def _sortByColumn(self, column_name, data_dc, data_list, view_control):
+        if len(self.data) == 0:
+            return
+
+        def comparator(key):
+            if column_name == '#0':
+                return key
+            return data_dc[key][column_name]
+
+        data_list.sort(key=comparator, reverse=self.reverseSort)
+        for index, element in enumerate(data_list):
+            el_id = self.data[element]
+            view_control.move(el_id, '', index + 1)
+
+    def getCheckButtonCount(self):
+        count = 0
+        for button in self.checkbuttons:
+            if not hasattr(self.checkbuttons[button], 'freeze_position'):
+                count = count + 1
+
+        return count
+
+    def getCheckButtonRows(self, element_size):
+        count = self.getCheckButtonCount()
+        elements_per_row = int(float(self.w) / float(element_size))
+        val = float(count) / float(elements_per_row)
+        import math
+        val = math.ceil(val)
+        return val
+
+    ___col__hided___ = {}
+
+    def recalcViewTreeCols(self, save_pos = False):
+        tree = self.view_ctrl
+        width_of_one = int(float(self.w - self.w / 3) / float(len(self.avilableParams)))
+
+        def sortColumn(self, paramName):
+            if paramName == self.sortColumn:
+                self.reverseSort = not self.reverseSort
+            else:
+                self.reverseSort = False
+                self.sortColumn = paramName
+            self.updateData()
+
+        if not save_pos:
+            tree.heading('#0', text='Resource Tag', command=lambda : sortColumn(self, '#0'))
+            tree.column('#0', width=int(self.w / 3.5), minwidth=100)
+        for pair in self.avilableParams:
+            width = width_of_one
+            min_width = 10
+            iternalName = pair[0]
+            interfaceName = pair[1]
+            if not self.checkbtns_vars[iternalName].get():
+                tree.column(iternalName, width=0, minwidth=0)
+                self.___col__hided___[iternalName] = True
+            elif iternalName in self.___col__hided___ and self.___col__hided___[iternalName]:
+                del self.___col__hided___[iternalName]
+                tree.column(iternalName, width=width, minwidth=min_width)
+            if save_pos:
+                continue
+            tree.heading(iternalName, text=interfaceName, command=lambda v = iternalName: sortColumn(self, v))
+            tree.column(iternalName, width=width, minwidth=min_width)
+
+    def recalcCheckButtonPos(self):
+        width = self.w
+        height = self.h
+        element_size = self.checkbutton_size
+        row_height = 25
+        rows = self.getCheckButtonRows(element_size)
+        length = self.getCheckButtonCount()
+        elements_per_row = int(float(self.w - 120) / float(element_size) + 0.5) + 1
+        row = 0
+        count = 0
+        start_y = 1
+        if not self.isTreeCollapsed():
+            start_y = height / 2 + 10
+        for name in self.checkbuttons:
+            button = self.checkbuttons[name]
+            if hasattr(button, 'freeze_position'):
+                continue
+            x = 10 + element_size * count
+            y = start_y + row_height * (row + 1)
+            button.place(x=x, y=y)
+            count = count + 1
+            if count >= elements_per_row:
+                count = 0
+                row = row + 1
+
+    __replaced = {}
+
+    def getPathName(self, name_str):
+        name = name_str.replace('.', '_')
+        name = name.replace('/', '.')
+        name = name.replace('\\', '-')
+        name = name.replace(' ', '__')
+        self.__replaced[name] = name_str
+        return name
+
+    def getRealNameFromPathName(self, name_str):
+        if name_str not in self.__replaced:
+            return ''
+        return self.__replaced[name_str]
+
+    def dictToList(self, dc):
+        outval = []
+        for key in dc:
+            outval.append({'path': key,
+             'data': dc[key]})
+
+        def comparator(lhs, rhs):
+            lhs = lhs['path']
+            rhs = rhs['path']
+            min_len = len(lhs)
+            if len(lhs) > len(rhs):
+                min_len = len(rhs)
+            for i in range(0, min_len):
+                if lhs[i] > rhs[i]:
+                    return True
+                if lhs[i] < rhs[i]:
+                    return False
+
+            return len(lhs) > len(rhs)
+
+        def make_comparator(less_than):
+
+            def compare(x, y):
+                if less_than(x, y):
+                    return 1
+                elif less_than(y, x):
+                    return -1
+                else:
+                    return 0
+
+            return compare
+
+        cmp = make_comparator(comparator)
+        outval.sort(cmp)
+        return outval
+
+    def _sumDicts(self, dc1, dc2):
+        if dc1 == {}:
+            return dc2
+        if dc2 == {}:
+            return dc1
+        result = {}
+        for key in dc1:
+            if key in dc2:
+                result[key] = dc1[key] + dc2[key]
+            else:
+                result[key] = dc1[key]
+
+        return result
+
+    def _resolveInputDict(self, dc, resolvedByTag):
+        outval = {}
+        for pairKey in dc:
+            self._subresolve(0, pairKey[0], dc[pairKey], outval)
+            resolvedByTag[pairKey[0]] = dc[pairKey]
+
+        return outval
+
+    def _subresolve(self, old_pos, key, value, outdc):
+        pos = key.find('/', old_pos)
+        if pos != -1:
+            single_key = key[:pos]
+        else:
+            single_key = key
+        if single_key not in outdc:
+            outdc[single_key] = {}
+        outdc[single_key] = self._sumDicts(value, outdc[single_key])
+        if pos == -1:
+            return
+        return self._subresolve(pos + 1, key, value, outdc)
+
+
+MemoryWindow()

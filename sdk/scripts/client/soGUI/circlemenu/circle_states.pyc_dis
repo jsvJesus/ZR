@@ -1,0 +1,282 @@
+# Embedded file name: ./client/soGUI/circlemenu/circle_states.py
+from utils import Listenable
+import GUI
+from math import pi, atan2
+from Localization import lc
+from Math import Vector2
+from petal import StateType as PState
+from circle_utils import get_sector_index_from_mouse_pos, petal_count
+import sounds_manager
+_debug_tracker = False
+
+class State(object):
+
+    def __init__(self, circle):
+        self._circle = circle
+        self.component = circle.component
+
+    def on_enter(self):
+        for petal in self._circle._petals:
+            petal.on_enter_state(self._get_petal_state())
+
+    def on_exit(self):
+        for petal in self._circle._petals:
+            petal.on_exit_state(self._get_petal_state())
+
+    def on_parent_size_changed(self, parent_size):
+        pass
+
+    def apply_selection(self):
+        pass
+
+    def _get_petal_state(self):
+        raise NotImplementedError
+
+    def accept_drop(self, slot):
+        pass
+
+    def handle_drag_start(self):
+        pass
+
+    def handle_drag_stop(self, comp):
+        pass
+
+
+class TrackerET:
+    OnSectorChanged, = ((r, 'CircleMouseTracker') for r in range(1))
+
+
+class MouseTracker(Listenable):
+    _radius_outer = 100.0
+    _radius_inner = 40.0
+
+    def __init__(self, circle):
+        Listenable.__init__(self)
+        self._sector_index = None
+        self._mouse_virtual_pos = Vector2(0, 0)
+        if _debug_tracker:
+            comp = GUI.Window('soGUI/frame/paint/white_circle.dds')
+        else:
+            comp = GUI.Window()
+        comp.position = (0, 0, 0)
+        comp.colour = (255, 255, 255, 255)
+        comp.materialFX = 'BLEND'
+        comp.wm, comp.hm = ('CLIP', 'CLIP')
+        comp.width, comp.height = (1, 1)
+        circle.component.addChild(comp)
+        self.component = comp
+        radius = float(MouseTracker._radius_inner) / MouseTracker._radius_outer * 2
+        comp = GUI.Window('soGUI/frame/paint/white_circle.dds')
+        comp.position = (0, 0, 0.9)
+        comp.colour = (0, 0, 0, 255)
+        comp.materialFX = 'BLEND'
+        comp.wm, comp.hm = ('CLIP', 'CLIP')
+        comp.visible = _debug_tracker
+        comp.width, comp.height = radius, radius
+        self.component.addChild(comp)
+        comp = GUI.Window('soGUI/frame/paint/white_circle.dds')
+        comp.materialFX = 'BLEND'
+        comp.colour = (255, 0, 0, 255)
+        comp.position = (0, 0, 0.5)
+        comp.wm, comp.hm = ('CLIP', 'CLIP')
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.visible = _debug_tracker
+        comp.width, comp.height = (0.15, 0.15)
+        self.component.addChild(comp)
+        self._dbgball = comp
+        comp = GUI.Window('soGUI/frame/circle_menu/selection.dds')
+        comp.materialFX = 'BLEND'
+        comp.position = (0, 0, 0.6)
+        comp.wm, comp.hm = ('CLIP', 'CLIP')
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.ha, comp.va = ('LEFT', 'CENTER')
+        comp.width, comp.height = (1, 0.5)
+        comp.isClip = False
+        comp.filterType = 'LINEAR'
+        comp.visible = False
+        self.component.addChild(comp)
+        self._selector = comp
+        return
+
+    def apply_mouse_event(self, event):
+        self._mouse_virtual_pos += Vector2(event.dx, -event.dy)
+        self._update_selection()
+
+    def reset(self):
+        self._mouse_virtual_pos = Vector2(0, 0)
+        self.sector_index = None
+        self._update_selection()
+        return
+
+    def _update_selection(self):
+        if self._mouse_virtual_pos.length > MouseTracker._radius_outer:
+            self._mouse_virtual_pos.normalise()
+            self._mouse_virtual_pos *= MouseTracker._radius_outer
+        pos = Vector2(self._mouse_virtual_pos)
+        pos /= MouseTracker._radius_outer
+        self._dbgball.position = (pos.x, pos.y, 0.5)
+        if self._mouse_virtual_pos.length > MouseTracker._radius_inner:
+            sector_index = get_sector_index_from_mouse_pos(self._mouse_virtual_pos)
+            self.sector_index = sector_index
+            self._selector.rotate = atan2(pos.y, pos.x)
+
+    @property
+    def sector_index(self):
+        return self._sector_index
+
+    @sector_index.setter
+    def sector_index(self, value):
+        if value == self._sector_index:
+            return
+        else:
+            self._sector_index = value
+            self._selector.visible = self._sector_index is not None
+            self.notify_listeners(TrackerET.OnSectorChanged)
+            return
+
+
+class UseState(State):
+
+    def __init__(self, circle):
+        State.__init__(self, circle)
+        self._mouse_tracker = MouseTracker(self._circle)
+        comp = GUI.Window('soGUI/frame/circle_menu/petal_hover.dds')
+        comp.ha, comp.va = ('CENTER', 'BOTTOM')
+        comp.materialFX = 'BLEND'
+        comp.filterType = 'LINEAR'
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.isClip = False
+        comp.position = (0, 0, 0.85)
+        comp.visible = False
+        comp.colour = (120, 120, 120, 255)
+        self.component.addChild(comp, 'petal_hover')
+
+    def on_enter(self):
+        State.on_enter(self)
+        self._mouse_tracker.add_listener(self._on_mouse_tracker_event)
+        self._mouse_tracker.reset()
+        self.component.petal_hover.visible = True
+        for petal in self._circle._petals:
+            petal.petal_comp.colour = (0, 0, 0, 90)
+
+        sector_index = self._mouse_tracker.sector_index
+        if sector_index is not None:
+            text = self._circle._petals[sector_index].get_center_text()
+            self._circle.set_center_text(text)
+        self._update_selection()
+        return
+
+    def on_exit(self):
+        State.on_exit(self)
+        self._mouse_tracker.remove_listener(self._on_mouse_tracker_event)
+        self._mouse_tracker.reset()
+        self.component.petal_hover.visible = False
+
+    def mouse_intercepted(self, event):
+        self._mouse_tracker.apply_mouse_event(event)
+        return True
+
+    def apply_selection(self):
+        sector_index = self._mouse_tracker.sector_index
+        if sector_index is not None:
+            selected_petal = self._circle._petals[sector_index]
+            selected_petal.apply()
+        return
+
+    def key_intercepted(self, event):
+        return False
+
+    def need_mouse_cursor(self):
+        return False
+
+    def _get_petal_state(self):
+        return PState.Use
+
+    def _on_mouse_tracker_event(self, event_type, data):
+        if event_type == TrackerET.OnSectorChanged:
+            if self._mouse_tracker.sector_index is not None:
+                sounds_manager.playSound('ui/obd/hover')
+            self._update_selection()
+        return
+
+    def _update_selection(self):
+        sector_index = self._mouse_tracker.sector_index
+        if sector_index is None:
+            self._circle.set_center_text(u'')
+            self.component.petal_hover.visible = False
+        else:
+            self._circle.set_center_text(self._circle._petals[sector_index].get_center_text())
+            angle = float(sector_index) / petal_count * 2 * pi - pi / 2
+            self.component.petal_hover.rotate = angle
+            self.component.petal_hover.visible = True
+        return
+
+    def on_parent_size_changed(self, parent_size):
+        comp = self.component.petal_hover
+        comp.height = self.component.height * 0.53
+        comp.width = comp.height * comp.texture.width / comp.texture.height
+
+
+class EditState(State):
+
+    def __init__(self, circle):
+        State.__init__(self, circle)
+        self._dragged_petal = None
+        return
+
+    def on_enter(self):
+        State.on_enter(self)
+        for petal in self._circle._petals:
+            petal.petal_comp.colour = (0, 0, 0, 220)
+
+        self._circle.set_center_text(lc('GUI.circle_menu.edit_mode'))
+
+    def need_mouse_cursor(self):
+        return True
+
+    def _cursor_incide_circle(self):
+        local_pos = self.component.screenToLocal(GUI.mcursor().position)
+        center_pos = Vector2(self.component.width, self.component.height) * 0.5
+        dist = (local_pos - center_pos).length
+        outer_radius = (self.component.width + self.component.height) / 4
+        inner_radius = outer_radius * (self.component.center.width + self.component.center.height) / 4
+        return (dist <= outer_radius, dist <= inner_radius)
+
+    def mouse_intercepted(self, event):
+        return True
+
+    def key_intercepted(self, event):
+        return self._cursor_incide_circle()[0]
+
+    def _get_petal_state(self):
+        return PState.Edit
+
+    def handle_drag_start(self):
+        self._dragged_petal = self._get_petal_under_cursor()
+        if self._dragged_petal:
+            self._dragged_petal.handle_drag_start()
+
+    def handle_drag_stop(self, comp):
+        if self._dragged_petal:
+            petal = self._get_petal_under_cursor()
+            self._dragged_petal.handle_drag_stop(comp, petal)
+            self._dragged_petal = None
+        return
+
+    def _get_petal_under_cursor(self):
+        inside_outcircle, incide_innercircle = self._cursor_incide_circle()
+        if not inside_outcircle or incide_innercircle:
+            return None
+        else:
+            m_pos = Vector2(GUI.mcursor().position)
+            m_pos.y *= -1
+            local_pos = self.component.screenToLocal(m_pos)
+            local_pos -= Vector2(self.component.width, self.component.height) * 0.5
+            sector_index = get_sector_index_from_mouse_pos(local_pos)
+            return self._circle._petals[sector_index]
+
+    def accept_drop(self, slot):
+        petal = self._get_petal_under_cursor()
+        if petal:
+            petal.accept_drop(slot)

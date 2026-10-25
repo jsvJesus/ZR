@@ -1,0 +1,1056 @@
+# Embedded file name: ./client/soGUI/gradesGUI/Grade_window.py
+import GUI
+import BigWorld
+import gui_jokes
+import Constants
+import colorCodes
+import ItemsUtils
+import grades_utils
+import BWPersonality
+import WeaponWorkbenchUtils
+from time import time
+from copy import deepcopy
+from Localization import lc
+from gui_const import ITSLOT
+from functools import partial
+from Items import ItemsCatalog
+from soGUI.soButton import soButton
+from Helpers.PyGUI import PyGUIBase
+from soGUI.GUIPositions import GUIPositions
+from soGUI.soInventorySlot2 import soInventorySlot2
+from soGUI.gradesGUI.Grade_widget import Grade_widget
+from Helpers.PyGUI.DraggableComponent import DraggableComponent
+ONE_MODE, AUTO_MODE = range(2)
+MODE = ONE_MODE
+
+class Grade_window(PyGUIBase, DraggableComponent, GUIPositions):
+
+    def __init__(self, component, workbench = None, npc = None):
+        PyGUIBase.__init__(self, component)
+        component.script = self
+        DraggableComponent.__init__(self, 1, 1, 1, xoffset=0, yoffset=0)
+        GUIPositions.__init__(self)
+        self.grade_controls = {}
+        self.workbench, self.npc = workbench, npc
+        self.__last_grade_id = None
+        self.__last_tool_type = None
+        self.__last_tool_type2 = None
+        self.__workaround_lock = False
+        self.locked_items = []
+        self.__dev_mode = False
+        self._calllback_id = 0
+        self.__tmp_downgrade = {}
+        self.setupRoot()
+        self.setupUI()
+        return
+
+    def stopDragging(self):
+        DraggableComponent.stopDragging(self)
+        GUIPositions.stopDragging(self)
+
+    def setupRoot(self):
+        cmp = self.component
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'CLIP'
+        cmp.horizontalAnchor = 'CENTER'
+        cmp.verticalAnchor = 'CENTER'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.height = 550
+        cmp.width = 874
+        cmp.visible = False
+        cmp.textureName = ''
+        cmp.focus = True
+        cmp.crossFocus = True
+        cmp.dragFocus = True
+        cmp.dropFocus = True
+        cmp.moveFocus = True
+        cmp.mouseButtonFocus = True
+
+    def reset_position(self):
+        self.component.position = (0, 0, 0.9)
+
+    def setupUI(self):
+        cmp = GUI.Frame2('soGUI/frame/basic_frame_1.dds')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.height = self.component.height
+        cmp.width = self.component.width
+        cmp.position = (0, 0, 0.9)
+        self.component.addChild(cmp, 'iFrame')
+        closeBox = soButton(GUI.Window())
+        cmp = closeBox.component
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'BOTTOM'
+        cmp.height = cmp.width = 16
+        cmp.position = (self.component.width - 28, 26, 0.3)
+        closeBox.initVSC('soGUI/elements/closeBox.xml')
+        closeBox.onBound()
+        closeBox.setVisualState('normal')
+        closeBox.onClick = self.hide
+        self.component.addChild(cmp, 'close_btn')
+        helpBox = soButton(GUI.Window())
+        cmp = helpBox.component
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'BOTTOM'
+        cmp.height = cmp.width = 16
+        cmp.position = (self.component.width - 48, 26, 0.3)
+        helpBox.initVSC('soGUI/elements/helpBox.xml')
+        helpBox.onBound()
+        helpBox.setVisualState('normal')
+        self.component.addChild(cmp, 'help_btn')
+        btn = soButton(GUI.Window())
+        cmp = btn.component
+        btn.initVSC('soGUI/elements/button_1.xml')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.horizontalAnchor = 'RIGHT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.label.font = 'RobotoCondensedRegular_16.font'
+        cmp.label.text = lc('soGrades.gui.changemode_btn')
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.width = 161
+        cmp.height = 30
+        cmp.position = (self.component.width - 36, 59, 0.1)
+        cmp.script.setDisabledState(False)
+        self.component.addChild(cmp, 'btn_changemode')
+        btn.onClick = self.change_mode
+        btn.onBound()
+        cmp = GUI.Text()
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.horizontalAnchor = 'CENTER'
+        cmp.verticalAnchor = 'TOP'
+        cmp.font = 'RobotoCondensedRegular_16.font'
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.position = (self.component.width / 2, 6, 0.3)
+        cmp.text = lc('soGrades.gui.title')
+        self.component.addChild(cmp, 'title')
+        cmp = GUI.Text()
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.horizontalAnchor = 'RIGHT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.font = 'RobotoCondensedRegular_16.font'
+        cmp.colour = (255, 0, 0, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.position = (self.component.width - 20, 6, 0.3)
+        cmp.text = 'DEV MODE'
+        cmp.visible = 0
+        self.component.addChild(cmp, 'title_dev')
+        slot = soGradeSlot(GUI.Window(), 0, default_texture='soGUI/frame/grades/gun_icone.dds')
+        cmp = slot.component
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.position = (12, 53, 0.5)
+        slot.tooltip_text = lc('soGrades.gui.weapon_tip')
+        slot.slotEvent = self.weapon_slot_eventsHandler
+        slot.is_show_count = False
+        self.component.addChild(cmp, 'weapon_slot')
+        slot = soGradeSlot(GUI.Window(), 1, default_texture='soGUI/frame/grades/hammer_wrench_icone.dds')
+        cmp = slot.component
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.materialFX = 'BLEND'
+        cmp.colour = (255, 255, 255, 255)
+        cmp.position = (78, 53, 0.5)
+        slot.slotEvent = partial(self.tool_slot_eventsHandler, slot, True)
+        slot.tooltip_text = lc('soGrades.gui.tool_tip')
+        self.component.addChild(cmp, 'tool_slot')
+        slot = soGradeSlot(GUI.Window(), 1, default_texture='soGUI/frame/grades/gear_icone.dds')
+        cmp = slot.component
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.materialFX = 'BLEND'
+        cmp.colour = (255, 255, 255, 255)
+        cmp.position = (12 + 2 * 66, 53, 0.5)
+        slot.slotEvent = partial(self.tool_slot_eventsHandler, slot, False)
+        slot.tooltip_text = lc('soGrades.gui.tool_1_tip')
+        self.component.addChild(cmp, 'tool2_slot')
+        cmp = GUI.Simple('soGUI/maps/Icons/blackboxes/rem.dds')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'CLIP'
+        cmp.horizontalAnchor = 'CENTER'
+        cmp.verticalAnchor = 'CENTER'
+        cmp.widthMode = cmp.heightMode = 'CLIP'
+        cmp.colour = (255, 255, 255, 150)
+        cmp.materialFX = 'BLEND'
+        cmp.height = 2
+        cmp.width = 2
+        cmp.position = (0, 0, 0.01)
+        cmp.dragFocus = True
+        cmp.dropFocus = True
+        cmp.crossFocus = True
+        cmp.moveFocus = True
+        cmp.mouseButtonFocus = True
+        cmp = GUI.Simple('textures/default/black.dds')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.colour = (255, 255, 255, 150)
+        cmp.materialFX = 'BLEND'
+        cmp.height = self.component.height - 126
+        cmp.width = self.component.width
+        cmp.position = (0, 126, 0.03)
+        cmp.dragFocus = True
+        cmp.dropFocus = True
+        cmp.crossFocus = True
+        cmp.moveFocus = True
+        cmp.mouseButtonFocus = True
+        cmp.visible = 0
+        self.component.addChild(cmp, 'block')
+        cmp = GUI.Text()
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.horizontalAnchor = 'CENTER'
+        cmp.verticalAnchor = 'BOTTOM'
+        cmp.font = 'RobotoCondensedRegular_14.font'
+        cmp.colour = (255, 191, 116, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.position = (self.component.width / 2, self.component.height - 25, 0.01)
+        cmp.text = lc('soGrades.gui.tip_descr')
+        self.component.addChild(cmp, 'tip_descr')
+        self.descr = {}
+        for index, i in enumerate(['perk_level', 'chanse', 'cost']):
+            cmp = GUI.Text()
+            cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+            cmp.horizontalAnchor = 'LEFT'
+            cmp.verticalAnchor = 'BOTTOM'
+            cmp.font = 'RobotoCondensedRegular_14.font'
+            cmp.colour = colorCodes.inactive_rgba
+            cmp.materialFX = 'BLEND'
+            cmp.text = lc('soGrades.gui.{0}'.format(i))
+            cmp.position = (239, 57 + 30 * index, 0.2)
+            self.component.addChild(cmp, 'label_{0}'.format(i))
+            cmp = GUI.Text()
+            cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+            cmp.horizontalAnchor = 'RIGHT'
+            cmp.verticalAnchor = 'BOTTOM'
+            cmp.font = 'RobotoCondensedRegular_14.font'
+            cmp.colour = (255, 255, 255, 255)
+            cmp.materialFX = 'BLEND'
+            cmp.text = lc('soGrades.gui.{0}_val'.format(i)).format(0)
+            cmp.position = (568, 57 + 30 * index, 0.2)
+            self.component.addChild(cmp, 'value_{0}'.format(i))
+            self.descr[i] = cmp
+
+        cmp = GUI.Text()
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'BOTTOM'
+        cmp.font = 'RobotoCondensedRegular_16.font'
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.position = (12, 156, 0.5)
+        cmp.text = lc('soGrades.gui.characteristic')
+        self.component.addChild(cmp, 'label_param')
+        cmp = GUI.Text()
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'BOTTOM'
+        cmp.font = 'RobotoCondensedRegular_16.font'
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.position = (239, 156, 0.5)
+        cmp.text = lc('soGrades.gui.upgrades_main')
+        self.component.addChild(cmp, 'label_grade')
+        btn = soButton(GUI.Window())
+        cmp = btn.component
+        btn.initVSC('soGUI/elements/button_1.xml')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.horizontalAnchor = 'RIGHT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.label.font = 'RobotoCondensedRegular_16.font'
+        cmp.label.text = lc('soGrades.gui.default_btn')
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.width = 191
+        cmp.height = 30
+        cmp.position = (self.component.width - 36, 473, 0.1)
+        cmp.script.setDisabledState(False)
+        self.component.addChild(cmp, 'btn_default')
+        btn.onClick = self.default
+        btn.onBound()
+        btn = soButton(GUI.Window())
+        cmp = btn.component
+        btn.initVSC('soGUI/elements/button_1.xml')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.label.font = 'RobotoCondensedRegular_16.font'
+        cmp.label.text = lc('soGrades.gui.apply_btn')
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.width = 191
+        cmp.height = 30
+        cmp.position = (415, 473, 0.1)
+        cmp.script.setDisabledState(False)
+        self.component.addChild(cmp, 'btn_apply')
+        btn.onClick = self.check_apply
+        btn.onBound()
+        btn = soButton(GUI.Window())
+        cmp = btn.component
+        btn.initVSC('soGUI/elements/button_1.xml')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.label.font = 'RobotoCondensedRegular_16.font'
+        cmp.label.text = lc('soGrades.gui.stop_btn')
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.width = 191
+        cmp.height = 30
+        cmp.position = (470, 473, 0.1)
+        cmp.script.setDisabledState(True)
+        self.component.addChild(cmp, 'btn_stop')
+        btn.onClick = self.stop
+        btn.onBound()
+        self.update_btn_apply()
+        self.update_btn_mode()
+        additional_grades_comp = []
+        j = 0
+        for i in xrange(grades_utils.PARAM_COUNT):
+            gs = Grade_widget(GUI.Window(), 901, 25, i, self)
+            grade_type = grades_utils.get_grage_type(i)
+            cmp = gs.component
+            if grade_type == grades_utils.GRADE_TYPES.VALUE:
+                cmp.position = (12, 164 + j * 30, 0.1)
+                j += 1
+            else:
+                additional_grades_comp.append(cmp)
+            self.component.addChild(cmp, 'grade_{0}'.format(i))
+            self.grade_controls[i] = gs
+            gs.on_grade_up = self.on_grade_up
+            gs.on_grade_down = self.on_grade_down
+            gs.on_slider_end_changed = self.on_end_changed
+            gs.on_slider_down_changed = self.on_remove_changed
+            gs.grade_up = self.grade_up
+
+        cmp = GUI.Text()
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'BOTTOM'
+        cmp.font = 'RobotoCondensedRegular_16.font'
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.position = (239, 319, 0.5)
+        cmp.text = lc('soGrades.gui.upgrades_add')
+        self.component.addChild(cmp, 'label_grade_2')
+        j = 0
+        for cmp in additional_grades_comp:
+            cmp.position = (14, 330 + j * 30, 0.1)
+            j += 1
+
+        cmp = GUI.Simple('textures/default/black.dds')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'CLIP'
+        cmp.horizontalAnchor = 'CENTER'
+        cmp.verticalAnchor = 'CENTER'
+        cmp.widthMode = cmp.heightMode = 'CLIP'
+        cmp.colour = (255, 255, 255, 150)
+        cmp.materialFX = 'BLEND'
+        cmp.height = 2
+        cmp.width = 2
+        cmp.position = (0, 0, 0.01)
+        cmp.dragFocus = True
+        cmp.dropFocus = True
+        cmp.crossFocus = True
+        cmp.moveFocus = True
+        cmp.mouseButtonFocus = True
+        cmp.visible = 0
+        self.component.addChild(cmp, 'darkScreen')
+        cmp = GUI.Simple('soGUI/frame/grades/grade_anim.texanim')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'CLIP'
+        cmp.horizontalAnchor = 'CENTER'
+        cmp.verticalAnchor = 'CENTER'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.height = 90
+        cmp.width = 90
+        cmp.position = (0, 0, 0.01)
+        self.component.darkScreen.addChild(cmp, 'loadAnim')
+
+    def show_load(self):
+        global MODE
+        if MODE == AUTO_MODE:
+            return
+        self.component.darkScreen.visible = 1
+        self._calllback_id = BigWorld.callback(10, self.hide_load)
+
+    def hide_load(self):
+        if self._calllback_id:
+            BigWorld.cancelCallback(self._calllback_id)
+            self._calllback_id = 0
+        self.component.darkScreen.visible = 0
+
+    def on_grade_up(self, key_id, is_minus):
+        if is_minus:
+            self.grade_down(key_id)
+        self.lock_widgets([key_id])
+        self.update_btn_apply()
+        self.update_description()
+        self.update_hint_text()
+
+    def grade_up(self, key_id):
+        if self.__last_grade_id and self.__last_grade_id[0] == key_id:
+            self.__last_grade_id[1] += 1
+        else:
+            self.__last_grade_id = [key_id, 1]
+
+    def grade_down(self, key_id):
+        if self.__last_grade_id and self.__last_grade_id[0] == key_id:
+            self.__last_grade_id[1] -= 1
+            if self.__last_grade_id[1] <= 0:
+                self.__last_grade_id = None
+        return
+
+    def on_grade_down(self, key_id):
+        self.grade_down(key_id)
+        self.unlock_widgets([key_id])
+        self.update_btn_apply()
+        self.update_description()
+        self.update_hint_text()
+
+    def on_remove_changed(self, key_id):
+        weapon = self.component.weapon_slot.script.itemData
+        item_params = ItemsCatalog.GetItemParam(weapon['complexItemType'])
+        relations = item_params['Grade_relations'].get(key_id, []) if item_params.has_key('Grade_relations') else grades_utils.get_grade_default_relations(key_id)
+        diff = self.grade_controls[key_id].get_value() - self.grade_controls[key_id].default_data['value_index']
+        for i in relations:
+            param_id, value_penalty, value_free = i
+            if key_id == param_id:
+                continue
+            if diff > value_free:
+                if self.__tmp_downgrade.has_key(param_id):
+                    for i, v in self.__tmp_downgrade[param_id]:
+                        self.grade_controls[i].upgrade(v)
+
+                else:
+                    self.grade_controls[param_id].upgrade(value_penalty)
+            else:
+                self.grade_controls[param_id].clear_penalty()
+
+        self.update_btn_apply()
+        self.update_description()
+
+    def on_end_changed(self, key_id, count = 1, old_value = False):
+        weapon = self.component.weapon_slot.script.itemData
+        if not weapon:
+            self.__last_grade_id = None
+            return
+        else:
+            item_params = ItemsCatalog.GetItemParam(weapon['complexItemType'])
+            relations = item_params['Grade_relations'].get(key_id, []) if item_params.has_key('Grade_relations') else grades_utils.get_grade_default_relations(key_id)
+            diff = self.grade_controls[key_id].get_value() - self.grade_controls[key_id].default_data['value_index']
+            for down_diff in range(count - 1, -1, -1):
+                for i in relations:
+                    param_id, value_penalty, value_free = i
+                    if key_id == param_id:
+                        continue
+                    if diff - down_diff > value_free:
+                        if param_id != grades_utils.CONDITION and self.grade_controls[param_id].get_value_index() - value_penalty < 0:
+                            if not self.__tmp_downgrade.has_key(param_id):
+                                self.__tmp_downgrade[param_id] = []
+                            self.__tmp_downgrade[param_id].append((grades_utils.CONDITION, value_penalty))
+                            self.grade_controls[grades_utils.CONDITION].downgrade(value_penalty)
+                            continue
+                        self.grade_controls[param_id].downgrade(value_penalty)
+
+            self.update_btn_apply()
+            self.update_description()
+            self.update_hint_text()
+            return
+
+    def full_update(self):
+        self.__last_grade_id = None
+        self.__tmp_downgrade = {}
+        self.update_params()
+        self.update_description()
+        self.update_btn_apply()
+        self.update_btn_mode()
+        return
+
+    def get_cost_chance(self, grade_id, offset = 0):
+        chance = 0
+        cost = 0
+        cost_percent = 0
+        if grade_id is None:
+            return (cost, chance)
+        else:
+            if isinstance(grade_id, list):
+                grade_id = grade_id[0]
+            weapon = self.component.weapon_slot.script.itemData
+            if not weapon or not self.grade_controls or not self.grade_controls[grade_id].default_data:
+                return (cost, chance)
+            chance_points = self.grade_controls[grade_id].default_data['chance_points']
+            color_points = self.grade_controls[grade_id].default_data['params']
+            value_index = self.grade_controls[grade_id].value_index + offset
+            chance = grades_utils.get_grade_chance(value_index, chance_points)
+            if weapon:
+                if self.npc and self.npc.__class__.__name__ == 'NPC':
+                    npc_costs = ItemsCatalog.GetItemParam(weapon['complexItemType'])['Grade_npc_cost']
+                    cost_percent = grades_utils.get_grade_color_result(value_index, color_points, npc_costs)
+                cost = ItemsUtils.GetPureItemCost(weapon['complexItemType'])
+            mult = BigWorld.player().get_weapon_grade_mult()
+            tool_mult = self.get_tool_chances()
+            if self.npc and self.npc.__class__.__name__ == 'NPC':
+                wb_chance, wb_price = WeaponWorkbenchUtils.get_grade_params(weapon, self.npc)
+                mult = wb_chance
+            else:
+                wb_chance, wb_price = WeaponWorkbenchUtils.get_grade_params(weapon, self.workbench)
+                mult *= wb_chance
+            cost_percent += wb_price
+            cost = cost * cost_percent / 100
+            chance = max(0, min(100, chance * mult * tool_mult))
+            return (cost, chance)
+
+    def is_weapon_low_level(self):
+        level_bench = WeaponWorkbenchUtils.get_grade_level(self.workbench)
+        weapon = self.get_weapon()
+        if not weapon:
+            return False
+        item_param = ItemsCatalog.GetItemParam(weapon['complexItemType'])
+        level_weapon = item_param.get('exp_Level', 0)
+        return level_bench < level_weapon
+
+    def update_description(self):
+        cost, chance = self.get_cost_chance(self.__last_grade_id)
+        level = 0
+        if self.npc and self.npc.__class__.__name__ == 'NPC':
+            level = WeaponWorkbenchUtils.get_grade_level(self.npc)
+        else:
+            level = BigWorld.player().get_perk_action_val('GRADE_LEVEL')
+        level_bench = WeaponWorkbenchUtils.get_grade_level(self.workbench)
+        self.component.title.text = lc('soGrades.gui.title').format(level_bench)
+        self.descr['perk_level'].text = lc('soGrades.gui.perk_level_val').format(level)
+        self.descr['chanse'].text = lc('soGrades.gui.chanse_val').format(round(chance, 2))
+        self.descr['cost'].text = lc('soGrades.gui.cost_val').format(cost)
+        self.update_hint_text()
+
+    def update_btn_apply(self):
+        is_enabled = self.__last_grade_id is not None
+        weapon_item = self.component.weapon_slot.script.itemData
+        if self.__dev_mode:
+            is_disabled = not is_enabled
+        else:
+            self.update_grade_lock()
+            gold_tool_item = self.component.tool_slot.script.itemData
+            tool_item = self.component.tool2_slot.script.itemData
+            if is_enabled:
+                is_disabled = not grades_utils.check_weapon_and_tool(weapon_item, tool_item, gold_tool_item)
+                is_disabled = self.is_weapon_low_level() and True
+                self.lock_widgets([])
+        self.component.btn_apply.script.setDisabledState(is_disabled)
+        return
+
+    def update_btn_mode(self):
+        if MODE == ONE_MODE or self.__dev_mode:
+            self.component.btn_changemode.label.text = lc('soGrades.gui.changemode_btn')
+            self.component.btn_apply.label.text = lc('soGrades.gui.apply_btn')
+            self.component.btn_stop.visible = False
+            self.component.btn_apply.position = (365, 473, 0.1)
+        elif MODE == AUTO_MODE:
+            self.component.btn_changemode.label.text = lc('soGrades.gui.changemode_btn1')
+            self.component.btn_apply.label.text = lc('soGrades.gui.apply_btn1')
+            self.component.btn_stop.visible = True
+            self.component.btn_apply.position = (285, 473, 0.1)
+        self.component.weapon_slot.script._applyItemData()
+        self.component.tool_slot.script._applyItemData()
+        self.component.tool2_slot.script._applyItemData()
+
+    def lock_widgets(self, ex_keys):
+        for i in xrange(grades_utils.PARAM_COUNT):
+            if i in ex_keys:
+                if self.__dev_mode:
+                    self.grade_controls[i].dev_unlock()
+                if self.__workaround_lock:
+                    self.grade_controls[i].lock()
+                elif MODE == AUTO_MODE:
+                    self.grade_controls[i].automode_ulock()
+                continue
+            self.grade_controls[i].lock()
+
+    def unlock_widgets(self, ex_keys):
+        for i in xrange(grades_utils.PARAM_COUNT):
+            if i in ex_keys:
+                continue
+            self.grade_controls[i].unlock()
+
+    def get_weapon(self):
+        return self.component.weapon_slot.script.itemData
+
+    def get_weapon_itemID(self):
+        weapon = self.get_weapon()
+        if weapon:
+            return weapon['complexItemID']
+        else:
+            return None
+
+    def show(self, workbench = None, npc = None):
+        global MODE
+        self.component.visible = True
+        self.component.focus = True
+        self.workbench, self.npc = workbench, npc
+        if self.component.parent is None:
+            BWPersonality.GUICore.worldLayer.addChild(self.component, 'grades_gui')
+        access_level = BigWorld.player().clientAccessLevel >= 3
+        if BigWorld.isKeyDown(BigWorld.stringToKey('F2')) and access_level:
+            self.__dev_mode = True
+            self.component.title_dev.visible = True
+            MODE = ONE_MODE
+        self.update_description()
+        self.update_btn_apply()
+        self.update_hint_text()
+        self.update_btn_mode()
+        GUIPositions.show(self)
+        return
+
+    def hide(self):
+        self.__dev_mode = False
+        self.__last_grade_id = None
+        self.__tmp_downgrade = {}
+        self.component.title_dev.visible = False
+        self.component.visible = False
+        self.component.focus = False
+        self.set_weapon(None)
+        self.workbench, self.npc = (None, None)
+        self.clear_tools()
+        player = BigWorld.player()
+        if player and hasattr(player, 'stop_dialog_camera'):
+            player.stop_dialog_camera()
+        BWPersonality.GUICore.setBestCursor()
+        return
+
+    def partially_update(self, new_item):
+        if new_item['complexItemID'] == self.get_weapon_itemID():
+            self.set_weapon(new_item, MODE == AUTO_MODE)
+
+    def on_fail(self):
+        if MODE == AUTO_MODE:
+            self.get_new_items()
+            self.update_params(True)
+            BigWorld.callback(0.3, self.apply)
+        else:
+            self.set_weapon(self.component.weapon_slot.script.itemData, MODE == AUTO_MODE)
+        self.component.btn_changemode.script.setDisabledState(False)
+        self.component.btn_default.script.setDisabledState(False)
+
+    def on_win(self):
+        if MODE == AUTO_MODE:
+            self.__lock_timer()
+            self.get_new_items()
+            if self.__last_grade_id:
+                self.grade_down(self.__last_grade_id[0])
+                if self.__last_grade_id and self.__last_grade_id[1] > 0:
+                    BigWorld.callback(0.5, self.apply)
+                else:
+                    self.stop()
+        else:
+            self.set_weapon(self.component.weapon_slot.script.itemData, MODE == AUTO_MODE)
+        self.component.btn_changemode.script.setDisabledState(False)
+        self.component.btn_default.script.setDisabledState(False)
+
+    def __lock_timer(self):
+
+        def unlock():
+            self.__workaround_lock = False
+            self.update_params(True)
+
+        self.__workaround_lock = True
+        BigWorld.callback(1, unlock)
+
+    def get_new_items(self):
+        self.set_weapon(self.component.weapon_slot.script.itemData, MODE == AUTO_MODE)
+        if self.__last_tool_type:
+            items = ItemsUtils.GetComplexItemsByType(BigWorld.player(), self.__last_tool_type)
+            if items:
+                self.set_tool(self.component.tool_slot.script, items[0], 1)
+            else:
+                self.set_tool(self.component.tool_slot.script, None)
+        if self.__last_tool_type2:
+            items = ItemsUtils.GetComplexItemsByType(BigWorld.player(), self.__last_tool_type2)
+            if items:
+                self.set_tool(self.component.tool2_slot.script, items[0], 0)
+            else:
+                self.set_tool(self.component.tool2_slot.script, None)
+        BigWorld.player().UpdateInventory(0)
+        return
+
+    def handleMouseButtonEvent(self, comp, event):
+        return DraggableComponent.handleMouseButtonEvent(self, comp, event)
+
+    def weapon_slot_eventsHandler(self, event, data):
+        if event == ITSLOT.SLOTEVENT_DROP:
+            item_slot, inventory_slot = data
+            if inventory_slot.factoryString == 'soGUI.soInventorySlot2' and inventory_slot.itemData:
+                if self.set_weapon(inventory_slot.itemData):
+                    BigWorld.player().lockItemByID(inventory_slot.itemData['complexItemID'], inventory_slot)
+        return True
+
+    def tool_slot_eventsHandler(self, tool_slot, is_gold, event, data):
+        if event == ITSLOT.SLOTEVENT_DROP:
+            item_slot, inventory_slot = data
+            if inventory_slot.factoryString == 'soGUI.soInventorySlot2' and inventory_slot.itemData:
+                if self.set_tool(tool_slot, inventory_slot.itemData, is_gold):
+                    BigWorld.player().lockItemByID(inventory_slot.itemData['complexItemID'], inventory_slot)
+                self.update_description()
+        return True
+
+    def set_weapon(self, item, silence = False):
+        if item and ItemsCatalog.GetItemClass(item['complexItemType']) != ItemsCatalog.WEAPON:
+            return False
+        else:
+            if not silence:
+                self.__last_grade_id = None
+                self.__tmp_downgrade = {}
+            weapon = self.component.weapon_slot.script.itemData
+            if weapon and (item is None or item['complexItemID'] != weapon['complexItemID']):
+                player = BigWorld.player()
+                if player and hasattr(player, 'unlockItemByID'):
+                    player.unlockItemByID(weapon['complexItemID'])
+            if self.workbench and hasattr(self.workbench, 'setItem'):
+                self.workbench.setItem(item)
+            self.component.weapon_slot.script.setContent(item)
+            if not silence:
+                self.update_params()
+            if not item:
+                return
+            self.update_btn_apply()
+            self.update_description()
+            self.update_hint_text()
+            return True
+
+    def clear_tools(self):
+        self.set_tool(self.component.tool_slot.script, None)
+        self.set_tool(self.component.tool2_slot.script, None)
+        return
+
+    def get_tool_chances(self):
+        mult = 1
+        for slot in [self.component.tool_slot, self.component.tool2_slot]:
+            if not slot.script.itemData:
+                continue
+            tool_type = slot.script.itemData['complexItemType']
+            tool_item_param = ItemsCatalog.GetItemParam(tool_type)
+            mult *= tool_item_param.get('GradeChance', 1)
+
+        return mult
+
+    def set_tool(self, tool_slot, item, is_gold = False):
+        if item:
+            kit_param = ItemsCatalog.GetItemParam(item['complexItemType'])
+            if not kit_param.get('RepairOnlyItemsType') and not kit_param.get('GradeItem', False):
+                return False
+            if is_gold != kit_param.get('isGoldRepair', False):
+                return False
+            if tool_slot.itemData and tool_slot.itemData['complexItemID'] == item['complexItemID']:
+                return False
+        if tool_slot.itemData:
+            BigWorld.player().unlockItemByID(tool_slot.itemData['complexItemID'])
+        tool_slot.setContent(item)
+        self.update_btn_apply()
+        self.update_hint_text()
+        return True
+
+    def update_hint_text(self):
+        weapon_item = self.component.weapon_slot.script.itemData
+        tool_item = self.component.tool_slot.script.itemData
+        gold_tool_item = self.component.tool2_slot.script.itemData
+        self.component.block.visible = self.is_weapon_low_level()
+        self.component.tip_descr.colour = (255, 191, 116, 255)
+        if not weapon_item:
+            self.component.tip_descr.text = lc('soGrades.gui.tip_descr')
+            return
+        elif self.is_weapon_low_level():
+            self.component.tip_descr.text = lc('soGrades.gui.tip_descr6')
+            self.component.tip_descr.colour = (255, 0, 0, 255)
+            return
+        elif not tool_item and not gold_tool_item:
+            self.component.tip_descr.text = lc('soGrades.gui.tip_descr2')
+            return
+        elif self.__last_grade_id is not None:
+            self.component.tip_descr.text = lc('soGrades.gui.tip_descr5')
+            return
+        elif not tool_item or not gold_tool_item:
+            self.component.tip_descr.text = lc('soGrades.gui.tip_descr4')
+            return
+        elif tool_item and gold_tool_item:
+            self.component.tip_descr.text = lc('soGrades.gui.tip_descr3')
+            return
+        else:
+            self.component.tip_descr.text = ''
+            return
+
+    def update_params(self, temp = False):
+        weapon = self.component.weapon_slot.script.itemData
+        if weapon is None:
+            for key in xrange(grades_utils.PARAM_COUNT):
+                self.grade_controls[key].clear()
+                self.grade_controls[key].default_data = None
+
+        else:
+            for key in xrange(grades_utils.PARAM_COUNT):
+                self.grade_controls[key].clear_diff_val()
+
+            item_params = ItemsCatalog.GetItemParam(weapon['complexItemType'])
+            inc_params = ItemsUtils.GetComplexItemInconstanParams(weapon, BigWorld.player())
+            weapon_grades = inc_params.get(ItemsCatalog.INC_WEAPON_GRADES, 0)
+            init_grade = inc_params.get(ItemsCatalog.INC_WEAPON_INIT_GRADES, 0)
+            grades_data = item_params.get('Grade_data', {})
+            for key in xrange(grades_utils.PARAM_COUNT):
+                grade_type = grades_utils.get_grage_type(key)
+                if not grades_data.get(key):
+                    tmp = grades_utils.default_data[key]
+                    tmp = deepcopy(tmp)
+                    if grade_type == grades_utils.GRADE_TYPES.VALUE:
+                        tmp['value'] = item_params.get(grades_utils.get_weapon_grade_name(key))
+                        tmp['value_index'] = int(round((tmp['value'] - tmp['min_value']) / ((float(tmp['max_value']) - tmp['min_value']) / float(tmp['count']))))
+                    tmp['id'] = key
+                    value_index = grades_utils.get_inc_param(key, weapon_grades) if 1 << key & init_grade else tmp['value_index']
+                    self.__workaround_lock or self.grade_controls[key].set_default_value(tmp)
+                self.grade_controls[key].set_value_index(value_index)
+
+            if self.__last_grade_id:
+                grade_id, diff = self.__last_grade_id
+                if diff > 0:
+                    self.grade_controls[grade_id].on_change_by_user(diff, True)
+                    if temp:
+                        self.grade_controls[grade_id].on_end_changed(diff, True)
+        self.update_hint_text()
+        return
+
+    def update_grade_lock(self):
+        if not self.grade_controls:
+            return
+        for i in xrange(grades_utils.PARAM_COUNT):
+            _, chance = self.get_cost_chance(i)
+            if chance <= 0.001 or self.__workaround_lock:
+                self.grade_controls[i].lock()
+
+    def check_apply(self):
+
+        def callback(event):
+            if event == gui_jokes.askUserYesNo.YES:
+                self.apply()
+
+        if MODE == AUTO_MODE:
+            gui_jokes.askUserYesNo(lc('soGrades.gui.message_caption'), lc('soGrades.gui.message_sure'), callback=callback)
+        else:
+            self.apply()
+
+    def apply(self):
+        weapon_item = self.component.weapon_slot.script.itemData
+        tool_item = self.component.tool_slot.script.itemData
+        gold_tool_item = self.component.tool2_slot.script.itemData
+        if self.__dev_mode:
+            inc_params = 0
+            for key in xrange(grades_utils.PARAM_COUNT):
+                value_index = self.grade_controls[key].get_value_index()
+                inc_params = grades_utils.set_inc_param(key, inc_params, value_index)
+
+            BigWorld.player().cell.apply_grade_weapon_dev(weapon_item['complexItemID'], inc_params)
+            return
+        elif not weapon_item or not tool_item and not gold_tool_item:
+            print 'not weapon_item or (not tool_item and not gold_tool_item)'
+            self.stop()
+            return
+        elif self.__last_grade_id is None:
+            print 'self.__last_grade_id is None'
+            self.stop()
+            return
+        else:
+            cost, chance = self.get_cost_chance(self.__last_grade_id)
+            if cost > BigWorld.player().CreditNumber:
+                BigWorld.player().ReportFail(ItemsUtils.FAIL_NO_MONEY)
+                self.stop()
+                return
+            tool_id = 0 if not gold_tool_item else gold_tool_item['complexItemID']
+            gold_tool_id = 0 if not tool_item else tool_item['complexItemID']
+            if MODE == ONE_MODE:
+                self.clear_tools()
+            self.__last_tool_type = tool_item['complexItemType'] if tool_item else None
+            self.__last_tool_type2 = gold_tool_item['complexItemType'] if gold_tool_item else None
+            workbench_or_npc = self.npc if self.npc else self.workbench
+            result = BigWorld.player().apply_grade_weapon(weapon_item['complexItemID'], tool_id, gold_tool_id, self.__last_grade_id[0], workbench_or_npc.id)
+            if not result:
+                print 'not result'
+                self.stop()
+                return
+            self.component.btn_apply.script.setDisabledState(True)
+            self.component.btn_stop.script.setDisabledState(MODE == ONE_MODE)
+            self.component.btn_changemode.script.setDisabledState(True)
+            self.component.btn_default.script.setDisabledState(True)
+            self.component.weapon_slot.script.startProgress(Constants.GRADE_TIME)
+            self.component.tool_slot.script.startProgress(Constants.GRADE_TIME)
+            self.component.tool2_slot.script.startProgress(Constants.GRADE_TIME)
+            return
+
+    def stop(self):
+        self.component.btn_stop.script.setDisabledState(True)
+        self.component.btn_apply.script.setDisabledState(False)
+        self.component.btn_default.script.setDisabledState(False)
+        BigWorld.player().stop_grade_weapon()
+        self.component.btn_changemode.script.setDisabledState(False)
+        self.component.weapon_slot.script.stopProgress()
+        self.component.tool_slot.script.stopProgress()
+        self.component.tool2_slot.script.stopProgress()
+        self.update_btn_apply()
+
+    def default(self):
+        for key in xrange(grades_utils.PARAM_COUNT):
+            self.grade_controls[key].clear_diff_val()
+            self.grade_controls[key].unlock()
+
+        self.__last_grade_id = None
+        self.__tmp_downgrade = {}
+        self.component.btn_apply.script.setDisabledState(True)
+        self.update_btn_apply()
+        self.update_description()
+        self.update_hint_text()
+        self.stop()
+        return
+
+    def change_mode(self):
+        global MODE
+        if MODE == ONE_MODE:
+            MODE = AUTO_MODE
+        elif MODE == AUTO_MODE:
+            MODE = ONE_MODE
+        self.update_btn_mode()
+        self.default()
+
+    def reload(self):
+        weapon = self.component.weapon_slot.script.itemData
+        if weapon:
+            item = ItemsUtils.GetComplexItemByID(BigWorld.player(), weapon['complexItemID'])
+            self.set_weapon(item)
+
+    def doReposition(self):
+        self.onBound()
+
+
+class soGradeSlot(soInventorySlot2):
+    factoryString = 'soGradeSlot'
+
+    def __init__(self, component, slotIndex, itemData = None, default_texture = '', tooltip_text = u''):
+        soInventorySlot2.__init__(self, component, slotIndex, itemData)
+        self.component.dropFocus = True
+        self.component.dragFocus = True
+        self.callback_id = None
+        self.is_show_count = True
+        self.default_texture = default_texture
+        self.tooltip_text = tooltip_text
+        self._applyItemData()
+        return
+
+    def setupContent(self):
+        soInventorySlot2.setupContent(self)
+        cmp = GUI.Simple('')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'BOTTOM'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.width = self.SLOTWIDTH
+        cmp.height = self.SLOTHEIGHT
+        cmp.colour = (255, 255, 255, 160)
+        cmp.materialFX = 'BLEND'
+        cmp.position = (0, self.SLOTHEIGHT, 0.01)
+        cmp.visible = False
+        cmp.texture = BigWorld.PyTextureProvider('soGUI/items/cooking.dds')
+        self.component.addChild(cmp, 'progress')
+
+    def startProgress(self, duration = 1):
+        self.start_time = time()
+        self.duration = float(duration)
+        self.stopProgress()
+        self.callback_id = BigWorld.callback(0.2, self.updateSlot)
+        self.lockSlot(True)
+
+    def stopProgress(self):
+        if self.callback_id:
+            BigWorld.cancelCallback(self.callback_id)
+        self.callback_id = None
+        self.component.progress.visible = False
+        self.lockSlot(False)
+        return
+
+    def updateSlot(self):
+        self.component.progress.visible = False
+        if self.itemData:
+            diff = min(time() - self.start_time, self.duration)
+            h = diff / self.duration
+            self.component.progress.height = self.SLOTHEIGHT * h
+            self.component.progress.visible = True
+            if diff >= self.duration:
+                self.stopProgress()
+                return
+            self.callback_id = BigWorld.callback(0.2, self.updateSlot)
+
+    def remove(self):
+        if self.haveItem():
+            item_id = self.itemData['complexItemID']
+            BigWorld.player().unlockItemByID(item_id)
+        self.setContent(None)
+        return
+
+    def _applyItemData(self):
+        if self.haveItem():
+            item_type = self.itemData['complexItemType']
+            if not ItemsUtils.GetIconName(self.itemData):
+                iconName = 'nottexture.dds'
+                if BWPersonality.GUICore.iconTextures is not None:
+                    if iconName not in BWPersonality.GUICore.iconTextures.failedIDs:
+                        if BWPersonality.GUICore.iconTextures.has_key(iconName):
+                            self.component.itemIcon.texture = BWPersonality.GUICore.iconTextures[iconName]
+                        else:
+                            self.component.itemIcon.textureName = iconName
+                else:
+                    self.component.itemIcon.textureName = iconName
+                self.component.itemIcon.colour = (255, 255, 255, 255)
+                countStr = ItemsUtils.GetDisplayValue(self.itemData)
+                if MODE == AUTO_MODE and self.is_show_count:
+                    countStr = len(ItemsUtils.GetComplexItemsByType(BigWorld.player(), item_type))
+                self.component.itemCount.text = str(countStr)
+                if self.itemData['complexItemID'] > 0:
+                    item_state = ItemsUtils.GetItemConditionRatio(BigWorld.player(), self.itemData)
+                    if item_state <= 0.5:
+                        self.component.itemBroken.visible = True
+                    else:
+                        self.component.itemBroken.visible = False
+                emblem = ItemsUtils.getItemEmblem(self.itemData)
+                colorise = ItemsUtils.getItemColorise(self.itemData)
+                self.component.itemColored.visible = bool(colorise) or bool(ItemsUtils.getTintID(self.itemData))
+                self.component.itemEmblem.visible = bool(emblem)
+                self.component.script.dragProxy.texture = hasattr(self.component.script, 'dragProxy') and self.component.itemIcon.texture
+        else:
+            self.component.itemIcon.textureName = self.default_texture
+            self.component.itemIcon.colour = (255, 255, 255, 111)
+            self.component.itemCount.text = ''
+            self.component.itemBroken.visible = False
+            self.component.frameCmp.colour = (255, 255, 255, 255)
+            self.component.itemColored.visible = False
+            self.component.itemEmblem.visible = False
+        return
+
+    def handleMouseEnterEvent(self, comp):
+        import BWPersonality
+        BWPersonality.GUICore.showToolTip(colorCodes.tf3_regular_text_color + self.tooltip_text)
+        return soInventorySlot2.handleMouseEnterEvent(self, comp)
+
+    def handleMouseLeaveEvent(self, comp):
+        import BWPersonality
+        BWPersonality.GUICore.hideToolTip()
+        return soInventorySlot2.handleMouseLeaveEvent(self, comp)

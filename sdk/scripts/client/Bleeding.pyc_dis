@@ -1,0 +1,143 @@
+# Embedded file name: ./client/Bleeding.py
+import SFXer
+import BigWorld
+import Math
+import BWPersonality
+from Config.Damage import BODY_ZONES
+from random import uniform
+from functools import partial
+from Helpers.BWCoroutine import BWCoroutine, BWWaitForPeriod
+from SfxCatalog import SFX_HIT_CATALOG, Mat
+from Items import ItemsCatalog
+from Math import Vector3
+import random
+import FX
+__author__ = 'muzhig'
+
+class Bleeding:
+    DOWN = Vector3(0.001, -0.1, 0)
+
+    def __init__(self):
+        self.isBleending = False
+        self._lock_bleed = {}
+
+    def blood_rel_pos(self, body_zone):
+        node = self.get_node_by_body_zone(body_zone)
+        if node:
+            node_pos = Math.Matrix(node).translation
+            if not node.isActualCoords:
+                return (0, 1.3, 0)
+            if node_pos.tuple() == (0, 0, 0):
+                return (0, 1.3, 0)
+            return node_pos - self.position
+        return (0, 1.3, 0)
+
+    def blood_sfx_on_damage(self, damage_source, damagetaken_data):
+        active_transform = getattr(self, 'active_transform', None)
+        if active_transform:
+            sfx_path = active_transform.raw_configs.get('sfx_pre_bleed_hit')
+            if sfx_path:
+                return str(sfx_path)
+        bullet_category = 'Bullet'
+        if damagetaken_data.has_key('ammo_type'):
+            ammo_type = damagetaken_data['ammo_type']
+            bullet_category = ItemsCatalog[ammo_type].get('HitSfxCategory') or 'Bullet'
+        return SFX_HIT_CATALOG[bullet_category].get(Mat.Flesh)
+
+    def bleed_on_damage(self, damage_source, damagetaken_data):
+        if self.is_sfx_damager_locked(damage_source['entity_id']):
+            return
+        if damagetaken_data['health_decrement'] == 0.0:
+            return
+        damager = BigWorld.entity(damage_source['entity_id'], True)
+        blood_rel_pos = self.position + self.blood_rel_pos(damagetaken_data['body_zone'])
+        if damager:
+            bloodvector = blood_rel_pos - (damager.position + (0, 1, 0.01))
+        else:
+            return
+        sfx_id = self.blood_sfx_on_damage(damage_source, damagetaken_data)
+        self.bleed(blood_rel_pos, bloodvector, sfx_id)
+
+    def on_death(self):
+        bleed_config = self.get_config()['death_bleed']
+        if not bleed_config:
+            return
+        for index, config in enumerate(bleed_config):
+            self.__bleed_tick(config['time'], index)
+
+    def __bleed_tick(self, time_remain, index):
+        if self.isDestroyed:
+            return
+        bleed_config = self.get_config()['death_bleed']
+        blood_rel_pos = self.position + self.blood_rel_pos(BODY_ZONES.TORSO)
+        dispersion = bleed_config[index]['dispersion']
+        bloodvector = blood_rel_pos - (self.position + (uniform(-dispersion, dispersion), 3, uniform(-dispersion, dispersion)))
+        self.bleed(blood_rel_pos, bloodvector, bleed_config[index]['sfx'])
+        if time_remain > 0:
+            next_tick_time = 1.0 / bleed_config[index]['frequency']
+            time_remain -= next_tick_time
+            BigWorld.callback(next_tick_time, partial(self.__bleed_tick, time_remain, index))
+
+    def pre_bleed(self, position, bodyZone, src_point, fireVector, ammo_type):
+        blood_sfx_id = self.blood_sfx_on_damage(None, {'body_zone': bodyZone,
+         'ammo_type': ammo_type})
+        blood_orientation = position - src_point
+        if blood_orientation.length < 0.01:
+            blood_orientation = fireVector
+        SFXer.BodyHit(position, self, blood_orientation, -Math.Vector3(blood_orientation), blood_sfx_id)
+        return
+
+    def bleed(self, blood_rel_pos, blood_orientation, blood_sfx_id):
+        SFXer.BodyHit(blood_rel_pos, self, blood_orientation, -Math.Vector3(blood_orientation), blood_sfx_id)
+
+    def bleedglobal(self, blood_rel_pos, blood_orientation, blood_sfx_id):
+        SFXer.BodyHit(blood_rel_pos, self, blood_orientation, -Math.Vector3(blood_orientation), blood_sfx_id)
+
+    def is_sfx_damager_locked(self, damager_id):
+        return damager_id in self._lock_bleed
+
+    def bleedFromShoot(self, pos, blood_orientation, collider_name, ammo_type, damager_id):
+        if damager_id:
+
+            def unlock_bleed():
+                if self.isDestroyed:
+                    return
+                if damager_id in self._lock_bleed:
+                    del self._lock_bleed[damager_id]
+
+            if damager_id in self._lock_bleed:
+                BigWorld.cancelCallback(self._lock_bleed[damager_id])
+            self._lock_bleed[damager_id] = BigWorld.callback(1.0, unlock_bleed)
+        damagetaken_data = {'body_zone': self.colliderNames[collider_name],
+         'ammo_type': ammo_type}
+        blood_sfx_id = self.blood_sfx_on_damage(None, damagetaken_data)
+        SFXer.BloodBodyHit(self, pos, blood_orientation, blood_sfx_id)
+        self.wound(pos, collider_name)
+        return
+
+    def wound(self, blood_world_pos, collider_name):
+        pass
+
+    def bleedDropEff(self):
+        if self.__class__.__name__ == 'PlayerAvatar':
+            BWPersonality.GUICore.bleedGUI.show()
+        if not self.isBleending:
+            self.isBleending = True
+            self._blood_drip(self).run()
+
+    def removeBleedDropEff(self):
+        self.isBleending = False
+        if self.__class__.__name__ == 'PlayerAvatar':
+            BWPersonality.GUICore.bleedGUI.hide()
+
+    def get_blood_drip_sfx(self):
+        return 'sfx/hits/bleed_red_decal_human.xml'
+
+    @BWCoroutine
+    def _blood_drip(self):
+        while not self.isDestroyed and self.isBleending:
+            if self.model:
+                pos = self.position + (random.uniform(-1, 1), 1, random.uniform(-1, 1))
+                sfx_path = self.get_blood_drip_sfx()
+                FX.bufferedOneShotEffect(sfx_path, self.model, DecalInfo=[pos, pos + Bleeding.DOWN * 5])
+            yield BWWaitForPeriod(0.5)

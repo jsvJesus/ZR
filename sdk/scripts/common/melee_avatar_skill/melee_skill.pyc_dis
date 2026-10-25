@@ -1,0 +1,278 @@
+# Embedded file name: ./common/melee_avatar_skill/melee_skill.py
+import BigWorld
+import traceback
+import Math
+import math
+import random
+import melee_avatar_skill.melee_conf
+reload(melee_avatar_skill.melee_conf)
+from functools import partial
+from Items import ItemsCatalog
+import Constants
+pi2 = math.pi * 2
+
+def reloadConf():
+    reload(melee_avatar_skill.melee_conf)
+
+
+class MeleeSkill:
+
+    def __init__(self, item_type, item_id = 0):
+        self.item_type = item_type
+        self.item_id = item_id
+        self.played_in = False
+        self.played_end = False
+        self.broken_msg_sended = False
+        default = '??????'
+        if not self.item_type:
+            default = 'punch'
+        self.skill_name = self.item_params.get('melee_skill_name', default)
+        self.param = melee_avatar_skill.melee_conf.MELEE_CONF_BYNAME[self.skill_name]
+        self.skill_id = self.param['skill_id']
+        self._attacks = {}
+        for attack_id, attack_param in enumerate(self.param['attacks'], 1):
+            self._attacks[attack_id] = attack_param
+
+        self._knife_visible = False
+        self._knife_model = None
+        self._is_attack = False
+        self._end_tmr = 0
+        self._a_tmr = 0
+        self._e_tmr = 0
+        self._ah_tmr = 0
+        self._t_tmr = 0
+        self._spine_tmr = 0
+        self._current_attack_id = 0
+        self._next_attack_id = 0
+        self._next_attack_power = 0
+        self._hips_m = None
+        return
+
+    @property
+    def item_params(self):
+        return ItemsCatalog[self.item_type]
+
+    def start(self, entity):
+        self.entity = entity
+        self._current_attack_id = 0
+        self._next_attack_id = 0
+        entity.pushTrackerLockByName('MeleeSkill', weapon_to='Belly-Belly2-PistolHolster', lock_track_torso=False, lock_track_head=False, lock_track_foot=False)
+        self.entity.SetWeaponStatus(Constants.WEAPON_INCOMABAT)
+        self.entity.UpdateAvatarAnimationCaps()
+        if self.param['action_in']:
+            aq = self.entity.model.action(self.param['action_in'])(0, self._onEndInAnimation)
+        else:
+            aq = self.entity.model
+            BigWorld.callback(0.3, self._onEndInAnimation)
+        getattr(aq, self.param['action_idle'])()
+        self.played_in = True
+        self._hips_m = Math.Matrix()
+        entity.torso_nodeinfo.addHipsAnimated = self._hips_m
+        item_params = ItemsCatalog[self.item_type]
+        ModelNames = item_params.get('ModelNames', {})
+        if ModelNames:
+            model_path = ModelNames.values()[0]
+            import ResourceLoader
+            ResourceLoader.asyncLoad([(ResourceLoader.MODEL, model_path)], partial(self._onLoadKnife, model_path))
+            delay_attach_model = self.param.get('delay_attach_model', 0)
+            BigWorld.callback(delay_attach_model, self._onEnableKnife)
+        self.entity.setDirectionProviderParam(force=True)
+
+    def playEnd(self):
+        self.played_end = True
+        if self.entity and not self.entity.isDestroyed:
+            if self.param['action_out']:
+                self.entity.model.action(self.param['action_out'])(0, self._onEndMelee)
+            else:
+                self.entity.model.action(self.param['action_idle']).stop()
+                BigWorld.callback(0.3, self._onEndMelee)
+            delay_detach_model = self.param.get('delay_detach_model', 0)
+            BigWorld.callback(delay_detach_model, partial(self._detach_knife, self.entity.model))
+        else:
+            self.stop()
+
+    def stop(self):
+        if self.entity and not self.entity.isDestroyed:
+            try:
+                for aname in ['action_in',
+                 'action_out',
+                 'action_idle',
+                 'action_idle_powerful']:
+                    act = self.param.get(aname, None)
+                    if act:
+                        self.entity.model.action(act).stop()
+
+            except:
+                traceback.print_exc()
+
+        self._onEndMelee()
+        return
+
+    def onStartPowerful(self):
+        action_idle_powerful = self.param.get('action_idle_powerful')
+        if action_idle_powerful:
+            self.entity.model.action(action_idle_powerful)()
+
+    def onEndPowerful(self):
+        if self.param.get('action_idle_powerful'):
+            self.entity.model.action(self.param['action_idle'])()
+
+    def startAttack(self, power = 0):
+        if self.played_end:
+            return 0
+        if self._next_attack_id and self._is_attack:
+            return 0
+        powerful = power > 0
+        keys = [ a[0] for a in self._attacks.items() if a[1].get('powerful') == powerful ]
+        self._next_attack_id = random.choice(keys)
+        self._next_attack_power = power
+        return self._next_attack_id
+
+    def addPlayAttack(self, attack_id):
+        BigWorld.cancelCallback(self._end_tmr)
+        self._next_attack_id = attack_id
+        if self.played_in:
+            return
+        if self.played_end:
+            return
+        if self._is_attack:
+            return
+        self._playAttack()
+
+    def getAttackParam(self, attack_id):
+        return self._attacks[attack_id]
+
+    def get_random_attack_id(self):
+        return random.choice(self._attacks.keys())
+
+    def getStaminaCost(self):
+        return self.param.get('stamina_cost', 0)
+
+    def _onLoadKnife(self, model_path, prereqs):
+        if not self.entity:
+            return
+        if self.entity.isDestroyed:
+            return
+        self._knife_model = prereqs[model_path]
+        self._knife_model.origin('HP_ThrowRight')
+        self.entity.model.node('HP_ThrowRight').attach(self._knife_model)
+        self._knife_model.visible = self._knife_visible
+
+    def _onEnableKnife(self):
+        self._knife_visible = True
+        if self._knife_model:
+            self._knife_model.visible = True
+
+    def _detach_knife(self, entity_model):
+        if not self._knife_model:
+            return
+        else:
+            try:
+                entity_model.node('HP_ThrowRight').detach(self._knife_model)
+            except Exception:
+                traceback.print_exc()
+
+            self._knife_model = None
+            return
+
+    def _onEndMelee(self):
+        self.destroy()
+
+    def destroy(self):
+        BigWorld.cancelCallback(self._a_tmr)
+        BigWorld.cancelCallback(self._e_tmr)
+        BigWorld.cancelCallback(self._end_tmr)
+        BigWorld.cancelCallback(self._ah_tmr)
+        BigWorld.cancelCallback(self._t_tmr)
+        BigWorld.cancelCallback(self._spine_tmr)
+        entity = self.entity
+        self.entity = None
+        if entity and not entity.isDestroyed:
+            self._detach_knife(entity.model)
+            entity.popTrackerLock('MeleeSkill')
+            entity.onMeleeSkillStop()
+            entity.torso_nodeinfo.addHipsAnimated = None
+        self._knife_model = None
+        self._hips_m = None
+        return
+
+    def _playAttack(self):
+        if not self.entity or self.entity.isDestroyed:
+            return
+        else:
+            self._current_attack_id = self._next_attack_id
+            if not self._next_attack_power:
+                power = 1.0
+                self._next_attack_id = None
+                if not self._current_attack_id:
+                    return
+                self._is_attack = True
+                conf = self._attacks[self._current_attack_id]
+                self.entity.model.action(conf['action_attack'])()
+                self._a_tmr = BigWorld.callback(conf['time_end_animation'], self.onAttackEnd)
+                self._e_tmr = BigWorld.callback(conf['time_start_effect'], partial(self._applyMelleEffect, self._current_attack_id, power))
+                BigWorld.cancelCallback(self._ah_tmr)
+                BigWorld.cancelCallback(self._spine_tmr)
+                self._add_hips = 0
+                self._hips_speed = conf.get('hips_speed') and conf.get('hips_speed', 4.5)
+                self._hips_fwd_power = conf.get('hips_fwd_power', 0.03)
+                self._hips_up_power = conf.get('hips_up_power', -0.015)
+                self._hips_yaw_power = conf.get('hips_yaw_power', 0.0)
+                hips_delay = conf.get('hips_delay', 0)
+                self._ah_tmr = BigWorld.callback(hips_delay, self._debug_add_hips)
+            return
+
+    _add_hips = 0
+
+    def _debug_add_hips(self):
+        if not self.entity or self.entity.isDestroyed:
+            return
+        dt = BigWorld.getTimeDelta()
+        self._add_hips += self._hips_speed * dt
+        if self._add_hips >= pi2:
+            self._add_hips = 0
+            self._hips_m.setTranslate((0, 0, 0))
+            return
+        fwd = math.sin(self._add_hips) * self._hips_fwd_power
+        up = math.sin(self._add_hips) * self._hips_up_power
+        yaw = math.sin(self._add_hips) * self._hips_yaw_power
+        up -= abs(yaw) * 0.1
+        if self.entity.IsAvatarCrouched():
+            up = 0
+            yaw = 0
+        self._hips_m.setTranslate((0, -fwd, up))
+        m_rot = Math.Matrix()
+        m_rot.setRotateYPR((yaw * 0.1, 0, yaw))
+        self._hips_m.postMultiply(m_rot)
+        self._ah_tmr = BigWorld.callback(0, self._debug_add_hips)
+
+    def _debug_rotate_spine(self):
+        pass
+
+    def _applyMelleEffect(self, attack_id, power):
+        if self.entity and not self.entity.isDestroyed:
+            self.entity._applyMeleeAttack(attack_id, self._attacks[attack_id], power)
+
+    def _onEndInAnimation(self):
+        self.played_in = False
+        self._playAttack()
+
+    def onHitEntity(self, entity):
+        if not self._knife_model:
+            return
+        tintname = 'red_blood'
+        item_params = ItemsCatalog[self.item_type]
+        for dye, def_tint in item_params.get('Tint', {}).items():
+            try:
+                setattr(self._knife_model, str(dye), str(tintname))
+            except:
+                print self._knife_model, [dye, tintname]
+                traceback.print_exc()
+
+    def onAttackEnd(self):
+        self._is_attack = False
+        BigWorld.cancelCallback(self._end_tmr)
+        if self._next_attack_id:
+            self._playAttack()
+            return
+        self._end_tmr = BigWorld.callback(self.param['idle_time'], self.playEnd)

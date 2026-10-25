@@ -1,0 +1,234 @@
+# Embedded file name: ./client/journal/rep_tab/rep_tab.py
+import GUI
+from journal.tab import Tab
+from Localization import lc
+from journal.fav_button import FavButton, FavState
+from rep_data_provider import RepDataProvider
+from server import Server, EventType as ServET
+from rep_view import RepView, EventType as ViewET
+from content import Content
+from rep_sort_filter import RepSortFilter
+from journal.sort_filter import EventType as SfET
+from rep_tab_view import EventType as RvET
+import Quest
+from soGUI.soTextField import soTextField3
+import colorCodes as cc
+
+class RepTab(Tab):
+
+    def __init__(self, component):
+        Tab.__init__(self, lc('GUI.QuestLog.REP_TAB_LABEL'), component)
+        self._last_visible_rep_id = None
+        self.on_quest_callback = lambda quest_id: None
+        self.on_npc_click_callback = lambda npc_name: None
+        self.on_group_click_callback = lambda gr_id: None
+        comp = GUI.Window()
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = (286, 520)
+        comp.position = (6, 6, 0.5)
+        self.component.addChild(comp, 'view')
+        self._dp = RepDataProvider()
+        self._server = Server(self._on_server_event)
+        self._view = RepView(self._dp, self._on_view_event, self.component.view)
+        self._sort_filter = RepSortFilter(self.component, self)
+        comp = GUI.Frame2('soGUI/frame/con_frame_2.dds')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor = 'LEFT'
+        comp.verticalAnchor = 'TOP'
+        comp.colour = (255, 255, 255, 255)
+        comp.materialFX = 'BLEND'
+        comp.width, comp.height = (854, 526)
+        comp.position = (3, 3, 1.1)
+        self.component.addChild(comp)
+        comp = GUI.Window()
+        comp.isClip = False
+        comp.horizontalAnchor, comp.verticalAnchor = ('RIGHT', 'TOP')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.position = (853, 7, 0.4)
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = (559, 518)
+        self.component.addChild(comp, 'content_holder')
+        comp = GUI.Window()
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.position = (0, 0, 0.5)
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = self.component.content_holder.width, self.component.content_holder.height
+        self.component.content_holder.addChild(comp, 'content')
+        self._content = Content(comp, self._on_tab_event, self._on_empty_acquaintance_handler, self._on_empty_additionals_visible)
+        comp = GUI.Frame2('soGUI/frame/con_frame_rounded.dds')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.position = (0, 0, 0.9)
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = self.component.content_holder.width, self.component.content_holder.height
+        comp.materialFX = 'SOLID'
+        self.component.content_holder.addChild(comp, 'empty_panel')
+        comp = GUI.Window()
+        tf = soTextField3(comp, 300, 200, textWidth=-1, hScroll=False, vScroll=False, hideScroll=True, borderWidth=0, vOffset=0, hOffset=0, textureless=1)
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+        comp.position = (0, -0.2, 0.9)
+        comp.visible = False
+        self.component.content_holder.empty_panel.addChild(comp)
+        self._intro_comp = comp
+        tf.setText(cc.inactive_xml + u'<font=RobotoCondensedRegular_20.font><alignment=center>' + lc('GUI.QuestLog.REP_INTRO'), immidiate=True)
+        self._fav_button = FavButton(self._get_fav_state)
+        self._fav_button.component.position = (0, self.component.content_holder.height + 37, 0)
+        self._fav_button.click_callback = self._on_fav_click
+        self.component.content_holder.addChild(self._fav_button.component, 'fav_button')
+        return
+
+    def _get_fav_state(self):
+        item_data = self._dp.find_first_selection()
+        rep_id = item_data and item_data.rep_id
+        if not rep_id:
+            return FavState.Disable
+        elif self._user.is_rep_favourite(rep_id):
+            return FavState.Defav
+        elif self._user.is_fav_rep_limit():
+            return FavState.Disable
+        else:
+            return FavState.Fav
+
+    def _on_fav_click(self):
+        item_data = self._dp.find_first_selection()
+        if item_data:
+            rep_id = item_data.rep_id
+            return rep_id or None
+        fav = self._user.is_rep_favourite(rep_id)
+        self._user.set_rep_favourite(rep_id, not fav)
+        self._last_visible_rep_id = rep_id
+        self._dp.clear()
+
+    def force_group(self, group_id):
+        self._last_visible_rep_id = group_id
+
+    def _on_empty_acquaintance_handler(self, group_id):
+        self._server.load_aquaintance(group_id)
+
+    def _on_empty_additionals_visible(self, group_id):
+        self._server.load_additional_knowledge(group_id)
+
+    def _on_tab_event(self, event_type, data):
+        if event_type == RvET.CurQuestsEmptyVisible:
+            rep_id = data['id']
+            self._server.load_quests(rep_id, Quest.CUR_REP_QUESTS)
+        elif event_type == RvET.AvailableQuestsEmptyVisible:
+            rep_id = data['id']
+            self._server.load_quests(rep_id, Quest.AVAILABLE_REP_QUEST)
+        elif event_type == RvET.MembersEmptyVisible:
+            rep_id = data['id']
+            self._server.load_members(rep_id, Quest.MEMBERS_REP)
+        elif event_type == RvET.EnemiesEmptyVisible:
+            rep_id = data['id']
+            self._server.load_members(rep_id, Quest.ENEMIES_REP)
+        elif event_type == RvET.OnQuestClick:
+            quest_id = data['quest_id']
+            self.on_quest_callback(quest_id)
+        elif event_type == RvET.OnMemberClick:
+            if 'npc_name' in data:
+                npc_name = data['npc_name']
+                self.on_npc_click_callback(npc_name)
+            else:
+                gr_id = data['gr_id']
+                if not self._view.try_select_group(gr_id):
+                    self.on_group_click_callback(gr_id)
+
+    def on_sortfilter_event(self, event_type):
+        if event_type == SfET.OnModeChanged:
+            item_data = self._dp.find_first_selection()
+            self._last_visible_rep_id = item_data and item_data.rep_id
+            self._dp.clear()
+        elif event_type == SfET.OnVisibleChanged:
+            self._update_content_filter_visibility()
+
+    def _update_content_filter_visibility(self):
+        self.component.content_holder.visible = not self._sort_filter.visible
+
+    def _on_server_event(self, event_type, data):
+        if event_type == ServET.OnDataLoaded:
+            unique_id, group_data = data['unique_id'], data['group_data']
+            group_data_updated = []
+            for gd in group_data:
+                if gd:
+                    gd = dict(gd)
+                    gd['is_fav'] = self._user.is_rep_favourite(gd['id'])
+                group_data_updated.append(gd)
+
+            self._dp.replace_empty_data(unique_id, group_data_updated, self._last_visible_rep_id)
+            if self._last_visible_rep_id:
+                item_data = self._dp.get_item_by_rep_id(self._last_visible_rep_id)
+                self._content.set_group(item_data)
+                self._last_visible_rep_id = None
+            self._fav_button.update()
+        elif event_type == ServET.OnQuestsLoaded:
+            quest_ids, rep_id, mode, data = (data['quest_ids'],
+             data['rep_id'],
+             data['mode'],
+             data['data'])
+            self._dp.set_quests(quest_ids, rep_id, mode, data)
+        elif event_type == ServET.OnMembersLoaded:
+            npc_ids, rep_id, mode = data['npc_ids'], data['rep_id'], data['mode']
+            self._dp.set_members(npc_ids, rep_id, mode)
+        elif event_type == ServET.OnDataChanged:
+            event_type, rep_data = data['event_type'], data['rep_data']
+            self._dp.set_data(event_type, rep_data, self._sort_filter.mode)
+        elif event_type == ServET.OnQuestStateChanged:
+            quest_id, prev_state, state = data['quest_id'], data['prev_state'], data['state']
+            self._dp.update_quest_state(quest_id, prev_state, state)
+        elif event_type == ServET.OnKnowledgeGot:
+            rep_id, knowledge = data['group_id'], data['knowledge']
+            self._dp.set_knowledge(rep_id, knowledge)
+        elif event_type == ServET.OnAcquaintedGot:
+            rep_id, acquainted = data['group_id'], bool(data['acquainted'])
+            self._dp.set_acquainted(rep_id, acquainted)
+        if not self._content.selected_rep_id and not self._last_visible_rep_id:
+            if self._dp._data:
+                if self._dp._data[0]:
+                    unique_id, rep_id = self._dp._data[0]._unique_id, self._dp._data[0].rep_id
+                    if rep_id:
+                        self._dp.set_selection(unique_id)
+                        item_data = self._dp.get_item_by_rep_id(rep_id)
+                        self._content.set_group(item_data)
+                        self._fav_button.update()
+            else:
+                self._intro_comp.visible = True
+        return
+
+    def _on_view_event(self, event_type, data):
+        if event_type == ViewET.OnEmptyItemVisible:
+            unique_id = data['unique_id']
+            context_ids = self._dp.get_item_context(unique_id)
+            if context_ids == (0, 0) and self._last_visible_rep_id:
+                context_ids = (self._last_visible_rep_id, self._last_visible_rep_id)
+            self._server.load_data(context_ids, unique_id, self._sort_filter.mode, self._user.fav_users)
+        elif event_type == ViewET.OnItemClick:
+            unique_id, group_id = data['unique_id'], data['group_id']
+            self._dp.set_selection(unique_id)
+            item_data = self._dp.get_item_by_rep_id(group_id)
+            self._content.set_group(item_data)
+            self._sort_filter.switch_off()
+            self._fav_button.update()
+
+    def on_show(self):
+        self._intro_comp.visible = False
+        self._dp.clear()
+        self._view.on_show()
+        self._content.set_group(None)
+        self._content.on_show()
+        self._server.on_show()
+        self._update_content_filter_visibility()
+        self._fav_button.update()
+        return
+
+    def on_hide(self):
+        self._last_visible_rep_id = self._content.selected_rep_id
+        self._content.set_group(None)
+        self._content.on_hide()
+        self._server.on_hide()
+        self._view.on_hide()
+        return

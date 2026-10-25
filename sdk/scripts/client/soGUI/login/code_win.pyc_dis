@@ -1,0 +1,323 @@
+# Embedded file name: ./client/soGUI/login/code_win.py
+import BigWorld
+import colorCodes as cc
+import GUI
+from base_win import BaseWin
+from soGUI.soTextField import soTextField3
+from Localization import lc
+from edit_box import EditBox, EventType as EditBoxET
+from soGUI.UtilsGUI.PaintButton import PaintButton
+from auth_common import TYPE_CONFIRM_ACC
+from utils import Tickable
+from Helpers.PyGUI import Utils
+from Localization import get_support_url
+
+class EventType:
+    OnExitRequest, OnCodeEntered, OnNewCodeRequest, ToggleAlt = ((r, 'codewin') for r in range(4))
+
+
+class TimerButton(PaintButton, Tickable):
+
+    def __init__(self, comp):
+        Tickable.__init__(self, 1)
+        PaintButton.__init__(self, comp, visual_state='soGUI/frame/loginwin/loginwinTextButton3.xml')
+        self._time = 0
+
+    def can_tick(self):
+        return Utils.is_visible_in_hierarchy(self.component)
+
+    def on_show(self, time):
+        self._time = BigWorld.time() + time
+        if time > 0:
+            self.start_tick()
+        self._update_text()
+
+    def on_check_tick(self):
+        self._update_text()
+        return not self.enabled
+
+    def _update_text(self):
+        time_remain = self._time - BigWorld.time()
+        time_remain = int(round(time_remain))
+        if time_remain > 0:
+            self.text = u'{0} ({1})'.format(lc('LoginWin.code.request'), time_remain)
+            self.enabled = False
+        else:
+            self.text = lc('LoginWin.code.request')
+            self.enabled = True
+
+    def on_hide(self):
+        self.stop_tick()
+
+
+class Code2faWin(BaseWin):
+
+    def __init__(self):
+        BaseWin.__init__(self, width=700)
+
+    def _create_content(self, margin, center_width):
+        pos_y = BaseWin._create_content(self, margin, center_width, lc('LoginWin.code.caption'))
+        self.component.textureName = u''
+        self.component.texture = None
+        comp = self.component.caption.text
+        comp.ha = 'LEFT'
+        comp.hpm = 'PIXEL'
+        comp.position[0] = margin
+        comp = GUI.Simple(u'')
+        comp.position = (0, 0, 0.5)
+        self.component.addChild(comp, 'repeat')
+        comp = GUI.Window()
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('RIGHT', 'CENTER')
+        comp.materialFX = 'BLEND'
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        btn = PaintButton(comp, visual_state='soGUI/frame/loginwin/loginwinLineButton.xml')
+        btn.text = lc('LoginWin.code.exit')
+        self.component.addChild(btn.component)
+        btn.do_reposition()
+        btn.on_click = self._on_exit_click
+        lcomp = btn.component.label
+        lcomp.wm, lcomp.hm = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = lcomp.width, lcomp.height
+        comp.position = (self.component.width - margin, pos_y / 2, 0.5)
+        comp = GUI.Window('soGUI/frame/paint/black.dds')
+        comp.materialFX = 'BLEND'
+        comp.ha, comp.va = ('CENTER', 'TOP')
+        comp.wm, comp.hm = ('CLIP', 'PIXEL')
+        comp.hpm, comp.vpm = ('CLIP', 'PIXEL')
+        comp.colour = (255, 255, 255, 150)
+        comp.position = (0, pos_y + 2, 0.9)
+        comp.width = 2
+        self.component.addChild(comp, 'black')
+        comp = GUI.Window()
+        comp.ha, comp.va = ('LEFT', 'TOP')
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = center_width, 200
+        comp.position = (margin, pos_y + 28, 0.5)
+        self._tf_code = soTextField3(comp, width=center_width, textWidth=center_width, height=comp.height, hScroll=False, vScroll=False, vOffset=0, hOffset=0)
+        self._tf_code.setText(u'')
+        self.component.addChild(comp)
+
+        def _int_validator(new_str, whole_text, offset):
+            potential_text = whole_text[:offset] + new_str + whole_text[offset:]
+            try:
+                int(potential_text)
+                return True
+            except ValueError:
+                return False
+
+        ok_btn_size = (40, 40)
+        comp = GUI.Window()
+        comp.ha, comp.va = ('LEFT', 'TOP')
+        comp.hpm, comp.vpm = ('CLIP', 'PIXEL')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = center_width * 0.5 - ok_btn_size[0] - 2, ok_btn_size[1]
+        comp.position = (0, 0, 0.5)
+        self.component.addChild(comp)
+        self._editbox = EditBox(comp, input_validator=_int_validator)
+        self._editbox.add_listener(self._on_editbox_event)
+        comp = GUI.Window()
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('RIGHT', 'TOP')
+        comp.materialFX = 'BLEND'
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = ok_btn_size[0], ok_btn_size[1]
+        comp.position = (margin + center_width, 0, 0.5)
+        self._okbutton = PaintButton(comp, visual_state='soGUI/frame/loginwin/loginwinTextButton3.xml')
+        self._okbutton.text = lc('LoginWin.code.ok')
+        self._okbutton.on_click = self._on_ok_click
+        self._okbutton.enabled = False
+        self.component.addChild(comp)
+        self._okbutton.do_reposition()
+        comp = GUI.Text(lc('LoginWin.code.enter_code'), 'RobotoCondensedRegular_20.font')
+        comp.ha, comp.va = ('LEFT', 'CENTER')
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.position = (margin, 0, 0.5)
+        comp.colour = cc.active_rgba
+        self.component.addChild(comp, 'entercode')
+        comp = GUI.Text(u'l', 'RobotoCondensedRegular_18.font')
+        comp.ha, comp.va = ('LEFT', 'TOP')
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.position = (margin, 0, 0.5)
+        comp.colour = cc.inactive_rgba
+        self.component.addChild(comp)
+        self._txt_attempts = comp
+        comp = GUI.Text(lc('LoginWin.code.period'), 'RobotoCondensedRegular_18.font')
+        comp.ha, comp.va = ('LEFT', 'TOP')
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.position = (margin, 0, 0.5)
+        comp.colour = cc.inactive_rgba
+        self.component.addChild(comp)
+        self._txt_period = comp
+        comp = GUI.Window()
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('CENTER', 'TOP')
+        comp.materialFX = 'BLEND'
+        comp.hpm, comp.vpm = ('CLIP', 'PIXEL')
+        btn = PaintButton(comp, visual_state='soGUI/frame/loginwin/loginwinLineButton.xml')
+        btn.text = lc('LoginWin.code.support')
+        self.component.addChild(btn.component, 'support')
+        btn.do_reposition()
+        btn.on_click = self._on_support_click
+        lcomp = btn.component.label
+        lcomp.wm, lcomp.hm = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = lcomp.width, lcomp.height
+        comp.position = (0, 0, 0.5)
+        comp = GUI.Simple('textures/default/white.dds')
+        comp.materialFX = 'SOLID'
+        comp.colour = cc.inactive_rgba
+        comp.ha, comp.va = ('CENTER', 'TOP')
+        comp.hpm, comp.vpm = ('CLIP', 'PIXEL')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = center_width, 2
+        comp.position = (0, 0, 0.5)
+        self.component.repeat.addChild(comp, 'line')
+        comp = GUI.Window()
+        comp.ha, comp.va = ('LEFT', 'TOP')
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.position = (margin, 0, 0.5)
+        tf = soTextField3(comp, width=center_width, textWidth=center_width, height=comp.height, hScroll=False, vScroll=False, vOffset=0, hOffset=0, autosize=True)
+        text = cc.active_xml + '<font=RobotoCondensedRegular_24.font>' + lc('LoginWin.code.more')
+        tf.setText(text, immidiate=True)
+        self.component.repeat.addChild(comp, 'codemore')
+        comp = GUI.Text(lc('LoginWin.code.alternative'), 'RobotoCondensedRegular_20.font')
+        comp.colour = cc.active_rgba
+        comp.ha, comp.va = ('LEFT', 'TOP')
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.position = (margin, 0, 0.5)
+        self.component.repeat.addChild(comp, 'altern')
+        comp = GUI.Window()
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('LEFT', 'TOP')
+        comp.materialFX = 'BLEND'
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        self._alt_btn = PaintButton(comp, visual_state='soGUI/frame/loginwin/loginwinLineButton.xml')
+        self._alt_btn.text = u''
+        self._alt_btn.on_click = self._on_alt_click
+        self.component.repeat.addChild(self._alt_btn.component)
+        self._alt_btn.do_reposition()
+        lcomp = self._alt_btn.component.label
+        lcomp.wm, lcomp.hm = ('PIXEL', 'PIXEL')
+        comp = GUI.Window()
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('LEFT', 'TOP')
+        comp.materialFX = 'BLEND'
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = self.component.width, 40
+        comp.position = (0, 0, 0.5)
+        self._tbutton = TimerButton(comp)
+        self._tbutton.on_click = self._on_new_code_click
+        self.component.repeat.addChild(comp)
+        self._tbutton.do_reposition()
+        return 400
+
+    def show(self, data):
+        BigWorld.zim = data
+        BaseWin.show(self)
+        self.set_load(False)
+        show_repeat_code = data['2fa_can_resend_code']
+        show_period = data['2fa_can_resend_code']
+        fa_type = data['2fa_typeconfirm']
+        if fa_type == TYPE_CONFIRM_ACC.PHONE:
+            text = lc('LoginWin.code.phone_result').format(data['2fa_sent_to'])
+            self._alt_btn.text = lc('LoginWin.code.email')
+        elif fa_type == TYPE_CONFIRM_ACC.EMAIL:
+            text = lc('LoginWin.code.email_result').format(data['2fa_sent_to'])
+            self._alt_btn.text = lc('LoginWin.code.sms')
+        elif fa_type == TYPE_CONFIRM_ACC.OTP2FA:
+            show_repeat_code = False
+            show_period = False
+            text = lc('LoginWin.code.twof_result').format(data['2fa_sent_to'])
+        else:
+            raise RuntimeError
+        if show_repeat_code:
+            self.component.repeat.visible = True
+            self._tbutton.on_show(data['2fa_send_code_cooldown'])
+        else:
+            self.component.repeat.visible = False
+        self._tf_code.setText(cc.active_xml + '<font=RobotoCondensedRegular_24.font>' + text, immidiate=True)
+        self._tf_code.height = 1000
+        self._tf_code.recalc_auto_height()
+        pos_y = self._tf_code.component.position[1] + self._tf_code.component.height
+        pos_y += 16
+        self._editbox.component.position[1] = pos_y
+        self.component.entercode.position[1] = pos_y + self._editbox.component.height / 2
+        self._okbutton.component.position[1] = pos_y
+        pos_y += self._editbox.component.height
+        pos_y += 32
+        self._txt_attempts.position[1] = pos_y
+        self._txt_attempts.text = lc('LoginWin.code.attempts') + u' ' + unicode(data['2fa_code_attempts_left'])
+        pos_y += self._txt_attempts.height
+        if show_period:
+            self._txt_period.visible = True
+            self._txt_period.position[1] = pos_y
+            pos_y += self._txt_period.height
+        else:
+            self._txt_period.visible = False
+        pos_y += 16
+        self.component.support.position[1] = pos_y
+        pos_y += self.component.support.height
+        if not show_repeat_code:
+            self.component.black.height = pos_y
+            self.component.height = pos_y + 16
+            return
+        pos_y += 8
+        self.component.repeat.line.position[1] = pos_y
+        pos_y += self.component.repeat.line.height
+        pos_y += 32
+        self.component.repeat.codemore.position[1] = pos_y
+        pos_y += self.component.repeat.codemore.height
+        pos_y += 16
+        acomp = self.component.repeat.altern
+        acomp.position[1] = pos_y
+        lcomp = self._alt_btn.component.label
+        comp = self._alt_btn.component
+        comp.width, comp.height = lcomp.width, lcomp.height
+        x = acomp.position[0] + acomp.width + 8
+        comp.position = (x, pos_y, 0.5)
+        pos_y += acomp.height
+        self.component.black.height = pos_y - self.component.black.position[1] + 16
+        pos_y += 48
+        self._tbutton.component.position[1] = pos_y
+        pos_y += self._tbutton.component.height
+        self.component.height = pos_y
+
+    def on_error(self):
+        if not self.visible:
+            return
+        self.set_load(False)
+
+    def _on_support_click(self):
+        import webbrowser
+        webbrowser.open(get_support_url())
+
+    def _on_alt_click(self):
+        self.set_load(True)
+        self.notify_listeners(EventType.ToggleAlt)
+
+    def _on_new_code_click(self):
+        self.set_load(True)
+        self.notify_listeners(EventType.OnNewCodeRequest)
+
+    def _on_exit_click(self):
+        self.notify_listeners(EventType.OnExitRequest)
+
+    def _on_ok_click(self):
+        self._editbox.activate(False)
+        self.set_load(True)
+        self.notify_listeners(EventType.OnCodeEntered, self._editbox.text_value)
+
+    def _on_editbox_event(self, event_type, data):
+        if event_type == EditBoxET.OnEmptyChanged:
+            self._okbutton.enabled = bool(self._editbox.text_value)
+
+    def on_hide(self):
+        BaseWin.on_hide(self)
+        self._tbutton.on_hide()
+        self._editbox.clear()
+        self._editbox.activate(False)

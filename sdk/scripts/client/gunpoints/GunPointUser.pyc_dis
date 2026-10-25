@@ -1,0 +1,186 @@
+# Embedded file name: ./client/gunpoints/GunPointUser.py
+from Localization import lc
+from functools import partial
+from Math import Matrix
+import BigWorld
+import BWPersonality
+import RestrictionsUtils
+import heli_weapon
+import heliconstants as H
+import Constants
+from heliutils.helicamera import Helicamera
+from base_to_capture_common.utils import GunEventType
+from Constants import MESSAGE_TYPES as MT
+
+class GunPointUser:
+    is_gunpoint = False
+
+    def onEnterWorld(self):
+        if self.transport_seat:
+            GunPointUser.set_transport_seat(self, 0)
+
+    def interact_gunpoint(self, gunpoint):
+        if not self.CheckRestriction(RestrictionsUtils.CHANNEL_ITEMS):
+            return
+        if self.IsAvatarCrouched():
+            return
+        if not self.transport_seat:
+            self._reset_restriction_handler = BigWorld.callback(3.0, self._reset_wait_restriction)
+            self.custom_restrictions.add('GunPointPrepare')
+            gunpoint.cell.request_seat()
+
+    def _reset_wait_restriction(self):
+        if self is not BigWorld.player():
+            return
+        if hasattr(self, '_reset_restriction_handler'):
+            BigWorld.cancelCallback(self._reset_restriction_handler)
+            del self._reset_restriction_handler
+        if 'GunPointPrepare' in self.custom_restrictions:
+            self.custom_restrictions.remove('GunPointPrepare')
+
+    def _disconnect_from_gunpoint(self):
+        if not self.is_gunpoint:
+            return
+        self.is_gunpoint = False
+        is_player = self is BigWorld.player()
+        self.onUseAnyHandActionEnd()
+        self.popTrackerLock('Transport')
+        self.rememberlastFootTwist(True, channel='Transport')
+        self.model.motors[0].lockChangeAction = False
+        self.model.motors[0].useEntityPitchAndRoll = False
+        self.resetFootTwist()
+        self._update_tracker_flags()
+        if is_player:
+            self.physics.fall = True
+            if self.physics.inAir:
+                self.inAirNotifier(0.0, True)
+        self.UpdateAvatarModel()
+        self.onChangeWeaponStatus()
+        if is_player:
+            if 'GunPoint' in self.custom_restrictions:
+                self.custom_restrictions.remove('GunPoint')
+            self._resetLookAround()
+            BWPersonality.GUICore.targettingGUI.show()
+            BWPersonality.GUICore.showCrosshairLookAround(False)
+            BWPersonality.GUICore.gunwin.hide()
+            self.SetWeaponStatus(Constants.WEAPON_BORED)
+            self._helicamera.deactivate()
+            self.replayHandHvatAnimation()
+            self.filter = self.default_filter()
+
+    def onPostModelChange(self):
+        pass
+
+    def _update_lock_animations(self):
+        if self.isDestroyed:
+            return
+        if getattr(self, '_update_lock_animations_id', 0):
+            BigWorld.cancelCallback(self._update_lock_animations_id)
+        if not self.is_gunpoint:
+            self._update_lock_animations_id = 0
+            return
+        if self.model and self.getTrackerKey()[2] in ('idle', 'crouch_idle'):
+            self.model.motors[0].lockChangeAction = True
+            self._update_lock_animations_id = 0
+            return
+        self._update_lock_animations_id = BigWorld.callback(0, self._update_lock_animations)
+
+    def _connect_to_gunpoint(self, gunpoint):
+        if self.is_gunpoint:
+            return
+        else:
+            self.is_gunpoint = True
+            is_player = self is BigWorld.player()
+            if is_player:
+                self.custom_restrictions.add('GunPoint')
+                self.filter = BigWorld.TransformFilter()
+                m = Matrix()
+                m.setTranslate(gunpoint.get_gunner_position())
+                r = Matrix()
+                r.setRotateY(gunpoint.yaw)
+                m.preMultiply(r)
+                self.filter.matrixProvider = m
+                BigWorld.dcursor().yaw = gunpoint.yaw
+                BigWorld.dcursor().yawReference = m
+                self.onChangeWeaponStatus()
+                if not hasattr(self, '_helicamera'):
+                    self._helicamera = Helicamera()
+                self._helicamera.activate(m, None, None)
+            self.clearAvatarGuns()
+            weapon = heli_weapon.HeliWeapon(complex_item=H.GUNPOINT_ITEM_WEAPON, parent_entity=self)
+            weapon.set_need_spend_ammo(True)
+            weapon.setAmmoNumber(0)
+            weapon.set_ammo_type(gunpoint.ammotype)
+            model = weapon.getModel()
+            self.model.GUNR = model
+            self.active_weapon = weapon
+            self.heli_weapon = weapon
+            self.setActiveWeaponModel(model, weapon)
+            self.forceClearTrackerLock()
+            if is_player:
+                self.model.motors[0].resetFootTwist()
+                self._update_lock_animations()
+                self.model.motors[0].useEntityPitchAndRoll = True
+                self.DisableCollisionWeapon()
+                self.LookAround(False)
+                BWPersonality.GUICore.targettingGUI.hide()
+                BWPersonality.GUICore.showCrosshairLookAround(False)
+                self.SetWeaponStatus(Constants.WEAPON_INCOMABAT, check_rest=False)
+                self.sendHeadRotationBylookArround()
+                BWPersonality.onAvatarChangeWeapon(self.heli_weapon.getItemType())
+                BWPersonality.GUICore.updateTestWeaponWindowActiveItem()
+                weapon.on_spend_ammo = self._on_spend_ammo
+            self.updateGunProvider()
+            self.updateTorsoHeadProvider()
+            self._update_tracker_flags()
+            if is_player:
+                self.LookAround(False)
+                BWPersonality.GUICore.targettingGUI.hide()
+                BWPersonality.GUICore.showCrosshairLookAround(False)
+                BWPersonality.GUICore.gunwin.show(gunpoint.id)
+            return
+
+    def on_try_shot_no_ammo(self):
+        if self.is_gunpoint:
+            if hasattr(self, '_last_try_shot_notification'):
+                if BigWorld.time() - self._last_try_shot_notification < 2.0:
+                    return
+            BWPersonality.gpd.sendHightMessage(lc('gunner.no_ammo'), MT.PERSONAL)
+            self._last_try_shot_notification = BigWorld.time()
+
+    def set_transport_seat(self, old_value, timeout = 10):
+        self._reset_wait_restriction()
+        if timeout <= 0:
+            raise RuntimeError
+        if hasattr(self, '_setgp_callback'):
+            BigWorld.cancelCallback(self._setgp_callback)
+            del self._setgp_callback
+        if old_value:
+            gunpoint = BigWorld.entities.get(old_value)
+            self._disconnect_from_gunpoint()
+        if self.transport_seat:
+            gunpoint = BigWorld.entities.get(self.transport_seat)
+            if not gunpoint:
+                self._setgp_callback = BigWorld.callback(0, partial(GunPointUser.set_transport_seat, self, old_value, timeout - BigWorld.getTimeDelta()))
+                return
+            if gunpoint.__class__.__name__ == 'GunPoint':
+                self._connect_to_gunpoint(gunpoint)
+
+    def on_gun_ammotype_changed(self, ammotype):
+        if self.heli_weapon:
+            self.heli_weapon.set_ammo_type(ammotype)
+
+    def _on_spend_ammo(self):
+        if BWPersonality.GUICore.gunwin_visible():
+            BWPersonality.GUICore.gunwin.count -= 1
+
+    def notify_gun_event(self, event_type, data):
+        if not self.heli_weapon:
+            return
+        if event_type == GunEventType.OnTotalAmmo:
+            ammo_number = sum(data)
+        elif event_type == GunEventType.OnAmmoAdded:
+            ammo_number = self.heli_weapon.getAmmoNumber() + data[1]
+        self.heli_weapon.setAmmoNumber(ammo_number)
+        if BWPersonality.GUICore.gunwin_visible():
+            BWPersonality.GUICore.gunwin.count = ammo_number

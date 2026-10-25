@@ -1,0 +1,259 @@
+# Embedded file name: ./client/journal/quests_tab2/content/quest_tf.py
+import Quest
+import client_utils
+import space_utils
+import colorCodes as CC
+from Helpers.BWCoroutine import BWMemberCoroutine, BWWaitForPeriod, BWWaitForCoroutine
+from soGUI.DialogGUI.AsyncLoader import AsyncLoader, PrepareResult as PR
+from soGUI.soTextField import soTextField3
+import GUI
+import QuestDispatcher as qd
+from Localization import lc
+import BigWorld
+from pvp_inst_config import configs as pvp_config
+import ItemsUtils
+import csconstans
+
+class TF(soTextField3):
+    DEFAULT_FONT = 'RobotoCondensedRegular_16.font'
+
+    def __init__(self, *args, **kargs):
+        soTextField3.__init__(self, *args, **kargs)
+        self._maskable = False
+
+    def handleMouseEvent(self, comp, event):
+        return False
+
+    def setText(self, text):
+        soTextField3.setText(self, text, immidiate=True)
+        if self.maskable:
+            self._apply_material()
+
+    def _refitCmps(self):
+        if len(self.hMap) > 0:
+            self.height = self.hMap[-1]
+        soTextField3._refitCmps(self)
+
+    def _apply_material(self):
+        material = 'BLEND_MASKABLE' if self._maskable else 'BLEND'
+        for _, child in self.component.textRendererPlane.children:
+            child.materialFX = material
+
+    @property
+    def maskable(self):
+        return self._maskable
+
+    @maskable.setter
+    def maskable(self, value):
+        if self._maskable == value:
+            return
+        self._maskable = value
+        self._apply_material()
+
+
+class QuestTF(TF):
+    """ \xd0\xbe\xd1\x82\xd0\xb4\xd0\xb5\xd0\xbb\xd1\x8c\xd0\xbd\xd1\x8b\xd0\xb9 \xd0\xb1\xd0\xbb\xd0\xbe\xd0\xba \xd1\x81 \xd0\xbe\xd0\xb4\xd0\xbd\xd0\xb8\xd0\xbc \xd0\xba\xd0\xb2\xd0\xb5\xd1\x81\xd1\x82\xd0\xbe\xd0\xbc """
+
+    def __init__(self, width, show_map = True):
+        self._show_map = show_map
+        comp = GUI.Window()
+        self._cut = False
+        self._quest_data = None
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = width, 100
+        comp.position = (0, 0, 0.5)
+        TF.__init__(self, comp, width, 50, textWidth=-1, hScroll=False, vScroll=False, hideScroll=True, borderWidth=0, vOffset=0, hOffset=0, textureless=1)
+        self._async_loader = AsyncLoader()
+        self._async_loader.need_break = self._need_break_async_operation
+        self._text_coroutine = None
+        self.on_size_changed_callback = None
+        return
+
+    def _need_break_async_operation(self):
+        return not self._quest_data or not self.component.parent
+
+    def update_quest(self, quest_data):
+        if not self.quest_id == quest_data['id']:
+            raise AssertionError
+            quest_type = qd.get_type_by_id(self.quest_id)
+            self._quest_data['int'][0] = quest_type in (Quest.TYPE_KILLMOBS, Quest.TYPE_KILLMOBS_WITH_ONTEST) and quest_data['int']
+        else:
+            self._quest_data.update(quest_data)
+        self.set_quest(self._quest_data)
+
+    def set_quest(self, quest_data, cut = False):
+        self._quest_data = quest_data
+        map_desc = ''
+        if self._show_map:
+            spaces_mask = qd.getQuestOnID(self.quest_id)['QuestRules'].get('spaces_mask', 0)
+            if spaces_mask:
+                map_desc = '<alignment=left>'
+                map_desc += CC.inactive_xml + lc('Quester.MAP') + u' '
+                spaces = space_utils.get_space_names_from_mask(spaces_mask)
+                for i, space in enumerate(spaces):
+                    map_desc += u'<hlink={0};{1}>'.format(space_utils.getLokalizedSpaceNameByName(space), space)
+                    if i < len(spaces) - 1:
+                        map_desc += ', '
+
+                map_desc += '\n'
+        desc = '<alignment=left>'
+        state = self._quest_data['state']
+        desc += CC.inactive_xml + qd.get_description_by_id(self.quest_id, state=state) or u'no description for ' + unicode(self.quest_id)
+        desc = client_utils.colorise_text(desc)
+        quest_type = qd.get_type_by_id(self.quest_id)
+        quest = qd.getQuestOnID(self.quest_id)
+        tech_desc = ''
+        if quest_type == Quest.TYPE_QUEST_COUNTER:
+            total_count = quest['Target']['NumOfObjects']
+            if state == Quest.STATE_OPENED:
+                tech_desc += u'{0}{1}{2} {3}/{4}.'.format(u'<p><alignment=right>', CC.active_xml, lc('Quester.YOU_HAVE_COMPLETED'), self._quest_data['int'], total_count)
+            elif state == Quest.STATE_ONTEST:
+                tech_desc += u'{0}{1}{2} {3}/{4}.'.format(u'<p><alignment=right>', CC.tf3_journal_collect_complete, lc('Quester.YOU_HAVE_COMPLETED'), total_count, total_count)
+        elif quest_type in (Quest.TYPE_KILLMOBS, Quest.TYPE_KILLMOBS_WITH_ONTEST):
+            if state == Quest.STATE_OPENED:
+                tech_desc += u'{0}{1}{2} {3}/{4}.'.format(u'<p><alignment=right>', CC.active_xml, lc('Quester.YOU_HAVE_KILLED'), self._quest_data['int'][0], self._quest_data['int'][1])
+            elif state == Quest.STATE_ONTEST:
+                tech_desc += u'{0}{1}{2} {3}/{4}.'.format(u'<p><alignment=right>', CC.tf3_journal_collect_complete, lc('Quester.YOU_HAVE_KILLED'), self._quest_data['int'][1], self._quest_data['int'][1])
+        elif quest_type in (Quest.TYPE_FARM, Quest.TYPE_FARM_AUTO, Quest.TYPE_DUNGEON_BOX_COUNTER):
+            total_count = quest['Target']['NumOfObjects']
+            if state == Quest.STATE_OPENED:
+                tech_desc += u'{0}{1}{2} {3}/{4}.'.format(u'<p><alignment=right>', CC.active_xml, lc('Quester.YOU_HAVE_COLLECT'), self._quest_data['int'], total_count)
+            elif state == Quest.STATE_ONTEST:
+                tech_desc += u'{0}{1}{2} {3}/{4}.'.format(u'<p><alignment=right>', CC.tf3_journal_collect_complete, lc('Quester.YOU_HAVE_COLLECT'), total_count, total_count)
+        elif quest_type in (Quest.TYPE_CRAFT_ITEM,
+         Quest.TYPE_CRAFT_ITEM_AUTO,
+         Quest.TYPE_COOK_ITEM,
+         Quest.TYPE_COOK_ITEM_AUTO,
+         Quest.TYPE_KILLNPC,
+         Quest.TYPE_KILLNPC_WITH_ONTEST):
+            total_count = quest['Target']['NumOfObjects']
+            if state == Quest.STATE_OPENED:
+                tech_desc += u'{0}{1}{2} {3}/{4}.'.format(u'<p><alignment=right>', CC.active_xml, lc('Quester.YOU_HAVE_COMPLETED'), self._quest_data['int'], total_count)
+            elif state == Quest.STATE_ONTEST:
+                tech_desc += u'{0}{1}{2} {3}/{4}.'.format(u'<p><alignment=right>', CC.tf3_journal_collect_complete, lc('Quester.YOU_HAVE_COMPLETED'), total_count, total_count)
+        elif quest_type in Quest.PVP_QUESTS:
+            need_count = quest['Target']['NumOfObjects']
+            pvp_desc = u''
+            if quest_type == Quest.TYPE_PVP_MAP_KILL:
+                pvp_desc += lc('Quester.pvpQuests.destroy').format(need_count)
+            elif quest_type == Quest.TYPE_PVP_MAP_CAPTURE_FLAG:
+                mode = int(quest['Target'].get('ObjectName', '0'))
+                if mode:
+                    pvp_desc += lc('Quester.pvpQuests.bringmore')
+                else:
+                    bring_mode = quest['Target'].get('ObjectType', 0)
+                    if bring_mode:
+                        pvp_desc += lc('Quester.pvpQuests.withdrawflags').format(need_count)
+                    else:
+                        pvp_desc += lc('Quester.pvpQuests.bringflags').format(need_count)
+            game_mode = quest['Target'].get('additional')
+            if game_mode is not None:
+                local_name = lc(next((pc['title'] for pc in pvp_config.itervalues() if pc['gamePlay'] == game_mode)))
+                pvp_desc += u'\n' + lc('Quester.pvpQuests.inmode').format(local_name)
+            use_weapon_type = quest['Conditions'].get('useWeaponType')
+            if use_weapon_type:
+                weapon_name = ItemsUtils.GetItemName(use_weapon_type, fGetShortName=True)
+                pvp_desc += u'\n' + lc('Quester.pvpQuests.weapon').format(weapon_name)
+            be_pvp_winner_color = quest['Conditions'].get('bePvpWinner')
+            if be_pvp_winner_color is not None:
+                if be_pvp_winner_color in (csconstans.TEAM_RED, csconstans.TEAM_BLUE):
+                    team_name = lc('Quester.pvpQuests.team{0}'.format(be_pvp_winner_color))
+                    pvp_desc += u'\n' + lc('Quester.pvpQuests.teamcolorwin').format(team_name)
+                else:
+                    pvp_desc += u'\n' + lc('Quester.pvpQuests.teamwin')
+            not_die_count = quest['Conditions'].get('notDieCount')
+            if not_die_count is not None:
+                pvp_desc += u'\n' + lc('Quester.pvpQuests.notdie').format(not_die_count)
+            pvp_win_team = quest['Conditions'].get('pvpWinTeam')
+            if pvp_win_team is not None:
+                if pvp_win_team == 1:
+                    pvp_desc += u'\n' + lc('Quester.pvpQuests.localleader')
+                elif pvp_win_team == 2:
+                    pvp_desc += u'\n' + lc('Quester.pvpQuests.globalleader')
+            if pvp_desc:
+                tech_desc += u'<p><alignment=right>' + CC.tf3_journal_collect + pvp_desc
+        elif quest_type in (Quest.TYPE_B2C_KILL, Quest.TYPE_B2C_FLAG, Quest.TYPE_B2C_REVIVE):
+            if state == Quest.STATE_OPENED:
+                total_count = quest['Target']['NumOfObjects']
+                count, deaths = Quest.unpack_double_count(self._quest_data['int'])
+                tech_desc += u'{0}{1}{2} {3}/{4}'.format(u'<p><alignment=right>', CC.active_xml, lc('Quester.YOU_HAVE_COMPLETED'), count, total_count)
+                not_die_count = quest['Conditions'].get('notDieCount')
+                if not_die_count:
+                    tech_desc += u'({0}/{1})'.format(deaths, not_die_count)
+        if self._text_coroutine:
+            self._text_coroutine.stop()
+            self._text_coroutine = None
+        self._text_coroutine = self._set_text_coroutine(map_desc, desc, tech_desc, cut)
+        self._text_coroutine.run()
+        return
+
+    def _set_text(self, map_txt, desc_text, tech_desc, cut):
+        self._cut = False
+        if cut:
+            short_desc_len = 200
+            counter = 0
+            break_index = None
+            tag_mode = False
+            for i, symbol in enumerate(desc_text):
+                if symbol == '<':
+                    tag_mode = True
+                if tag_mode and symbol == '>':
+                    tag_mode = False
+                    continue
+                if tag_mode:
+                    continue
+                counter += 1
+                if counter > short_desc_len:
+                    break_index = i
+                    break
+
+            if break_index is not None:
+                desc_text = desc_text[:break_index - 10] + '...'
+                self._cut = True
+        self.setText(map_txt + desc_text + tech_desc)
+        if self.on_size_changed_callback:
+            self.on_size_changed_callback()
+        return
+
+    @BWMemberCoroutine
+    def _set_text_coroutine(self, map_txt, desc_txt, tech_desc, cut):
+        prepare_result = self._async_loader.prepare_async_text(desc_txt, colorise=True)
+        self._set_text(map_txt, self._async_loader.text, tech_desc, cut)
+        if not prepare_result & PR.AsyncChange:
+            return
+        else:
+            yield BWWaitForCoroutine(self._async_loader.replace_text(desc_txt, colorise=True))
+            self._set_text(map_txt, self._async_loader.text, tech_desc, cut)
+            if self._async_loader.ticker is not None:
+                time_value, start, end, time_method = self._async_loader.ticker
+                start_time = BigWorld.time()
+                while True:
+                    yield BWWaitForPeriod(1.0)
+                    if self._need_break_async_operation():
+                        break
+                    cur_time = max(0, time_value - int(BigWorld.time() - start_time))
+                    insertion = CC.active_xml + time_method(cur_time) + '<basecolor>'
+                    self._set_text(map_txt, client_utils.colorise_text(start + insertion + end), tech_desc, cut)
+                    if cur_time == 0:
+                        break
+
+            self._text_coroutine = None
+            return
+
+    def on_pool(self):
+        self._quest_data = None
+        self.on_size_changed_callback = None
+        if self._text_coroutine:
+            self._text_coroutine.stop()
+            self._text_coroutine = None
+        return
+
+    @property
+    def quest_id(self):
+        return self._quest_data and self._quest_data['id']
+
+    @property
+    def _user(self):
+        return BigWorld.player()

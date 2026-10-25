@@ -1,0 +1,576 @@
+# Embedded file name: ./client/soGUI/BB_Viewer.py
+import GUI
+import BWPersonality
+from Items import ItemsCatalog
+import BlackBox
+from Localization import lc
+import math
+import ItemsUtils
+from soGUI.soTextField import soTextField2, soTextField3, soTxtFieldPropsStructure
+import os
+import BigWorld
+from soGUI.soButton import soButton
+import colorCodes
+from Math import Vector3
+import time
+import Keys
+import sounds_manager as sounds
+import traceback
+from Helpers.PyGUI.PyGUIBase import get_layer
+from functools import partial
+
+def get_tool_tip(group_data, item_data, is_blackbox):
+    if is_blackbox:
+        return lc('Inventory.client.bbboxes.tooltip')
+    else:
+        item_name = ItemsUtils.GetItemName(item_data['itemID'])
+        drop_chance = item_data.get('dropChance', 0)
+        if group_data:
+            drop_chance = round(drop_chance * group_data.get('chance', 100.0) * 0.01, 3)
+        text = lc('Inventory.client.bbboxes.wintooltip1').format(item_name, drop_chance)
+        limits = None
+        if ItemsUtils.has_item_state(item_data['itemID']):
+            if item_data.get('MIN', 100) != -1:
+                limits = (item_data.get('MIN', 100), item_data.get('MAX', 100))
+            elif item_data.get('AVER', 100) != -1:
+                limits = item_data.get('AVER', 100)
+            elif group_data and group_data.get('MIN', 100) != -1:
+                limits = (group_data.get('MIN', 100), group_data.get('MAX', 100))
+            elif group_data and group_data.get('AVER', 100) != -1:
+                limits = group_data.get('AVER', 100)
+        if limits is not None:
+            state_text = str(limits) if isinstance(limits, (int, long, float)) else '{0}-{1}'.format(*limits)
+            text += u' ' + lc('Inventory.client.bbboxes.wintooltip2').format(state_text)
+        return text
+
+
+class BB_Win_Slot(soButton):
+
+    def __init__(self, component, item_type, tooltip_caller):
+        soButton.__init__(self, component)
+        self.muted = True
+        self._fake_item = None
+        self._item_type = item_type
+        self.on_click = lambda item: None
+        self._tooltip_caller = tooltip_caller
+        self.onClick = self._on_click
+        return
+
+    def handleMouseEnterEvent(self, comp):
+        tooltip_text = self._tooltip_caller()
+        if tooltip_text:
+            gui_layer = get_layer(self.component).component
+            BWPersonality.GUICore.showToolTip(colorCodes.tf3_regular_text_color + tooltip_text, gui_layer=gui_layer)
+        return soButton.handleMouseEnterEvent(self, comp)
+
+    def handleMouseLeaveEvent(self, comp):
+        BWPersonality.GUICore.toolTip.hide()
+        return soButton.handleMouseLeaveEvent(self, comp)
+
+    def handleMouseButtonEvent(self, comp, event):
+        if event.key == Keys.KEY_LEFTMOUSE:
+            if event.isKeyDown():
+                sounds.playSound('ui/menu_click')
+            else:
+                sounds.playSound('ui/menu_click_up')
+        return soButton.handleMouseButtonEvent(self, comp, event)
+
+    def _on_click(self):
+        if not self._fake_item:
+            self._fake_item = ItemsUtils.CreateFakeItem(self._item_type)
+        self._fake_item['creationTime'] = time.time() - BWPersonality.gpd.time_diff
+        self.on_click(self._fake_item)
+
+
+class BB_Win:
+
+    def __init__(self):
+        self.on_slot_click = lambda item: None
+        self.component = GUI.Window()
+        self.component.widthMode, self.component.heightMode = ('PIXEL', 'PIXEL')
+        self.component.width, self.component.height = (100, 200)
+        self.component.horizontalAnchor, self.component.verticalAnchor = ('CENTER', 'TOP')
+        self.component.horizontalPositionMode, self.component.verticalPositionMode = ('PIXEL', 'PIXEL')
+        self.component.position = (0, 0, 0.1)
+        self.component.visible = False
+        component = GUI.Frame2('soGUI/items/cell.dds')
+        component.widthMode, component.heightMode = ('CLIP', 'CLIP')
+        component.width, component.height = (2, 2)
+        component.materialFX = 'BLEND'
+        component.horizontalAnchor, component.verticalAnchor = ('CENTER', 'CENTER')
+        component.horizontalPositionMode, component.verticalPositionMode = ('CLIP', 'CLIP')
+        component.position = (0, 0, 0.9)
+        self.component.addChild(component, 'frame')
+        comp = GUI.Simple('soGUI/frame/paint/black.dds')
+        comp.colour = (255, 255, 255, 150)
+        comp.materialFX = 'BLEND'
+        comp.wm, comp.hm = ('CLIP', 'PIXEL')
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.ha, comp.va = ('CENTER', 'TOP')
+        comp.width, comp.height = (2, 16)
+        comp.position = (0, 1, 0.1)
+        self.component.addChild(comp, 'arrow')
+        component = GUI.Simple('soGUI/frame/donatshop/up.dds')
+        component.materialFX = 'BLEND'
+        component.widthMode, component.heightMode = ('PIXEL', 'PIXEL')
+        component.horizontalAnchor, component.verticalAnchor = ('CENTER', 'TOP')
+        component.horizontalPositionMode, component.verticalPositionMode = ('CLIP', 'PIXEL')
+        component.width, component.height = component.texture.width, component.texture.height
+        component.position = (0, 3, 0.8)
+        self.component.arrow.addChild(component)
+
+    def show(self, box_data):
+        for _, child in self.component.frame.children:
+            self.component.frame.delChild(child)
+
+        box_data = BlackBox.readBoxInfo(box_data['blackbox'], box_data['container'])
+        top_margin = 24
+        bottom_margin = 16
+        vertical_space = 16
+        left_margin = 16
+        right_margin = left_margin
+        height = [top_margin]
+        max_group_width = [0]
+        groups = []
+
+        def parse_group(group):
+            group_comp = self._create_group(group)
+            groups.append(group_comp)
+            group_comp.position = (0, height[0], 0.5)
+            height[0] += group_comp.height + vertical_space
+            max_group_width[0] = max(max_group_width[0], group_comp.width)
+            self.component.frame.addChild(group_comp)
+            if len(groups) > 1:
+                cross_comp = self._create_cross()
+                pos_y = (groups[-1].position[1] + groups[-2].position[1] + groups[-1].height) / 2
+                cross_comp.position = (0, pos_y, 0.5)
+                self.component.frame.addChild(cross_comp)
+            for item in group['items']:
+                item_type = item.get('itemID')
+                if not item_type:
+                    continue
+                if ItemsCatalog.GetItemClass(item_type) != ItemsCatalog.WEAPON:
+                    continue
+                item_param = ItemsCatalog.GetItemParam(item_type)
+                attach_shop_bb = item_param.get('AttachShopBB')
+                if not attach_shop_bb:
+                    continue
+                shop_box_data = BlackBox.readShopAttaches(attach_shop_bb)
+                for shop_group in shop_box_data['groups']:
+                    parse_group(shop_group)
+
+        for group in box_data['groups']:
+            parse_group(group)
+
+        for group_comp in groups:
+            group_comp.position[0] = (max_group_width[0] - group_comp.width) / 2 + left_margin
+
+        self.component.height = height[0] + bottom_margin - vertical_space
+        self.component.width = left_margin + max_group_width[0] + right_margin
+        self.component.visible = True
+
+    def _create_cross(self):
+        component = GUI.Simple('soGUI/frame/donatshop/cross2.dds')
+        component.widthMode, component.heightMode = ('PIXEL', 'PIXEL')
+        component.materialFX = 'BLEND'
+        component.width, component.height = component.texture.width, component.texture.height
+        component.horizontalAnchor, component.verticalAnchor = ('CENTER', 'CENTER')
+        component.horizontalPositionMode, component.verticalPositionMode = ('CLIP', 'PIXEL')
+        return component
+
+    def _create_group(self, group_data):
+        component = GUI.Window()
+        component.widthMode, component.heightMode = ('PIXEL', 'PIXEL')
+        component.horizontalAnchor, component.verticalAnchor = ('LEFT', 'TOP')
+        component.horizontalPositionMode, component.verticalPositionMode = ('PIXEL', 'PIXEL')
+        component.position = (0, 0, 0.5)
+        vertical_space = 2
+        x_pos = 0
+        for item in group_data['items']:
+            item_comp = self._create_item(group_data, item)
+            item_comp.position = (x_pos, 0, 0.5)
+            x_pos += item_comp.width + vertical_space
+            component.addChild(item_comp)
+
+        component.width, component.height = x_pos - vertical_space, item_comp.height
+        return component
+
+    def _create_item(self, group_data, item_data):
+        component = GUI.Window()
+        component.widthMode, component.heightMode = ('PIXEL', 'PIXEL')
+        component.horizontalAnchor, component.verticalAnchor = ('LEFT', 'CENTER')
+        component.horizontalPositionMode, component.verticalPositionMode = ('PIXEL', 'CLIP')
+        component.width, component.height = (32, 32)
+        frame_comp = GUI.Frame2('soGUI/items/cell.dds')
+        frame_comp.widthMode, frame_comp.heightMode = ('CLIP', 'CLIP')
+        frame_comp.horizontalAnchor, frame_comp.verticalAnchor = ('CENTER', 'CENTER')
+        frame_comp.horizontalPositionMode, frame_comp.verticalPositionMode = ('CLIP', 'CLIP')
+        frame_comp.width, frame_comp.height = (2, 2)
+        frame_comp.position = (0, 0, 0.8)
+        frame_comp.materialFX = 'BLEND'
+        component.addChild(frame_comp, 'frame')
+        item_param = ItemsCatalog.GetItemParam(item_data['itemID'])
+        icon_name = item_param.get('IconName') or 'nottexture.dds'
+        icon_comp = GUI.Simple('')
+        icon_comp.texture = BWPersonality.GUICore.get_icon_from_cache(icon_name, True)
+        icon_comp.widthMode, icon_comp.heightMode = ('CLIP', 'CLIP')
+        icon_comp.horizontalAnchor, icon_comp.verticalAnchor = ('CENTER', 'CENTER')
+        icon_comp.horizontalPositionMode, icon_comp.verticalPositionMode = ('CLIP', 'CLIP')
+        icon_comp.width, icon_comp.height = (2, 2)
+        icon_comp.materialFX = 'BLEND'
+        icon_comp.position = (0, 0, 0.5)
+        component.addChild(icon_comp, 'icon')
+        slot = BB_Win_Slot(component, item_data['itemID'], partial(get_tool_tip, group_data, item_data, False))
+        slot.on_click = lambda item: self.on_slot_click(item)
+        return component
+
+    def hide(self):
+        self.component.visible = False
+
+    @property
+    def visible(self):
+        return self.component.visible
+
+
+class BB_Slot(soButton):
+
+    def __init__(self, component, item_data, group_data, hide_content, hide_chances):
+        soButton.__init__(self, component)
+        self.muted = True
+        self._item_data = item_data
+        self._group_data = group_data
+        if not hide_content:
+            self.onClick = self._on_click
+        self._fake_item = None
+        self.on_show_item = lambda item: None
+        self.request_bb_win = lambda pos_up, pos_down, item_data: None
+        return
+
+    def handleMouseEnterEvent(self, comp):
+        tooltip_text = get_tool_tip(self._group_data, self._item_data, self._is_blackbox)
+        if tooltip_text:
+            gui_layer = get_layer(self.component).component
+            BWPersonality.GUICore.showToolTip(colorCodes.tf3_regular_text_color + tooltip_text, gui_layer=gui_layer)
+        return soButton.handleMouseEnterEvent(self, comp)
+
+    def handleMouseButtonEvent(self, comp, event):
+        if event.key == Keys.KEY_LEFTMOUSE:
+            if event.isKeyDown():
+                sounds.playSound('ui/menu_click')
+            else:
+                sounds.playSound('ui/menu_click_up')
+        return soButton.handleMouseButtonEvent(self, comp, event)
+
+    def handleMouseLeaveEvent(self, comp):
+        BWPersonality.GUICore.toolTip.hide()
+        return soButton.handleMouseLeaveEvent(self, comp)
+
+    @property
+    def _is_blackbox(self):
+        return 'itemID' not in self._item_data
+
+    def _on_click(self):
+        if self._is_blackbox:
+            pos_up = Vector3(self.component.position)
+            old_pos_mode = (self.component.parent.verticalPositionMode, self.component.parent.horizontalPositionMode)
+            self.component.parent.verticalPositionMode, self.component.parent.horizontalPositionMode = ('PIXEL', 'CLIP')
+            pos_up[0] += self.component.width / 2
+            pos_up[1] = self.component.parent.position[1] + self.component.position[1]
+            self.component.parent.verticalPositionMode, self.component.parent.horizontalPositionMode = old_pos_mode
+            pos_down = pos_up + Vector3(0, self.component.height - self.component.arrow.height, 0)
+            self.request_bb_win(pos_up, pos_down, self._item_data)
+        else:
+            if not self._fake_item:
+                self._fake_item = ItemsUtils.CreateFakeItem(int(self._item_data['itemID']))
+            self._fake_item['creationTime'] = time.time() - BWPersonality.gpd.time_diff
+            self.on_show_item(self._fake_item)
+
+
+class BB_Viewer:
+
+    def __init__(self, itemtype_or_bbname, win_comp, font_color, chance_color, font, interface_id):
+        """ font_color \xd0\xb2 \xd1\x84\xd0\xbe\xd1\x80\xd0\xbc\xd0\xb0\xd1\x82\xd0\xb5 \xd1\x82\xd0\xb8\xd0\xbf\xd0\xb0 r"\\cFFFFFFFF;" """
+        self._interface_id = interface_id
+        if isinstance(itemtype_or_bbname, (int, long, float)):
+            item_param = ItemsCatalog.GetItemParam(itemtype_or_bbname)
+            bb_name = item_param['Name']
+        elif isinstance(itemtype_or_bbname, (str, unicode)):
+            bb_name = str(itemtype_or_bbname)
+        else:
+            traceback.print_stack()
+            raise ValueError('ERROR::BB_Viewer wrong itemtype_or_bbname:|{0}|, |{1}|'.format(itemtype_or_bbname, type(itemtype_or_bbname)))
+        bb_data = BlackBox.readBoxInfo(bb_name)
+        is_set = bb_data.get('isset', False)
+        hide_all, self._hide_content, self._hide_chances = bb_data.get('view_data', (False, False, False))
+        if hide_all:
+            self.component = None
+            return
+        else:
+            if is_set:
+                self._hide_chances = True
+            self._hide_range = is_set
+            self._colors = (font_color, chance_color)
+            self._font = font
+            self.component = GUI.Window()
+            if is_set:
+                height = self._create_set(bb_data['groups'], bb_name)
+            else:
+                height = self._create_groups(bb_data['groups'], bb_name)
+            self._last_bb_pos = None
+            self._bb_win = BB_Win()
+            self._bb_win.on_slot_click = self._on_show_item
+            win_comp.addChild(self._bb_win.component, 'bb_win')
+            self.component.heightMode = 'PIXEL'
+            self.component.height = height
+            self.component.materialFX = 'SOLID'
+            self.component.script = self
+            return
+
+    def set_y_pos(self, y_pos):
+        disp = y_pos - self.component.position[1]
+        self._bb_win.component.position[1] += disp
+        self.component.position[1] += disp
+
+    def _show_bb_win(self, pos_up, pos_down, item_data):
+        if self._last_bb_pos == (pos_up, pos_down) and self._bb_win.visible:
+            self._last_bb_pos = None
+            self._bb_win.hide()
+            return
+        else:
+            self._bb_win.show(item_data)
+            text_field = self.component.parent
+            window = text_field.parent
+            disp = (text_field.position[0], self.component.position[1] + text_field.script.disp(), 0)
+            self._last_bb_pos = (pos_up, pos_down)
+            depth = self._bb_win.component.position[2]
+            header_height = text_field.position[1]
+            text_height = text_field.script.text_height() + header_height
+            win_height = window.height
+            available_height = max(text_height, win_height)
+            needed_height = pos_down[1] + text_height - self.component.height + self._bb_win.component.height
+            if needed_height >= available_height:
+                self._bb_win.component.verticalAnchor = 'BOTTOM'
+                self._bb_win.component.position = pos_up + disp
+            else:
+                self._bb_win.component.verticalAnchor = 'TOP'
+                self._bb_win.component.position = pos_down + disp
+            self._bb_win.component.position[2] = depth
+            return
+
+    def _create_set(self, groups, name):
+        vert_position = 0
+        index = 0
+        for group in groups:
+            for item_data in group['items']:
+                item_comp = self._create_setitem(group, item_data)
+                item_comp.position = (-1, vert_position, 0.5)
+                self.component.addChild(item_comp, 'itemset' + str(index))
+                vert_position += item_comp.height
+                index += 1
+
+        return vert_position
+
+    def _create_setitem(self, group, item_data):
+        component = GUI.Window()
+        component.widthMode, component.heightMode = ('CLIP', 'PIXEL')
+        component.horizontalPositionMode, component.verticalPositionMode = ('CLIP', 'PIXEL')
+        component.horizontalAnchor, component.verticalAnchor = ('LEFT', 'TOP')
+        component.width, component.height = (2, 90)
+        component.materialFX = 'SOLID'
+        slot_comp = GUI.Window()
+        if 'garant' in item_data:
+            raise RuntimeError
+        slot_comp = self._create_item_block(item_data, group, None)
+        slot_comp.materialFX = 'BLEND'
+        slot_comp.widthMode, slot_comp.heightMode = ('PIXEL', 'PIXEL')
+        slot_comp.width, slot_comp.height = (70, 80)
+        slot_comp.horizontalAnchor, slot_comp.verticalAnchor = ('LEFT', 'CENTER')
+        slot_comp.horizontalPositionMode, slot_comp.verticalPositionMode = ('PIXEL', 'CLIP')
+        slot_comp.position = (10, 0, 0.9)
+        component.addChild(slot_comp, 'item_slot')
+        text_comp = soTextField3(GUI.Window(), width=600, height=50, textWidth=-1, hScroll=False, vScroll=False, hideScroll=True, borderWidth=0, vOffset=5, hOffset=5, textureless=1, autosize=0)
+        text_comp.INTERFACE_ID = self._interface_id
+        if 'itemID' in item_data:
+            item_name = ItemsUtils.GetItemName(item_data['itemID'])
+            range_from, range_to = item_data['rangeFrom'], item_data['rangeTo']
+            color_format = colorCodes.cvtColor(self._colors[0])
+            if range_from == range_to:
+                number = color_format + lc('Inventory.client.bbboxes.pieces1').format(range_from)
+            else:
+                number = color_format + lc('Inventory.client.bbboxes.piecesMany').format(range_from, range_to)
+            text_comp.setText(u'<hlink={0};INFO:TYPE:{1};>{2}'.format(item_name + ' ', item_data['itemID'], number))
+            text_comp = text_comp.component
+            text_comp.moveFocus = False
+            text_comp.horizontalPositionMode, text_comp.verticalPositionMode = ('PIXEL', 'CLIP')
+            text_comp.horizontalAnchor, text_comp.verticalAnchor = ('LEFT', 'CENTER')
+            text_comp.position = (100, -1.0, 0.5)
+            text_comp.materialFX = 'SOLID'
+            component.addChild(text_comp, 'description')
+        return component
+
+    def _create_groups(self, groups, bb_name):
+        height = 0
+        multiplier = 1
+        if BigWorld.player():
+            multiplier, _ = BigWorld.player().getBBServerChanceMultiplier(bb_name)
+        for i, group in enumerate(groups):
+            component = self._create_group(group, i + 1, group['chance'] * multiplier)
+            self.component.addChild(component, 'group' + str(i))
+            component.position = (0, height, 0.5)
+            height += component.height
+
+        return height
+
+    def _create_group(self, group, index, chance):
+        component = GUI.Window()
+        component.widthMode, component.heightMode = ('CLIP', 'PIXEL')
+        component.horizontalPositionMode, component.verticalPositionMode = ('CLIP', 'PIXEL')
+        component.horizontalAnchor, component.verticalAnchor = ('CENTER', 'TOP')
+        component.width = 2
+        component.materialFX = 'SOLID'
+        header_comp = self._create_group_header(index, chance, group['rangeTo'])
+        header_comp.position = (6, 1, 0.5)
+        component.addChild(header_comp, 'header')
+        left_margin = 17
+        top_margin = 63
+        bottom_margin = 19
+        horizontal_space = 9
+        vertical_space = 16
+        columns = 6
+        for i, item in enumerate(group['items']):
+            group_data = {'MIN': group.get('MIN', 100),
+             'AVER': group.get('AVER', 100),
+             'MAX': group.get('MAX', 100)}
+            garant_data = None
+            if 'garant' in item:
+                garant_data = {'article': item['article'],
+                 'garant': item['garant']}
+            item_comp = self._create_item_block(item, group_data, garant_data)
+            pos_x = left_margin + (item_comp.width + horizontal_space) * (i % columns)
+            pos_y = top_margin + (item_comp.height + vertical_space) * (i / columns)
+            item_comp.position = (pos_x, pos_y, 0.5)
+            component.addChild(item_comp, 'item' + str(i))
+
+        rows = int(math.ceil(float(len(group['items'])) / columns))
+        component.height = bottom_margin + top_margin + (item_comp.height + vertical_space) * rows - vertical_space
+        return component
+
+    def _create_group_header(self, index, chance, count):
+        local_string = 'groupheader' if count > 1 else 'groupheader_1'
+        str_chance = '{0:g}'.format(round(min(chance, 100), 2))
+        text = lc('Inventory.client.bbboxes.{0}'.format(local_string)).format(count=count, color1=self._colors[0], color2=self._colors[1], group=index, chance=str_chance)
+        text_field = soTextField2(GUI.Window(), soTxtFieldPropsStructure(autoSize=False, borderWidth=0, autoScroll=False, width=800, height=64, hideScroll=True, font=self._font))
+        comp = text_field.component
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'CLIP')
+        comp.focus = False
+        comp.moveFocus = False
+        comp.crossFocus = False
+        comp.mouseButtonFocus = False
+        text_field.setText(text)
+        return comp
+
+    def _create_item_block(self, item, group_data, garant_data):
+        component = GUI.Window()
+        component.materialFX = 'BLEND'
+        component.widthMode, component.heightMode = ('PIXEL', 'PIXEL')
+        component.width, component.height = (70, 80)
+        component.horizontalAnchor, component.verticalAnchor = ('LEFT', 'TOP')
+        component.horizontalPositionMode, component.verticalPositionMode = ('PIXEL', 'PIXEL')
+        bb_slot = BB_Slot(component, item, group_data, self._hide_content, self._hide_chances)
+        bb_slot.on_show_item = self._on_show_item
+        bb_slot.request_bb_win = self._show_bb_win
+        back_comp = GUI.Simple('soGUI/maps/bboxes/border.tga')
+        back_comp.materialFX = 'BLEND'
+        back_comp.widthMode, back_comp.heightMode = ('PIXEL', 'PIXEL')
+        back_comp.horizontalPositionMode, back_comp.verticalPositionMode = ('CLIP', 'PIXEL')
+        back_comp.horizontalAnchor, back_comp.verticalAnchor = ('CENTER', 'BOTTOM')
+        back_comp.position = (0, component.height - 3, 0.8)
+        back_comp.width, back_comp.height = (64, 64)
+        component.addChild(back_comp, 'pic')
+        if not self._hide_chances:
+            chance_comp = GUI.Text(str(item['dropChance']) + '%')
+            chance_comp.font = 'ArialNarrowClearShadow_14.family'
+            chance_comp.horizontalPositionMode, chance_comp.verticalPositionMode = ('CLIP', 'PIXEL')
+            chance_comp.horizontalAnchor, chance_comp.verticalAnchor = ('CENTER', 'TOP')
+            chance_comp.position = (0, -1, 0.5)
+            chance_comp.colour = (235, 222, 175, 255)
+            component.addChild(chance_comp, 'chance')
+        if not self._hide_range:
+            range_comp = GUI.Text('{0}-{1}'.format(item['rangeFrom'], item['rangeTo']))
+            range_comp.font = 'ruRU_Cyrvetica_Extra_10i.family'
+            range_comp.horizontalPositionMode, range_comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+            range_comp.colour = (245, 236, 192, 255)
+            range_comp.horizontalAnchor, range_comp.verticalAnchor = ('RIGHT', 'TOP')
+            range_comp.position = (component.width - 5, 16, 0.3)
+            component.addChild(range_comp, 'range')
+        is_blackbox = 'itemID' not in item
+        if is_blackbox:
+            comp = GUI.Simple('soGUI/frame/storehouse/question.png')
+            comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+            comp.width, comp.height = comp.texture.width, comp.texture.height
+            comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+            comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+            comp.position = (0, 0, 0.4)
+            comp.materialFX = 'BLEND'
+            comp.colour = (255, 255, 0, 255)
+            component.addChild(comp, 'question')
+            bb_data = BlackBox.readBoxInfo(item['blackbox'], item['container'])
+            rarity = bb_data.get('rarity', 1)
+            icon = bb_data.get('icon', 'icon_double_blackbox')
+            if isinstance(icon, int) or icon.isdigit():
+                item_param = ItemsCatalog.GetItemParam(int(icon))
+                if not item_param.get('IconName'):
+                    icon_name = 'nottexture.dds'
+                    icon = BWPersonality.GUICore.get_icon_from_cache(icon_name, True)
+                else:
+                    if not os.path.splitext(icon)[1]:
+                        icon += '.dds'
+                    icon_name = os.path.join('soGUI/maps/Icons/blackboxes', icon)
+                    icon = BigWorld.PyTextureProvider(icon_name)
+                if not self._hide_content:
+                    comp = GUI.Window('soGUI/frame/paint/black.dds')
+                    comp.colour = (255, 255, 255, 150)
+                    comp.materialFX = 'BLEND'
+                    comp.wm, comp.hm = ('CLIP', 'PIXEL')
+                    comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+                    comp.ha, comp.va = ('CENTER', 'BOTTOM')
+                    comp.width, comp.height = (2, 16)
+                    comp.position = (0, -1, 0.1)
+                    component.addChild(comp, 'arrow')
+                    arrow_comp = GUI.Simple('soGUI/frame/donatshop/down.dds')
+                    arrow_comp.materialFX = 'BLEND'
+                    arrow_comp.widthMode, arrow_comp.heightMode = ('PIXEL', 'PIXEL')
+                    arrow_comp.width, arrow_comp.height = arrow_comp.texture.width, arrow_comp.texture.height
+                    arrow_comp.horizontalPositionMode, arrow_comp.verticalPositionMode = ('CLIP', 'CLIP')
+                    arrow_comp.horizontalAnchor, arrow_comp.verticalAnchor = ('CENTER', 'CENTER')
+                    arrow_comp.position = (0, 0, 0.7)
+                    component.arrow.addChild(arrow_comp)
+            else:
+                item_type = int(item['itemID'])
+                item_param = ItemsCatalog.GetItemParam(item_type)
+                rarity = item_param.get('ItemRarity', 1)
+                icon_name = item_param.get('IconName') or 'nottexture.dds'
+                icon = BWPersonality.GUICore.get_icon_from_cache(icon_name, True)
+            back_texture_name = rarity <= 0.1 and 'soGUI/maps/bboxes/back_gold.tga'
+        elif rarity <= 0.5:
+            back_texture_name = 'soGUI/maps/bboxes/back_silver.tga'
+        elif garant_data:
+            back_texture_name = 'soGUI/maps/bboxes/back_green.dds'
+        else:
+            back_texture_name = 'soGUI/maps/bboxes/back.tga'
+        component.texture = BigWorld.PyTextureProvider(back_texture_name)
+        item_comp = GUI.Simple('')
+        item_comp.texture = icon
+        item_comp.widthMode, item_comp.heightMode = back_comp.widthMode, back_comp.heightMode
+        item_comp.width, item_comp.height = back_comp.width, back_comp.height
+        item_comp.horizontalAnchor, item_comp.verticalAnchor = back_comp.horizontalAnchor, back_comp.verticalAnchor
+        item_comp.horizontalPositionMode, item_comp.verticalPositionMode = back_comp.horizontalPositionMode, back_comp.verticalPositionMode
+        item_comp.position = back_comp.position
+        item_comp.filterType = 'LINEAR'
+        item_comp.materialFX = 'BLEND'
+        component.addChild(item_comp, 'item')
+        return component
+
+    def _on_show_item(self, item):
+        BWPersonality.GUICore.infoWindowManger.showInfo(item)

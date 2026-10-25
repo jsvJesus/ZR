@@ -1,0 +1,133 @@
+# Embedded file name: ./client/MusicVolumeBlender.py
+import traceback
+from Settings import Settings
+import BigWorld
+import sounds_manager as sm
+from utils import Tickable
+from math_bw import clamp, move_towards
+from utils import plog
+MAIN_VOLUME_CHANNEL, WATER_VOLUME_CHANNEL, MINIMIZE_CHANNEL = xrange(3)
+_volumes = dict(MAIN_VOLUME_CHANNEL=1.0, WATER_VOLUME_CHANNEL=1.0, MINIMIZE_CHANNEL=1.0)
+
+class _SoundBlender(Tickable):
+
+    def __init__(self):
+        Tickable.__init__(self)
+        self._desired_volumes = {}
+        self._cur_volumes = {}
+        self._debug_start_time = BigWorld.time()
+
+    def start_tick(self):
+        Tickable.start_tick(self)
+        self._debug_start_time = BigWorld.time()
+
+    def stop_tick(self):
+        Tickable.stop_tick(self)
+        self._debug_start_time = BigWorld.time()
+
+    def can_tick(self):
+        return bool(self._is_in_process())
+
+    def _is_in_process(self):
+        for (ch, bus_id), data in self._desired_volumes.items():
+            cur_volume = self._cur_volumes.get(bus_id, 1.0)
+            if cur_volume != data['volume'] or data['time'] > 0:
+                return True
+
+        return False
+
+    def on_tick(self):
+        if BigWorld.time() - self._debug_start_time > 120:
+            print 'MusicBlender (WARNING)', self._desired_volumes, self._cur_volumes
+            self._debug_start_time = BigWorld.time()
+        self._update_volume()
+        if not self._is_in_process():
+            self.stop_tick()
+
+    def get_volume(self, channel):
+        result = 1.0
+        for (ch, bus_id), data in self._desired_volumes.iteritems():
+            if ch == channel:
+                result = min(result, data['volume'])
+
+        return result
+
+    def _update_volume(self):
+        min_volumes = {}
+        min_times = {}
+        for (ch, bus_id), data in self._desired_volumes.items():
+            if bus_id not in min_volumes or min_volumes[bus_id] > data['volume']:
+                min_volumes[bus_id] = data['volume']
+            if bus_id not in min_times or min_times[bus_id] > data['time']:
+                min_times[bus_id] = data['time']
+            data['time'] = max(data['time'] - BigWorld.getTimeDelta(), 0)
+
+        for bus_id, desired_volume in min_volumes.items():
+            desired_time = min_times[bus_id]
+            if bus_id not in self._cur_volumes:
+                self._cur_volumes[bus_id] = 1.0
+            cur_volume = self._cur_volumes[bus_id]
+            if desired_time > 0:
+                distance = abs(desired_volume - cur_volume)
+                speed = float(distance) / desired_time
+                cur_volume = move_towards(cur_volume, desired_volume, speed * BigWorld.getTimeDelta())
+            else:
+                cur_volume = desired_volume
+            self._cur_volumes[bus_id] = cur_volume
+            sm.total_volume_settings_changed(cur_volume, [bus_id])
+
+        for bus_id in self._cur_volumes.keys():
+            if self._cur_volumes[bus_id] == 1.0:
+                del self._cur_volumes[bus_id]
+
+        for (ch, bus_id), data in self._desired_volumes.items():
+            if data['volume'] == 1 and data['time'] == 0:
+                del self._desired_volumes[ch, bus_id]
+
+    def stop(self, channel):
+        for ch, bus_id in self._desired_volumes.keys():
+            if ch == channel:
+                self._desired_volumes[ch, bus_id] = {'volume': 1,
+                 'time': 0}
+
+        self._update_volume()
+        self.start_tick()
+
+    def blend_volume_to2(self, volume, channel, blend_time, bus_ids):
+        plog('[MusicVolumeBlender] blend_volume_to', volume, channel, blend_time, bus_ids)
+        if channel == 'LOAD_SPACE':
+            import BWPersonality
+            if BigWorld.isConsumer() and not BWPersonality.is_user_awesome():
+                traceback.print_stack()
+        volume = clamp(volume)
+        for bus_id in bus_ids:
+            self._desired_volumes[channel, bus_id] = {'volume': volume,
+             'time': blend_time}
+
+        if blend_time == 0:
+            self._update_volume()
+        self.start_tick()
+
+
+_sound_blender = _SoundBlender()
+
+def set_volume(volume, channel, set_settings = False):
+    if set_settings and channel == MAIN_VOLUME_CHANNEL:
+        Settings().setSetting('allVolume', volume, True)
+    _sound_blender.blend_volume_to2(volume, channel, 0, sm.FULL_BUS_IDS)
+
+
+def blend_volume_to(volume, channel, time_ = 3.0, bus_ids = None):
+    if bus_ids is None:
+        bus_ids = sm.FULL_BUS_IDS
+    _sound_blender.blend_volume_to2(volume, channel, time_, bus_ids)
+    return
+
+
+def restore_volume():
+    volume = Settings().getSetting('allVolume')
+    _sound_blender.blend_volume_to2(volume, MAIN_VOLUME_CHANNEL, 0, sm.FULL_BUS_IDS)
+
+
+def get_volume(channel):
+    return _sound_blender.get_volume(channel)

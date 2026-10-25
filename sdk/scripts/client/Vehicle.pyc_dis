@@ -1,0 +1,296 @@
+# Embedded file name: ./client/Vehicle.py
+from functools import partial
+import ResourceLoader
+import BigWorld
+from HelicopterFilter import HelicopterFilter
+import Helpers.Caps
+import RestrictionsUtils
+from soGUI.soInworldMarkers import soInworldMarker
+import BWPersonality
+import heliconstants as H
+from Localization import lc
+from BoxStatus import BoxStatus
+from sounds_manager import playSound
+
+class AnimationState:
+    Undefined, Stand, Prepare, Run, Unprepare = range(5)
+
+
+class Vehicle(BigWorld.Entity):
+
+    def __init__(self):
+        BigWorld.Entity.__init__(self)
+        self.targetCaps = self.targetCaps + [Helpers.Caps.CAP_INTERACT]
+        self.skeletonCollider = BigWorld.SkeletonCollider()
+        self.post_update_callback = None
+        self.isHelicop = True
+        self._fly_sound = None
+        self._filter = None
+        self._animation_state = AnimationState.Undefined
+        return
+
+    def get_model_name(self):
+        raise NotImplementedError
+
+    def get_collider_name(self):
+        return None
+
+    def need_camera_tick(self):
+        return True
+
+    def get_sound(self):
+        raise NotImplementedError
+
+    def prerequisites(self):
+        return [self.get_model_name(), self.get_collider_name()]
+
+    def onEnterWorld(self, prereqs):
+        self.model = prereqs[self.get_model_name()]
+        self.model.isObstacle = True
+        self._filter = HelicopterFilter(self)
+        section = prereqs[self.get_collider_name()]
+        hitbox = section['BoxAttachment']
+        box = BigWorld.BoxAttachment()
+        node_name = hitbox['nodeName'].asString
+        box_name = hitbox['boxName'].asString
+        box.name = box_name
+        box.minBounds = hitbox['minBounds'].asVector3
+        box.maxBounds = hitbox['maxBounds'].asVector3
+        box.localTransform = hitbox['transform'].asMatrix
+        self.model.node(node_name).attach(box)
+        self.skeletonCollider.addCollider(box)
+        if self.need_camera_tick():
+            BigWorld.callback(0, self._pre_update_tick)
+        self._update_boxes()
+        self._deside_animation_state(self.preparation_factor)
+
+    def _pre_update_tick(self):
+        """ \xd0\xb8\xd1\x81\xd0\xbf\xd0\xbe\xd0\xbb\xd1\x8c\xd0\xb7\xd1\x83\xd0\xb5\xd1\x82\xd1\x81\xd1\x8f \xd0\xb4\xd0\xbb\xd1\x8f \xd0\xba\xd0\xb0\xd0\xbc\xd0\xb5\xd1\x80\xd1\x8b """
+        if self.isDestroyed:
+            return
+        if self._filter:
+            dtime = BigWorld.getTimeDelta()
+            self.filter.forceOutput(dtime)
+            self.model.tickDisable = False
+            self.model.forceTick(dtime)
+            self.model.tickDisable = True
+            self.model.forceDraw()
+        BigWorld.callback(0, self._pre_update_tick)
+        if self.post_update_callback:
+            self.post_update_callback()
+
+    def interact(self, interactor):
+        if self.can_interact() and not BigWorld.player().waiting_autopickup():
+            interactor.interact_helicopter(self)
+
+    def get_interaction_dist(self):
+        return 5.0
+
+    def get_target_mark(self, distance):
+        if distance <= self.get_interaction_dist() and self.can_interact():
+            return soInworldMarker.MARKER_USE
+
+    def can_put_box_from_this_point(self, position):
+        distance = (self.position - position).length
+        return distance <= self.get_interaction_dist() and self.can_interact()
+
+    def set_boxes(self, old_value):
+        self._on_boxes_changed()
+
+    def setNested_boxes(self, path, old_value):
+        self._on_boxes_changed()
+
+    def setSlice_CarryingItems(self, path, old_value):
+        self._on_boxes_changed()
+
+    def _on_boxes_changed(self):
+        self._update_boxes()
+        if BWPersonality.GUICore.heliwin_visible():
+            BWPersonality.GUICore.heliwin.on_boxes_changed()
+
+    def get_next_available_box_position(self):
+        if self.isDestroyed or not self.model:
+            return None
+        else:
+            index = len(self.boxes)
+            if index >= self.get_boxes_count():
+                return None
+            node = self.model.node('cargo_' + str(index + 1))
+            return node.lastWorldTransform
+
+    def _update_boxes(self):
+        if not self.inWorld:
+            return
+        for i in xrange(self.get_boxes_count()):
+            need_box = i < len(self.boxes)
+            node = self.model.node('cargo_' + str(i + 1))
+            if need_box:
+                if not node.attachments:
+                    box_data = self.boxes[i]
+                    model_path = BoxStatus.get_model_by_type(box_data.box_type, box_data.status)
+
+                    def on_loaded(node, prereqs):
+                        if self.isDestroyed or not node or not node.inWorld:
+                            return
+                        model = prereqs.produce(0)
+                        scale = self.get_box_scale()
+                        model.newScaleTest = (scale, scale, scale)
+                        node.attach(model)
+
+                    ResourceLoader.asyncLoad([(ResourceLoader.MODEL, model_path)], partial(on_loaded, node))
+            elif node.attachments:
+                node.detach(node.attachments[0])
+
+    def setNested_seat_ids(self, path, old_value):
+        if BWPersonality.GUICore.heliwin_visible():
+            BWPersonality.GUICore.heliwin.on_seat_changed()
+
+    def get_user_seat_index(self, user_id):
+        index = next((i for i, s_id in enumerate(self.seat_ids) if s_id == user_id), None)
+        return index
+
+    def on_touchdown(self):
+        pass
+
+    def on_speed_changed(self):
+        pass
+
+    def get_context_menu_title_and_actions(self):
+        title = self.get_mark_name()
+        player = BigWorld.player()
+
+        def on_box_click():
+            if player.CheckRestriction(RestrictionsUtils.CHANNEL_ITEMS):
+                player.on_start_autopick_box()
+                self.cell.request_box()
+
+        def on_seat_click():
+            if player.CheckRestriction(RestrictionsUtils.CHANNEL_ITEMS):
+                BWPersonality.GUICore.heliwin.show(self)
+
+        def request_seat_active():
+            if BWPersonality.GUICore.heliwin_visible() or not player.CheckRestriction(RestrictionsUtils.CHANNEL_ITEMS):
+                return False
+            return (player.position - self.position).length <= self.get_interaction_dist()
+
+        def request_box_active():
+            if BWPersonality.GUICore.heliwin_visible() or not player.CheckRestriction(RestrictionsUtils.CHANNEL_ITEMS):
+                return False
+            if (player.position - self.position).length > self.get_interaction_dist():
+                return False
+            if len(self.boxes) == 0:
+                return False
+            return True
+
+        actions = []
+        if self.can_take_boxes_out():
+            actions.append({'label': lc('Helicopter.actions.takebox'),
+             'callback': on_box_click,
+             'foo_active': request_box_active})
+        if self.can_sit_inside():
+            actions.append({'label': lc('Helicopter.actions.sit'),
+             'callback': on_seat_click,
+             'foo_active': request_seat_active})
+        return (title, actions)
+
+    def get_mark_name(self):
+        raise NotImplementedError
+
+    def get_boxes_count(self):
+        raise NotImplementedError
+
+    def can_interact(self):
+        if not BWPersonality.GUICore.heliinterface_visible():
+            return False
+        p = BigWorld.player()
+        if p.in_transport:
+            return False
+        if p.position.distTo(self.position) > self.get_interaction_dist():
+            return False
+        return True
+
+    def onLeaveWorld(self):
+        if self._fly_sound:
+            self._fly_sound.stop()
+            self._fly_sound = None
+        self.model = None
+        return
+
+    def canLeaveUser(self, user):
+        return self.preparation_factor < 0.9
+
+    def can_take_boxes_out(self):
+        raise NotImplementedError
+
+    def can_sit_inside(self):
+        raise NotImplementedError
+
+    def get_seat_node(self, passanger_id):
+        return self.get_model_seat_params(passanger_id)[0]
+
+    def get_cam_node(self):
+        return None
+
+    def get_entrance_node(self):
+        return None
+
+    def get_box_scale(self):
+        return 1.0
+
+    def get_npc_animation(self):
+        raise NotImplementedError
+
+    def on_animation_state_changed(self, state, prev_state):
+        if prev_state == AnimationState.Undefined:
+            if state in (AnimationState.Run, AnimationState.Prepare):
+                self._fly_sound = playSound(self.get_sound(), self.model)
+        if state == AnimationState.Prepare:
+            if prev_state == AnimationState.Stand:
+                self._fly_sound = playSound(self.get_sound(), self.model)
+        if state == AnimationState.Stand:
+            if self._fly_sound:
+                self._fly_sound.stop()
+                self._fly_sound = None
+        return
+
+    @property
+    def animation_state(self):
+        return self._animation_state
+
+    @animation_state.setter
+    def animation_state(self, value):
+        if value == self._animation_state:
+            return
+        prev_value = self._animation_state
+        self._animation_state = value
+        self.on_animation_state_changed(self._animation_state, prev_value)
+
+    def _deside_animation_state(self, old_prep_value):
+        if not self.model:
+            self.animation_state = AnimationState.Undefined
+            return
+        if self.preparation_factor == 0:
+            self.animation_state = AnimationState.Stand
+        elif self.preparation_factor == 1:
+            self.animation_state = AnimationState.Run
+        elif self.animation_state == AnimationState.Stand:
+            self.animation_state = AnimationState.Prepare
+        elif self.animation_state == AnimationState.Run:
+            self.animation_state = AnimationState.Unprepare
+        elif self.preparation_factor > old_prep_value:
+            self.animation_state = AnimationState.Prepare
+        elif self.preparation_factor < old_prep_value:
+            self.animation_state = AnimationState.Unprepare
+
+    def get_model_seat_params(self, user_id):
+        """ returns sit_node and animation_name """
+        index = self.get_user_seat_index(user_id)
+        if index == H.NPC_SEAT_INDEX:
+            return (self.model.node('pilot'), self.get_npc_animation())
+        elif index == H.GUNNER_SEAT_INDEX:
+            return (self.model.node('machinegunner'), H.GUNNER_ANIMATION)
+        else:
+            return (self.model.node('passenger_' + str(index)), H.BASE_ANIMATION)
+
+    def set_preparation_factor(self, old_value):
+        self._deside_animation_state(old_value)

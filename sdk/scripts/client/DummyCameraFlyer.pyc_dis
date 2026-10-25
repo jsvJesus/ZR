@@ -1,0 +1,89 @@
+# Embedded file name: ./client/DummyCameraFlyer.py
+import BigWorld
+from utils import Singlton
+from DummyRotating import DummyRotating
+import ResMgr
+from Math import Matrix, Vector3
+import math_bw
+import math
+import PostProcessing
+SCROLL_SENSIVITY = 0.0002
+ROTATE_SENSIVITY = 0.01
+ZOOM_LIMITS = (0.5, 0.75)
+ROTATE_Y_LIMITS = (-1, 1)
+FOV = 0.7
+
+class DummyCameraFlyer(Singlton):
+
+    def initialization(self, *args, **kw):
+        """\xd0\x9c\xd0\xb5\xd1\x82\xd0\xbe\xd0\xb4 \xd0\xb8\xd0\xbd\xd0\xb8\xd1\x86\xd0\xb8\xd0\xb0\xd0\xbb\xd0\xb8\xd0\xb7\xd0\xb0\xd1\x86\xd0\xb8\xd0\xb8."""
+        self.centered = False
+        self.saved_data = None
+        self.matrix_provider = Matrix()
+        self._dist = 0.63
+        self._height = 1.63
+        self.hor_angle = math.pi / 2
+        self.vert_angle = 0.0
+        return
+
+    def center(self, center = True):
+        if self.centered == center:
+            return
+        else:
+            self.centered = center
+            if center:
+                self.saved_data = (ResMgr.DataSection('savedActionQueue'),
+                 DummyRotating().torso_sensivity,
+                 Matrix(self.cam.invViewMatrix),
+                 BigWorld.projection().nearPlane,
+                 BigWorld.projection().farPlane,
+                 BigWorld.projection().fov)
+                self.dummy.model.saveActionQueue(self.saved_data[0])
+                self.dummy.model.FaceGen()
+                DummyRotating().torso_sensivity = 0.1
+                BigWorld.projection().nearPlane = 0.01
+                BigWorld.projection().farPlane = 60
+                BigWorld.projection().fov = FOV
+                self._update_matrix()
+            else:
+                if self.saved_data:
+                    self.dummy.model.restoreActionQueue(self.saved_data[0])
+                    DummyRotating().torso_sensivity = self.saved_data[1]
+                    self.cam.invViewProvider = self.saved_data[2]
+                    BigWorld.projection().nearPlane = self.saved_data[3]
+                    BigWorld.projection().farPlane = self.saved_data[4]
+                    BigWorld.projection().fov = self.saved_data[5]
+                self.saved_data = None
+            return
+
+    def _update_matrix(self):
+        dummy_head = self.dummy.position + (0, self._height, 0)
+        view_point = Vector3(math.sin(self.hor_angle) * math.cos(self.vert_angle), math.sin(self.vert_angle), math.cos(self.hor_angle))
+        view_point *= self._dist
+        view_point += dummy_head
+        self.matrix_provider.lookAt(view_point, dummy_head - view_point, (0, 1, 0))
+        self.matrix_provider.invert()
+        self.cam.invViewProvider = self.matrix_provider
+
+    def zoom(self, delta):
+        if not self.centered:
+            return
+        self._dist -= delta * SCROLL_SENSIVITY
+        self._dist = math_bw.clamp(self._dist, *ZOOM_LIMITS)
+        self._update_matrix()
+
+    def rotate(self, delta_x, delta_y):
+        if not self.centered:
+            return
+        self.hor_angle += delta_x * ROTATE_SENSIVITY
+        self.vert_angle += delta_y * ROTATE_SENSIVITY
+        self.vert_angle = math_bw.clamp(self.vert_angle, *ROTATE_Y_LIMITS)
+        self._update_matrix()
+
+    @property
+    def cam(self):
+        return BigWorld.camera()
+
+    @property
+    def dummy(self):
+        return BigWorld.player().dummy

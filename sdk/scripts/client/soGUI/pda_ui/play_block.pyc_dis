@@ -1,0 +1,275 @@
+# Embedded file name: ./client/soGUI/pda_ui/play_block.py
+import BigWorld
+import GUI
+from Helpers.BWCoroutine import BWMemberCoroutine, BWWaitForPeriod, BWWaitForCoroutine
+import math
+from random import random, shuffle
+from utils import Listenable
+import pda_constants as pc
+import sounds_manager
+ARROW_SPEED = 0.6
+
+class ErrorScreen:
+
+    def __init__(self, component):
+        self._component = component
+        self._component.overrideTextureAddress = 'WRAP'
+
+    @BWMemberCoroutine
+    def run(self):
+        self._component.visible = True
+        time = 0.5
+        while time > 0:
+            self._update_mapping()
+            yield BWWaitForPeriod(0)
+            time -= BigWorld.getTimeDelta()
+
+        self.stop()
+
+    def _update_mapping(self):
+        height = random()
+        width_ratio = float(self._component.width) / self._component.texture.width
+        height_ratio = float(self._component.height) / self._component.texture.height
+        self._component.mapping = ((0, height),
+         (0, height + height_ratio),
+         (width_ratio, height + height_ratio),
+         (width_ratio, height))
+
+    def stop(self):
+        self._component.visible = False
+
+
+class Sector(object):
+
+    def __init__(self, component):
+        self.component = component
+        self._activated = None
+        self.activated = False
+        return
+
+    def is_inside(self, pos_x):
+        return abs(self.component.position[0] - pos_x) <= self.component.width * 0.5
+
+    @property
+    def activated(self):
+        return self._activated
+
+    @activated.setter
+    def activated(self, value):
+        if value == self._activated:
+            return
+        self._activated = value
+        self.component.colour = (2, 126, 28, 255) if self._activated else (15, 212, 55, 255)
+
+
+class ApplyResult:
+    Null, Won, Lose = range(3)
+
+
+class EventType:
+    OnWon, OnTargetsChanged = ((r, 'playblock') for r in range(2))
+
+
+class PlayBlock(Listenable):
+
+    def __init__(self, component):
+        Listenable.__init__(self)
+        self._component = component
+        self._coroutine_handler = None
+        self._move_arg = 0
+        self._apply_data = None
+        self._targets = 0
+        self._sectors = []
+        comp = GUI.Window()
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = (288, 32)
+        comp.position = (82, 86, 0.9)
+        comp.materialFX = 'SOLID'
+        comp.isClip = False
+        self._component.addChild(comp)
+        line = comp
+        comp = GUI.Window()
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = line.width - 6, line.height - 6
+        comp.position = (3, 3, 0.1)
+        comp.materialFX = 'SOLID'
+        comp.isClip = False
+        line.addChild(comp)
+        self._subline = comp
+        comp = GUI.Frame2('soGUI/frame/pda/frame_game.dds')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = line.width, line.height
+        comp.position = (0, 0, 0.9)
+        comp.materialFX = 'BLEND'
+        line.addChild(comp)
+        comp = GUI.Window('soGUI/frame/pda/check.dds')
+        comp.materialFX = 'BLEND'
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = comp.texture.width, comp.texture.height
+        comp.position = (0, 0, 0.5)
+        self._subline.addChild(comp, 'arrow')
+        self._arrow = comp
+        comp = GUI.Window('soGUI/frame/pda/help.dds')
+        comp.materialFX = 'BLEND'
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = comp.texture.width, comp.texture.height
+        comp.position = (line.position.x + line.width / 2, 140, 0.5)
+        self._component.addChild(comp)
+        comp = GUI.Window('soGUI/frame/pda/mistake.dds')
+        comp.materialFX = 'BLEND'
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = (394, 140)
+        comp.position = (30, 30, 0.1)
+        comp.colour = (255, 255, 255, 200)
+        comp.visible = False
+        self._component.addChild(comp)
+        self._error_screen = ErrorScreen(comp)
+        return
+
+    def _create_random_sectors(self, count):
+        for sector in self._sectors:
+            self._subline.delChild(sector.component)
+
+        self._sectors[:] = []
+        if count == 0:
+            return
+        total_width = self._subline.width
+        sector_width = total_width / count * 0.5
+        total_free_space = total_width - count * sector_width
+        spaces = []
+        while len(spaces) < count:
+            free_space = total_free_space - sum(spaces)
+            spaces.append(random() * free_space)
+
+        spaces.append(total_free_space - sum(spaces))
+        shuffle(spaces)
+        positions = []
+        pos_x = 0
+        for i in range(count):
+            pos_x += spaces[i] + sector_width
+            positions.append(pos_x - sector_width * 0.5)
+
+        for pos_x in positions:
+            comp = GUI.Window('soGUI/frame/paint/white.dds')
+            comp.widthMode, comp.heightMode = ('PIXEL', 'CLIP')
+            comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+            comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'CLIP')
+            comp.width, comp.height = sector_width, 2
+            comp.position = (pos_x, 0, 0.9)
+            comp.materialFX = 'SOLID'
+            self._sectors.append(Sector(comp))
+            self._subline.addChild(comp)
+
+    def reset(self):
+        self.stop()
+        self.move_arg = 0
+        self._create_random_sectors(0)
+
+    def on_show(self):
+        self.reset()
+
+    def on_hide(self):
+        self.reset()
+
+    def start(self):
+        self.reset()
+        self._coroutine_handler = self._play_coroutine()
+        self._coroutine_handler.run()
+        self._create_random_sectors(1)
+
+    def stop(self):
+        if self._coroutine_handler:
+            self._coroutine_handler.stop()
+            self._coroutine_handler = None
+        self._error_screen.stop()
+        self.targets = 0
+        return
+
+    def apply(self):
+        if not self._coroutine_handler:
+            return
+        self._apply_data = {'delay': 0.5,
+         'result': ApplyResult.Null}
+        arrow_pos = self._arrow.position[0]
+        arrow_pos = (arrow_pos + 1) * 0.5 * self._subline.width
+        target = False
+        activated = 0
+        for sector in self._sectors:
+            if sector.is_inside(arrow_pos) and not sector.activated:
+                sector.activated = True
+                target = True
+                self.targets += 1
+                sounds_manager.playSound(pc.SOUND_CLICK)
+            if sector.activated:
+                activated += 1
+
+        if not target:
+            sounds_manager.playSound(pc.SOUND_FAIL)
+            self._apply_data['result'] = ApplyResult.Lose
+            self.targets = 0
+        elif activated == len(self._sectors):
+            self._apply_data['result'] = ApplyResult.Won
+
+    @property
+    def move_arg(self):
+        return self._move_arg
+
+    @move_arg.setter
+    def move_arg(self, value):
+        self._move_arg = value
+        factor = math.modf(self._move_arg)[0] * 4 - 1
+        if factor > 1:
+            factor = 2 - factor
+        self._arrow.position[0] = factor
+
+    @property
+    def targets(self):
+        return self._targets
+
+    @targets.setter
+    def targets(self, value):
+        if self._targets == value:
+            return
+        self._targets = value
+        self.notify_listeners(EventType.OnTargetsChanged)
+
+    @BWMemberCoroutine
+    def _play_coroutine(self):
+        while True:
+            if self._apply_data:
+                if self._apply_data['delay'] >= BigWorld.getTimeDelta():
+                    self._apply_data['delay'] -= BigWorld.getTimeDelta()
+                else:
+                    result = self._apply_data['result']
+                    self._apply_data = None
+                    if result == ApplyResult.Lose:
+                        yield BWWaitForCoroutine(self._error_screen.run())
+                        self._apply_data = None
+                        self.start()
+                        break
+                    elif result == ApplyResult.Won:
+                        if len(self._sectors) == 3:
+                            sounds_manager.playSound(pc.SOUND_SUCCESS)
+                            self.stop()
+                            self.notify_listeners(EventType.OnWon)
+                            break
+                        else:
+                            self._create_random_sectors(len(self._sectors) + 1)
+                yield BWWaitForPeriod(0)
+                continue
+            self.move_arg += BigWorld.getTimeDelta() * ARROW_SPEED
+            yield BWWaitForPeriod(0)
+
+        return

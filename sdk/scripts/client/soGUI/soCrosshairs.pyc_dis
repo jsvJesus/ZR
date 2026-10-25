@@ -1,0 +1,205 @@
+# Embedded file name: ./client/soGUI/soCrosshairs.py
+import BigWorld
+import BWPersonality
+import GUI
+import soGUI
+from Helpers.PyGUI import PyGUIBase
+from Math import Matrix
+import Math
+from math_bw import rotate_by_yaw_pitch
+import math
+import Settings
+import traceback
+from Localization import lc
+import utils_bw
+
+class soTargettingGUI(PyGUIBase):
+    factoryString = 'soGUI.soTargettingGUI'
+    INTERACTION_NONE = 0
+    INTERACTION_CAN = 1
+    INTERACTION_CANNOT = 2
+    HEAP_NONE = 0
+    HEAP_DEFAULT = 1
+    HEAP_CROSS = 2
+    HEAP_DYNAMIC = 3
+    HEAP_TEXTURES = {HEAP_DEFAULT: BigWorld.PyTextureProvider('soGUI/maps/Crosshairs/aim_masks/cross.dds'),
+     HEAP_DYNAMIC: BigWorld.PyTextureProvider('soGUI/maps/Crosshairs/aim_masks/cross.dds'),
+     HEAP_CROSS: BigWorld.PyTextureProvider('soGUI/maps/Crosshairs/aim_masks/target.dds'),
+     HEAP_NONE: None}
+    HEAP_CONF = {HEAP_DEFAULT: {'width': 3,
+                    'alpha': 170},
+     HEAP_DYNAMIC: {'width': 2,
+                    'alpha': 0,
+                    'line_visible': True,
+                    'line_height': 2,
+                    'line_width': 8,
+                    'line_offset': 6.0,
+                    'line_color': (255, 255, 255, 112)},
+     HEAP_CROSS: {'width': 60,
+                  'alpha': 10,
+                  'acr': True}}
+
+    def __init__(self, component):
+        PyGUIBase.__init__(self, component)
+        self._game_dot = False
+        self._builder_dot = False
+        self._tid = 0
+        component.script = self
+        self.inacuracy = 0.0
+        self.debugShowHeap = False
+        self.tmpShader = GUI.MatrixShader()
+        self.setupRoot()
+        self.setupContent()
+
+    def setupRoot(self):
+        cmp = self.component
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'CLIP'
+        cmp.widthMode = cmp.heightMode = 'CLIP'
+        cmp.horizontalAnchor = cmp.verticalAnchor = 'CENTER'
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.width = cmp.height = 2.0
+        cmp.position = (0.0, 0.0, 1.6)
+        cmp.visible = False
+
+    def setupContent(self):
+        cmp = GUI.Simple('')
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.horizontalAnchor = 'CENTER'
+        cmp.verticalAnchor = 'CENTER'
+        cmp.materialFX = 'BLEND'
+        cmp.colour = (255, 255, 255, 255)
+        cmp.width = cmp.height = 3
+        cmp.position = (0.0, 0.0, 0.1)
+        self.component.addChild(cmp, 'heapCENTER')
+        self.component.heapCENTER.visible = True
+        for name in ('L', 'R', 'U', 'D'):
+            cmp = GUI.Simple('soGUI/white.dds')
+            cmp.widthMode = cmp.heightMode = 'PIXEL'
+            cmp.horizontalPositionMode = 'PIXEL'
+            cmp.verticalPositionMode = 'PIXEL'
+            cmp.horizontalAnchor = 'CENTER'
+            cmp.verticalAnchor = 'CENTER'
+            cmp.materialFX = 'BLEND'
+            cmp.colour = (255, 255, 255, 255)
+            cmp.width = cmp.height = 3
+            cmp.position = (0.0, 0.0, 0.2)
+            self.component.addChild(cmp, name)
+            cmp.visible = False
+
+        self.component.L.horizontalAnchor = 'RIGHT'
+        self.component.R.horizontalAnchor = 'LEFT'
+        self.component.U.verticalAnchor = 'BOTTOM'
+        self.component.D.verticalAnchor = 'TOP'
+
+    def show(self):
+        if self.component.parent is None:
+            BWPersonality.GUICore.worldLayer.addChild(self.component, 'targettingGUI')
+        self.component.visible = True
+        self.update()
+        return
+
+    def hide(self):
+        self.component.visible = False
+
+    def builder_dot(self, on):
+        self._builder_dot = on
+        self._switch_dot()
+
+    def only_dot(self, on = False):
+        self._game_dot = on
+        self._switch_dot()
+
+    def _switch_dot(self):
+        pass
+
+    def _updateHeapMode(self, mode):
+        if self.debugShowHeap:
+            mode = self.HEAP_DEFAULT
+        if mode == self.HEAP_NONE:
+            self.component.heapCENTER.textureName = ''
+            for name in ('L', 'R', 'U', 'D', 'heapCENTER'):
+                getattr(self.component, name).visible = False
+
+            return
+        self.component.heapCENTER.visible = True
+        self.component.heapCENTER.texture = self.HEAP_TEXTURES[mode]
+        if mode in self.HEAP_CONF:
+            conf = self.HEAP_CONF[mode]
+            for name in ('L', 'R', 'U', 'D'):
+                getattr(self.component, name).visible = conf.get('line_visible', False)
+                getattr(self.component, name).colour = conf.get('line_color', (255, 255, 255, 255))
+
+            self.component.heapCENTER.colour.alpha = conf['alpha']
+            width = conf['width']
+            if conf.get('acr'):
+                width = int(width * BigWorld.screenHeight() / 1024.0)
+            self.component.heapCENTER.width = width
+            self.component.heapCENTER.height = width
+        line_width = conf.get('line_width', False)
+        line_height = conf.get('line_height', False)
+        self.component.L.width = self.component.R.width = line_width
+        self.component.L.height = self.component.R.height = line_height
+        self.component.U.width = self.component.D.width = line_height
+        self.component.U.height = self.component.D.height = line_width
+
+    def _tick(self):
+        if not self.component.visible:
+            return
+        else:
+            player = BigWorld.player()
+            if not getattr(player, 'active_weapon', None):
+                return
+            W, H = BigWorld.screenSize()
+            w2 = int(W) / 2
+            h2 = int(H) / 2
+            conf = self.HEAP_CONF[self.HEAP_DYNAMIC]
+            if player._shot_number:
+                if not player.active_weapon.getParam()['recoil_and_spread'].get('delay_burst_end'):
+                    delay_burst_end = 1.5
+                    if BigWorld.time() - player._last_shot_time > delay_burst_end:
+                        player._shot_number = 0
+                bullet_spread = player.getMaxBulletSpread(player._shot_number)
+                sys_point, barrel_point, direction = player.get_firing_point()
+                dist = 100
+                hitParams = player.traceBullet(barrel_point, direction * dist)
+                if hitParams['hitPoint']:
+                    dist = barrel_point.distTo(hitParams['hitPoint'])
+                width_spread = dist * math.tan(bullet_spread)
+                end_pos = barrel_point + direction * dist
+                cam = BigWorld.camera()
+                dist_to_cam = cam.position.distTo(end_pos)
+                end_pos = cam.position + cam.direction * dist_to_cam
+                pos2d = self.tmpShader.calcWorldToScreen(end_pos + (0, width_spread, 0), False)
+                plane_y = abs(pos2d.y * H * 0.5) + conf.get('line_offset', 0)
+                alpha = conf.get('line_color', (255, 255, 255, 255))[3]
+                plane_y = player._is_weapon_collide and player.active_weapon and 300
+                alpha *= 0.3
+            for name, dir_ in (('L', (-1, 0)),
+             ('R', (1, 0)),
+             ('U', (0, -1)),
+             ('D', (0, 1))):
+                getattr(self.component, name).colour.alpha = alpha
+                getattr(self.component, name).position = (w2 + dir_[0] * plane_y, h2 + dir_[1] * plane_y, 0.2)
+
+            self._tid = BigWorld.callback(0.001, self._tick)
+            return
+
+    def update(self):
+        if self._tid:
+            BigWorld.cancelCallback(self._tid)
+        data = BWPersonality.GUICore.crosshairsDataSection
+        if data and data.has_key('heap_mode'):
+            mode = data['heap_mode']
+            if mode == self.HEAP_CROSS:
+                mode = self.HEAP_DYNAMIC
+            self._updateHeapMode(mode)
+            if mode == self.HEAP_DYNAMIC:
+                self._tid = BigWorld.callback(0.001, self._tick)
+
+    def doReposition(self):
+        pass
+
+    def fini(self):
+        soTargettingGUI.HEAP_TEXTURES = None
+        return

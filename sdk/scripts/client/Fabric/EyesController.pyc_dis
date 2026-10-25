@@ -1,0 +1,290 @@
+# Embedded file name: ./client/Fabric/EyesController.py
+import BigWorld
+from DrawPrimitivesUtils import gdrawMatr, one_draw_line
+from Math import Vector3, Vector2, Matrix
+import math_bw
+from Helpers.BWCoroutine import BWMemberCoroutine, BWWaitForCoroutine, BWWaitForPeriod
+from random import uniform, randint, random
+import tracker_lod_settings
+from Math import PythonMatrixProvider
+import _Trackers
+USE_CPP = 1
+DEBUG = False
+X_LIMITS = (-0.55, 0.55)
+Y_LIMITS = (0.0, 0.2)
+RANDOM_TICK_VS_TRACK_CAMERA = 1.0
+PUPIL_VELOCITY = 10
+TRACK_CAMERA_TIME = (5, 10)
+TICK_X_LIMIT = (-0.2, 0.2)
+TICK_Y_LIMIT = (-0.05, 0.0)
+TICK_AMOUNT = (3, 5)
+TICK_TIME = (0.5, 1.5)
+FRONT_DIRECTION = Vector3(0, 1, 0)
+
+class _CppEyesController:
+
+    def __init__(self, node_info):
+        node_info.randomTickVsTrackProvider = RANDOM_TICK_VS_TRACK_CAMERA
+        node_info.frontDirection = FRONT_DIRECTION
+        node_info.tickAmmount = TICK_AMOUNT
+        node_info.xLimits = TICK_X_LIMIT
+        node_info.yLimits = TICK_Y_LIMIT
+        node_info.tickTime = TICK_TIME
+        node_info.trackTime = TRACK_CAMERA_TIME
+        node_info.pupilsSpeed = PUPIL_VELOCITY
+
+        def cameraMatrixAccessor():
+            cam = BigWorld.camera()
+            if not cam:
+                return Matrix()
+            return cam.invViewMatrix
+
+        camProvider = PythonMatrixProvider()
+        camProvider.matrixMethod = cameraMatrixAccessor
+        node_info.freeLookProvider = camProvider
+        self.node_info = node_info
+
+    def start(self):
+        self.node_info.startFreeLook()
+
+    def stop(self):
+        self.node_info.stop()
+
+    def destroy(self):
+        self.node_info.stop()
+
+    def track_bone(self, matrix_provider = None):
+        self.node_info.trackMatrix(matrix_provider)
+
+
+class EyesController:
+
+    def __init__(self, node_info):
+        node_info.pTick = self._tick
+        node_info.pDraw = self._draw
+        self.look_point = None
+        self.value = Vector2()
+        self.dtime = 0
+        self.prev_local_direction_left = None
+        self.prev_local_direction_right = None
+        self.move_coroutine = None
+        self.random_look_coroutine = None
+        self.track_entity_coroutine = None
+        self.track_bone_coroutine = None
+        return
+
+    def start(self):
+        """ \xd0\xb7\xd0\xb0\xd0\xbf\xd1\x83\xd1\x81\xd1\x82\xd0\xb8\xd1\x82\xd1\x8c \xd0\xbe\xd1\x87\xd0\xb5\xd1\x80\xd0\xb5\xd0\xb4\xd1\x8c \xd1\x81\xd0\xbb\xd1\x83\xd1\x87\xd0\xb0\xd0\xb9\xd0\xbd\xd1\x8b\xd1\x85 \xd0\xbf\xd0\xbe\xd0\xb2\xd0\xb5\xd0\xb4\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb9 """
+        self.stop()
+        self.move_coroutine = self.start_move_coroutine()
+        self.move_coroutine.run()
+
+    def stop(self):
+        """ \xd0\xbf\xd1\x80\xd0\xb5\xd0\xba\xd1\x80\xd0\xb0\xd1\x82\xd0\xb8\xd1\x82\xd1\x8c \xd1\x80\xd0\xb0\xd0\xb1\xd0\xbe\xd1\x82\xd1\x83 """
+        self._stop_all_coroutines()
+
+    def destroy(self):
+        """ \xd0\xb4\xd0\xb5\xd1\x81\xd1\x82\xd1\x80\xd1\x83\xd0\xba\xd1\x82\xd0\xbe\xd1\x80 (\xd0\xbd\xd0\xb0\xd0\xb4\xd0\xbe \xd0\xb2\xd1\x8b\xd0\xb7\xd1\x8b\xd0\xb2\xd0\xb0\xd1\x82\xd1\x8c \xd1\x80\xd1\x83\xd0\xba\xd0\xb0\xd0\xbc\xd0\xb8) """
+        self.stop()
+
+    def track_bone(self, matrix_provider = None):
+        """ \xd1\x81\xd0\xbb\xd0\xb5\xd0\xb4\xd0\xb8\xd1\x82\xd1\x8c \xd0\xb7\xd0\xb0 \xd0\xba\xd0\xbe\xd1\x81\xd1\x82\xd1\x8c\xd1\x8e (None - \xd0\xbe\xd1\x81\xd1\x82\xd0\xb0\xd0\xbd\xd0\xbe\xd0\xb2\xd0\xb8\xd1\x82\xd1\x8c \xd0\xb2\xd1\x81\xd1\x91) """
+        self.stop()
+        if matrix_provider:
+            self.track_bone_coroutine = self.start_track_bone_coroutine(matrix_provider)
+            self.track_bone_coroutine.run()
+        else:
+            self.start()
+
+    @staticmethod
+    def destroy_controller(entity):
+        if hasattr(entity, 'eyes_controller'):
+            entity.eyes_controller.destroy()
+            del entity.eyes_controller
+        if entity.model and hasattr(entity.model, 'simple_eyes_tracker'):
+            entity.model.simple_eyes_tracker.removeAllAdditionalNodes()
+            del entity.model.simple_eyes_tracker
+
+    @staticmethod
+    def create_controller(entity):
+        """ \xd1\x81\xd0\xbe\xd0\xb7\xd0\xb4\xd0\xb0\xd1\x82\xd1\x8c/\xd0\xbf\xd0\xb5\xd1\x80\xd0\xb5\xd1\x81\xd0\xbe\xd0\xb7\xd0\xb4\xd0\xb0\xd1\x82\xd1\x8c \xd1\x82\xd1\x80\xd1\x8d\xd0\xba\xd0\xb5\xd1\x80 \xd0\xbd\xd0\xb0 \xd1\x81\xd1\x83\xd1\x89\xd0\xbd\xd0\xbe\xd1\x81\xd1\x82\xd0\xb8 """
+        model = entity.model
+        if hasattr(entity, 'eyes_controller'):
+            entity.eyes_controller.destroy()
+            del entity.eyes_controller
+        if not hasattr(model, 'simple_eyes_tracker'):
+            model.simple_eyes_tracker = BigWorld.Tracker()
+            model.simple_eyes_tracker.fashionEraID = 4
+            model.simple_eyes_tracker.maxLod = tracker_lod_settings.simple_eyes_lod
+            model.simple_eyes_tracker.nodeMatrixUpdateType = 'UPDATE_SELECTED'
+            model.simple_eyes_tracker.nodeMatrixUpdateList = ['Eye_Left', 'Eye_Right']
+        model.simple_eyes_tracker.removeAllAdditionalNodes()
+        if not USE_CPP:
+            node_info = BigWorld.NodeInfoSimpleCloth(model, (('Head', 'Eye_Left'), ('Head', 'Eye_Right')))
+            entity.eyes_controller = EyesController(node_info)
+        else:
+            node_info = _Trackers.NodeInfoEyesController(model, 'Head', 'Eye_Right', 'Eye_Left')
+            entity.eyes_controller = _CppEyesController(node_info)
+        model.simple_eyes_tracker.addAdditionalNode(node_info)
+        return entity.eyes_controller
+
+    def _working(self):
+        return self.move_coroutine or self.random_look_coroutine or self.track_entity_coroutine or self.track_bone_coroutine
+
+    def _tick(self, dtime):
+        self.dtime = dtime
+
+    def _align_eye_with_look_point(self, world, local, look_point, prev_local_direction):
+        world_inv = Matrix(world)
+        world_inv.invert()
+        local_look_point = world_inv.applyPoint(look_point)
+        needed_local_direction = local_look_point - local.translation
+
+        def interpolate_pupil(vector_from, vector_to):
+            if vector_from is None:
+                return vector_to
+            else:
+                displace = self.dtime * PUPIL_VELOCITY
+                direction = vector_to - vector_from
+                if displace >= direction.length:
+                    return vector_to
+                direction.normalise()
+                direction = direction * displace
+                return vector_from + direction
+
+        if prev_local_direction:
+            local_direction = interpolate_pupil(prev_local_direction, needed_local_direction)
+        else:
+            local_direction = needed_local_direction
+        axis = FRONT_DIRECTION * local_direction
+        angle = math_bw.angle_between_vectors(FRONT_DIRECTION, local_direction)
+        m = Matrix().xfromAngleAxis(axis, angle)
+        local.preMultiply(m)
+        return local_direction
+
+    def _clamp_lookpoint(self, look_point):
+        head_inv = Matrix(self.head_matrix)
+        head_inv.invert()
+        local_point = head_inv.applyPoint(look_point)
+        l = local_point.length
+        local_point /= abs(local_point.y)
+        local_point = Vector3(math_bw.clamp(local_point.x, *X_LIMITS), 1.0, math_bw.clamp(local_point.z, *Y_LIMITS))
+        local_point.normalise()
+        local_point *= l
+        return self.head_matrix.applyPoint(local_point)
+
+    def _look_point_from_value(self, world, value):
+        return world.applyPoint(Vector3(value.x, 1.0, value.y))
+
+    def _draw(self, wind, bones):
+        if not self._working:
+            return
+        else:
+            out = []
+            for bones_chain in bones:
+                bones_out = []
+                for world, local in bones_chain:
+                    bones_out.append(local)
+
+                out.append(bones_out)
+
+            left_world, left_local = bones[0][1]
+            right_world, right_local = bones[1][1]
+            self.head_matrix = bones[0][0][0]
+            if DEBUG:
+                prev_right_local = Matrix(right_local)
+                prev_left_local = Matrix(left_local)
+            if self.value is None:
+                look_point = self._clamp_lookpoint(self.look_point)
+                self.right_look_point = look_point
+                self.left_look_point = look_point
+            else:
+                self.right_look_point = self._look_point_from_value(right_world, self.value)
+                self.left_look_point = self._look_point_from_value(left_world, self.value)
+            self.prev_local_direction_right = self._align_eye_with_look_point(right_world, right_local, self.right_look_point, self.prev_local_direction_right)
+            self.prev_local_direction_left = self._align_eye_with_look_point(left_world, left_local, self.left_look_point, self.prev_local_direction_left)
+            if DEBUG:
+                one_draw_line(right_world.translation, self.right_look_point, color=(1, 1, 1, 1))
+                one_draw_line(left_world.translation, self.left_look_point, color=(1, 1, 1, 1))
+                right_local_inv = Matrix(prev_right_local)
+                right_local_inv.invert()
+                left_local_inv = Matrix(prev_left_local)
+                left_local_inv.invert()
+                right_parent_world = Matrix(right_world)
+                right_parent_world.preMultiply(right_local_inv)
+                left_parent_world = Matrix(left_world)
+                left_parent_world.preMultiply(left_local_inv)
+                new_right_world = Matrix(right_parent_world)
+                new_right_world.preMultiply(right_local)
+                new_left_world = Matrix(left_parent_world)
+                new_left_world.preMultiply(left_local)
+                gdrawMatr(new_right_world, siz=0.2)
+                gdrawMatr(right_world, siz=0.1)
+                gdrawMatr(new_left_world, siz=0.2)
+                gdrawMatr(left_world, siz=0.1)
+                gdrawMatr(self.head_matrix)
+            return out
+
+    def _stop_all_coroutines(self):
+        if self.move_coroutine:
+            self.move_coroutine.stop()
+            self.move_coroutine = None
+        if self.random_look_coroutine:
+            self.random_look_coroutine.stop()
+            self.random_look_coroutine = None
+        if self.track_entity_coroutine:
+            self.track_entity_coroutine.stop()
+            self.track_entity_coroutine = None
+        if self.track_bone_coroutine:
+            self.track_bone_coroutine.stop()
+            self.track_bone_coroutine = None
+        return
+
+    @BWMemberCoroutine
+    def start_move_coroutine(self):
+        while True:
+            if random() < RANDOM_TICK_VS_TRACK_CAMERA:
+                self.random_look_coroutine = self.start_random_look_coroutine()
+                yield BWWaitForCoroutine(self.random_look_coroutine)
+            else:
+                self.track_entity_coroutine = self.start_track_entity_coroutine(BigWorld.camera(), False)
+                yield BWWaitForCoroutine(self.track_entity_coroutine)
+
+        self.move_coroutine = None
+        return
+
+    @BWMemberCoroutine
+    def start_random_look_coroutine(self):
+        if self.value is None:
+            self.value = Vector2()
+
+        def get_random_point():
+            return Vector2(uniform(*TICK_X_LIMIT), uniform(*TICK_Y_LIMIT))
+
+        for i in xrange(randint(*TICK_AMOUNT)):
+            self.value.set(get_random_point())
+            yield BWWaitForPeriod(uniform(*TICK_TIME))
+
+        self.random_look_coroutine = None
+        return
+
+    @BWMemberCoroutine
+    def start_track_entity_coroutine(self, entity, nonstop = False):
+        self.value = None
+        end_time = BigWorld.time() + uniform(*TRACK_CAMERA_TIME)
+        while nonstop or BigWorld.time() < end_time:
+            self.look_point = entity.position
+            yield BWWaitForPeriod(0)
+
+        self.track_entity_coroutine = None
+        return
+
+    @BWMemberCoroutine
+    def start_track_bone_coroutine(self, matrix_provider):
+        self.value = None
+        while True:
+            self.look_point = Matrix(matrix_provider).translation
+            yield BWWaitForPeriod(0.0)
+
+        self.track_bone_coroutine = None
+        return

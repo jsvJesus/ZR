@@ -1,0 +1,267 @@
+# Embedded file name: ./client/clanboard_gui/recruit/page_view.py
+import Clan
+from Localization import lc
+from utils import Listenable
+import BigWorld
+from math_bw import clamp
+from data_model import EventType as DataET
+import math
+import GUI
+from soGUI.soButton import soButton, soButtonWTT
+import colorCodes as cc
+from functools import partial
+import UCManager
+import gui_jokes
+
+class EventType:
+    OnSizeChanged, OnInvestigateRequested = ((r, 'RecruitPageView') for r in range(2))
+
+
+class BlockEventType:
+    OnDelRequested, OnEditRequested = ((r, 'RecrPageBlock') for r in range(2))
+
+
+class Block(Listenable):
+
+    def __init__(self, component):
+        Listenable.__init__(self)
+        self.component = component
+        self._data = None
+        comp = GUI.Text(u'', 'RobotoCondensedRegular_16.font')
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.position = (0, 0.5, 0.5)
+        comp.colour = cc.active_rgba
+        self.component.addChild(comp, 'name')
+        comp = GUI.Text(u'', 'RobotoCondensedRegular_16.font')
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.position = (0, 0.2, 0.5)
+        comp.colourFormatting = True
+        self.component.addChild(comp, 'clevel')
+        comp = GUI.Text(u'', 'RobotoCondensedRegular_16.font')
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.position = (0, -0.1, 0.5)
+        comp.colourFormatting = True
+        self.component.addChild(comp, 'plevel')
+        b_width = 0.85
+        h_margin = 0.1
+        v_margin = 0.3
+        comp = GUI.Frame2('soGUI/frame/stuff/line_frame.dds')
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.wm, comp.hm = ('CLIP', 'CLIP')
+        comp.width, comp.height = (2, 2)
+        comp.position = (0, 0, 0.5)
+        self.component.addChild(comp)
+        comp = GUI.Window()
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.ha, comp.va = ('LEFT', 'CENTER')
+        comp.wm, comp.hm = ('CLIP', 'PIXEL')
+        comp.width, comp.height = b_width, 25
+        comp.position = (-1 + h_margin, -1 + v_margin, 0.8)
+        btn = soButton(comp)
+        btn.initVSC('soGUI/elements/button_1.xml')
+        comp.label.font = 'RobotoCondensedRegular_16.font'
+        comp.label.text = lc('clan_win.Recruit.Block.Inspect')
+        btn.onBound()
+        self.component.addChild(comp)
+        self.btn_investigate = btn
+        comp = GUI.Window()
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.ha, comp.va = ('RIGHT', 'CENTER')
+        comp.wm, comp.hm = ('CLIP', 'PIXEL')
+        comp.width, comp.height = b_width, 25
+        comp.position = (1 - h_margin, -1 + v_margin, 0.8)
+        btn = soButton(comp)
+        btn.initVSC('soGUI/elements/button_1.xml')
+        comp.label.font = 'RobotoCondensedRegular_16.font'
+        comp.label.text = lc('clan_win.Recruit.Block.Card')
+        btn.onBound()
+        btn.onClick = self._on_card_click
+        self.component.addChild(comp)
+        comp = GUI.Window()
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.height = self.component.height * 0.6
+        comp.width = comp.height
+        comp.position = (0, 0, 0.85)
+        comp.materialFX = 'BLEND'
+        comp.filterType = 'LINEAR'
+        comp.colour = (255, 255, 255, 100)
+        comp.visible = False
+        self.component.addChild(comp, 'icon')
+        btn_space = 8
+        comp = GUI.Window()
+        btn = soButtonWTT(comp, TTid='recr_edit')
+        btn.initVSC('soGUI/visual_styles/btn_TPCRightsEditor.xml')
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('RIGHT', 'TOP')
+        comp.textureName = 'soGUI/elements/button_edit.dds'
+        comp.width, comp.height = (24, 24)
+        comp.position = (self.component.width - btn_space, btn_space, 0.1)
+        btn.onClick = self._on_edit_click
+        self.component.addChild(comp, 'btn_edit')
+        btn.onBound()
+        btn.setVisualState('normal')
+        comp = GUI.Window()
+        btn = soButtonWTT(comp, TTid='recr_del')
+        btn.initVSC('soGUI/visual_styles/btn_TPCRightsEditor.xml')
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('RIGHT', 'TOP')
+        comp.textureName = 'soGUI/elements/button_del.dds'
+        comp.width, comp.height = (24, 24)
+        comp.position = (self.component.width - btn_space * 2 - comp.width, btn_space, 0.1)
+        btn.onClick = self._on_del_click
+        self.component.addChild(comp, 'btn_del')
+        btn.onBound()
+        btn.setVisualState('normal')
+        return
+
+    def _on_edit_click(self):
+
+        def callback(event):
+            if event == gui_jokes.askUserYesNo.YES:
+                data = {'player_level': self.player_level}
+                self.notify_listeners(BlockEventType.OnEditRequested, data)
+
+        text = lc('clan_win.Recruit.Block.editconfirm').format(Clan.COST_RECR_EDIT_POINTS)
+        gui_jokes.askUserYesNo(u'', text, callback)
+
+    def _on_del_click(self):
+
+        def callback(event):
+            if event == gui_jokes.askUserYesNo.YES:
+                self.notify_listeners(BlockEventType.OnDelRequested)
+
+        gui_jokes.askUserYesNo(u'', lc('clan_win.Recruit.Block.delconfirm'), callback=callback)
+
+    @property
+    def clan_level(self):
+        return self._data['clevel']
+
+    @property
+    def player_level(self):
+        return self._data['plevel']
+
+    @property
+    def clan_name(self):
+        return self._data['name']
+
+    @property
+    def clan_id(self):
+        return self._data['cid']
+
+    @property
+    def icon_id(self):
+        return self._data['icon']
+
+    def _on_card_click(self):
+        BigWorld.player().base.get_another_clan_info(self.clan_name)
+
+    def _icon_loaded(self, icon_id, feed_name, texture):
+        if self._data and self._data['icon'] == icon_id:
+            self.component.icon.visible = True
+            self.component.icon.texture = texture
+
+    def set_data(self, data):
+        self._data = data
+        self.component.icon.visible = False
+        self.component.name.text = self.clan_name.decode('utf8')
+        self.component.clevel.text = cc.inactive_hex + lc('clan_win.Recruit.Block.CLevel') + cc.active_hex + u' ' + unicode(self.clan_level)
+        self.component.plevel.text = cc.inactive_hex + lc('clan_win.Recruit.Block.PLevel') + cc.active_hex + u' ' + unicode(data['plevel'])
+        if self._data['icon']:
+            UCManager.ucmanager.loadImg(self._data['icon'], self._icon_loaded)
+        edit_visible = False
+        p = BigWorld.player()
+        if self.clan_id == p.clanID:
+            if p.checkClanRights(Clan.FLAG_CAN_RECRUT):
+                edit_visible = True
+        self.component.btn_edit.visible = edit_visible
+        self.component.btn_del.visible = edit_visible
+
+
+class PageView(Listenable):
+
+    def __init__(self, component, model):
+        Listenable.__init__(self)
+        self._model = model
+        self._model.add_listener(self._on_model_event)
+        self.component = component
+        self._blocks = []
+        self._size = 0
+        self._recreate_blocks()
+
+    def _on_model_event(self, event_type, data):
+        if event_type == DataET.OnPageChanged:
+            BigWorld.addPreGUIDrawCallback(self._update_content)
+
+    def _update_content(self, result):
+        raise not result or AssertionError
+        i = -1
+        for i, (data, block) in enumerate(zip(self._model.page, self._blocks)):
+            block.component.visible = True
+            block.set_data(data)
+
+        for index in range(i + 1, len(self._blocks)):
+            self._blocks[index].component.visible = False
+
+    def _recreate_blocks(self):
+        for block in self._blocks:
+            self.component.delChild(block.component)
+
+        self._blocks[:] = []
+        min_width, min_height = (370, 192)
+        space = 8
+        columns = int(clamp(math.floor(float(self.component.width) / min_width), 2, 5))
+        rows = int(clamp(math.floor(float(self.component.height) / min_height), 2, 4))
+        width = float(self.component.width - (columns - 1) * space) / columns - 1
+        height = float(self.component.height - (rows - 1) * space) / rows - 1 - 1
+        for row in range(rows):
+            for column in range(columns):
+                comp = GUI.Window()
+                comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+                comp.ha, comp.va = ('LEFT', 'TOP')
+                comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+                comp.width, comp.height = width, height
+                x = column * (space + width)
+                y = row * (space + height)
+                comp.position = (x, y, 0.8)
+                self.component.addChild(comp)
+                block = Block(comp)
+                block.add_listener(self._on_block_event)
+                self._blocks.append(block)
+                block.btn_investigate.onClick = partial(self._on_investigate_click, block)
+
+        BigWorld.addPreGUIDrawCallback(self._update_content)
+        self.size = columns * rows
+
+    def _on_block_event(self, event_type, data):
+        if event_type in (BlockEventType.OnDelRequested, BlockEventType.OnEditRequested):
+            self.notify_listeners(event_type, data)
+
+    def _on_investigate_click(self, block):
+        data = {'clan_id': block.clan_id,
+         'clan_level': block.clan_level,
+         'clan_name': block.clan_name,
+         'player_level': block.player_level,
+         'icon_id': block.icon_id}
+        self.notify_listeners(EventType.OnInvestigateRequested, data)
+
+    @property
+    def size(self):
+        return self._size
+
+    @size.setter
+    def size(self, value):
+        if value == self._size:
+            return
+        self._size = value
+        self.notify_listeners(EventType.OnSizeChanged)
+
+    def do_reposition(self):
+        self._recreate_blocks()

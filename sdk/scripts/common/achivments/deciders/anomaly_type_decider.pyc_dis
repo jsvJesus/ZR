@@ -1,0 +1,57 @@
+# Embedded file name: ./common/achivments/deciders/anomaly_type_decider.py
+import common_decider
+from collections import defaultdict
+from achivments import achives_parser
+from hashlib import md5
+from itertools import chain
+ET = achives_parser.EssenceTypes
+
+def _validate_ach(ach_id, art_type, art_condition):
+    quality, _, art_types = achives_parser.get_achiv(ach_id)['essence']['params']
+    if art_condition * 100.0 < quality:
+        return False
+    elif art_types is not None and art_type not in art_types:
+        return False
+    else:
+        return True
+
+
+def decide(user, art_type, condition_ratio):
+
+    def validate_ach(ach_id):
+        return _validate_ach(ach_id, art_type, condition_ratio)
+
+    ach_ids = chain(_art_type_to_achids.get(None, []), _art_type_to_achids.get(art_type, []))
+    common_decider.decide(user, ach_ids, get_col_name, validate_ach, 1)
+    return
+
+
+def get_colname_and_hashkey(ach_id):
+    essence = achives_parser.get_achiv(ach_id)['essence']
+    if not essence['id'] == ET.AnomalyArt:
+        raise AssertionError
+        quality, amount, art_types = essence['params']
+        return amount in (None, 0, 1) and (None, None)
+    else:
+        db_key = 'ess' + str(essence['id'])
+        db_sub_key = '_' + str(quality and int(quality) or None)
+        for art_type in art_types or []:
+            db_sub_key += ':' + str(art_type)
+
+        if len(db_sub_key) > 10:
+            db_sub_key = md5(db_sub_key).hexdigest()[:9]
+        return (db_key + db_sub_key, (quality, art_types))
+
+
+def get_col_name(ach_id):
+    return get_colname_and_hashkey(ach_id)[0]
+
+
+_art_type_to_achids = defaultdict(list)
+for ach in achives_parser.filter_achs_by_essence(ET.AnomalyArt):
+    art_types = ach['essence']['params'][2]
+    if art_types is None:
+        _art_type_to_achids[None].append(ach['id'])
+    else:
+        for art_type in art_types:
+            _art_type_to_achids[art_type].append(ach['id'])

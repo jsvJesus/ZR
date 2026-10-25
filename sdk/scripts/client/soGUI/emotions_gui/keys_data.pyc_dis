@@ -1,0 +1,148 @@
+# Embedded file name: ./client/soGUI/emotions_gui/keys_data.py
+from copy import deepcopy
+import pyson
+import traceback
+import os
+from utils import stalker_path, Listenable
+from Helpers import BWKeyBindings
+from GesturesUtils import animations_data
+from Localization import lc
+import gui_jokes
+save_path = os.path.join(stalker_path(), 'usercontent/emotions.pyson')
+
+class EventType:
+    OnBindChanged = ((r, 'emotions.keysdata') for r in range(1))
+
+
+class KeysData(Listenable):
+
+    def __init__(self):
+        Listenable.__init__(self)
+        self._emotions = {}
+        self._animations_data = deepcopy(animations_data['emotions'])
+        self._emotion_id_to_gesture_id = {}
+        self._gesture_id_to_emotion_id = {}
+        self._default_keys = {}
+        for ad in animations_data['emotions']:
+            self._default_keys[ad['id']] = ad['key']
+
+        for i, ad in enumerate(self._animations_data):
+            self._emotions[ad['id']] = ad
+            self._emotion_id_to_gesture_id[ad['id']] = i + 1
+            self._gesture_id_to_emotion_id[i + 1] = ad['id']
+
+        if os.path.exists(save_path):
+            try:
+                with open(save_path, 'rb') as f:
+                    loaded_data = pyson.loads(f.read())
+                    for emotion_id, key_id in loaded_data.iteritems():
+                        if emotion_id == 'selected':
+                            continue
+                        key = BWKeyBindings._keyToString(key_id)
+                        self._emotions[emotion_id]['key'] = key
+
+            except:
+                traceback.print_exc()
+                traceback.print_stack()
+
+        used_keys = set()
+        for ad in self._animations_data:
+            if ad['key'] in used_keys:
+                ad['key'] = None
+            else:
+                used_keys.add(ad['key'])
+
+        return
+
+    def get_emotion_ids_sorted(self):
+        return [ ad['id'] for ad in self._animations_data ]
+
+    def get_emotion_id_by_key(self, event_key):
+        key = BWKeyBindings._keyToString(event_key)
+        for e_id, ed in self._emotions.iteritems():
+            if ed['key'] == key:
+                return e_id
+
+    def get_emotion_id_by_gesture_id(self, gesture_id):
+        """ \xd1\x80\xd1\x83\xd0\xba\xd0\xbe\xd0\xb6\xd0\xbe\xd0\xbf\xd1\x8b, \xd0\xba\xd1\x82\xd0\xbe \xd1\x8d\xd1\x82\xd0\xbe \xd0\xbf\xd1\x80\xd0\xb8\xd0\xb4\xd1\x83\xd0\xbc\xd0\xb0\xd0\xbb """
+        return self._gesture_id_to_emotion_id.get(gesture_id)
+
+    def get_gesture_id(self, emotion_id):
+        """ \xd1\x80\xd1\x83\xd0\xba\xd0\xbe\xd0\xb6\xd0\xbe\xd0\xbf\xd1\x8b, \xd0\xba\xd1\x82\xd0\xbe \xd1\x8d\xd1\x82\xd0\xbe \xd0\xbf\xd1\x80\xd0\xb8\xd0\xb4\xd1\x83\xd0\xbc\xd0\xb0\xd0\xbb """
+        return self._emotion_id_to_gesture_id.get(emotion_id)
+
+    def get_local_name(self, emotion_id):
+        return lc('EmotionsGUI.{0}'.format(self._emotions[emotion_id]['name']))
+
+    def has_overrides(self):
+        for e_id, ed in self._emotions.iteritems():
+            if self._default_keys[e_id] != ed['key']:
+                return True
+
+        return False
+
+    def _on_bind_changed(self, emotion_id):
+        self.notify_listeners(EventType.OnBindChanged, emotion_id)
+
+    def request_restore(self):
+
+        def ask_handler(event):
+            if event == gui_jokes.askUserYesNo.YES:
+                self._restore()
+
+        gui_jokes.askUserYesNo(lc('EmotionsGUI.RestoreTitle'), lc('EmotionsGUI.RestoreText'), callback=ask_handler)
+
+    def _restore(self):
+        for e_id, key in self._default_keys.iteritems():
+            if self._emotions[e_id]['key'] != key:
+                self._emotions[e_id]['key'] = key
+                self._on_bind_changed(e_id)
+
+        self._dump_pyson()
+
+    def replace_key(self, emotion_id, event_key):
+        key = BWKeyBindings._keyToString(event_key)
+        dirty = False
+        for e_id, ed in self._emotions.iteritems():
+            if e_id == emotion_id:
+                if ed['key'] != key:
+                    ed['key'] = key
+                    self._on_bind_changed(e_id)
+                    dirty = True
+            elif ed['key'] == key:
+                ed['key'] = None
+                self._on_bind_changed(e_id)
+                dirty = True
+
+        if dirty:
+            self._dump_pyson()
+        return
+
+    def _dump_pyson(self):
+        try:
+            with open(save_path, 'wb') as f:
+                dump_data = {}
+                for e_id, ed in self._emotions.iteritems():
+                    if self._default_keys[e_id] != ed['key']:
+                        key_id = ed['key'] and BWKeyBindings._stringToKey(ed['key']) or None
+                        dump_data[e_id] = key_id
+
+                f.write(pyson.dumps(dump_data))
+        except:
+            traceback.print_exc()
+            traceback.print_stack()
+
+        return
+
+    def get_short_keyname(self, emotion_id):
+        key_name = self._emotions[emotion_id]['key']
+        if key_name:
+            key_name = key_name.replace('NUMPAD', 'Num ')
+            key_name = key_name.replace('MINUS', '-')
+            key_name = key_name.replace('ADD', 'Num +')
+            key_name = key_name.replace('STAR', '*')
+            key_name = key_name.replace('SLASH', '/')
+        return key_name
+
+
+keys_data = KeysData()

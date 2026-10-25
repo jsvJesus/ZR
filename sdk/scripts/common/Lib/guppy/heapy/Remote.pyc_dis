@@ -1,0 +1,320 @@
+# Embedded file name: ./common/Lib/guppy/heapy/Remote.py
+"""
+    Support remote access to a Python interpreter.
+"""
+from guppy.etc import cmd
+from guppy import hpy
+from guppy.heapy import heapyc, Target
+from guppy.heapy.RemoteConstants import *
+from guppy.heapy.Console import Console
+from guppy.sets import mutbitset
+import os, socket, sys, time, thread, threading, traceback, Queue
+
+class SocketClosed(Exception):
+    pass
+
+
+class IsolatedCaller():
+
+    def __init__(self, func):
+        self.func = func
+
+    def __call__(self, *args, **kwds):
+        return self.func(*args, **kwds)
+
+
+class QueueWithReadline(Queue.Queue):
+
+    def readline(self, size = -1):
+        while 1:
+            try:
+                return self.get(timeout=0.5)
+            except Queue.Empty:
+                continue
+
+
+class NotiInput():
+
+    def __init__(self, input, output):
+        self.input = input
+        self.output = output
+
+    def read(self, size = -1):
+        return self.readline(size)
+
+    def readline(self, size = -1):
+        self.output.write(READLINE)
+        return self.input.readline(size)
+
+
+class Annex(cmd.Cmd):
+    address_family = socket.AF_INET
+    socket_type = socket.SOCK_STREAM
+    use_rawinput = 0
+    prompt = '<Annex> '
+
+    def __init__(self, target, port = None):
+        cmd.Cmd.__init__(self)
+        if port is None:
+            port = HEAPYPORT
+        self.server_address = (LOCALHOST, port)
+        self.target = target
+        target.close = IsolatedCaller(self.asynch_close)
+        self.socket = None
+        self.isclosed = 0
+        self.closelock = thread.allocate_lock()
+        self.intlocals = {}
+        self.do_reset('')
+        return
+
+    def asynch_close(self):
+        self.closelock.acquire()
+        try:
+            if not self.isclosed:
+                self.isclosed = 1
+                self.disconnect()
+        finally:
+            self.closelock.release()
+
+    def connect(self):
+        self.socket = socket.socket(self.address_family, self.socket_type)
+        while not self.isclosed:
+            try:
+                self.socket.connect(self.server_address)
+            except SystemExit:
+                raise
+            except socket.error:
+                if self.isclosed:
+                    raise
+                time.sleep(2)
+            else:
+                break
+
+        else:
+            return
+
+        self.stdout = self.socket.makefile('w', bufsize=0)
+        self.stdin = NotiInput(self.socket.makefile('r'), self.stdout)
+        self.stderr = sys.stderr
+        if sys.version_info < (2, 4):
+            self.interruptible = 0
+        else:
+            self.start_ki_thread()
+            self.interruptible = 1
+        cmd.Cmd.__init__(self, stdin=self.stdin, stdout=self.stdout)
+
+    def start_ki_thread(self):
+        queue = QueueWithReadline()
+        ostdin = self.stdin
+        self.stdin = NotiInput(input=queue, output=ostdin.output)
+        socket = self.socket
+
+        def run():
+            try:
+                _hiding_tag_ = self.intlocals['hp']._hiding_tag_
+                while socket is self.socket:
+                    line = ostdin.input.readline()
+                    if not line:
+                        break
+                    if line == KEYBOARDINTERRUPT:
+                        if socket is self.socket:
+                            heapyc.set_async_exc(self.target.annex_thread, KeyboardInterrupt)
+                    else:
+                        queue.put(line)
+
+            finally:
+                if socket is self.socket:
+                    heapyc.set_async_exc(self.target.annex_thread, SocketClosed)
+
+        th = threading.Thread(target=run, args=())
+        th.start()
+
+    def disconnect(self):
+        socket = self.socket
+        if socket is None:
+            return
+        else:
+            self.socket = None
+            try:
+                socket.send(DONE)
+            except:
+                pass
+
+            try:
+                socket.close()
+            except:
+                pass
+
+            sys.last_traceback = None
+            sys.exc_clear()
+            return
+
+    def do_close(self, arg):
+        self.asynch_close()
+        return 1
+
+    def help_close(self):
+        print >> self.stdout, "close\n-----\nClose and disable this remote connection completely.  It can then not\nbe reopened other than by some command from within the target process.\n\nNormally you shouldn't need to use this command, because you can\nreturn to the Monitor via other commands (<Ctrl-C> or .) keeping the\nconnection open.\n\nBut it might be useful when you want to get rid of the remote control\ninterpreter and thread, if it uses too much memory or disturbs the\ntarget process in some other way."
+
+    do_h = cmd.Cmd.do_help
+
+    def help_h(self):
+        print >> self.stdout, 'h(elp)\n-----\nWithout argument, print the list of available commands.\nWith a command name as argument, print help about that command.'
+
+    help_help = help_h
+
+    def do_int(self, arg):
+        ostdin = sys.stdin
+        ostdout = sys.stdout
+        ostderr = sys.stderr
+        try:
+            sys.stdin = self.stdin
+            sys.stdout = self.stdout
+            sys.stderr = self.stdout
+            con = Console(stdin=sys.stdin, stdout=sys.stdout, locals=self.intlocals)
+            con.interact('Remote interactive console. To return to Annex, type %r.' % con.EOF_key_sequence)
+        finally:
+            sys.stdin = ostdin
+            sys.stdout = ostdout
+            sys.stderr = ostderr
+
+    def help_int(self):
+        print >> self.stdout, "int\n-----\nInteractive console.\nBring up a Python console in the Remote Control interpreter.\n\nThis console will initially have access to a heapy constructor, named\nhpy, and a ready-made instance, named hp, and the target (see also the\nreset command).  Other things may be imported as needed.\n\nAfter returning to the Annex (by q) or to the Monitor (by . or\n<Ctrl-C>), the data in the interactive console will remain there - and\nwill be available till the next time the console is entered.  But the\ndata may be cleared and reset to the initial state - a new heapy\ninstance will be created - by the 'reset' command of Annex.\n\nIt should be noted that the interpreter thread under investigation is\nexecuting in parallell with the remote control interpreter. So there\nmay be some problems to do with that if both are executing at the same\ntime. This has to be dealt with for each case specifically."
+
+    _bname = 'a1e55f5dc4c9f708311e9f97b8098cd3'
+
+    def do_isolatest(self, arg):
+        hp = self.intlocals['hp']
+        a = []
+        self._a = a
+        b = []
+        self.intlocals[self._bname] = b
+        eval('0', self.intlocals)
+        testobjects = [a,
+         b,
+         self.intlocals['__builtins__'],
+         self.intlocals,
+         hp]
+        h = hp.heap()
+        if hp.iso(*testobjects) & h:
+            print >> self.stdout, 'Isolation test failed.'
+            for i, v in enumerate(testobjects):
+                if hp.iso(v) & h:
+                    print >> self.stdout, '-- Shortest Path(s) to testobjects[%d] --' % i
+                    print >> self.stdout, hp.iso(v).shpaths
+
+        else:
+            print >> self.stdout, 'Isolation test succeeded.'
+        del self._a
+        del self.intlocals[self._bname]
+
+    def help_isolatest(self):
+        print >> self.stdout, 'isolatest\n----------\nIsolation test.\n\nTest that the target interpreter heap view is isolated from the data\nin the remote control interpreter. Data introduced here, eg in the\ninteractive console, should not be seen in the heap as reported by\nhp.heap() etc. This is achieved by setting hp to not follow the\ncalling interpreter root.  However, this isolation may become broken.\nThis test is intended to diagnose this problem. The test checks that\nnone of a number of test objects is visible in the target heap\nview. If the test failed, it will show the shortest path(s) to each of\nthe test objects that was visible.'
+
+    def do_q(self, arg):
+        print >> self.stdout, 'To return to Monitor, type <Ctrl-C> or .'
+        print >> self.stdout, "To close this connection ('permanently'), type close"
+
+    def help_q(self):
+        print >> self.stdout, "q\n-----\nQuit.\n\nThis doesn't currently do anything except printing a message.  (I\nthought it would be too confusing to have a q (quit) command from the\nAnnex, when there was a similarly named command in the Monitor.)"
+
+    def do_reset(self, arg):
+        self.intlocals.clear()
+        self.intlocals.update({'hpy': self.hpy,
+         'hp': self.hpy(),
+         'target': self.target})
+        self.intlocals['h'] = self.intlocals['hp']
+
+    def help_reset(self):
+        print >> self.stdout, 'reset\n-----\nReset things to an initial state.\n\nThis resets the state of the interactive console data only, for now.\nIt is reinitialized to contain the following:\n\nhpy\t--- from guppy import hpy\nhp      --- hp = hpy()\ntarget  --- a reference to some data in the target interpreter\nh       --- h = hp; h is a shorthand for hp\n\n(The hpy function is modified here from the normal one so\nit sets some options to make it be concerned with the target\ninterpreter heap under investigation rather than the current one.)\n'
+
+    def do_stat(self, arg):
+        print >> self.stdout, 'Target overview'
+        print >> self.stdout, '------------------------------------'
+        print >> self.stdout, 'target.sys.executable   = %s' % self.target.sys.executable
+        print >> self.stdout, 'target.sys.argv         = %s' % self.target.sys.argv
+        print >> self.stdout, 'target.wd               = %s' % self.target.wd
+        print >> self.stdout, 'target.pid              = %d' % self.target.pid
+        print >> self.stdout, '------------------------------------'
+        if not self.interruptible:
+            print >> self.stdout, 'noninterruptible interactive console'
+
+    def help_stat(self):
+        print >> self.stdout, 'stat\n-----\nPrint an overview status table, with data from the target interpreter.\n\nIn the table, sys.executable and sys.argv means the current values of\nthose attributes in the sys module of the target interpreter. The row\nlabeled target.wd is the working directory of the target interpreter,\nat the time the Remote Control interpreter was started (the actual\nworking directory may have changed since that time). The row labeled\ntarget.pid is the process id of the target interpreter.\n\n'
+
+    def hpy(self, *args, **kwds):
+        from guppy import hpy
+        hp = hpy(*args, **kwds)
+        hp.View.is_hiding_calling_interpreter = 1
+        hp.View.target = self.target
+        self.target.close._hiding_tag_ = hp._hiding_tag_
+        hp.reprefix = 'hp.'
+        return hp
+
+    def run(self):
+        try:
+            while not self.isclosed:
+                self.connect()
+                if not self.isclosed:
+                    self.do_stat('')
+                    while 1:
+                        try:
+                            self.cmdloop()
+                        except SocketClosed:
+                            break
+                        except:
+                            try:
+                                traceback.print_exc(file=self.stdout)
+                            except:
+                                traceback.print_exc(file=sys.stdout)
+                                break
+
+                            continue
+
+                self.disconnect()
+
+        finally:
+            self.asynch_close()
+
+
+def on():
+    global annex_thread
+    global target
+    if annex_thread is not None:
+        return
+    elif getattr(sys, '_is_guppy_heapy_remote_interpreter_', 0):
+        return
+    else:
+        start_annex = '# Set a flag to stop recursion when importing site\n# in case sitecustomize tries to do Remote.on()\nimport sys\nsys._is_guppy_heapy_remote_interpreter_ = 1\nimport site\nfrom guppy.heapy import Remote\nRemote.Annex(target).run()\n'
+        target = Target.Target()
+        annex_thread = heapyc.interpreter(start_annex, {'target': target})
+        target.annex_thread = annex_thread
+        return
+
+
+def off():
+    global annex_thread
+    global target
+    if annex_thread is None:
+        return
+    else:
+        for i in range(10):
+            try:
+                close = target.close
+            except AttributeError:
+                print 'Can not turn it off yet, waiting..'
+                time.sleep(1)
+            else:
+                close()
+                break
+
+        else:
+            raise
+
+        heapyc.set_async_exc(annex_thread, SystemExit)
+        annex_thread = target = None
+        return
+
+
+annex_thread = None
+target = None

@@ -1,0 +1,88 @@
+# Embedded file name: ./client/Bullets/BulletsController.py
+import random
+import math
+from Math import Vector3, Matrix
+import BWBallistic
+import BigWorld
+ZERO = Vector3(0, 0, 0)
+UP = Vector3(0, 1, 0)
+USE_CPP = True
+
+class BulletsController(object):
+    """ \xd1\x88\xd1\x82\xd1\x83\xd0\xba\xd0\xb0, \xd0\xba\xd0\xbe\xd1\x82\xd0\xbe\xd1\x80\xd0\xb0\xd1\x8f \xd1\x81\xd0\xbf\xd0\xb0\xd1\x83\xd0\xbd\xd0\xb8\xd1\x82 \xd0\xbf\xd1\x83\xd0\xbb\xd0\xb8 \xd0\xb8 \xd1\x80\xd0\xb0\xd0\xb1\xd0\xbe\xd1\x82\xd0\xb0\xd0\xb5\xd1\x82 \xd1\x81 \xd0\xb8\xd1\x85 \xd0\xbf\xd1\x83\xd0\xbb\xd0\xbe\xd0\xbc """
+    LIMIT = 50
+    POOL = set()
+
+    @staticmethod
+    def spawn(parent_avatar, position, direction, ammo_type, weapon_item_id, weapon_item_type, weapon_in_water):
+        if not USE_CPP:
+            if BulletsController.POOL:
+                bullet = BulletsController.POOL.pop()
+            else:
+                bullet = TraceBullet(BulletsController.bullet_destroyed)
+            bullet.reset(parent_avatar, position, direction, ammo_type, weapon_item_id, weapon_in_water)
+            if bullet.in_water:
+                bullet._last_water_collision = [position]
+                bullet._on_water_enter(True)
+        else:
+            player = BigWorld.player()
+            isPlayerBullet = parent_avatar.id == player.id
+            bulletOverrider = BWBallistic.get_ammo_param(ammo_type, weapon_item_type)
+            if isPlayerBullet and getattr(player, '_debug_bullet_hit', False):
+                from utils import plog
+                plog('SpawnBullet', parent_avatar.id, position, direction, ammo_type, weapon_item_id, weapon_in_water, isPlayerBullet)
+            try:
+                position_from = position - direction
+                found_portals = BigWorld.collidePortals(position_from, position, 2)
+                if found_portals:
+                    after_port = found_portals[1]
+                    position = after_port[0]
+                    direction = after_port[1] - after_port[0]
+                    direction.normalise()
+                BWBallistic.SpawnBullet(parent_avatar.id, position, direction, ammo_type, weapon_item_id, weapon_in_water, isPlayerBullet, bulletOverrider)
+            except Exception as err:
+                print 'ERROR FOR:', parent_avatar, [parent_avatar.id,
+                 position,
+                 direction,
+                 ammo_type,
+                 weapon_item_id,
+                 weapon_in_water,
+                 isPlayerBullet,
+                 bulletOverrider]
+                raise err
+
+    @staticmethod
+    def bullet_destroyed(bullet):
+        if len(BulletsController.POOL) < BulletsController.LIMIT:
+            BulletsController.POOL.add(bullet)
+
+
+class Spin(object):
+
+    def __init__(self, density, speed, size, velocity_fade):
+        self.amplitude = 0.0
+        self._angle = random.uniform(0.0, math.pi * 2.0)
+        self._velocity = Vector3(0, 0, 0)
+        self._density = density
+        self._speed = speed
+        self._size = size
+        self._velocity_fade = velocity_fade
+        self.velocity_ratio = 1.0
+
+    def tick(self, delta_time, velocity):
+        self._velocity = velocity
+        self._angle += delta_time * self._density
+        self.velocity_fade = delta_time * self._velocity_fade
+        self.amplitude += delta_time * self._speed
+        if self.amplitude > self._size:
+            self.amplitude = self._size
+        axis = self._velocity.crossProduct(UP)
+        m = Matrix().xfromAngleAxis(axis, math.pi * 0.5)
+        start_vector = m.applyVector(self._velocity)
+        m = Matrix().xfromAngleAxis(self._velocity, self._angle)
+        self.spin_vector = m.applyVector(start_vector)
+        self.spin_vector.normalise()
+        self.spin_vector *= self.amplitude
+
+
+from TraceBullet import TraceBullet

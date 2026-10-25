@@ -1,0 +1,224 @@
+# Embedded file name: ./common/client_lights/light.py
+import BigWorld
+import Pixie
+import traceback
+import ResourceLoader
+import FX
+import Math
+STATE_UND = -1
+STATE_OFF = 0
+STATE_ON = 1
+
+class Light(object):
+    model = None
+    model_pix = None
+    udo = None
+
+    def __init__(self, guid, udo, parent_entity, state = STATE_UND):
+        self.child = []
+        self.guid = guid
+        self.id = guid
+        self.udo = udo
+        self.state = STATE_UND
+        self._tint_on = {}
+        self._tint_off = {}
+        self.parent_entity = parent_entity
+        self.child_guids = []
+        self._pixie = None
+        self.parseTints()
+        self.createModel()
+        if hasattr(self.udo, 'targetNodes'):
+            self.child_guids = [ child_udo.guid for child_udo in self.udo.targetNodes ]
+        return
+
+    def parseTints(self):
+
+        def parse(tint_str):
+            all_dyes = {}
+            if not tint_str:
+                return all_dyes
+            for dyes in tint_str.split(','):
+                dyes = dyes.strip()
+                if ':' not in dyes:
+                    continue
+                dye, tint = dyes.split(':', 1)
+                dye = dye.strip()
+                tint = tint.strip()
+                all_dyes[dye] = tint
+
+            return all_dyes
+
+        self._tint_on = parse(self.getParam('modelTintON'))
+        self._tint_off = parse(self.getParam('modelTintOFF'))
+
+    def addInputChannel(self, obj, state):
+        pass
+
+    def getChildGuid(self):
+        return self.child_guids
+
+    def getChildUDO(self):
+        return self.udo.targetNodes
+
+    def getParam(self, param, default = None):
+        return getattr(self.udo, param, default)
+
+    def getColor(self):
+        colour = Math.Vector4(self.getParam('light_colour', (255, 255, 255, 255)))
+        mul = self.getParam('light_multiply', 1.0)
+        return colour * mul
+
+    def createModel(self):
+        self.model_path = self.getParam('model')
+        if not self.model_path:
+            self._onCreateModel({self.model_path: BigWorld.Model('')})
+            return
+        ResourceLoader.asyncLoad([(ResourceLoader.MODEL, self.model_path)], self._onCreateModel)
+
+    def _onCreateModel(self, prereqs):
+        if not self.parent_entity:
+            return
+        if self.parent_entity.isDestroyed:
+            return
+        self.model = prereqs[self.model_path]
+        self.model_pix = BigWorld.Model('')
+        self.parent_entity.addModel(self.model)
+        self.parent_entity.addModel(self.model_pix)
+        self.visibleAttachments = True
+        if self.state == STATE_ON:
+            tints = self._tint_on
+            self.lightON()
+            self.attachPixie()
+        else:
+            tints = self._tint_off
+        if self.model_path:
+            for dye, tint in tints.items():
+                try:
+                    setattr(self.model, dye, tint)
+                except:
+                    print self.udo, self.udo.guid if self.udo else 'no guid'
+                    print self, 'model:', self.model
+                    print [dye, tint]
+                    print 'model_path ', self.model_path
+                    print 'sources:', self.model.sources if self.model else 'None'
+                    print 'position:', self.getParam('position')
+                    traceback.print_exc()
+
+        self.model.position = self.getParam('position')
+        self.model_pix.position = self.getParam('position')
+        yaw = self.getParam('yaw', 0)
+        pitch = self.getParam('pitch', 0)
+        roll = self.getParam('roll', 0)
+        self.model.rotate(roll, (0, 0, 1))
+        self.model.rotate(yaw, (0, 1, 0))
+        self.model.rotate(pitch, (1, 0, 0))
+        self.model_pix.rotate(roll, (0, 0, 1))
+        self.model_pix.rotate(yaw, (0, 1, 0))
+        self.model_pix.rotate(pitch, (1, 0, 0))
+        self.onEndCreateModel()
+
+    def onEndCreateModel(self):
+        pass
+
+    def setState(self, new_state, parent_id):
+        if new_state == STATE_UND:
+            return
+        self.updateChildState(new_state)
+        old_state = self.state
+        if new_state == self.state:
+            return
+        self.state = new_state
+        if self.model and self.model_path:
+            tints = self._tint_on if self.state == STATE_ON else self._tint_off
+            for dye, tint in tints.items():
+                try:
+                    setattr(self.model, dye, tint)
+                except:
+                    print
+                    print self.udo, self.udo.guid if self.udo else 'no guid'
+                    print self, 'model:', self.model
+                    print [dye, tint]
+                    print 'model_path ', self.model_path
+                    print 'sources:', self.model.sources if self.model else 'None'
+                    traceback.print_exc()
+
+        if self.state == STATE_ON:
+            self.lightON()
+            self.attachPixie()
+            if old_state != STATE_UND:
+                self.playSFX_ON()
+        else:
+            self.lightOFF()
+            self.detachPixie()
+            if old_state != STATE_UND:
+                self.playSFX_OFF()
+
+    def updateChildState(self, new_state):
+        from ClientLightManager import lmanager
+        lmanager.setState(self.getChildUDO(), new_state, self.id)
+
+    def playSFX_ON(self):
+        path = self.getParam('onEnableSFX')
+        if path and self.model:
+            FX.bufferedOneShotEffect(path, self.model)
+
+    def playSFX_OFF(self):
+        path = self.getParam('onDisableSFX')
+        if path and self.model:
+            FX.bufferedOneShotEffect(path, self.model)
+
+    def lightON(self):
+        pass
+
+    def lightOFF(self):
+        pass
+
+    def attachPixie(self):
+        if not self.model_pix:
+            return
+        self.detachPixie()
+        particles_path = self.getParam('particles')
+        if not particles_path:
+            return
+        if not self._pixie:
+            try:
+                self._pixie = Pixie.create(particles_path)
+            except Exception as err:
+                print 'Error for:', self, self.getParam('position')
+                print 'particles_path', repr(particles_path)
+                raise err
+
+        self.model_pix.root.attach(self._pixie)
+        self._pixie.force()
+        bb = self.getParam('particlesVisBoundBox', 2.0)
+        self.model_pix.scale = (bb, bb, bb)
+
+    def detachPixie(self):
+        if not self._pixie:
+            return
+        if not self.model_pix:
+            return
+        if self._pixie in self.model_pix.root.attachments:
+            self.model_pix.root.detach(self._pixie)
+
+    def destroy(self):
+        if not self.parent_entity:
+            return
+        elif self.parent_entity.isDestroyed:
+            return
+        else:
+            try:
+                if self.model:
+                    self.parent_entity.delModel(self.model)
+                if self.model_pix:
+                    self.parent_entity.delModel(self.model_pix)
+            except:
+                traceback.print_exc()
+
+            self.parent_entity = None
+            self.udo = None
+            self.model = None
+            self.model_pix = None
+            self._pixie = None
+            self._light = None
+            return

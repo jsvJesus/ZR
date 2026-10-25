@@ -1,0 +1,247 @@
+# Embedded file name: ./client/soGUI/sales/filters/treeblock.py
+import GUI
+from Helpers.PyGUI.PyGUIBase import PyGUIBase
+from Localization import lc
+import colorCodes as cc
+from ui_elements import BillboardCheckBox
+ArrowDir = BillboardCheckBox.ArrowDir
+import ItemCategories
+from soGUI.soScrollBar import soScrollBar2
+from functools import partial
+from math_bw import clamp
+_line_height = 20.0
+
+class Section(PyGUIBase):
+
+    def __init__(self, cat_ids, color):
+        comp = GUI.Window()
+        PyGUIBase.__init__(self, comp)
+        self.component.script = self
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.widthMode, comp.heightMode = ('CLIP', 'PIXEL')
+        comp.position = (0, 0, 0.5)
+        self._children = []
+        level_margin = 28
+
+        def filter_foo(cat_id):
+            if cat_id in (ItemCategories.HIDDEN, ItemCategories.UNDEFINED):
+                return False
+            return True
+
+        cat_ids = filter(filter_foo, cat_ids)
+        for cat_id in cat_ids:
+            name = ItemCategories.get_name(cat_id) if cat_id >= 0 else lc('soTradeInterface.shop.ALL')
+            cb = BillboardCheckBox(name, cat_id, color=color, callback=self._on_check_clicked)
+            cb.setActive()
+            cb.component.position = (0, 0, 0.8)
+            self.component.addChild(cb.component)
+            sub_section = None
+            if cat_id != -1 and ItemCategories.has_children(cat_id, valid_only=True):
+                sub_section = Section(ItemCategories.get_children(cat_id), cc.inactive_rgba)
+                sub_section.component.position[0] = level_margin
+                self.component.addChild(sub_section.component)
+                sub_section.component.widthMode = 'PIXEL'
+                sub_section.component.width -= level_margin
+                sub_section.component.visible = False
+                sub_section.visiblity_changed_callback = self._on_child_visibility_changed
+                sub_section.filter_changed_callback = self._on_child_filter_changed
+                cb.create_drop_button(partial(self._on_dropdown_click, cb))
+                cb.set_arrow_direction(ArrowDir.Down)
+            self._children.append({'checkbox': cb,
+             'subsection': sub_section})
+
+        comp.width = 2
+        self.visiblity_changed_callback = lambda : None
+        self.filter_changed_callback = lambda : None
+        return
+
+    def check_all(self, value):
+        for child in self._children:
+            if value:
+                child['checkbox'].setActive()
+            else:
+                child['checkbox'].setInactive()
+            if child['subsection']:
+                child['subsection'].check_all(value)
+
+    def _on_check_clicked(self, cat_id, value):
+        subsection = next((child['subsection'] for child in self._children if child['checkbox'].klass == cat_id))
+        if subsection:
+            subsection.check_all(value)
+        self.filter_changed_callback()
+
+    def _on_dropdown_click(self, checkbox):
+        checkbox, subsection = next(((child['checkbox'], child['subsection']) for child in self._children if child['checkbox'] == checkbox))
+        if subsection.component.visible:
+            subsection.component.visible = False
+            checkbox.set_arrow_direction(ArrowDir.Down)
+        else:
+            subsection.component.visible = True
+            checkbox.set_arrow_direction(ArrowDir.Up)
+        self.visiblity_changed_callback()
+
+    def _on_child_visibility_changed(self):
+        self.visiblity_changed_callback()
+
+    def _on_child_filter_changed(self):
+        self.filter_changed_callback()
+
+    def realign(self):
+        height = 0
+        for child in self._children:
+            child['checkbox'].component.position[1] = height
+            height += _line_height
+            if child['subsection'] and child['subsection'].component.visible:
+                child['subsection'].realign()
+                child['subsection'].component.position[1] = height
+                height += child['subsection'].component.height
+
+        self.component.height = height
+
+    def compile_cat_ids(self, result):
+        for child in self._children:
+            if child['checkbox'].isChecked():
+                result.add(child['checkbox'].klass)
+            if child['subsection']:
+                child['subsection'].compile_cat_ids(result)
+
+
+class Treeblock(PyGUIBase):
+
+    def __init__(self, comp, data_changed_callback = None):
+        PyGUIBase.__init__(self, comp)
+        comp.script = self
+        self.component.crossFocus = True
+        self.component.moveFocus = True
+        self.component.mouseButtonFocus = True
+        self._callback = data_changed_callback
+
+        def create_caption(height):
+            comp = GUI.Text(lc('sales.FILTERS.TREEBLOCK.CAPTION'))
+            comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+            comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+            comp.font = 'RobotoCondensedRegular_16.font'
+            comp.colour = cc.active_rgba
+            comp.position = (4, height, 0.3)
+            self.component.addChild(comp)
+
+        def create_scroll_bar(pos_y, height):
+
+            def scroll_moved(value):
+                self._set_scroll_value(value)
+
+            comp = GUI.Window()
+            comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'PIXEL')
+            comp.horizontalAnchor, comp.verticalAnchor = ('RIGHT', 'TOP')
+            comp.position = (1, pos_y, 0.8)
+            comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+            scroll_bar = soScrollBar2(comp, height=height)
+            scroll_bar.setValue(0)
+            scroll_bar.setVisualState('normal')
+            scroll_bar.scrollUp = self._scroll_up
+            scroll_bar.scrollDown = self._scroll_down
+            scroll_bar.scrollMoved = scroll_moved
+            return scroll_bar
+
+        height = 8
+        create_caption(height)
+        height += 28
+        self._scroll = create_scroll_bar(height, self.component.height - height - 16)
+        self.component.addChild(self._scroll.component)
+        comp = GUI.Window()
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('RIGHT', 'TOP')
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.width, comp.height = (2, 2)
+        comp.position = (1, height, 0.8)
+        self.component.addChild(comp, 'scroll_area')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width -= 8
+        comp.height -= height
+        comp.height = int(comp.height) / 20 * 20
+        comp = GUI.Window()
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('RIGHT', 'TOP')
+        comp.widthMode, comp.heightMode = ('CLIP', 'PIXEL')
+        comp.width = 2
+        comp.position = (1, 0, 0.8)
+        self.component.scroll_area.addChild(comp, 'content')
+        self._content = comp
+        section = Section([-1], cc.active_rgba)
+        section.filter_changed_callback = self._on_all_changed
+        self._content.addChild(section.component, 'all_cb')
+        cat_ids = ItemCategories.get_top_level()
+        section = Section(cat_ids, cc.active_rgba)
+        section.visiblity_changed_callback = self._on_visibility_changed
+        section.filter_changed_callback = self._on_filter_changed
+        self._content.addChild(section.component, 'base_cb')
+        self._realign_sections()
+        self.filter_data = set()
+        self._content.base_cb.script.compile_cat_ids(self.filter_data)
+
+    def _on_all_changed(self):
+        result = set()
+        self._content.all_cb.script.compile_cat_ids(result)
+        self._content.base_cb.script.check_all(bool(result))
+        self._on_filter_changed()
+
+    def _on_filter_changed(self):
+        result = set()
+        self._content.base_cb.script.compile_cat_ids(result)
+        if result != self.filter_data:
+            self.filter_data = result
+            if self._callback:
+                self._callback()
+
+    def _on_visibility_changed(self):
+        self._realign_sections()
+
+    def _set_scroll_value(self, value):
+        value = clamp(value, 0, self._scroll.steps)
+        if self._scroll.getValue() == value:
+            return
+        self._scroll.setValue(value)
+        self._scroll_changed()
+
+    def _scroll_changed(self):
+        pos_y = -self._scroll.getValue() * _line_height
+        bottom_space = self.component.scroll_area.height - (pos_y + self._content.height)
+        if bottom_space > 0:
+            pos_y += bottom_space
+        self._content.position.y = min(pos_y, 0)
+
+    def _scroll_up(self):
+        self._set_scroll_value(self._scroll.getValue() - 1)
+
+    def _scroll_down(self):
+        self._set_scroll_value(self._scroll.getValue() + 1)
+
+    def handleMouseEvent(self, comp, event):
+        dz = event.dz
+        if dz > 0:
+            self._scroll_up()
+            return True
+        if dz < 0:
+            self._scroll_down()
+            return True
+        return True
+
+    def _realign_sections(self):
+        section1 = self._content.children[0][1].script
+        section1.realign()
+        section2 = self._content.children[1][1].script
+        section2.realign()
+        height = 0
+        section1.component.position[1] = height
+        height += section1.component.height
+        section2.component.position[1] = height
+        height += section2.component.height
+        self._content.height = height
+        self._scroll.setSteps(round((height - self.component.scroll_area.height) / _line_height))
+        self._scroll_changed()
+
+    def reset(self):
+        self._content.all_cb.script.check_all(False)
+        self._content.base_cb.script.check_all(False)
+        self._on_filter_changed()

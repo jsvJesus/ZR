@@ -1,0 +1,86 @@
+# Embedded file name: ./client/StoriesListener.py
+from StoriesListenerCommon import StoriesListenerCommon, STORIES_DATA
+from ChatChannelConfig import ChannelConsts
+from Localization import lc
+import BWPersonality
+from sounds_manager import playSound
+CHANNEL_CONSTS = ChannelConsts()
+
+class StoriesListener(StoriesListenerCommon):
+
+    def use_story(self, story_id):
+        if self.has_story(story_id):
+            return False
+        self.update_stories(story_id)
+        return True
+
+    def update_stories(self, story_id):
+        self.base.use_story(story_id)
+
+    def update_famousStories(self, stories):
+        if self.famousStories == stories:
+            return
+        prev_stories = set(self.get_active_stories())
+        self.famousStories = stories
+        cur_stories = set(self.get_active_stories())
+        new_stories = cur_stories - prev_stories
+        journal_visible = BWPersonality.GUICore.journal_win_visible()
+        for story_id in new_stories:
+            self.set_story_read(story_id, False)
+            gr_id = STORIES_DATA[story_id].get('Group')
+            if not gr_id:
+                continue
+            if self.has_story_group_completed(gr_id):
+                self.putMessage(CHANNEL_CONSTS.SYSTEM, lc('Quester.GROUP_COMPLETED') + ' ' + lc('Stories.GroupName.id_' + str(gr_id)))
+
+        if stories:
+            self.putMessage(CHANNEL_CONSTS.SYSTEM, lc('Quester.NEW_DIARY_ENTRY'))
+            playSound('ui/diary_open')
+            new_stories = list(new_stories)
+            if journal_visible:
+                BWPersonality.GUICore.journal_win.on_got_new_stories(new_stories)
+            elif new_stories:
+                self._last_picked_unseed_story = new_stories[-1]
+        else:
+            settings_key = self._get_story_unread_settings_key()
+            BWPersonality.settings.delSettings(settings_key)
+            if journal_visible:
+                BWPersonality.GUICore.journal_win.on_stories_wiped()
+
+    def peek_last_unseen_story(self):
+        return getattr(self, '_last_picked_unseed_story', None)
+
+    def pop_last_unseen_story(self):
+        if hasattr(self, '_last_picked_unseed_story'):
+            result = self._last_picked_unseed_story
+            del self._last_picked_unseed_story
+            return result
+
+    def get_story_quest(self, story_id):
+        data = STORIES_DATA.get(story_id, {})
+        quest_id = data.get('OpenQuest')
+        if quest_id:
+            self.base.get_story_quest(story_id)
+
+    def _get_story_unread_settings_key(self):
+        if not hasattr(self, '_storlistener_settings_stories_cache'):
+            adress = BWPersonality.game.last_server_address
+            if ':' in adress:
+                adress = adress.split(':')[0]
+            self._storlistener_settings_stories_cache = u'unread_stories' + self.name + adress
+        return self._storlistener_settings_stories_cache
+
+    def is_story_unread(self, story_id):
+        unread = BWPersonality.settings.getSetting(self._get_story_unread_settings_key())
+        return unread and story_id in unread or False
+
+    def set_story_read(self, story_id, value):
+        settings_key = self._get_story_unread_settings_key()
+        unread = BWPersonality.settings.getSetting(settings_key, default=[])
+        if value:
+            if story_id in unread:
+                unread.remove(story_id)
+                BWPersonality.settings.setSetting(settings_key, list(unread))
+        elif story_id not in unread:
+            unread.append(story_id)
+            BWPersonality.settings.setSetting(settings_key, list(unread))

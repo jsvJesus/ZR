@@ -1,0 +1,1351 @@
+# Embedded file name: ./common/QuestDispatcher.py
+"""
+Created on 30.08.2010
+
+@author: Madcat
+"""
+import Localization
+import BigWorld
+import ResMgr
+import Math
+import Quest
+from Quest import SortMode as SM
+import GUITextUtils
+from utils import ReadOnlyDict
+import ItemsUtils
+import QuestsToRemove
+from Localization import lc
+import Fractions
+import traceback
+import random
+import json
+import autoquest_parser
+from Config import Creatures as Cfg
+import colorCodes as cc
+from Constants import AllyStatus
+from collections import defaultdict
+import rep_utils
+from CellListenerUtils import VisibleObjectType as VOT
+import CellListenerUtils
+RES_PATH_QUESTSDATA_FILE = 'scripts/common/data/Quests/QuestData.xml'
+BOARD_QUESTS_CONFIG_PATH = 'scripts/server_data/BoardQuestsConfig.json'
+RES_PATH_SCENARIO = 'scripts/common/data/Quests/Scenarios.xml'
+Quests = None
+Scenarios = None
+QuestChapters = None
+QuestMains = None
+BoardQuestsSet = None
+autoquests_localizeddata = None
+_quests_by_rep_id = None
+_markquests_by_space = None
+
+def reload_quests():
+    """ \xd0\xb7\xd0\xb0\xd0\xbd\xd0\xbe\xd0\xb2\xd0\xbe \xd0\xbf\xd0\xb0\xd1\x80\xd1\x81\xd0\xb8\xd1\x82 \xd0\xb2\xd1\x81\xd0\xb5 \xd0\xba\xd0\xb2\xd0\xb5\xd1\x81\xd1\x82\xd1\x8b
+            \xd0\xbd\xd0\xb8\xd1\x87\xd0\xb5\xd0\xb3\xd0\xbe \xd0\xbd\xd0\xb5 \xd0\xbc\xd0\xb5\xd0\xbd\xd1\x8f\xd0\xb5\xd1\x82 \xd0\xb2 \xd1\x81\xd1\x86\xd0\xb5\xd0\xbd\xd0\xb0\xd1\x80\xd0\xb8\xd1\x8f\xd1\x85
+            \xd0\xbf\xd1\x80\xd0\xb8\xd0\xbc\xd0\xb5\xd0\xbd\xd1\x8f\xd0\xb5\xd1\x82\xd1\x81\xd1\x8f \xd1\x82\xd0\xbe\xd0\xbb\xd1\x8c\xd0\xba\xd0\xbe \xd0\xbd\xd0\xb0 \xd1\x81\xd0\xb5\xd1\x80\xd0\xb2\xd0\xb5\xd1\x80\xd0\xb5
+    """
+    parseAll()
+    print 'QuestDispatcher: all the quests are reloaded!'
+
+
+def get_int(node, field_name, default_value = 0):
+    if not node:
+        return default_value
+    elif node.has_key(field_name):
+        return node[field_name].asInt
+    else:
+        return default_value
+
+
+def get_bool(node, field_name, default_value = False):
+    if not node:
+        return default_value
+    elif node.has_key(field_name):
+        return bool(node[field_name].asInt)
+    else:
+        return default_value
+
+
+def get_float(node, field_name, default_value = 0.0):
+    if not node:
+        return default_value
+    elif node.has_key(field_name):
+        return node[field_name].asFloat
+    else:
+        return default_value
+
+
+def get_string(node, field_name, default_value = ''):
+    if not node:
+        return default_value
+    elif node.has_key(field_name):
+        return node[field_name].asString
+    else:
+        return default_value
+
+
+def get_widestring(node, field_name, default_value = ''):
+    if not node:
+        return default_value
+    elif node.has_key(field_name):
+        return node[field_name].asWideString
+    else:
+        return default_value
+
+
+def get_float_array(node, field_name, default_value = None):
+    if not default_value:
+        default_value = []
+    if not node:
+        return default_value
+    elif node.has_key(field_name):
+        return [ float(subitem) for subitem in node[field_name].asString.split(',') if subitem != '' ]
+    else:
+        return default_value
+
+
+def get_int_array(node, field_name, default_value = None):
+    if not default_value:
+        default_value = []
+    if not node:
+        return default_value
+    elif node.has_key(field_name):
+        text = node[field_name].asString
+        if '&' in text:
+            text = text.replace('&', ',')
+        return [ int(subitem) for subitem in text.split(',') if subitem != '' ]
+    else:
+        return default_value
+
+
+def get_boolean_int_array(node, field_name, default_value = None):
+    if not node:
+        return default_value
+    elif node.has_key(field_name):
+        text = node[field_name].asString
+        predicate = all
+        if '|' in text:
+            text = text.replace('|', ',')
+            predicate = any
+        if '&' in text:
+            text = text.replace('&', ',')
+        result = {'ids': [ int(subitem) for subitem in text.split(',') if subitem != '' ],
+         'predicate': predicate}
+        return result
+    else:
+        return default_value
+
+
+def get_items_array(node, field_name, default_value = []):
+    if not node:
+        return default_value
+    if not node.has_key(field_name):
+        return default_value
+    result = []
+    for key, node_item in node[field_name].items():
+        if key != 'item':
+            continue
+        item = {}
+        item['itemType'] = node_item['itemType'].asInt
+        item['count'] = node_item['count'].asInt
+        if node_item.has_key('attribute'):
+            item['attribute'] = node_item['attribute'].asInt
+        if node_item.has_key('condition'):
+            item['condition'] = node_item['condition'].asFloat * 0.01
+        if node_item.has_key('locked'):
+            item['locked'] = True
+        result.append(item)
+
+    return result
+
+
+def parseAll():
+    global _markquests_by_space
+    global QuestMains
+    global QuestChapters
+    global _quests_by_rep_id
+    global autoquests_localizeddata
+    global Scenarios
+    global Quests
+    global BoardQuestsSet
+    QuestMains = {}
+    QuestChapters = {}
+    Scenarios = {}
+    Quests = ReadOnlyDict()
+    autoquests_localizeddata = {}
+    _quests_by_rep_id = defaultdict(list)
+    _markquests_by_space = defaultdict(set)
+    parseQuestsInf()
+    if not Scenarios:
+        parseScenariosInf()
+        if BigWorld.component == 'client':
+            fillScenarioQuests()
+    if BigWorld.component == 'base':
+        BoardQuestsSet = set(map(int, json.load(open(BOARD_QUESTS_CONFIG_PATH)).keys()))
+    Quests.readonly()
+
+
+def _parseReputation(input_string):
+    ret = {}
+    if input_string:
+        fractions = input_string.split(';')
+        for f in fractions:
+            fraction_info = f.split(':')
+            if fraction_info[1] == 'Infinity':
+                fraction_info[1] = 2147483647
+            if fraction_info[1] == '-Infinity':
+                fraction_info[1] = -2147483647
+            ret[int(fraction_info[0])] = int(fraction_info[1])
+
+    return ret
+
+
+def parse_messages(messages_xml):
+    messages = []
+    for i, message_data in enumerate(messages_xml.values()):
+        messages.append({'from': message_data['stateFrom'].asInt,
+         'to': message_data['stateTo'].asInt,
+         'screen': message_data['notification'].asBool,
+         'index': i})
+
+    return messages
+
+
+def parse_autoquests_localizeddata(res_xml):
+    result = {}
+    for npc_name, quests in res_xml.items():
+        for quest_data in quests.values():
+            quest_type, target_index = map(int, get_widestring(quest_data, 'id').split('_'))
+            text = get_widestring(quest_data, 'text')
+            result[npc_name, quest_type, target_index - 1] = text
+
+    return result
+
+
+def create_sorted_dict(language):
+    section = Localization.localization_object.getXMLData('QuestTexts', language=language)
+    localized_data = parse_localized_data(section)
+    sorted_data = []
+    for q_id, data in localized_data.items():
+        data['Title']
+        sorted_data.append((data['Title'], q_id))
+
+    sorted_data = sorted(sorted_data, key=lambda d: d[0])
+    sorted_dict = {}
+    for index, (_, q_id) in enumerate(sorted_data):
+        sorted_dict[q_id] = index
+
+    return sorted_dict
+
+
+def parse_localized_data(resXML):
+
+    def getItemsInf(xmlObject):
+        ret = []
+        if not xmlObject:
+            return ret
+        for e in xmlObject.values():
+            data = {}
+            if e.has_key('title'):
+                data['title'] = e['title'].asWideString
+            if e.has_key('description'):
+                data['description'] = GUITextUtils.encode(e['description'].asWideString)
+            if e.has_key('itemID'):
+                data['itemID'] = e['itemID'].asInt
+            if e.has_key('activation'):
+                data['activation'] = e['activation'].asWideString
+            if e.has_key('content'):
+                data['content'] = GUITextUtils.encode(e['content'].asWideString)
+            ret.append(data)
+
+        return ret
+
+    result = {}
+    for item in resXML.values():
+        data = {}
+        data['Title'] = get_widestring(item, 'Title')
+        data['Description'] = GUITextUtils.encode(get_widestring(item, 'Description'))
+        if item.has_key('DescriptionOnTest'):
+            data['DescriptionOnTest'] = GUITextUtils.encode(get_widestring(item, 'DescriptionOnTest'))
+        if item.has_key('DescriptionClosed'):
+            data['DescriptionClosed'] = GUITextUtils.encode(get_widestring(item, 'DescriptionClosed'))
+        data['Items'] = getItemsInf(item['Items'])
+        if item.has_key('messages'):
+            data['messages'] = item['messages'].values()
+        result[item['ID'].asInt] = data
+
+    return result
+
+
+def sort_quest_ids_by_priority_then_title(quest_ids, sort_mode, language):
+    if language == 'russian':
+        title_sorted_dict = rus_sorted_dict
+    elif language == 'english':
+        title_sorted_dict = eng_sorted_dict
+    elif language == 'chinese':
+        title_sorted_dict = chi_sorted_dict
+    else:
+        raise RuntimeError
+    if sort_mode == SM.TitleDown:
+        return sorted(quest_ids, key=lambda q_id: (get_sort_order(q_id), title_sorted_dict.get(q_id, 0)))
+    if sort_mode == SM.TitleUp:
+        return sorted(quest_ids, key=lambda q_id: (get_sort_order(q_id), -title_sorted_dict.get(q_id, 0)))
+    raise RuntimeError
+
+
+def parse_description(description, root_node):
+
+    def get_int(node):
+        if isinstance(node, int):
+            return node
+        return node.asInt
+
+    if description:
+        if '%I%' in description:
+            try:
+                item_type = get_int(root_node['Target']['ObjectType'])
+            except:
+                raise ValueError('not found ObjectType')
+
+            description = description.replace('%I%', cc.active_xml + ItemsUtils.GetItemNameCached(item_type) + '<basecolor>')
+        if '%X%' in description:
+            try:
+                item_quantity = get_int(root_node['Target']['NumOfObjects'])
+            except:
+                raise ValueError('not found NumOfObjects')
+
+            description = description.replace('%X%', cc.active_xml + unicode(item_quantity) + '<basecolor>')
+    return description
+
+
+def parse_change_quests(node):
+    result = []
+    splits = node.asString.split(';')
+    for split in splits:
+        quest_id, action_type = split.split(':')
+        result.append((int(quest_id), int(action_type)))
+
+    return result
+
+
+def parseQuestsInf():
+    global eng_sorted_dict
+    global rus_sorted_dict
+    global chi_sorted_dict
+
+    def parseReputation(input_string):
+        ret = []
+        if input_string:
+            fractions = input_string.split(',')
+            for f in fractions:
+                fraction_info = f.split(':')
+                ret.append(dict(fractionID=int(fraction_info[0]), status=int(fraction_info[1]) if fraction_info[0] else 0))
+
+        return ret
+
+    def getEffectsInf(node):
+        if not node:
+            return []
+        xmlObject = node['Effects']
+        if not xmlObject:
+            return []
+        ret = []
+        for e in xmlObject.values():
+            ret.append(dict(id=e['id'].asInt, stack=e['stack'].asInt))
+
+        return ret
+
+    if BigWorld.component == 'client':
+        section = Localization.localization_object.getXMLData('QuestTexts')
+        questTextsLocalizedData = parse_localized_data(section)
+        section = Localization.localization_object.getXMLData('AutoGenQuestTexts')
+        autoquests_localizeddata.update(parse_autoquests_localizeddata(section))
+    elif BigWorld.component == 'base':
+        rus_sorted_dict = create_sorted_dict('russian')
+        eng_sorted_dict = create_sorted_dict('english')
+        chi_sorted_dict = create_sorted_dict('chinese')
+    resXML = ResMgr.openSection(RES_PATH_QUESTSDATA_FILE)
+    for item in resXML.values():
+        quest = ReadOnlyDict()
+        id = item['ID'].asInt
+        try:
+            quest['QuestID'] = id
+            if BigWorld.component == 'client':
+                if id not in questTextsLocalizedData:
+                    localizedData = {'Description': None,
+                     'Title': None,
+                     'Items': None}
+                    print 'QuestsDispatcher (ERROR): quest with id {0} not translated'.format(id)
+                else:
+                    localizedData = questTextsLocalizedData[id]
+                information = ReadOnlyDict()
+                try:
+                    information['Description'] = parse_description(localizedData['Description'], item)
+                    if localizedData.has_key('DescriptionOnTest'):
+                        information['DescriptionOnTest'] = parse_description(localizedData['DescriptionOnTest'], item)
+                    if localizedData.has_key('DescriptionClosed'):
+                        information['DescriptionClosed'] = parse_description(localizedData['DescriptionClosed'], item)
+                except:
+                    print 'QuestDispatcher (ERROR) bad description', id
+                    raise
+
+                information['Title'] = localizedData['Title']
+                information['Items'] = localizedData['Items']
+                information['NPCs'] = []
+                if localizedData.get('messages'):
+                    information['messages'] = [ m.asWideString for m in localizedData['messages'] ]
+                quest['Information'] = information
+                information.readonly()
+            additional = ReadOnlyDict()
+            additionalNode = item['Additional']
+            additional['IsSubQuest'] = get_int(additionalNode, 'IsSubQuest')
+            additional['ListOfSubQuest'] = get_int_array(additionalNode, 'ListOfSubQuest')
+            additional['ShowProgress'] = get_int(additionalNode, 'ShowProgress')
+            additional['Holder'] = additionalNode['Holder'].asString
+            additional['CantCancel'] = get_int(additionalNode, 'CantCancel')
+            quest['Additional'] = additional
+            if additionalNode.has_key('messages'):
+                additional['messages'] = parse_messages(additionalNode['messages'])
+            if additionalNode.has_key('CantFail'):
+                additional['CantFail'] = bool(additionalNode['CantFail'].asInt)
+            if additionalNode.has_key('DebugData'):
+                additional['DebugData'] = additionalNode['DebugData'].asString
+            if additionalNode.has_key('isEmpty'):
+                additional['isEmpty'] = bool(additionalNode['isEmpty'].asInt)
+            if additionalNode.has_key('isFractionBonus'):
+                additional['isFractionBonus'] = additionalNode['isFractionBonus'].asInt
+            additional.readonly()
+            questRulesNode = item['QuestRules']
+            questRules = ReadOnlyDict()
+            if questRulesNode:
+                if questRulesNode.has_key('MassQuests'):
+                    questRules['MassQuests'] = questRulesNode['MassQuests'].asInt
+                if questRulesNode.has_key('baseToCapturePercent'):
+                    questRules['baseToCapturePercent'] = questRulesNode['baseToCapturePercent'].asFloat
+                if questRulesNode.has_key('Spaces'):
+                    questRules['spaces_mask'] = questRulesNode['Spaces'].asInt64
+                questRules['dontTakeItems'] = questRulesNode.has_key('dontTakeItems')
+                if questRulesNode.has_key('npc'):
+                    questRules['npc'] = {}
+                    questRules['npc']['name'] = '' if not questRulesNode['npc'].has_key('name') else questRulesNode['npc']['name'].asString
+                    questRules['npc']['displayName'] = '' if not questRulesNode['npc'].has_key('displayName') else questRulesNode['npc']['displayName'].asString
+                    questRules['npc']['way'] = '' if not questRulesNode['npc'].has_key('way') else questRulesNode['npc']['way'].asString
+                    questRules['npc']['fractionID'] = 0 if not questRulesNode['npc'].has_key('fraction') else questRulesNode['npc']['fraction'].asInt
+                    questRules['npc']['reputation'] = 0 if not questRulesNode['npc'].has_key('reputation') else questRulesNode['npc']['reputation'].asInt
+                    questRules['npc']['npcActions'] = '' if not questRulesNode['npc'].has_key('animation') else questRulesNode['npc']['animation'].asString
+                    questRules['npc']['invulnerable'] = questRulesNode['npc'].has_key('invulnerable')
+                    questRules['npc']['mobNoAggr'] = questRulesNode['npc'].has_key('mobNoAggr')
+                    questRules['npc']['ignoreWAR'] = 0 if not questRulesNode['npc'].has_key('ignoreWAR') else questRulesNode['npc']['ignoreWAR'].asInt
+                    questRules['npc']['npcWeapon'] = 0 if not questRulesNode['npc'].has_key('weapon') else questRulesNode['npc']['weapon'].asInt
+                    questRules['npc']['npcWeaponPrimary'] = 0 if not questRulesNode['npc'].has_key('npcWeaponPrimary') else questRulesNode['npc']['npcWeaponPrimary'].asInt
+                    questRules['npc']['npcWeaponPrimaryAttachItemIDs'] = get_int_array(questRulesNode['npc'], 'npcWeaponPrimaryAttachItemIDs')
+                    questRules['npc']['npcWeaponPrimary2'] = 0 if not questRulesNode['npc'].has_key('npcWeaponPrimary2') else questRulesNode['npc']['npcWeaponPrimary2'].asInt
+                    questRules['npc']['npcWeaponPrimary2AttachItemIDs'] = get_int_array(questRulesNode['npc'], 'npcWeaponPrimary2AttachItemIDs')
+                    questRules['npc']['npcWeaponSecondary'] = 0 if not questRulesNode['npc'].has_key('npcWeaponSecondary') else questRulesNode['npc']['npcWeaponSecondary'].asInt
+                    questRules['npc']['npcWeaponSecondaryAttachItemIDs'] = get_int_array(questRulesNode['npc'], 'npcWeaponSecondaryAttachItemIDs')
+                    questRules['npc']['NPCEquippedArmor'] = get_int_array(questRulesNode['npc'], 'NPCEquippedArmor')
+                    questRules['npc']['npcSuit'] = 0 if not questRulesNode['npc'].has_key('npcSuit') else questRulesNode['npc']['npcSuit'].asInt
+                    questRules['uniq'] = 0 if not questRulesNode['npc'].has_key('uniq') else questRulesNode['npc']['uniq'].asInt
+                    questRules['npc']['uniq_id'] = str(id)
+                    questRules['npc']['walkSpeed'] = 0 if not questRulesNode['npc'].has_key('walkSpeed') else questRulesNode['npc']['walkSpeed'].asFloat
+                    questRules['npc']['shootRange'] = 0 if not questRulesNode['npc'].has_key('shootRange') else questRulesNode['npc']['shootRange'].asFloat
+                    questRules['npc']['shootRangeOnCreature'] = 0 if not questRulesNode['npc'].has_key('shootRangeOnCreature') else questRulesNode['npc']['shootRangeOnCreature'].asFloat
+                if questRulesNode.has_key('mobs'):
+                    questRules['mobs'] = {}
+                    questRules['mobs']['creatureType'] = 0 if not questRulesNode['mobs'].has_key('mobType') else questRulesNode['mobs']['mobType'].asInt
+                    questRules['mobs']['level'] = '0' if not questRulesNode['mobs'].has_key('level') else questRulesNode['mobs']['level'].asString
+                    questRules['mobs']['count'] = 0 if not questRulesNode['mobs'].has_key('count') else questRulesNode['mobs']['count'].asInt
+                    questRules['mobs']['scenType'] = 0 if not questRulesNode['mobs'].has_key('scenType') else questRulesNode['mobs']['scenType'].asInt
+                    questRules['mobs']['way'] = '' if not questRulesNode['mobs'].has_key('way') else questRulesNode['mobs']['way'].asString
+                    questRules['mobs']['invulnerable'] = 0 if not questRulesNode['mobs'].has_key('invulnerable') else questRulesNode['mobs']['invulnerable'].asInt
+                    questRules['uniq'] = 0 if not questRulesNode['mobs'].has_key('uniq') else questRulesNode['mobs']['uniq'].asInt
+                    questRules['mobs']['uniq_id'] = '' if not questRulesNode['mobs'].has_key('questID') else questRulesNode['mobs']['questID'].asString
+                if questRulesNode.has_key('MapMarks'):
+                    questRules['map_marks'] = []
+                    for item_data in questRulesNode['MapMarks'].values():
+                        data = {'radius': None}
+                        data['pos'] = item_data['coordinates'].asVector3
+                        data['space_name'] = 'spaces/' + item_data['space'].asString
+                        if item_data.has_key('radius'):
+                            data['radius'] = item_data['radius'].asFloat
+                        questRules['map_marks'].append(data)
+                        _markquests_by_space[data['space_name']].add(id)
+
+                if questRulesNode.has_key('dontHideMarks'):
+                    questRules['openontest_mark'] = True
+            questRules['Items'] = get_items_array(questRulesNode, 'Items')
+            questRules['Scenarios'] = get_int_array(questRulesNode, 'Scenarios')
+            teleportTo = ReadOnlyDict()
+            teleportTo['spaceName'] = get_string(questRulesNode, 'TeleportTo')
+            teleportTo['position'] = Math.Vector3(0.0, 0.0, 0.0)
+            teleportTo['spaceID'] = 0
+            questRules['TeleportTo'] = teleportTo
+            quest['QuestRules'] = questRules
+            teleportTo.readonly()
+            questRules.readonly()
+            questConditions = item['Conditions']
+            conditions = ReadOnlyDict()
+            if questConditions is not None:
+                if questConditions.has_key('useWeaponType'):
+                    conditions['useWeaponType'] = get_int(questConditions, 'useWeaponType')
+                if questConditions.has_key('notDieCount'):
+                    conditions['notDieCount'] = get_int(questConditions, 'notDieCount')
+                if questConditions.has_key('pvpWinTeam'):
+                    conditions['pvpWinTeam'] = get_int(questConditions, 'pvpWinTeam')
+                if questConditions.has_key('bePvpWinner'):
+                    conditions['bePvpWinner'] = get_int(questConditions, 'bePvpWinner')
+            quest['Conditions'] = conditions
+            reward = ReadOnlyDict()
+            rewardNode = item['Reward'] if item['Reward'] else {}
+            reward['Expirience'] = get_int(rewardNode, 'Exp')
+            reward['Items'] = get_items_array(rewardNode, 'Items')
+            reward['Credits'] = get_int(rewardNode, 'Credits')
+            reward['Difficulty'] = get_int(rewardNode, 'Difficulty')
+            if rewardNode.has_key('Reputation2'):
+                reward['Reputation2'] = _parseReputation(get_string(rewardNode, 'Reputation2'))
+                for rep_id, rep_value in reward['Reputation2'].iteritems():
+                    if rep_value > 0:
+                        _quests_by_rep_id[rep_id].append(id)
+
+            if rewardNode.has_key('tradingPoints'):
+                reward['tradingPoints'] = _parseReputation(get_string(rewardNode, 'tradingPoints'))
+            if rewardNode.has_key('clanPoints'):
+                reward['clanPoints'] = get_int(rewardNode, 'clanPoints')
+            reward['KarmaPK'] = get_int(rewardNode, 'KarmaPK')
+            reward['Effects'] = getEffectsInf(rewardNode)
+            reward['RewardWindow'] = get_int(rewardNode, 'RewardWindow')
+            reward['blackBoxes'] = [ bb_name.strip() for bb_name in rewardNode['blackBoxes'].asString.split(',') ] if rewardNode.has_key('blackBoxes') else []
+            if rewardNode.has_key('ChangeQuests'):
+                reward['ChangeQuests'] = parse_change_quests(rewardNode['ChangeQuests'])
+                if rewardNode.has_key('randomQuest'):
+                    reward['randomQuest'] = True
+            if rewardNode.has_key('Teleport'):
+                reward['Teleport'] = get_string(rewardNode, 'Teleport')
+            if rewardNode.has_key('dungeonTarget'):
+                reward['dungeonTarget'] = get_string(rewardNode, 'dungeonTarget')
+                reward['dungeonTargetMode'] = get_int(rewardNode, 'dungeonTargetMode')
+            if rewardNode.has_key('GetKnowleges'):
+                reward['knowledge'] = get_int_array(rewardNode, 'GetKnowleges')
+            quest['Reward'] = reward
+            reward.readonly()
+            target = ReadOnlyDict()
+            targetNode = item['Target']
+            target['onFin'] = get_int(targetNode, 'onFin')
+            target['QuestType'] = get_int(targetNode, 'QuestType')
+            target['ObjectType'] = get_int(targetNode, 'ObjectType')
+            target['NumOfObjects'] = get_int(targetNode, 'NumOfObjects')
+            target['ObjectName'] = get_string(targetNode, 'ObjectName')
+            target['IsClan'] = get_int(targetNode, 'IsClan')
+            target['AObjectAttrs'] = get_int_array(targetNode, 'AObjectAttrs')
+            target['Time'] = get_float(targetNode, 'Time')
+            target['ObjectAttr'] = get_int(targetNode, 'ObjectAttr')
+            target['AreaName'] = get_string(targetNode, 'AreaName')
+            if target['AreaName']:
+                target['area_names'] = set(target['AreaName'].split(','))
+            if targetNode.has_key('percent'):
+                target['kill_ratio'] = targetNode['percent'].asFloat
+            if targetNode.has_key('additional'):
+                target['additional'] = targetNode['additional'].asInt
+            if targetNode.has_key('str_param'):
+                target['str_param'] = targetNode['str_param'].asString
+            if targetNode.has_key('str_param2'):
+                target['str_param2'] = targetNode['str_param2'].asString
+            quest['Target'] = target
+            penalty = ReadOnlyDict()
+            penaltyNode = item['Penalty']
+            penalty['Credits'] = get_int(penaltyNode, 'Credits')
+            penalty['Expirience'] = get_int(penaltyNode, 'Exp')
+            penalty['KarmaPK'] = get_int(penaltyNode, 'KarmaPK')
+            if penaltyNode and penaltyNode.has_key('ChangeQuests'):
+                penalty['ChangeQuests'] = parse_change_quests(penaltyNode['ChangeQuests'])
+                if penaltyNode.has_key('randomQuest'):
+                    penalty['randomQuest'] = True
+            if penaltyNode and penaltyNode.has_key('Reputation2'):
+                penalty['Reputation2'] = _parseReputation(get_string(penaltyNode, 'Reputation2'))
+            quest['Penalty'] = penalty
+            if penalty.has_key('GetKnowleges'):
+                penalty['knowledge'] = get_int_array(penaltyNode, 'GetKnowleges')
+            penalty.readonly()
+            precondition = ReadOnlyDict()
+            preconditionNode = item['Precondition']
+            precondition['TakenPeriod'] = get_float(preconditionNode, 'TakenPeriod') * 3600.0
+            precondition['Repeat'] = get_int(preconditionNode, 'Repeat')
+            if preconditionNode:
+                if preconditionNode.has_key('OmniCounter'):
+                    precondition['OmniCounter'] = preconditionNode['OmniCounter'].asInt
+                if preconditionNode.has_key('isGroup'):
+                    precondition['is_for_party'] = get_bool(preconditionNode, 'isGroup')
+            quest['Precondition'] = precondition
+            precondition.readonly()
+            target.readonly()
+            if item.has_key('Priority'):
+                quest['Priority'] = get_int(item, 'Priority')
+            if item.has_key('questLink'):
+                main_id = get_int(item, 'questLink')
+                if main_id not in QuestChapters:
+                    QuestChapters[main_id] = []
+                QuestChapters[main_id].append(id)
+                QuestMains[id] = main_id
+            if item.has_key('questLinkType') and get_int(item, 'questLinkType') == 1:
+                quest['marked_as_chapter'] = True
+            quest.readonly()
+            Quests[id] = quest
+        except Exception as err:
+            print ('ERROR IN Q', id)
+            raise err
+
+    if BigWorld.component == 'base':
+        parse_deprecated_quests(QuestsToRemove.DEPRECATED_QUESTS_REMOVE)
+        parse_deprecated_quests(QuestsToRemove.DEPRECATED_QUESTS_REWARD)
+    return
+
+
+def parse_deprecated_quests(quests_list):
+    """ \xd0\xb2 \xd1\x81\xd0\xbf\xd0\xb8\xd1\x81\xd0\xba\xd0\xb5 \xd1\x83\xd1\x81\xd1\x82\xd0\xb0\xd1\x80\xd0\xb5\xd0\xb2\xd1\x88\xd0\xb8\xd1\x85 \xd0\xba\xd0\xb2\xd0\xb5\xd1\x81\xd1\x82\xd0\xbe\xd0\xb2 \xd0\xbb\xd0\xb5\xd0\xb6\xd0\xb0\xd1\x82 \xd1\x82\xd0\xbe\xd0\xbb\xd1\x8c\xd0\xba\xd0\xbe \xd1\x80\xd0\xbe\xd0\xb4\xd0\xb8\xd1\x82\xd0\xb5\xd0\xbb\xd1\x8c\xd1\x81\xd0\xba\xd0\xb8\xd0\xb5 \xd0\xba\xd0\xb2\xd0\xb5\xd1\x81\xd1\x82\xd1\x8b
+            \xd0\x9d\xd1\x83\xd0\xb6\xd0\xbd\xd0\xbe \xd0\xb8\xd1\x85 \xd0\xb4\xd0\xbe\xd0\xbf\xd0\xbe\xd0\xbb\xd0\xbd\xd0\xb8\xd1\x82\xd1\x8c \xd0\xb5\xd1\x89\xd1\x91 \xd0\xb8 \xd0\xbf\xd0\xbe\xd0\xb4\xd0\xba\xd0\xb2\xd0\xb5\xd1\x81\xd1\x82\xd0\xb0\xd0\xbc\xd0\xb8
+    """
+    child_quests = set()
+    for quest_id in quests_list:
+        if quest_id in Quests:
+            child_quests.update(getQuestOnID(quest_id)['Additional']['ListOfSubQuest'])
+
+    if child_quests:
+        parse_deprecated_quests(child_quests)
+        quests_list.update(child_quests)
+
+
+def parseScenariosInf():
+    resXML = ResMgr.openSection(RES_PATH_SCENARIO)
+    for item in resXML.values():
+        if item['id'] not in Scenarios.keys():
+            scenario = {'id': item['id'].asInt,
+             'type': item['type'].asInt,
+             'winif': [ int(subitem) for subitem in item['winif'].asString.split(',') if subitem != '' ],
+             'mobs': [ {'type': mob['type'].asInt,
+                      'goto': mob['goto'].asInt,
+                      'count': mob['count'].asInt,
+                      'level': mob['level'].asInt,
+                      'update': mob['update'].asInt,
+                      'wayName': mob['wayName'].asString} for mob in item['mobs'].values() ],
+             'npcs': [ {'type': npc['type'].asInt,
+                      'npcName': npc['npcName'].asString,
+                      'wayName': npc['wayName'].asString,
+                      'id': npc['id'].asInt,
+                      'fractionID': npc['fractionID'].asInt} for npc in item['npcs'].values() ],
+             'time': item['time'].asFloat}
+            Scenarios[scenario['id']] = scenario
+
+
+def fillScenarioQuests():
+    for quest in Quests.values():
+        for sID in quest['QuestRules']['Scenarios']:
+            scenario = getScenarioOnID(sID)
+            if scenario:
+                npcs = [ dict(id=e['id'], name=u'') for e in scenario['npcs'] ]
+                quest['Information']['NPCs'] += npcs
+
+
+def get_all_quest_tree(quest_id):
+    ret = []
+    quest = Quests.get(quest_id)
+    if quest:
+        ret.append(quest)
+        for subquest_id in quest['Additional']['ListOfSubQuest']:
+            ret.extend(get_all_quest_tree(subquest_id))
+
+    return ret
+
+
+def getQuestOnID(quest_id):
+    quest = Quests.get(quest_id)
+    if not quest:
+        try:
+            quest = autoquest_parser.generate_quest(quest_id)
+        except:
+            print 'QuestDispatcher (ERROR): autoparser generation', quest_id
+            traceback.print_exc()
+            traceback.print_stack()
+
+        if quest:
+            Quests.readonly(False)
+            Quests[quest_id] = quest
+            Quests.readonly()
+    return quest
+
+
+def getQuests(quests_ids):
+    quests = []
+    for quest_id in quests_ids:
+        quest = getQuestOnID(quest_id)
+        if quest:
+            quests.append(quest)
+
+    return quests
+
+
+def getScenarioOnID(scenario_id):
+    scenario = Scenarios.get(scenario_id)
+    return scenario
+
+
+def get_type(quest):
+    return quest['Target'].get('QuestType', 0)
+
+
+def get_type_by_id(quest_id):
+    return get_type(getQuestOnID(quest_id))
+
+
+def getRootID(quest_id):
+    quest = Quests.get(quest_id)
+    if quest:
+        sub_quest = quest['Additional']['IsSubQuest']
+        if sub_quest:
+            return getRootID(sub_quest)
+        return quest_id
+    return 0
+
+
+def get_quest_mesages(quest_id):
+    quest = Quests.get(quest_id)
+    return quest['Information'].get('messages')
+
+
+def getQuestTitle(quest):
+    """ \xd0\xb2\xd0\xbe\xd0\xb7\xd0\xb2\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xb7\xd0\xb0\xd0\xb3\xd0\xbe\xd0\xbb\xd0\xbe\xd0\xb2\xd0\xbe\xd0\xba \xd0\xba\xd0\xb2\xd0\xb5\xd1\x81\xd1\x82\xd0\xb0 \xd0\xbb\xd0\xb8\xd0\xb1\xd0\xbe, \xd0\xb5\xd1\x81\xd0\xbb\xd0\xb8 \xd0\xbf\xd0\xbe\xd0\xb4\xd0\xba\xd0\xb2\xd0\xb5\xd1\x81\xd1\x82, \xd1\x82\xd0\xbe
+            \xd0\xb7\xd0\xb0\xd0\xb3\xd0\xbe\xd0\xbb\xd0\xbe\xd0\xb2\xd0\xbe\xd0\xba \xd1\x80\xd0\xbe\xd0\xb4\xd0\xb8\xd1\x82\xd0\xb5\xd0\xbb\xd1\x8c\xd1\x81\xd0\xba\xd0\xbe\xd0\xb3\xd0\xbe \xd0\xba\xd0\xb2\xd0\xb5\xd1\x81\xd1\x82\xd0\xb0 (\xd1\x81 F2 \xd0\xb2\xd0\xb5\xd1\x80\xd0\xbd\xd1\x91\xd1\x82 \xd0\xbe\xd1\x82\xd0\xbb\xd0\xb0\xd0\xb4\xd0\xbe\xd1\x87\xd0\xbd\xd1\x83\xd1\x8e \xd0\xb8\xd0\xbd\xd1\x84\xd0\xbe\xd1\x80\xd0\xbc\xd0\xb0\xd1\x86\xd0\xb8\xd1\x8e)
+    """
+    parent_quest = quest['Additional']['IsSubQuest']
+    if parent_quest:
+        return getQuestTitleByID(parent_quest)
+    if BigWorld.component != 'client':
+        if not quest['Information']['Title']:
+            return u''
+        return (not BigWorld.isKeyDown(BigWorld.stringToKey('F2')) or not BigWorld.player().isAdminAccess()) and (quest['Information']['Title'] or u'')
+    return u'{0} [ID {1}]'.format(quest['Information']['Title'], quest['QuestID'])
+
+
+def getQuestTitleByID(quest_id):
+    """ \xd0\xb2\xd0\xbe\xd0\xb7\xd0\xb2\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xb7\xd0\xb0\xd0\xb3\xd0\xbe\xd0\xbb\xd0\xbe\xd0\xb2\xd0\xbe\xd0\xba \xd0\xba\xd0\xb2\xd0\xb5\xd1\x81\xd1\x82\xd0\xb0 \xd0\xbb\xd0\xb8\xd0\xb1\xd0\xbe, \xd0\xb5\xd1\x81\xd0\xbb\xd0\xb8 \xd0\xbf\xd0\xbe\xd0\xb4\xd0\xba\xd0\xb2\xd0\xb5\xd1\x81\xd1\x82, \xd1\x82\xd0\xbe
+            \xd0\xb7\xd0\xb0\xd0\xb3\xd0\xbe\xd0\xbb\xd0\xbe\xd0\xb2\xd0\xbe\xd0\xba \xd1\x80\xd0\xbe\xd0\xb4\xd0\xb8\xd1\x82\xd0\xb5\xd0\xbb\xd1\x8c\xd1\x81\xd0\xba\xd0\xbe\xd0\xb3\xd0\xbe \xd0\xba\xd0\xb2\xd0\xb5\xd1\x81\xd1\x82\xd0\xb0 (\xd1\x81 F2 \xd0\xb2\xd0\xb5\xd1\x80\xd0\xbd\xd1\x91\xd1\x82 \xd0\xbe\xd1\x82\xd0\xbb\xd0\xb0\xd0\xb4\xd0\xbe\xd1\x87\xd0\xbd\xd1\x83\xd1\x8e \xd0\xb8\xd0\xbd\xd1\x84\xd0\xbe\xd1\x80\xd0\xbc\xd0\xb0\xd1\x86\xd0\xb8\xd1\x8e)
+    """
+    quest = getQuestOnID(quest_id)
+    return getQuestTitle(quest)
+
+
+def get_description_by_id(quest_id, state = None):
+    if state == Quest.STATE_ONTEST:
+        info_key = 'DescriptionOnTest'
+    elif state == Quest.STATE_CLOSED:
+        info_key = 'DescriptionClosed'
+    else:
+        info_key = 'Description'
+    quest = getQuestOnID(quest_id)
+    if not quest['Information'].get(info_key):
+        description = quest['Information']['Description']
+        return (not BigWorld.isKeyDown(BigWorld.stringToKey('F2')) or not BigWorld.player().isAdminAccess()) and description
+    return u'{0} [ID {1}]'.format(description, quest['QuestID'])
+
+
+def getQuestTreeIDs(quest_id):
+    tree = []
+    quest = Quests.get(quest_id)
+    if quest:
+        tree.append(quest_id)
+        for subquest_id in quest['Additional']['ListOfSubQuest']:
+            tree += getQuestTreeIDs(subquest_id)
+
+    return tree
+
+
+def get_parent_by_id(quest_id):
+    """ \xd0\xb2\xd0\xb5\xd1\x80\xd0\xbd\xd1\x91\xd1\x82 \xd1\x81\xd0\xb0\xd0\xbc\xd1\x8b\xd0\xb9 \xd0\xb2\xd0\xb5\xd1\x80\xd1\x85\xd0\xbd\xd0\xb8\xd0\xb9 \xd1\x83\xd1\x80\xd0\xbe\xd0\xb2\xd0\xb5\xd0\xbd\xd1\x8c (root \xd1\x80\xd0\xbe\xd0\xb4\xd0\xb8\xd1\x82\xd0\xb5\xd0\xbb\xd1\x8c) \xd0\xb8\xd0\xbb\xd0\xb8 \xd1\x81\xd0\xb0\xd0\xbc\xd0\xbe\xd0\xb3\xd0\xbe \xd1\x81\xd0\xb5\xd0\xb1\xd1\x8f """
+    quest = getQuestOnID(quest_id)
+    if not quest:
+        print "QuestDispatcher (ERROR): can't qet parent from quest", quest_id
+        traceback.print_stack()
+        return quest_id
+    else:
+        parent_quest_id = quest['Additional']['IsSubQuest']
+        if parent_quest_id:
+            return get_parent_by_id(parent_quest_id)
+        return quest_id
+
+
+def get_direct_parent_by_id(quest_id):
+    """ \xd0\xb2\xd0\xb5\xd1\x80\xd0\xbd\xd1\x91\xd1\x82 \xd0\xbd\xd0\xb5\xd0\xbf\xd0\xbe\xd1\x81\xd1\x80\xd0\xb5\xd0\xb4\xd1\x81\xd1\x82\xd0\xb2\xd0\xb5\xd0\xbd\xd0\xbd\xd0\xbe\xd0\xb3\xd0\xbe \xd1\x80\xd0\xbe\xd0\xb4\xd0\xb8\xd1\x82\xd0\xb5\xd0\xbb\xd1\x8f """
+    quest = getQuestOnID(quest_id)
+    return quest['Additional']['IsSubQuest']
+
+
+def get_siblings_by_id(quest_id):
+    quest = getQuestOnID(quest_id)
+    parent_quest_id = quest['Additional']['IsSubQuest']
+    if parent_quest_id:
+        siblings = list(getQuestOnID(parent_quest_id)['Additional']['ListOfSubQuest'])
+        siblings.remove(quest['QuestID'])
+        return siblings
+    else:
+        return []
+
+
+def getScenario(scenario_id):
+    scenario = Scenarios.get(scenario_id)
+    return scenario
+
+
+def is_subquest(quest_id):
+    quest = getQuestOnID(quest_id)
+    if not quest:
+        print 'QuestDispatcher (ERROR) bad quest id:', repr(quest_id)
+        raise RuntimeError
+    return quest['Additional']['IsSubQuest']
+
+
+def get_subquests(quest_id):
+    quest = getQuestOnID(quest_id)
+    return quest['Additional']['ListOfSubQuest']
+
+
+def show_progress(quest_id):
+    quest = getQuestOnID(quest_id)
+    return quest['Additional']['ShowProgress']
+
+
+def show_in_journal(quest_id):
+    quest = getQuestOnID(quest_id)
+    return quest['Additional']['ShowProgress'] & Quest.SHOW_JOURNAL
+
+
+def show_rel_available(quest_id):
+    if not is_quest_repeatable(quest_id):
+        return True
+    quest = getQuestOnID(quest_id)
+    if quest['Additional']['ShowProgress'] & Quest.NOT_SHOW_AVAILABILITY:
+        return False
+    return True
+
+
+def get_base_share(quest):
+    """ \xd0\xb4\xd0\xbe\xd0\xbb\xd1\x8f, \xd0\xba\xd0\xbe\xd1\x82\xd0\xbe\xd1\x80\xd1\x83\xd1\x8e \xd0\xbd\xd1\x83\xd0\xb6\xd0\xbd\xd0\xbe \xd0\xbf\xd0\xb5\xd1\x80\xd0\xb5\xd0\xb4\xd0\xb0\xd1\x82\xd1\x8c \xd1\x85\xd0\xbe\xd0\xb7\xd1\x8f\xd0\xb8\xd0\xbd\xd1\x83 \xd0\xba\xd0\xb2\xd0\xb5\xd1\x81\xd1\x82\xd0\xb0 """
+    return quest['QuestRules'].get('baseToCapturePercent')
+
+
+def get_mass_quest(quest):
+    """ \xd0\xb8\xd0\xb4\xd0\xb5\xd0\xbd\xd1\x82\xd0\xb8\xd1\x84\xd0\xb8\xd0\xba\xd0\xb0\xd1\x82\xd0\xbe\xd1\x80 \xd0\xbc\xd0\xb0\xd1\x81\xd1\x81\xd0\xbe\xd0\xb2\xd0\xbe\xd0\xb3\xd0\xbe \xd0\xba\xd0\xb2\xd0\xb5\xd1\x81\xd1\x82\xd0\xb0 """
+    return quest['QuestRules'].get('MassQuests')
+
+
+def has_quest(quest_id):
+    """ \xd0\xbf\xd1\x80\xd0\xbe\xd0\xb2\xd0\xb5\xd1\x80\xd0\xba\xd0\xb0 \xd1\x81\xd1\x83\xd1\x89\xd0\xb5\xd1\x81\xd1\x82\xd0\xb2\xd0\xbe\xd0\xb2\xd0\xb0\xd0\xbd\xd0\xb8\xd1\x8f \xd0\xba\xd0\xb2\xd0\xb5\xd1\x81\xd1\x82\xd0\xb0 """
+    return quest_id in Quests or autoquest_parser.is_auto(quest_id)
+
+
+def is_empty(quest):
+    return quest['Additional'].get('isEmpty', False)
+
+
+def has_omnicounter(quest):
+    return quest['Precondition'].get('OmniCounter')
+
+
+def get_debug_data(quest_id):
+    """ \xd0\xb4\xd0\xb0\xd0\xbd\xd0\xbd\xd1\x8b\xd0\xb5 \xd0\xb4\xd0\xbb\xd1\x8f \xd0\xbe\xd1\x82\xd0\xbb\xd0\xb0\xd0\xb4\xd0\xba\xd0\xb8 """
+    quest = Quests.get(quest_id)
+    return quest['Additional'].get('DebugData')
+
+
+def is_repeatable(quest):
+    return quest['Precondition'].get('Repeat')
+
+
+def is_repeatable_by_id(quest_id):
+    quest = getQuestOnID(quest_id)
+    return is_repeatable(quest)
+
+
+def get_taken_period_by_id(quest_id):
+    """ \xd0\xb2\xd0\xbe\xd0\xb7\xd0\xb2\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xb2 \xd1\x81\xd0\xb5\xd0\xba\xd1\x83\xd0\xbd\xd0\xb4\xd0\xb0\xd1\x85 """
+    quest = getQuestOnID(quest_id)
+    return get_taken_period(quest)
+
+
+def get_taken_period(quest):
+    """ \xd0\xb2\xd0\xbe\xd0\xb7\xd0\xb2\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xb2 \xd1\x81\xd0\xb5\xd0\xba\xd1\x83\xd0\xbd\xd0\xb4\xd0\xb0\xd1\x85 """
+    return quest['Precondition'].get('TakenPeriod')
+
+
+def get_needed_items_by_id(quest_id):
+    quest = getQuestOnID(quest_id)
+    return get_needed_items(quest)
+
+
+def get_needed_items(quest):
+    item_type = quest['Target']['ObjectType']
+    item_count = quest['Target']['NumOfObjects']
+    return (item_type, item_count)
+
+
+def cancel_fail_mode(quest):
+    return not quest['Additional'].get('CantFail', False)
+
+
+def show_reward_window(quest):
+    return bool(quest['Reward'].get('RewardWindow'))
+
+
+def get_kill_ratio(quest):
+    """ \xd0\xba\xd0\xbe\xd0\xbb\xd0\xb8\xd1\x87\xd0\xb5\xd1\x81\xd1\x82\xd0\xb2\xd0\xbe \xd1\x83\xd1\x80\xd0\xbe\xd0\xbd\xd0\xb0 \xd0\xbc\xd0\xbe\xd0\xb1\xd1\x83 \xd0\xb4\xd0\xbb\xd1\x8f \xd0\xb7\xd0\xb0\xd1\x87\xd1\x91\xd1\x82\xd0\xb0 \xd1\x83\xd0\xb1\xd0\xb8\xd0\xb9\xd1\x81\xd1\x82\xd0\xb2\xd0\xb0
+            None - \xd0\xb7\xd0\xb0\xd1\x87\xd1\x91\xd1\x82 \xd1\x82\xd0\xbe\xd0\xbb\xd1\x8c\xd0\xba\xd0\xbe \xd0\xb4\xd0\xbe\xd0\xb1\xd0\xb8\xd0\xb2\xd1\x88\xd0\xb5\xd0\xbc\xd1\x83
+    """
+    return quest['Target'].get('kill_ratio', None)
+
+
+def does_farm_need_items(quest):
+    """ \xd0\xb4\xd0\xbe\xd0\xbb\xd0\xb6\xd0\xb5\xd0\xbd \xd0\xbb\xd0\xb8 \xd1\x84\xd0\xb0\xd1\x80\xd0\xbc\xd0\xba\xd0\xb2\xd0\xb5\xd1\x81\xd1\x82 \xd0\xb7\xd0\xb0\xd0\xb1\xd1\x80\xd0\xb0\xd1\x82\xd1\x8c \xd0\xbf\xd1\x80\xd0\xb5\xd0\xb4\xd0\xbc\xd0\xb5\xd1\x82\xd1\x8b """
+    return not quest['Target'].get('additional', False)
+
+
+def get_quests():
+    """" \xd1\x82\xd0\xbe\xd0\xbb\xd1\x8c\xd0\xba\xd0\xbe \xd0\xb4\xd0\xbb\xd1\x8f \xd0\xbe\xd1\x82\xd0\xbb\xd0\xb0\xd0\xb4\xd0\xba\xd0\xb8 """
+    return Quests
+
+
+def get_penalty(quest):
+    return quest['Penalty']
+
+
+def get_mob_kill_type(quest):
+    return quest['Target'].get('ObjectType', Quest.KILLQUEST_TYPE_ANY)
+
+
+def get_capture_status(quest):
+    return quest['Target'].get('additional', Quest.CAPTURE_ANY)
+
+
+def check_ally_type(quest_id, ally_type):
+    quest = getQuestOnID(quest_id)
+    str_param = quest['Target'].get('str_param')
+    if not (str_param and int(str_param)):
+        value = 0
+        quest_need_ally = bool(value & 1)
+        quest_need_war = bool(value & 2)
+        if quest_need_ally and quest_need_war:
+            return ally_type in (AllyStatus.Undefined, AllyStatus.NoClan) and False
+    elif quest_need_ally:
+        if ally_type not in (AllyStatus.CoClan, AllyStatus.Ally):
+            return False
+    elif quest_need_war:
+        if ally_type != AllyStatus.DiffClan:
+            return False
+    return True
+
+
+def get_time(quest_id):
+    return getQuestOnID(quest_id)['Target']['Time']
+
+
+def get_change_quest_reward(quest_id):
+    """ \xd1\x81\xd0\xbf\xd0\xb8\xd1\x81\xd0\xbe\xd0\xba \xd0\xbd\xd0\xb0\xd0\xb3\xd1\x80\xd0\xb0\xd0\xb4\xd0\xb8\xd1\x82\xd0\xb5\xd0\xbb\xd1\x8c\xd0\xbd\xd1\x8b\xd1\x85 \xd0\xba\xd0\xb2\xd0\xb5\xd1\x81\xd1\x82\xd0\xbe\xd0\xb2
+    """
+    reward = getQuestOnID(quest_id)['Reward']
+    if 'ChangeQuests' not in reward:
+        return []
+    if reward.get('randomQuest', False):
+        return [random.choice(reward['ChangeQuests'])]
+    return reward['ChangeQuests']
+
+
+def get_change_quest_penalty(quest_id):
+    """ \xd1\x81\xd0\xbf\xd0\xb8\xd1\x81\xd0\xbe\xd0\xba \xd1\x88\xd1\x82\xd1\x80\xd0\xb0\xd1\x84\xd0\xbd\xd1\x8b\xd1\x85 \xd0\xba\xd0\xb2\xd0\xb5\xd1\x81\xd1\x82\xd0\xbe\xd0\xb2 """
+    penalty = getQuestOnID(quest_id)['Penalty']
+    if 'ChangeQuests' not in penalty:
+        return []
+    if penalty.get('randomQuest', False):
+        return [random.choice(penalty['ChangeQuests'])]
+    return penalty['ChangeQuests']
+
+
+def get_tradpoints_reward(quest_id):
+    return getQuestOnID(quest_id)['Reward'].get('tradingPoints', {})
+
+
+def get_clanpoints_reward(quest_id):
+    return getQuestOnID(quest_id)['Reward'].get('clanPoints', 0)
+
+
+def get_reputation2_reward(quest_id):
+    return getQuestOnID(quest_id)['Reward'].get('Reputation2', {})
+
+
+def get_reputation2_penalty(quest_id):
+    return getQuestOnID(quest_id)['Penalty'].get('Reputation2', {})
+
+
+def get_reputation_data(quest_id):
+    quest = getQuestOnID(quest_id)
+    if get_type(quest) in [Quest.TYPE_REPUTATION, Quest.TYPE_REPUTATION_AUTO]:
+        obj_name = quest['Target']['ObjectName']
+        value = quest['Target']['NumOfObjects']
+        return (obj_name, value)
+
+
+def get_dungeon_event_data(quest_id):
+    quest = getQuestOnID(quest_id)
+    if get_type(quest) in [Quest.TYPE_DUNGEON_EVENT]:
+        dungeon_id = quest['Target']['ObjectType']
+        event_id = quest['Target']['ObjectAttr']
+        return (dungeon_id, event_id)
+    return (0, 0)
+
+
+def check_quest_reputation(quest_id, value):
+    quest = getQuestOnID(quest_id)
+    auto = bool(quest['Target']['ObjectAttr'])
+    if not auto:
+        return value >= quest['Target']['NumOfObjects']
+    else:
+        return value <= quest['Target']['NumOfObjects']
+
+
+def is_board_quest(quest_id):
+    """ \xd1\x82\xd0\xbe\xd0\xbb\xd1\x8c\xd0\xba\xd0\xbe \xd0\xb4\xd0\xbb\xd1\x8f Base """
+    return quest_id in BoardQuestsSet
+
+
+def getQItemInfo(questID, item_type):
+    quest = getQuestOnID(questID)
+    if not quest:
+        return None
+    elif not quest['Information']['Items']:
+        return None
+    else:
+        return next((i for i in quest['Information']['Items'] if i['itemID'] == item_type), None)
+
+
+def check_area_visit_name(quest_id, area_name):
+    target = getQuestOnID(quest_id)['Target']
+    if 'area_names' not in target:
+        return False
+    return area_name in target['area_names']
+
+
+def check_any_area_visit_name(quest_id, check_provider):
+    target = getQuestOnID(quest_id)['Target']
+    if 'area_names' not in target:
+        return True
+    for area_name in target['area_names']:
+        if check_provider(area_name):
+            return True
+
+    return False
+
+
+def get_visible_objects_data(quest_id):
+    try:
+        quest = getQuestOnID(quest_id)
+        object_type = CellListenerUtils.objectname_to_objecttype(quest['Target']['ObjectName'])
+        if object_type == VOT.QuestEntity:
+            model_name = quest['Target']['str_param']
+            object_hash = CellListenerUtils.calc_visibleobject_hash(object_type, model_name)
+            return (object_type, object_hash)
+        if object_type == VOT.Creature:
+            mob_type, mob_subtype = quest['Target']['ObjectType'], quest['Target']['str_param']
+            object_hash = CellListenerUtils.calc_visibleobject_hash(object_type, mob_type, mob_subtype)
+            return (object_type, object_hash)
+        if object_type == VOT.TimeEntity:
+            config_name, model_name = quest['Target']['AreaName'], quest['Target']['str_param']
+            object_hash = CellListenerUtils.calc_visibleobject_hash(object_type, config_name, model_name)
+            return (object_type, object_hash)
+        raise RuntimeError
+    except Exception as err:
+        print ('ERROR FOR Q:', repr(quest_id))
+        raise err
+
+
+def get_dung_data(quest_id):
+    quest = getQuestOnID(quest_id)
+    dung_id = quest['Target']['ObjectType']
+    count = quest['Target']['NumOfObjects']
+    return (dung_id, count)
+
+
+def get_effect_data(quest_id):
+    quest = getQuestOnID(quest_id)
+    effect_id = quest['Target']['ObjectType']
+    eff_stack = quest['Target']['NumOfObjects']
+    return (effect_id, eff_stack)
+
+
+def get_holder(quest_id):
+    quest = getQuestOnID(quest_id)
+    return quest['Additional'].get('Holder')
+
+
+def is_for_party(quest_id):
+    quest = getQuestOnID(quest_id)
+    return quest['Precondition'].get('is_for_party', False)
+
+
+def check_killmobs_quest(quest_id, mob_type, mob_unique_id, mob_subtype):
+    quest = getQuestOnID(quest_id)
+    quest_type = get_type(quest)
+    if quest_type not in [Quest.TYPE_KILLMOBS, Quest.TYPE_KILLMOBS_WITH_ONTEST]:
+        return False
+    target = getQuestOnID(quest_id)['Target']
+    if target['ObjectType'] != mob_type:
+        return False
+    needed_mob_unique_id = target.get('str_param2')
+    if needed_mob_unique_id and needed_mob_unique_id != mob_unique_id:
+        return False
+    if target.has_key('str_param') and target['str_param'] and target['str_param'] != mob_subtype:
+        return False
+    return True
+
+
+counter_data_cache = {}
+
+def get_quest_counter_data(quest_id):
+    quest = getQuestOnID(quest_id)
+    quest_type = get_type(quest)
+    if quest_type != Quest.TYPE_QUEST_COUNTER:
+        return None
+    else:
+        if quest_id not in counter_data_cache:
+            quest_to_count_ids = map(int, quest['Target']['ObjectName'].split(','))
+            count_amount = quest['Target']['NumOfObjects']
+            counter_data_cache[quest_id] = (quest_to_count_ids, count_amount)
+        return counter_data_cache[quest_id]
+
+
+def check_use_item_quest(quest_id, item_quest_id, item_type):
+    quest = getQuestOnID(quest_id)
+    if get_type(quest) != Quest.TYPE_QITEM_USE:
+        return False
+    if quest['Target']['ObjectType'] != item_type:
+        return False
+    if item_quest_id not in quest['Target']['AObjectAttrs']:
+        return False
+    return True
+
+
+def get_sort_order(quest_id):
+    quest = getQuestOnID(quest_id)
+    return Quest.priority_to_sort_order.get(quest.get('Priority'), 10)
+
+
+def get_priority(quest_id):
+    quest = getQuestOnID(quest_id)
+    if quest is None:
+        print 'ERROR FOR:   quest_id=', quest_id
+    return quest.get('Priority', 0)
+
+
+def is_quest_plot(quest_id):
+    return get_priority(quest_id) == 5
+
+
+def is_quest_repeatable(quest_id):
+    return get_priority(quest_id) == 3
+
+
+def get_artefact_from_rules(quest_id):
+    quest = getQuestOnID(quest_id)
+    return quest['QuestRules']['Items'][0]['itemType']
+
+
+def get_quest_craft_data(quest_id):
+    quest = getQuestOnID(quest_id)
+    raise get_type(quest) == Quest.TYPE_CRAFT_ITEM or AssertionError
+    recipe_id = quest['Target']['ObjectType']
+    amount = quest['Target']['NumOfObjects']
+    return (recipe_id, amount)
+
+
+def get_teleport_reward(quest_id):
+    reward = getQuestOnID(quest_id)['Reward']
+    return reward.get('Teleport')
+
+
+def get_dungeon_target(quest_id):
+    reward = getQuestOnID(quest_id)['Reward']
+    return (reward.get('dungeonTarget'), reward.get('dungeonTargetMode', 0))
+
+
+def get_autoquest_replica(quest_id):
+    quest = getQuestOnID(quest_id)
+    if quest['Target']['QuestType'] == Quest.TYPE_KILLMOBS_WITH_ONTEST:
+        mob_type, subtype_name = quest['Target']['ObjectType'], quest['Target']['str_param']
+        mob_level = Cfg.get_subtype_index(mob_type, subtype_name)
+        mob_name = Cfg.get_mob_name(mob_type, mob_level)
+        return lc('Quests.AutoQuest.KillReplica').format(mob_name, quest['Target']['NumOfObjects'])
+    if quest['Target']['QuestType'] == Quest.TYPE_FARM:
+        item_name = ItemsUtils.GetItemName(quest['Target']['ObjectType'])
+        return lc('Quests.AutoQuest.FarmReplica').format(item_name, quest['Target']['NumOfObjects'])
+    raise NotImplementedError()
+
+
+def get_penalty_string(quest_id, groups_data = None):
+
+    def get_rep_string(rep):
+        result = lc('Quests.CancelQuest.Reputation')
+        for fraction_id, value in rep.items():
+            fraction_name = lc(Fractions.FractionNames[fraction_id])
+            result += u' {0} {repa},'.format(fraction_name, repa=-value)
+
+        return result[:-1]
+
+    def get_penalty_string(rep):
+        result = u''
+        for group_id, value in rep.items():
+            if rep_utils.is_group_hidden(group_id):
+                continue
+            if not groups_data.get(group_id):
+                continue
+            group_name = rep_utils.get_name(group_id)
+            result += u' {0} {repa}\n'.format(group_name, repa=-value)
+
+        if result:
+            result = (lc('Quests.CancelQuest.Reputation') + result)[:-1]
+        return result
+
+    penalty = getQuestOnID(quest_id)['Penalty']
+    result = u''
+    if penalty['Credits']:
+        result += u'{0} {1}\n'.format(lc('Quests.CancelQuest.Money'), -penalty['Credits'])
+    if penalty['Expirience']:
+        result += u'{0} {1}\n'.format(lc('Quests.CancelQuest.Expirience'), -penalty['Expirience'])
+    if penalty['KarmaPK']:
+        result += u'{0} {karmas:+}\n'.format(lc('Quests.CancelQuest.Karma'), karmas=-penalty['KarmaPK'])
+    if penalty.get('Reputation2'):
+        result += get_penalty_string(penalty['Reputation2'])
+    return result
+
+
+def get_autoquests_localizeddata(npc_name, quest_type, target_index):
+    return autoquests_localizeddata.get((npc_name, quest_type, target_index), u'no local data {0} {1} {2}'.format(npc_name, quest_type, target_index))
+
+
+def get_chapters(quest_id):
+    return QuestChapters.get(quest_id, [])
+
+
+def get_main(quest_id):
+    return QuestMains.get(quest_id)
+
+
+def get_quests_by_rep_id(rep_id):
+    return _quests_by_rep_id.get(rep_id, [])
+
+
+def get_markquests_by_spacename(space_name):
+    return _markquests_by_space.get(space_name, [])
+
+
+def get_marks(quest_id):
+    quest = getQuestOnID(quest_id)
+    return quest['QuestRules'].get('map_marks', [])
+
+
+def is_openontest_mark(quest_id):
+    quest = getQuestOnID(quest_id)
+    return quest['QuestRules'].get('openontest_mark', False)
+
+
+def notify_messages(quest_id, state_from, state_to):
+    quest = getQuestOnID(quest_id)
+    messages = quest['Additional'].get('messages')
+    if not messages:
+        return None
+    else:
+        result = []
+        for message_data in messages:
+            if message_data['from'] not in (Quest.STATE_ANY, state_from):
+                continue
+            if message_data['to'] not in (Quest.STATE_ANY, state_to):
+                continue
+            result.append(message_data)
+
+        return result
+
+
+def is_autotracked_quest(quest_id):
+    if is_subquest(quest_id):
+        return False
+    if not show_in_journal(quest_id):
+        return False
+    priority = get_priority(quest_id)
+    if priority not in (1, 2, 5):
+        return False
+    if is_marked_as_chapter(quest_id):
+        return False
+    return True
+
+
+def get_fraction_bonus(quest_id):
+    quest = getQuestOnID(quest_id)
+    return quest['Additional'].get('isFractionBonus')
+
+
+def is_marked_as_chapter(quest_id):
+    return getQuestOnID(quest_id).get('marked_as_chapter', False)
+
+
+_priority_to_color = {0: (99,
+     72,
+     170,
+     255),
+ 1: (163,
+     224,
+     212,
+     255),
+ 2: (105,
+     67,
+     67,
+     255),
+ 3: (92,
+     129,
+     146,
+     255),
+ 4: (220,
+     229,
+     79,
+     255),
+ 5: (224,
+     135,
+     29,
+     255),
+ 6: (255,
+     110,
+     0,
+     255),
+ 7: (160,
+     103,
+     168,
+     255)}
+
+def get_priority_color(q_id):
+    priority = get_priority(q_id)
+    return _priority_to_color.get(priority) or _priority_to_color[7]
+
+
+parseAll()
+if BigWorld.component == 'base':
+    from Config import Creatures
+
+    def _validateAll():
+        result = True
+        for quest_id, quest in Quests.items():
+            if get_type(quest) in (Quest.TYPE_KILLMOBS, Quest.TYPE_KILLMOBS_WITH_ONTEST):
+                sub_type = quest['Target'].get('str_param', 0)
+                if sub_type:
+                    mob_type = quest['Target']['ObjectType']
+                    if not Creatures.has_subtype(mob_type, sub_type):
+                        result = False
+                        print '  QuestDispatcher (CRITICAL ERROR): bad mob in quest {0}, mob_type {1}, mob_subtype {2}'.format(quest_id, mob_type, sub_type)
+
+        return result
+
+
+    if not _validateAll():
+        raise RuntimeError

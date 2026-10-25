@@ -1,0 +1,174 @@
+# Embedded file name: ./client/FX/Effects/Buffered.py
+import BigWorld
+import traceback
+from OneShot import OneShot
+from Queue import Queue
+from functools import partial
+from bwdebug import DEBUG_MSG, ERROR_MSG, WARNING_MSG
+import ResourceLoader
+from collections import defaultdict
+DEBUG_PRINT_EMPTY_QUEUE = False
+if not hasattr(BigWorld, '_effectBuffer'):
+    BigWorld._effectBuffer = {}
+    BigWorld._profile_sfx_end = defaultdict(int)
+    BigWorld._profile_sfx_start = defaultdict(int)
+    BigWorld._profile_sfx_time = defaultdict(float)
+DEBUG_PRINT_STACK = False
+
+class SFXQueue(Queue):
+    is_loading = True
+
+
+def cleanupBufferedEffects():
+    """This method cleans up all effects buffers, and should be called to
+    free the effects system in a controlled manner."""
+    BigWorld._effectBuffer = {}
+
+
+class _BufferedOneShot(OneShot):
+    """This class is a buffered version of OneShot.  It is private
+    (don't create one of these yourself!)"""
+
+    def __init__(self, fileName, maxDuration, queue, prereqs = None):
+        OneShot.__init__(self, fileName, maxDuration, prereqs)
+        self.queue = queue
+        self.__go_time = 0
+
+    def go(self, *w, **kw):
+        BigWorld._profile_sfx_start[self.fileName] += 1
+        self.__go_time = BigWorld.time()
+        OneShot.go(self, *w, **kw)
+
+    def stop(self, source, target, callbackFn):
+        OneShot.stop(self, source, target, callbackFn)
+        self.queue.put(self)
+        work_time = BigWorld.time() - self.__go_time
+        BigWorld._profile_sfx_end[self.fileName] += 1
+        BigWorld._profile_sfx_time[self.fileName] += work_time
+
+
+def _onAsyncLoadBufferedEffect(fileName, maxDuration, resourceRefs):
+    queue = BigWorld._effectBuffer[fileName]
+    queue.is_loading = False
+    queue.put(_BufferedOneShot(fileName, maxDuration, queue, resourceRefs))
+
+
+def _preloadBufferedOneShotEffect(fileName, maxDuration = 10.0, prereqs = None, start_sfx_callback = None):
+    """This method preloads the whole effect buffer given by fileName.
+    If no prerequisites are passed in, then the entire buffer is synchronously
+    created.  This may create a pause in the rendering thread.
+    If prerequisites are provided, it immediately queues up one effect, and
+    then asnychronously loads the rest.
+    """
+    if prereqs is None:
+        prepare_buffer(fileName, maxDuration, start_sfx_callback)
+        return False
+    else:
+        pSection = prereqs[fileName]
+        if not pSection:
+            ERROR_MSG('not pSection file', repr(fileName))
+            traceback.print_stack()
+            print '\n\n'
+            return False
+        queue = BigWorld._effectBuffer[fileName] = SFXQueue()
+        bufferSize = pSection.readInt('bufferSize', 5)
+        if bufferSize > 100:
+            WARNING_MSG('big bufferSize %s set 100' % bufferSize, fileName)
+            bufferSize = 100
+        queue.bufferSize = bufferSize
+        resourceIDs = tuple(prereqs.keys())
+        queue.put(_BufferedOneShot(fileName, maxDuration, queue, prereqs))
+        for i in xrange(bufferSize - 1):
+            BigWorld.loadResourceListBG(resourceIDs, partial(_onAsyncLoadBufferedEffect, fileName, maxDuration))
+
+        return True
+
+
+def prepare_buffer(file_name, max_duration = 10.0, start_sfx_callback = None):
+    if not file_name:
+        return
+    if file_name in BigWorld._effectBuffer:
+        return
+
+    def on_load_ref(prereqs):
+        try:
+            t = prereqs.produce(0)
+            ds = t[0] if type(t) == tuple else t
+            buffer_size = ds.readInt('bufferSize', 15)
+            if buffer_size > 100:
+                WARNING_MSG('big bufferSize %s set 100' % buffer_size, file_name)
+                buffer_size = 100
+            queue = BigWorld._effectBuffer[file_name]
+            queue.is_loading = False
+            queue.bufferSize = buffer_size
+            for i in xrange(buffer_size):
+                queue.put(_BufferedOneShot(file_name, max_duration, queue, prereqs=prereqs))
+
+        except:
+            print 'ERROR IN', repr(file_name)
+            raise
+
+        if start_sfx_callback is not None:
+            start_sfx_callback(queue.get())
+        return
+
+    BigWorld._effectBuffer[file_name] = SFXQueue()
+    ResourceLoader.asyncLoad([(ResourceLoader.SFX, file_name)], on_load_ref)
+
+
+def getBufferedOneShotEffect(fileName, maxDuration = 10.0, prereqs = None, start_sfx_callback = None):
+    """This method returns an instance of a buffered effect.  You should call
+    this if you need access to a buffered effect, but do not want the effect
+    to play immediately."""
+    if not fileName:
+        ERROR_MSG('getBufferedOneShotEffect for empty fileName')
+        traceback.print_stack()
+        print
+        return False
+    else:
+        if not BigWorld._effectBuffer.has_key(fileName):
+            if not _preloadBufferedOneShotEffect(fileName, maxDuration, prereqs, start_sfx_callback):
+                return None
+        queue = BigWorld._effectBuffer[fileName]
+        if queue.empty():
+            if not queue.is_loading and DEBUG_PRINT_EMPTY_QUEUE:
+                countstart = BigWorld._profile_sfx_start[fileName]
+                count = BigWorld._profile_sfx_end[fileName]
+                w_time = BigWorld._profile_sfx_time[fileName]
+                av_time = w_time / max(1, count)
+                msg = '\n\tbufferSize=%s' % getattr(queue, 'bufferSize', '?')
+                msg += '\n\tav-time=%s, go=%s, end=%s, alltime=%s, curtime=%s' % (av_time,
+                 countstart,
+                 count,
+                 w_time,
+                 BigWorld.time())
+                WARNING_MSG('ran out of buffered effects', fileName, msg)
+                traceback.print_stack()
+        else:
+            return queue.get()
+        return None
+
+
+def bufferedOneShotEffect(fileName, source, target = None, callbackFn = None, maxDuration = 10.0, prereqs = None, **kargs):
+    """This method plays an effect, retrieving it from an interally managed
+    fixed-size cirular buffer.  If there are none available to play, it
+    fails silently and internally reports it as a buffer overrun."""
+    if not fileName:
+        return
+
+    def start_sfx(sfx, maxDuration, source, target, callbackFn, **kargs):
+        sfx.maxDuration = maxDuration
+        sfx.go(source, target, callbackFn, **kargs)
+
+    start_sfx_freezed = partial(start_sfx, maxDuration=maxDuration, source=source, target=target, callbackFn=callbackFn, **kargs)
+    s = getBufferedOneShotEffect(fileName, maxDuration, prereqs, start_sfx_freezed)
+    if DEBUG_PRINT_STACK:
+        print '\ntry to play sfx:', fileName
+        traceback.print_stack()
+        print
+    if s:
+        start_sfx_freezed(s)
+    return s
+
+
+queue = SFXQueue()

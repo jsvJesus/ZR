@@ -1,0 +1,221 @@
+# Embedded file name: ./client/ClientMortalModel.py
+import FX
+import json
+import SFXer
+import ResMgr
+import BigWorld
+import traceback
+from Math import Vector3
+from random import randint
+from functools import partial
+from BurnInterface import BurnInterface
+section = ResMgr.openSection('scripts/common/EnumProps/MortalMobSpawner.json')
+CONFIG_MODELS = json.loads(section.asBinary)['model_index']['values']
+CONFIG = json.loads(ResMgr.openSection('scripts/common/data/motral_mobspawner_config.json').asBinary)
+
+class ClientMortalModel(BigWorld.Entity, BurnInterface):
+
+    def __init__(self):
+        BigWorld.Entity.__init__(self)
+        BurnInterface.__init__(self)
+        self.filter = BigWorld.NoneFilter()
+        self._model_path = next((model for index, model in CONFIG_MODELS if index == self.model_index), None)
+        self.model = None
+        self.sfx_model = None
+        self.skeletonCollider = None
+        self.canBeHurtByBullets = False
+        self.binary_health = 0
+        self.real_health = []
+        self.effect = None
+        self.colliderNames = {}
+        self.collider_boxes = {}
+        self.additional_models = {}
+        self.body_zones = {}
+        return
+
+    def prerequisites(self):
+        if self._model_path:
+            return [self._model_path]
+        return []
+
+    def onEnterWorld(self, prereqs):
+        if self._model_path:
+            scale = self.scale
+            self.model = prereqs[self._model_path]
+            self.model.isObstacle = True
+            self.model.visible = True
+            self.model.scale = (scale, scale, scale)
+            self.model.newScaleTest = (scale, scale, scale)
+            self.model.position = self.position
+            self.load_hit_boxes()
+        BurnInterface.onEnterWorld(self)
+
+    def load_hit_boxes(self):
+        if not CONFIG.has_key(self._model_path):
+            return
+        else:
+            data = CONFIG[self._model_path]
+            data = CONFIG[self._model_path]
+            for i in xrange(len(data.get('nodes', []))):
+                self.binary_health |= 1 << i
+                self.real_health.append(int(data['attach_health']))
+
+            self.add_collider()
+            self.colliderNames = {}
+
+            def on_load_node(node, body_zone, model):
+                self.model.node(node).attach(model)
+                model.isObstacle = 1
+                self.additional_models[node] = model
+
+            for index, node_name in enumerate(data['nodes']):
+                if self.binary_health & 1 << index:
+                    self.colliderNames[node_name] = index
+                    self.body_zones[index] = node_name
+                    model_path = data['attach_model']
+                else:
+                    model_path = data['broken_model']
+                BigWorld.fetchModel(str(model_path), partial(on_load_node, node_name, index))
+
+            ds = ResMgr.openSection(data['bound_box'])
+            for entry in ds.values():
+                bone = entry['nodeName'].asString
+                body_zone = self.colliderNames.get(bone)
+                if body_zone is None:
+                    continue
+                minBounds = entry['minBounds'].asVector3
+                maxBounds = entry['maxBounds'].asVector3
+                transform = entry['transform'].asMatrix if entry.has_key('transform') else None
+                if transform:
+                    transform.translation = transform.translation
+                self.attach_collider_box(bone, bone, body_zone, minBounds, maxBounds, transform)
+
+            return
+
+    def override_client_damage_calculation(self, victim_id, ammo_type, weapon_item_id, body_zones, speed_factor):
+        new_health = self.binary_health
+        damaged_zones = []
+        for body_zone in body_zones:
+            self.real_health[body_zone] = int(max(0, self.real_health[body_zone] - 100))
+            if self.real_health[body_zone] == 0:
+                new_health &= ~(1 << body_zone)
+                damaged_zones.append(body_zone)
+
+        if damaged_zones:
+            self.binary_health = new_health
+            self.on_damaged(damaged_zones)
+        if not self.binary_health:
+            self.client_destroy()
+        return True
+
+    def on_grenaded(self, grenade_position, grenade_type):
+        self.burn(True)
+        BigWorld.callback(randint(5, 10), self.client_destroy)
+
+    def on_damaged(self, body_zones):
+        data = CONFIG[self._model_path]
+        for body_zone in body_zones:
+            if not self.body_zones.has_key(body_zone):
+                continue
+            node_name = self.body_zones[body_zone]
+            del self.colliderNames[node_name]
+            del self.body_zones[body_zone]
+            if self.additional_models.has_key(node_name):
+                model = self.additional_models[node_name]
+                self.model.node(node_name).detach(model)
+                del self.additional_models[node_name]
+            if self.collider_boxes.has_key(node_name):
+                box = self.collider_boxes[node_name]
+                self.model.node(node_name).detach(box)
+                del self.collider_boxes[node_name]
+            if data['broke_sfx']:
+
+                def on_detach_sfx_model(_node, model):
+                    self.model.node(_node).detach(model)
+
+                sfx_model = BigWorld.Model('')
+                self.model.node(node_name).attach(sfx_model)
+                FX.bufferedOneShotEffect(data['broke_sfx'], sfx_model)
+                BigWorld.callback(5, partial(on_detach_sfx_model, node_name, sfx_model))
+
+            def on_load_model(_node, model):
+                self.model.node(_node).attach(model)
+
+            BigWorld.fetchModel(str(data['broken_model']), partial(on_load_model, node_name))
+
+    def bleedFromShoot(self, pos, blood_orientation, collider_name, ammo_type, damager_id):
+        blood_sfx = CONFIG[self._model_path]['damage_sfx']
+        SFXer.BloodBodyHit(self, pos, blood_orientation, blood_sfx)
+
+    def onLeaveWorld(self):
+        self.clearColliders()
+        self.model = None
+        return
+
+    def get_effect_hips_name(self):
+        return self.burn_hips_name or 'root'
+
+    def client_destroy(self):
+        self.play_sfx()
+        self.model.visible = False
+        self.model.isObstacle = False
+
+    def play_sfx(self):
+        if not self.on_end_sfx or not self.model:
+            return
+        self.stop_sfx()
+        self.sfx_model = BigWorld.Model('')
+        self.sfx_model.position = self.model.position
+        self.addModel(self.sfx_model)
+        FX.bufferedOneShotEffect(self.on_end_sfx, self.sfx_model)
+        BigWorld.callback(3, self.stop_sfx)
+
+    def stop_sfx(self):
+        if self.effect:
+            self.effect.stop()
+        self.effect = None
+        if self.sfx_model:
+            self.delModel(self.sfx_model)
+        self.sfx_model = None
+        return
+
+    def __createBoxAttachment(self, box_name, min_bounds, max_bounds, transform):
+        box = BigWorld.BoxAttachment()
+        box.name = box_name
+        box.minBounds = min_bounds
+        box.maxBounds = max_bounds
+        if transform:
+            box.localTransform = transform
+        return box
+
+    def attach_collider_box(self, box_name, node_name, body_zone, min_bounds, max_bounds, transform):
+        if box_name == 'None':
+            box_name = node_name
+            print 'MortalMobSpawner (ERROR): empty box name', node_name, body_zone, self
+            traceback.print_stack()
+        box = self.__createBoxAttachment(box_name, min_bounds, max_bounds, transform)
+        node = self.model.node(node_name)
+        node.attach(box)
+        self.skeletonCollider.addCollider(box)
+        self.colliderNames[box_name] = body_zone
+        self.collider_boxes[node_name] = box
+
+    def add_collider(self):
+        self.canBeHurtByBullets = True
+        self.canTakeDamage = True
+        self.respawned_recently = False
+        self.skeletonCollider = BigWorld.SkeletonCollider()
+
+    def clearColliders(self):
+        if self.model:
+            for node_name in self.colliderNames.keys():
+                box = self.collider_boxes[node_name]
+                self.model.node(node_name).detach(box)
+
+        self.collider_boxes = {}
+        self.colliderNames = {}
+        self.body_zones = {}
+        if getattr(self, 'skeletonCollider', None):
+            self.skeletonCollider.clearColliders()
+            self.skeletonCollider = None
+        return

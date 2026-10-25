@@ -1,0 +1,89 @@
+# Embedded file name: ./client/weapon_reload_scripts/l96a1_bolt_script.py
+import BigWorld
+import BWPersonality
+import Math
+import traceback
+from Items import ItemsCatalog
+from utils import ignoreError
+from utils_bw import not_safe_animation_callback
+from reload_base_script import BaseWeaponReloader, BaseWeaponManualReloader
+from weapon_bolt_script import BaseWeaponBoltAnimation
+from functools import partial
+
+class L96a1BoltAnimation(BaseWeaponBoltAnimation):
+    LEFT_HAND = False
+
+    def __init__(self, player, onComplete):
+        self.player = player
+        self._onComplete = onComplete
+
+    def isBoltAnimation(self):
+        return True
+
+    def play(self, anim_name):
+        BigWorld.callback(0.0, lambda : self._continuePlay(anim_name))
+
+    def _continuePlay(self, anim_name):
+        anim_name = anim_name.split(':')[-1]
+        try:
+            action_pl = self.player.model.action(anim_name)
+        except:
+            print 'avatar model= anim_name: %r' % anim_name
+            print 'self.player', self.player
+            print 'weapon', self.player.active_weapon
+            if self.player == BigWorld.player() and self.player.isAdminAccess():
+                BWPersonality.gpd.sendHightMessage(u'\u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d \u044d\u043a\u0448\u043d \u0443 \u0438\u0433\u0440\u043e\u043a\u0430:%r' % anim_name)
+            traceback.print_exc()
+            self.onFini()
+            return False
+
+        copy_model = self.player.active_weapon.createCopyModelWeapon()
+        copy_model.testAnimateFromTpose = True
+        self.player.model.testAnimateFromTpose = True
+        fake_Lhand_provider = copy_model.node('HP_Lhand')
+        fake_Lhand_provider.blend_factor_hand = 1.0
+        fake_Lhand_provider.disableDrawInReflection = True
+        self.player.nodeInfoL.AttachedProviders = (fake_Lhand_provider, 0.2)
+        self.player.nodeInfoR.AttachedProviders = (None, 0.4)
+        self.player.model.Rhand = copy_model
+        self.player.active_weapon.setVisibleModel(copy_model)
+        action_pl(0, self._onEndAnimationRealod)
+        try:
+            action_w = copy_model.action(anim_name)
+            action_w()
+        except:
+            print 'weapon anim_name: %r' % anim_name
+            if self.player == BigWorld.player() and self.player.isAdminAccess():
+                BWPersonality.gpd.sendHightMessage(u'\u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d \u044d\u043a\u0448\u043d \u0443 \u043e\u0440\u0443\u0436\u0438\u044f:%r' % anim_name)
+            traceback.print_exc()
+
+        duration = action_pl.duration
+        delay = duration - self.player.TO_TRACKER_HAND_DELAY - 0.03
+        self.player.model.forceDraw()
+        BigWorld.callback(delay, partial(self.returnHand, self.player, right=not self.LEFT_HAND))
+        return None
+
+    def _onEndAnimationRealod(self):
+        self.onFini()
+
+    def returnHand(self, player, right = True, blend_time = None):
+        if self._canceled:
+            return
+        if not player or player.isDestroyed:
+            return
+        player.nodeInfoR.AttachedProviders = (player.right_weapon_prov, 0.2)
+        offset_matrx = Math.Matrix()
+        player.model.Rhand.setBlendedMatrixOffset(1.0, 0.0, 0.1, offset_matrx)
+        player._weapon_to_attached = 'Right'
+
+        def ret(player):
+            if not player or player.isDestroyed:
+                return
+            player._HandControl__reload_weapon_osn_anmation = False
+            player._HandControl__check(blend_time=blend_time)
+            player.model.testAnimateFromTpose = False
+
+        BigWorld.callback(0.3, partial(ret, player))
+
+    def onFini(self):
+        BaseWeaponBoltAnimation.onFini(self, True)

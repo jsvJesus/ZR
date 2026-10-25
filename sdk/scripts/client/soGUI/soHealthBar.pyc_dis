@@ -1,0 +1,428 @@
+# Embedded file name: ./client/soGUI/soHealthBar.py
+import BigWorld
+import GUI
+import BWPersonality
+import colorCodes
+from CharacterUtils import CharacterConst
+from Helpers.PyGUI.PyGUIBase import PyGUIBase
+from Keys import KEY_RIGHTMOUSE
+from Localization import lc
+from soGUI.soToolTipComponent import soToolTipComponent
+from Helpers.PyGUI.DraggableComponent import DraggableComponent
+from soGUI.GUIPositions import GUIPositions
+from functools import partial
+from PremiumAccountConfigs import PREMIUM_OFF, ClientSimpleConfigs
+import BoosterConfigParser
+
+class Bonus(PyGUIBase):
+
+    def __init__(self, component, tooltip_text_provider):
+        PyGUIBase.__init__(self, component)
+        self._tooltip_text_provider = tooltip_text_provider
+        component.focus = True
+        component.moveFocus = True
+        component.crossFocus = True
+        component.script = self
+
+    def handleMouseEnterEvent(self, component):
+        BWPersonality.GUICore.showToolTip(self._tooltip_text_provider(), delay=0)
+        return True
+
+    def handleMouseLeaveEvent(self, component):
+        if BWPersonality.GUICore.toolTip:
+            BWPersonality.GUICore.toolTip.hide()
+        return True
+
+
+class soHealthBar(PyGUIBase, DraggableComponent, GUIPositions):
+    factoryString = 'soGUI.soHealthBar'
+    FACTION_MARK_FOREIGNERS = 0
+    FACTION_MARK_LOCALS = 1
+    FACTION_MARK_LONERS = 2
+    ANOMALY_RADIATION, ANOMALY_ELECTRICITY, ANOMALY_FIRE, ANOMALY_CHEMICAL, ANOMALY_GRAVITY, ANOMALY_PSIONICS = xrange(6)
+    fIconTextures = {}
+    EVENT_CONTEXT = 0
+    TTID_PL_MARK = 'gui_player_frame_PLMARK'
+
+    def __init__(self, component):
+        PyGUIBase.__init__(self, component)
+        DraggableComponent.__init__(self, True, True, True, xoffset=0, yoffset=0)
+        GUIPositions.__init__(self)
+        component.script = self
+        self.pressed = False
+        self.stamina_timer_id = None
+        self.old_HP_timer_id = None
+        self.interfaceID = BWPersonality.GUICore.GUI_ID_PLAYERFRAME
+        self._premium_id = PREMIUM_OFF
+        self._boost_id = 0
+        self._prem_end_time = -1
+        self._boost_end_time = -1
+        self.setupRoot()
+        self.setupFrame()
+        self.setupBars()
+        self.setupShaders()
+        self.hungry_value = 1.0
+        self.hp_value = 1.0
+        self.hp_abs_value = 175.0
+        self.thirst_value = 1.0
+        self.HP_BLINK_TIME = 0.3
+        self.HUNGRY_BLINK_TIME = 0.7
+        BigWorld.callback(self.HP_BLINK_TIME, self.updateHPBlink)
+        return
+
+    def reset(self):
+        if self.container.plMark:
+            self.container.plMark.visible = False
+
+    def set_leader_mark(self, value):
+        self.container.plMark.visible = value
+
+    def updateHPBlink(self):
+        BigWorld.callback(self.HP_BLINK_TIME, self.updateHPBlink)
+        if self.hp_abs_value > 40.0:
+            self.container.healthBar.colour.x = 255
+        else:
+            red = self.container.healthBar.colour.x
+            self.container.healthBar.colour.x = 255 if red != 255 else 150
+
+    def setupRoot(self):
+        cmp = self.component
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'CLIP'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.textureName = ''
+        cmp.width = 400
+        cmp.height = 50
+        x, y = (3, 3)
+        sW, sH = BigWorld.screenSize()
+        x, y = float(x - sW / 2) / (sW / 2), float(y - sH / 2) / (sH / 2) * -1
+        cmp.position = (x, y, 0.9)
+
+    def reset_position(self):
+        x, y = (3, 3)
+        sW, sH = BigWorld.screenSize()
+        x, y = float(x - sW / 2) / (sW / 2), float(y - sH / 2) / (sH / 2) * -1
+        self.component.position = (x, y, 0.9)
+
+    def setupFrame(self):
+        comp = GUI.Window()
+        comp.widthMode, comp.heightMode = ('PIXEL', 'CLIP')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'CLIP')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'CENTER')
+        comp.width, comp.height = (48, 2)
+        comp.position = (0, 0, 0.9)
+        comp.visible = False
+        self.component.addChild(comp, 'bonuses')
+        Bonus(comp, self._get_bonus_tooltip)
+        comp = GUI.Simple('soGUI/frame/healthbar/booster.dds')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+        comp.width, comp.height = (48, 48)
+        comp.materialFX = 'BLEND'
+        comp.filterType = 'LINEAR'
+        comp.position = (0, 0, 0.4)
+        self.component.bonuses.addChild(comp, 'booster')
+        comp = GUI.Simple('soGUI/frame/healthbar/premium.dds')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+        comp.width, comp.height = (48, 48)
+        comp.materialFX = 'BLEND'
+        comp.filterType = 'LINEAR'
+        comp.position = (0, 0, 0.5)
+        self.component.bonuses.addChild(comp, 'premium')
+        container = GUI.Window()
+        container.widthMode, container.heightMode = ('CLIP', 'CLIP')
+        container.horizontalPositionMode, container.verticalPositionMode = ('PIXEL', 'CLIP')
+        container.horizontalAnchor, container.verticalAnchor = ('LEFT', 'CENTER')
+        container.width, container.height = (2, 2)
+        container.position = (0, 0, 0.9)
+        self.component.addChild(container, 'container')
+        self.container = self.component.container
+        cmp = GUI.Text('')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'CENTER'
+        cmp.colour = (255, 255, 255, 120)
+        cmp.materialFX = 'BLEND'
+        cmp.font = 'ArialNarrowClearShadow_16.font'
+        cmp.text = u'_empty_name_'
+        cmp.position = (23, 8, 0.2)
+        self.container.addChild(cmp, 'pName')
+        cmp = GUI.Simple('soGUI/frame/party/leader_mark.dds')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.width = 18
+        cmp.height = 21
+        cmp.position = (347, 8, 0.3)
+        cmp.visible = False
+        self.container.addChild(cmp, 'plMark')
+        cmp = GUI.Text('')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'CENTER'
+        cmp.colour = (200, 166, 112, 0)
+        cmp.materialFX = 'BLEND'
+        cmp.font = 'BloggerMedium_12.font'
+        cmp.position = (200, 10, 0.2)
+        self.container.addChild(cmp, 'pvpFree')
+        cmp = GUI.Simple('soGUI/maps/Icons/ability/icon_perk_boost_perception.dds')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.width = 20
+        cmp.height = 20
+        cmp.position = (150, 4, 0.5)
+        cmp.visible = 0
+        self.container.addChild(cmp, 'NinjaIcon')
+
+    def setupBars(self):
+        cmp = GUI.Simple('soGUI/frame/healthbar/hp_bar_back.dds')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.colour = (255, 255, 255, 230)
+        cmp.materialFX = 'BLEND'
+        cmp.width = 310
+        cmp.height = 30
+        cmp.position = (22, 12, 0.7)
+        self.container.addChild(cmp, 'healthBarBack')
+        cmp = GUI.Simple('soGUI/frame/healthbar/hp_bar.dds')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.width = 310
+        cmp.height = 30
+        cmp.position = (22, 12, 0.3)
+        self.container.addChild(cmp, 'healthBar')
+        cmp = GUI.Simple('soGUI/frame/healthbar/hp_bar_damage.dds')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.width = 310
+        cmp.height = 30
+        cmp.position = (22, 12, 0.4)
+        self.container.addChild(cmp, 'healthBar_old_val')
+        cmp = GUI.Simple('soGUI/frame/healthbar/stamina_back.dds')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.colour = (255, 255, 255, 230)
+        cmp.materialFX = 'BLEND'
+        cmp.width = 310
+        cmp.height = 6
+        cmp.position = (22, 38, 0.7)
+        self.container.addChild(cmp, 'staminaBarBack')
+        cmp = GUI.Simple('soGUI/frame/healthbar/stamina.dds')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.width = 310
+        cmp.height = 6
+        cmp.position = (22, 38, 0.3)
+        self.container.addChild(cmp, 'staminaBar')
+
+    def setupShaders(self):
+        hShader = GUI.ClipShader()
+        hShader_old_val = GUI.ClipShader()
+        sShader = GUI.ClipShader()
+        hShader.speed = 0
+        hShader_old_val.speed = 0
+        sShader.speed = 0
+        hShader.mode = hShader_old_val.mode = sShader.mode = 'RIGHT'
+        hShader.value = hShader_old_val.value = sShader.value = 1.0
+        self.container.healthBar.addShader(hShader, 'clipper')
+        self.container.healthBar_old_val.addShader(hShader_old_val, 'clipper')
+        self.container.staminaBar.addShader(sShader, 'clipper')
+
+    def partySettingHandler(self):
+        pass
+
+    def _get_bonus_tooltip(self):
+        text = []
+        from time import time
+        if self._premium_id != PREMIUM_OFF:
+            config = ClientSimpleConfigs().get_premium_config(self._premium_id)
+            text.append(lc(config['description']))
+            rem_time = int(self._prem_end_time - (time() - BWPersonality.gpd.time_diff))
+            text.append(self.get_prem_time_string(rem_time))
+        if self._boost_id:
+            config = BoosterConfigParser.get_config(self._boost_id)
+            text.append(lc(config['description']))
+            rem_time = int(self._boost_end_time - (time() - BWPersonality.gpd.time_diff))
+            text.append(self.get_prem_time_string(rem_time))
+        return '\n'.join(text)
+
+    def get_prem_time_string(self, remain_time):
+        import math
+        real_days = int(remain_time) / 86400
+        days = int(math.ceil(remain_time / 86400))
+        hours = int(remain_time) / 3600
+        minutes = int(remain_time) / 60
+        if real_days >= 1:
+            result = colorCodes.tf3_text_color_gray + lc('extendedGUI.PremiumPanel.days') + ' ' + lc('extendedGUI.PremiumPanel.toEnd') + ': ' + colorCodes.tf3_chat_default + str(days)
+        elif hours >= 1:
+            result = colorCodes.tf3_text_color_gray + lc('extendedGUI.PremiumPanel.hours') + ' ' + lc('extendedGUI.PremiumPanel.toEnd') + ': ' + colorCodes.tf3_chat_default + str(hours)
+        else:
+            result = colorCodes.tf3_text_color_gray + lc('extendedGUI.PremiumPanel.minutes') + ' ' + lc('extendedGUI.PremiumPanel.toEnd') + ': ' + colorCodes.tf3_chat_default + str(minutes)
+        return result
+
+    def set_ninja(self, ninja):
+        self.container.NinjaIcon.visible = ninja
+
+    def set_premium(self, premium_id):
+        self._premium_id = premium_id
+        self._update_premium_block()
+        self._update_booster_block()
+
+    def set_booster(self, boost_id):
+        self._boost_id = boost_id
+        self._update_premium_block()
+        self._update_booster_block()
+
+    def set_premium_time(self, end_time):
+        self._prem_end_time = end_time if end_time > 0 else -1
+
+    def set_booster_time(self, end_time):
+        self._boost_end_time = end_time if end_time > 0 else -1
+
+    def _update_booster_block(self):
+        bonuses = self.component.bonuses
+        if self._premium_id == PREMIUM_OFF and not self._boost_id:
+            self.container.position[0] = 0
+            bonuses.visible = False
+            return
+        self.container.position[0] = 30
+        bonuses.visible = True
+        if not bool(self._boost_id):
+            bonuses.booster.visible = False
+            return
+        booster_path = BoosterConfigParser.get_icon_path(self._boost_id, self._premium_id != PREMIUM_OFF, True)
+        bonuses.booster.textureName = booster_path
+        bonuses.booster.visible = True
+
+    def _update_premium_block(self):
+        bonuses = self.component.bonuses
+        if self._premium_id == PREMIUM_OFF and not self._boost_id:
+            self.container.position[0] = 0
+            bonuses.visible = False
+            return
+        self.container.position[0] = 30
+        bonuses.visible = True
+        if self._premium_id == PREMIUM_OFF:
+            bonuses.premium.visible = False
+            return
+        config = ClientSimpleConfigs().get_premium_config(self._premium_id)
+        default_path = config.get('icon_path', '')
+        bonuses.premium.textureName = config.get('icon_path_small', default_path)
+        bonuses.premium.visible = True
+
+    def set_old_HP_value(self, value, step = None):
+        old = self.container.healthBar_old_val.clipper.value
+        if not step:
+            step = float(old - value) / 10.0
+        new_val = old - step
+        self.container.healthBar_old_val.clipper.value = new_val
+        if new_val == old:
+            return
+        if self.old_HP_timer_id:
+            BigWorld.cancelCallback(self.old_HP_timer_id)
+        self.old_HP_timer_id = BigWorld.callback(0.1, partial(self.set_old_HP_value, value, step))
+
+    def set_stamina_value(self, value, step = None):
+        old = self.container.staminaBar.clipper.value
+        if not step:
+            step = float(old - value) / 10.0
+        new_val = old - step
+        self.container.staminaBar.clipper.value = new_val
+        if new_val == old:
+            return
+        if self.stamina_timer_id:
+            BigWorld.cancelCallback(self.stamina_timer_id)
+        self.stamina_timer_id = BigWorld.callback(0.1, partial(self.set_stamina_value, value, step))
+
+    def update(self):
+        data = BWPersonality.GUICore.healthDataSection
+        if data.has_key('name'):
+            self.container.pName.text = data['name']
+        if data.has_key('abshealth') and data.has_key('maxhealth'):
+            old_hp = self.hp_value
+            self.hp_value = data['abshealth'] / data['maxhealth'] if data['maxhealth'] else 0.0
+            self.hp_abs_value = data['abshealth']
+            self.container.healthBar.clipper.value = self.hp_value
+            if old_hp == self.hp_value:
+                self.set_old_HP_value(self.hp_value)
+        if data.has_key('absstamina') and data.has_key('maxstamina'):
+            stamina = data['absstamina'] / data['maxstamina'] if data['maxstamina'] else 0.0
+            self.set_stamina_value(stamina)
+        if data.has_key('isPL'):
+            self.container.plMark.visible = data['isPL']
+        player = BigWorld.player()
+        if player:
+            self.container.pvpFree.colour[3] = 30 if getattr(player, 'pvpFree') else 220
+            namecolor = (175, 166, 112, 255)
+            if player.AgrFlag:
+                namecolor = colorCodes.rgba_mark_AGR
+            if player.karma >= CharacterConst.PK_KARMA_PER_AGGR:
+                namecolor = colorCodes.rgba_mark_name_PK
+            self.container.pName.colour = tuple(namecolor)
+
+    def handleMouseButtonEvent(self, comp, event):
+        if not event.isMouseButton():
+            return False
+        down = event.isKeyDown()
+        key = event.key
+        if key == KEY_RIGHTMOUSE:
+            if down:
+                self.pressed = True
+            elif self.pressed:
+                self.pressed = False
+                BWPersonality.GUICore.playerFrameEvent(self.EVENT_CONTEXT, None)
+            return True
+        else:
+            return DraggableComponent.handleMouseButtonEvent(self, comp, event)
+
+    def handleMouseEnterEvent(self, component):
+        if component is self.container.plMark:
+            BWPersonality.GUICore.toolTipEvent(self.TTID_PL_MARK, self.interfaceID, soToolTipComponent.EVENT_SHOW)
+            return True
+        return False
+
+    def handleMouseLeaveEvent(self, component):
+        if component is self.container.plMark:
+            BWPersonality.GUICore.toolTipEvent(self.TTID_PL_MARK, self.interfaceID, soToolTipComponent.EVENT_HIDE)
+            return True
+        return False
+
+    def show(self):
+        GUIPositions.show(self)
+        self.component.visible = True
+
+    def hide(self):
+        self.component.visible = False
+
+    def stopDragging(self):
+        GUIPositions.stopDragging(self)
+        DraggableComponent.stopDragging(self)

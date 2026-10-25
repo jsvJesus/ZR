@@ -1,0 +1,124 @@
+# Embedded file name: ./client/authentication/auth_client_req.py
+import json
+import BigWorld
+import requests
+from threading import Thread
+import Queue
+from auth_common import CLIENT_API_KEY
+from auth_common import AHOST, AHOST2, AHOST_MIRROR
+
+def _gen():
+    while True:
+        for url in [AHOST2, AHOST, AHOST_MIRROR]:
+            yield url
+
+
+_adr_gen = _gen()
+
+class _Hosts:
+
+    def __init__(self):
+        self._apihost = _adr_gen.next()
+
+    def getSiteHost(self):
+        return self._apihost
+
+    def getAPIHost(self):
+        return self._apihost
+
+    def changeMirror(self):
+        self._apihost = _adr_gen.next()
+        print 'WARN: change auth host', self.getAPIHost()
+
+
+a_hosts = _Hosts()
+
+class AuthStatus:
+    OFFLINE = 0
+    WAIT = 2
+    ONLINE = 1
+
+
+def req(urlpath, onreq = lambda data: 0, onerr = lambda msg: 0, **kw):
+    kw = dict(kw)
+    kw['client_api_key'] = CLIENT_API_KEY
+    status_code = 0
+    text = ''
+    r = None
+    for attemp in range(7):
+        try:
+            print '->%r' % a_hosts.getAPIHost()
+            url = a_hosts.getAPIHost() + urlpath
+            r = requests.post(url, timeout=5, verify=False, data=kw)
+            text = r.text
+            status_code = r.status_code
+            if status_code == 502:
+                raise IOError
+            break
+        except Exception as err:
+            print 'AUTH::error %r %s: %s: %r' % (err,
+             url,
+             status_code,
+             text)
+            a_hosts.changeMirror()
+            continue
+        finally:
+            if r and r.raw:
+                r.raw.release_conn()
+
+    if status_code != 200:
+        print 'AUTH::error %s: %s: %r' % (url, status_code, text)
+        onerr('SERVER_ERROR')
+        return
+    else:
+        try:
+            data = json.loads(text)
+            onreq(data)
+        except Exception as err:
+            print 'AUTH::json error %s: %s: %r' % (url, status_code, text)
+            onerr('SERVER_ERROR')
+            return
+
+        return
+
+
+class BgReq:
+
+    def __init__(self, urlpath, onreq = lambda data: 0, onerr = lambda msg: 0, **kw):
+        self._onreq = onreq
+        self._onerr = onerr
+        self.q = Queue.Queue()
+        self._tid = BigWorld.callback(0.3, self._on_tick)
+
+        def _thr_onreq(data):
+            self.q.put(('onreq', data))
+
+        def _thr_onerr(msg):
+            self.q.put(('onerr', msg))
+
+        self.thr = Thread(target=req, args=(urlpath, _thr_onreq, _thr_onerr), kwargs=kw)
+        self.thr.start()
+
+    def _on_tick(self):
+        try:
+            res = self.q.get(False)
+        except Queue.Empty:
+            self._tid = BigWorld.callback(0.3, self._on_tick)
+            return
+
+        cmd, data = res
+        if cmd == 'onreq':
+            self._onreq(data)
+        else:
+            self._onerr(data)
+
+    def stop(self):
+        BigWorld.cancelCallback(self._tid)
+        self._onreq = lambda *e: 0
+        self._onerr = lambda *e: 0
+
+    def join(self):
+        if self.thr and self.thr.isAlive():
+            print 'wait stop auth_req ...'
+            self.thr.join()
+            print 'stop auth_req OK'

@@ -1,0 +1,214 @@
+# Embedded file name: ./client/PopAttacher.py
+import FX
+import json
+import SFXer
+import ResMgr
+import BigWorld
+from functools import partial
+CONFIG = json.loads(ResMgr.openSection('scripts/common/data/motral_mobspawner_config.json').asBinary)
+
+class PopAttacher:
+
+    def __init__(self):
+        self.pop_body_zones = {}
+        self.pop_additional_models = {}
+
+    def onEnterWorld(self, prereqs):
+        self.load_pop_hit_boxes()
+
+    def load_pop_hit_boxes(self, silence = False):
+        model_path = self.get_model_path()
+        if not CONFIG.has_key(model_path):
+            return
+        else:
+            data = CONFIG[model_path]
+
+            def on_load_node(node, body_zone, model):
+                if self.isDestroyed:
+                    return
+                self.model.node(node).attach(model)
+                model.isObstacle = 1
+                self.pop_additional_models[node] = model
+
+            if data.has_key('animations'):
+                def_anim = data.get('default_anim')
+                if def_anim and not silence:
+                    self.model.action(def_anim)()
+            ds = ResMgr.openSection(data['bound_box'])
+            for index, node_name in enumerate(data['nodes']):
+                anim_name = ''
+                if data.has_key('animations'):
+                    anim_name = data['animations'][index]
+                self.colliderNames[node_name] = index + 100
+                self.pop_body_zones[index + 100] = node_name
+                if self.binary_health & 1 << index:
+                    attach_path = data.get('attach_model')
+                    if anim_name:
+                        self.add_pop_by_anim(anim_name)
+                    for entry in ds.values():
+                        bone = entry['nodeName'].asString
+                        if node_name != bone:
+                            continue
+                        body_zone = self.colliderNames.get(bone)
+                        minBounds = entry['minBounds'].asVector3
+                        maxBounds = entry['maxBounds'].asVector3
+                        transform = entry['transform'].asMatrix if entry.has_key('transform') else None
+                        if transform:
+                            transform.translation = transform.translation
+                        self.attach_collider_box(bone, bone, body_zone, minBounds, maxBounds, transform)
+
+                else:
+                    attach_path = data.get('broken_model')
+                    if anim_name and not silence:
+                        self.remove_pop_by_anim(anim_name)
+                if attach_path:
+                    BigWorld.fetchModel(str(attach_path), partial(on_load_node, node_name, index + 100))
+
+            self.load_other_body_zones(ds)
+            return
+
+    def load_other_body_zones(self, dataSection):
+        pass
+
+    def remove_pop_by_anim(self, anim_name):
+        if anim_name:
+            self.model.action(anim_name)()
+
+    def add_pop_by_anim(self, anim_name):
+        if anim_name:
+            self.model.action(anim_name).stop()
+
+    def on_added_pops(self, indexes):
+        model_path = self.get_model_path()
+        data = CONFIG[model_path]
+
+        def on_load_node(node, body_zone, model):
+            self.model.node(node).attach(model)
+            model.isObstacle = 1
+            self.pop_additional_models[node] = model
+
+        for index in indexes:
+            node_name = data['nodes'][index]
+            anim_name = ''
+            body_zone = index + 100
+            if data.has_key('animations'):
+                anim_name = data['animations'][index]
+            if self.binary_health & 1 << index:
+                self.colliderNames[node_name] = body_zone
+                self.pop_body_zones[body_zone] = node_name
+                attach_path = data.get('attach_model')
+                self.add_pop_by_anim(anim_name)
+            else:
+                attach_path = data.get('broken_model')
+                if anim_name:
+                    self.remove_pop_by_anim(anim_name)
+            ds = ResMgr.openSection(data['bound_box'])
+            for entry in ds.values():
+                if node_name != entry['nodeName'].asString:
+                    continue
+                minBounds = entry['minBounds'].asVector3
+                maxBounds = entry['maxBounds'].asVector3
+                transform = entry['transform'].asMatrix if entry.has_key('transform') else None
+                if transform:
+                    transform.translation = transform.translation
+                self.attach_collider_box(node_name, node_name, body_zone, minBounds, maxBounds, transform)
+
+            if attach_path:
+                BigWorld.fetchModel(str(attach_path), partial(on_load_node, node_name, body_zone))
+
+        return
+
+    def on_damaged_pops(self, body_zones):
+        model_path = self.get_model_path()
+        data = CONFIG[model_path]
+        for body_zone in body_zones:
+            if not self.pop_body_zones.has_key(body_zone):
+                continue
+            node_name = self.pop_body_zones[body_zone]
+            del self.colliderNames[node_name]
+            del self.pop_body_zones[body_zone]
+            if self.pop_additional_models.has_key(node_name):
+                model = self.pop_additional_models[node_name]
+                self.model.node(node_name).detach(model)
+                del self.pop_additional_models[node_name]
+            if self.collider_boxes.has_key(node_name):
+                box = self.collider_boxes[node_name]
+                self.model.node(node_name).detach(box)
+                del self.collider_boxes[node_name]
+            if data.get('animations'):
+                index = data['nodes'].index(node_name)
+                anim_name = data['animations'][index]
+                self.remove_pop_by_anim(anim_name)
+            if data.get('broke_sfx'):
+
+                def on_detach_sfx_model(_node, model):
+                    self.model.node(_node).detach(model)
+
+                sfx_model = BigWorld.Model('')
+                self.model.node(node_name).attach(sfx_model)
+                FX.bufferedOneShotEffect(data['broke_sfx'], sfx_model)
+                BigWorld.callback(5, partial(on_detach_sfx_model, node_name, sfx_model))
+
+            def on_load_model(_node, model):
+                self.model.node(_node).attach(model)
+
+            if data.get('broken_model'):
+                BigWorld.fetchModel(str(data['broken_model']), partial(on_load_model, node_name))
+
+    def get_model_path(self):
+        raise NotImplementedError
+
+    def its_pop(self, collider_name):
+        model_path = self.get_model_path()
+        if collider_name not in CONFIG[model_path]['nodes']:
+            return False
+        return True
+
+    def bleedFromShoot(self, pos, blood_orientation, collider_name, ammo_type, damager_id):
+        model_path = self.get_model_path()
+        if collider_name not in CONFIG[model_path]['nodes']:
+            return
+        blood_sfx = CONFIG[model_path].get('damage_sfx')
+        if not blood_sfx:
+            return
+        SFXer.BloodBodyHit(self, pos, blood_orientation, blood_sfx)
+
+    def play_sfx(self):
+        if not self.on_end_sfx or not self.model:
+            return
+        self.stop_sfx()
+        self.sfx_model = BigWorld.Model('')
+        self.sfx_model.position = self.model.position
+        self.addModel(self.sfx_model)
+        FX.bufferedOneShotEffect(self.on_end_sfx, self.sfx_model)
+        BigWorld.callback(3, self.stop_sfx)
+
+    def stop_sfx(self):
+        if self.effect:
+            self.effect.stop()
+        self.effect = None
+        if self.sfx_model:
+            self.delModel(self.sfx_model)
+        self.sfx_model = None
+        return
+
+    def recompose(self):
+        for node_name in self.pop_additional_models:
+            model = self.pop_additional_models[node_name]
+            self.model.node(node_name).detach(model)
+            if self.collider_boxes.has_key(node_name):
+                box = self.collider_boxes[node_name]
+                self.model.node(node_name).detach(box)
+                del self.collider_boxes[node_name]
+
+        self.pop_body_zones = {}
+        self.pop_additional_models = {}
+        BigWorld.callback(0.3, self.load_pop_hit_boxes)
+
+    def on_death(self, source_data, item_type, noSound = False):
+        model_path = self.get_model_path()
+        data = CONFIG[model_path]
+        if data.has_key('animations'):
+            def_anim = data.get('default_anim')
+            if def_anim:
+                self.model.action(def_anim).stop()

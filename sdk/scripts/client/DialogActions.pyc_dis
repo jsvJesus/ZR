@@ -1,0 +1,494 @@
+# Embedded file name: ./client/DialogActions.py
+import BigWorld
+import BWPersonality
+import CameraNode
+from AvatarDialogPoint import AvatarDialogPoint
+import Math
+import math
+import StalkerModel
+from DialogHideAreaUDO import DialogHideAreaUDO
+from functools import partial
+import Constants
+from Items import ItemsCatalog
+import sounds_manager
+import AnimationCaps
+MOVE_COEFF = 0.05
+ROTATE_COEFF = 0.01
+LEFT_HAND, RIGHT_HAND = xrange(1, 3)
+PUTON_PRIM_WEAPON, PUTON_PRIM2_WEAPON, PUTON_SECOND_WEAPON, PUTOFF_WEAPON, DIRECT_TO_PLAYER, ROTATE_TO, END_THROW, START_THROW, USE_ITEM, DIRECT_HEAD_TO_PLAYER, NPC_FIRE, NPC_RELOAD = xrange(1, 13)
+
+class DialogActions:
+
+    def Init_DialogActions(self):
+        self.clone_model = None
+        self.default_action_name = None
+        self.__rotate_step = 0
+        self.__dialog_camera = None
+        self.__dialog_sound = None
+        self._dialog_hide_areas = []
+        self._dialog_npc = None
+        self._dialog_npc_action = None
+        self._need_stop_actions = False
+        self.__last_npc_weapon = None
+        self.__dialog_callback = None
+        return
+
+    def get_init_camera(self):
+        self.init_camera_matrix = BigWorld.Camera().invViewProvider
+
+    def onEnterWorld(self):
+        self.Init_DialogActions()
+
+    def onLeaveWorld(self):
+        if self.clone_model:
+            BigWorld.delModel(self.clone_model)
+            self.clone_model = None
+        self.default_action_name = None
+        self.__rotate_step = 0
+        self.__dialog_camera = None
+        self.__dialog_sound = None
+        self._dialog_npc = None
+        self._dialog_npc_action = None
+        return
+
+    def npc_default_action(self):
+        if not self._dialog_npc:
+            self._dialog_npc = BigWorld.entities.get(self.last_interlocutor_id)
+        if not self._dialog_npc:
+            return
+        self._dialog_npc.update_targeting()
+        if self._dialog_npc.ActiveItemID != self.__last_npc_weapon:
+            self._dialog_npc.ActiveItemID = self.__last_npc_weapon
+            self._dialog_npc.set_ActiveItemID(0)
+        self._dialog_npc.returnModelToDefault()
+        if self._dialog_npc.playedAnimationIndexList:
+            self._dialog_npc.playAnimationByIDInList(self._dialog_npc.playedAnimationIndexList)
+
+    def stop_npc_actions(self):
+        if self._dialog_npc and self._dialog_npc_action:
+            if isinstance(self._dialog_npc_action, list):
+                for action in self._dialog_npc_action:
+                    action.stop()
+
+            else:
+                self._dialog_npc_action.stop()
+        self._dialog_npc_action = None
+        if self.__dialog_callback:
+            BigWorld.cancelCallback(self.__dialog_callback)
+            self.__dialog_callback = None
+        return
+
+    def stop_dialog_camera(self):
+        if not self._need_stop_actions:
+            return
+        else:
+            self.stop_dialog_sound()
+            self._need_stop_actions = False
+            self.resetCamera()
+            if self._dialog_npc and not getattr(self._dialog_npc, 'is_old_npc', True):
+                self.stop_npc_actions()
+                self.npc_default_action()
+            self.removeControlLockByEffect(Constants.ControlLockTypes.ANIMATION)
+            if self.clone_model:
+                BigWorld.delModel(self.clone_model)
+                self.clone_model = None
+            if self.model:
+                self.model.visible = True
+            self.default_action_name = None
+            self.__dialog_camera = None
+            if self._dialog_npc:
+                self._dialog_npc.dialog_actions = False
+            self._dialog_npc = None
+            self.destroyHideAreas()
+            self.onDialogCameraActivate(False)
+            if self.hide_all_other_avatar_key:
+                self._updateAllAvatarVisible()
+            return
+
+    def dialog_event(self, event, data):
+        raise RuntimeError
+        if event == BWPersonality.soGUI.soDialogueGUI2.EVENT_CLOSE:
+            self.stop_dialog_camera()
+
+    def createHideAreas(self, areasUDO):
+        for udo in areasUDO:
+            if not udo or not isinstance(udo, DialogHideAreaUDO):
+                continue
+            area_params = {'radius': udo.radius,
+             'name': udo.name}
+            areaID = BigWorld.createEntity('DialogHideArea', self.spaceID, 0, udo.position, (0, 0, 0), area_params)
+            area = BigWorld.entities.get(areaID)
+            if area:
+                self._dialog_hide_areas.append(areaID)
+                area.activate()
+
+    def destroyHideAreas(self):
+        for areaID in self._dialog_hide_areas:
+            area = BigWorld.entities.get(areaID)
+            if area:
+                area.deactivate()
+                BigWorld.destroyEntity(areaID)
+
+        self._dialog_hide_areas = []
+
+    def get_dialog_cameras(self):
+
+        def nodes_gen():
+            for cn in BigWorld.userDataObjects.values():
+                if isinstance(cn, CameraNode.CameraNode):
+                    yield (cn.name, cn)
+
+        return dict(nodes_gen())
+
+    def get_dialog_points(self):
+
+        def nodes_gen():
+            for adp in BigWorld.userDataObjects.values():
+                if isinstance(adp, AvatarDialogPoint):
+                    yield (adp.name, adp)
+
+        return dict(nodes_gen())
+
+    def _get_matrix_from_instance(self, instance):
+        roll, pitch, yaw = instance.direction
+        m = Math.Matrix()
+        m.setRotateYPR((yaw, pitch, roll))
+        m.translation = instance.position
+        return m
+
+    def _get_matrix_from_node(self, node):
+        m = Math.Matrix()
+        m.setRotateYPR((node.yaw, node.pitch, node.roll))
+        m.translation = node.position
+        return m
+
+    def _get_matrix_from_dct(self, dct):
+        yaw, pitch, roll = dct['direction']
+        m = Math.Matrix()
+        m.setRotateYPR((yaw, pitch, roll))
+        m.translation = dct['position']
+        return m
+
+    def setDialogActions(self, dialog_actions, defaultAction = False):
+        print 'setDialogActions', dialog_actions
+
+        def next_action():
+            self.go_to_dialog_camera(dialog_actions['cam'], dialog_actions['cam_smooth'])
+            self.play_player_dialog_anim(dialog_actions['anim_player'], defaultAction)
+            self.play_NPC_action(dialog_actions['act_npc'], dialog_actions['add_act_npc'], defaultAction)
+            self.play_NPC_dialog_anim(dialog_actions['anim_npc'], defaultAction)
+
+        if not self.go_to_dialog_point(dialog_actions['point'], next_action):
+            next_action()
+
+    def go_to_dialog_point(self, dialog_point_name, ready_callback = None):
+        if not dialog_point_name:
+            return
+        else:
+            dialog_points = self.get_dialog_points()
+            if not dialog_points.has_key(dialog_point_name):
+                return
+            if self.clone_model:
+                BigWorld.delModel(self.clone_model)
+                self.clone_model = None
+            self._need_stop_actions = True
+
+            def model_ready_callback(model):
+                if not self._need_stop_actions:
+                    return
+                else:
+                    self.clone_model = model
+                    point = dialog_points[dialog_point_name]
+                    self.clone_model.position = point.position
+                    self.clone_model.yaw = point.yaw
+                    if self.IsAvatarSniping():
+                        self.UpdateSniping(False)
+                    if self.isFPScamera:
+                        self.disableFPS()
+                    if self.model:
+                        self.model.visible = False
+                    BigWorld.addModel(self.clone_model)
+                    if point.hideAreas:
+                        self.createHideAreas(point.hideAreas)
+                    if point.animation:
+                        action = getattr(self.clone_model, point.animation, None)
+                        if action:
+                            self.default_action_name = point.animation
+                            action()
+                    if ready_callback:
+                        ready_callback()
+                    return
+
+            if self.active_transform and self.active_transform.getModelPath() != 'DEF':
+                StalkerModel.ComposePlayerTransformModel(self, self.active_transform, model_ready_callback)
+            else:
+                StalkerModel.ComposePlayerModelTraker(self, callback=model_ready_callback)
+            return True
+
+    def play_dialog_sound(self, sound_name):
+        if not sound_name:
+            return
+        self._need_stop_actions = True
+        self.stop_dialog_sound()
+        if sound_name == 'stop':
+            return
+        try:
+            self.__dialog_sound = sounds_manager.playSound(sound_name)
+        except Exception as e:
+            print 'DIALOG_ERROR:: NO PLAY SOUND [%s]' % sound_name
+            raise e
+
+    def stop_dialog_sound(self):
+        if self.__dialog_sound:
+            self.__dialog_sound.stop()
+            self.__dialog_sound.releaseSound()
+            self.__dialog_sound = None
+        return
+
+    def play_default_action(self):
+        if not self.default_action_name:
+            return
+        if self.clone_model:
+            self.clone_model.action(self.default_action_name)()
+        else:
+            self.model.action(self.default_action_name)()
+
+    def play_NPC_dialog_anim(self, anim_name, defaultAction = False):
+        if not self.last_interlocutor_id:
+            return
+        else:
+            self._dialog_npc = BigWorld.entities.get(self.last_interlocutor_id)
+            if not anim_name or not self._dialog_npc:
+                return
+            anim_name = anim_name.replace(' ', '')
+            animations = anim_name.split(',')
+            if defaultAction:
+                self._dialog_npc.stop_all_animations(force=True)
+            self.stop_npc_actions()
+            self._need_stop_actions = True
+            self._dialog_npc.dialog_actions = True
+            self._dialog_npc_action = getattr(self._dialog_npc.model, anim_name, None)
+            if self._dialog_npc_action:
+                self._dialog_npc_action(0, self.npc_default_action)
+            duration = 0
+            if len(animations) > 1:
+                self._dialog_npc_action = []
+                last_action = self._dialog_npc.model
+                for anim in animations:
+                    action = getattr(self._dialog_npc.model, anim, None)
+                    if action:
+                        self._dialog_npc_action.append(action)
+                        duration += action.duration
+                        last_action = getattr(last_action, anim)()
+
+            else:
+                anim_name = animations[0]
+                self._dialog_npc_action = getattr(self._dialog_npc.model, anim_name, None)
+                if self._dialog_npc_action:
+                    duration = self._dialog_npc_action.duration
+                    self._dialog_npc_action()
+            return
+
+    def play_NPC_action(self, action_id, additional_data = '', default = False):
+        if not self.last_interlocutor_id:
+            return
+        self._dialog_npc = BigWorld.entities.get(self.last_interlocutor_id)
+        if not self._dialog_npc:
+            return
+        if not hasattr(self._dialog_npc, 'ActiveItemID'):
+            return
+        if default:
+            self.__last_npc_weapon = self._dialog_npc.ActiveItemID
+        if not action_id:
+            return
+        if action_id in [PUTON_PRIM_WEAPON,
+         PUTON_PRIM2_WEAPON,
+         PUTON_SECOND_WEAPON,
+         PUTOFF_WEAPON]:
+            prev_item_id = self._dialog_npc.ActiveItemID
+            new_item_id = 0
+            if action_id == PUTON_PRIM_WEAPON:
+                new_item_id = self._dialog_npc.ActiveWeaponSet2.PrimarySlot.itemID
+            elif action_id == PUTON_PRIM2_WEAPON:
+                new_item_id = self._dialog_npc.ActiveWeaponSet2.Primary2Slot.itemID
+            elif action_id == PUTON_SECOND_WEAPON:
+                new_item_id = self._dialog_npc.ActiveWeaponSet2.SecondarySlot.itemID
+            self._dialog_npc.ActiveItemID = new_item_id
+            self._dialog_npc.set_ActiveItemID(prev_item_id)
+        elif action_id == NPC_FIRE:
+            if not self._dialog_npc.active_weapon:
+                return
+            self._dialog_npc.onPlayerFire()
+        elif action_id == NPC_RELOAD:
+            if not self._dialog_npc.active_weapon:
+                return
+            weapon = self._dialog_npc.active_weapon
+            if not weapon.getAmmoType():
+                ammo_type = weapon.findRandomAmmoType()
+                need_ammo_number = weapon.isBuiltinMagazine() and weapon.getAmmoCapacity()
+                self._dialog_npc.onStartReloadWeaponManual(need_ammo_number, ammo_type)
+            else:
+                magaz_upgr = weapon.getMagazineUpgradeSlot()
+                self._dialog_npc.onStartReloadWeapon(magaz_upgr, ammo_type)
+        elif action_id in [START_THROW, END_THROW, USE_ITEM]:
+            try:
+                item_type = int(additional_data)
+            except Exception as e:
+                print 'Error Dialog npc action', action_id, [additional_data]
+                print '\t', self, self.name, self._dialog_npc, self._dialog_npc.name
+                raise e
+
+            item_params = ItemsCatalog.GetItemParam(item_type)
+            if not item_params:
+                return
+            if action_id == START_THROW:
+                self._dialog_npc.drawStartThrowGrenade(item_type)
+            elif action_id == END_THROW:
+                position, velocity = self._dialog_npc.get_throw_params()
+                self._dialog_npc.throw_grenade(position, velocity, -999, 0, 1.0, item_type)
+            elif action_id == USE_ITEM:
+                duration = item_params.get('Action_use_time', 99999)
+                self._dialog_npc.drawUsingItemAnimation(item_type, duration)
+        elif action_id == DIRECT_HEAD_TO_PLAYER:
+            target_model = self.clone_model if self.clone_model else BigWorld.player().model
+            try:
+                player_head = target_model.node('Head')
+            except:
+                player_head = target_model.matrix
+
+            self._dialog_npc.directHeadTo(player_head)
+        elif action_id in [DIRECT_TO_PLAYER, ROTATE_TO]:
+            target_matrix = self.clone_model.matrix if self.clone_model else BigWorld.player().matrix
+            self._dialog_npc.rotateModelTo(target_matrix)
+
+    def play_player_dialog_anim(self, player_anim_name, default = False):
+        if not player_anim_name:
+            return
+        else:
+            if self.clone_model:
+                anim_model = self.clone_model
+            else:
+                anim_model = self.model
+            self._need_stop_actions = True
+            action = getattr(anim_model, player_anim_name, None)
+            if action:
+                if default or self.default_action_name is None:
+                    self.default_action_name = player_anim_name
+                if not self.clone_model:
+                    self.playAnimation(action, action.duration, self.stopAnimationClear)
+                    self.cell.playAnimation(player_anim_name, action.duration)
+                elif self.default_action_name:
+                    action().action(self.default_action_name)()
+                else:
+                    action()
+            return
+
+    def go_to_dialog_camera(self, cam, smoothly = False):
+        if not cam:
+            return
+        else:
+            self._need_stop_actions = True
+            if cam == 'default':
+                self.stop_dialog_camera()
+                return
+            self.__rotate_step = 0
+            if isinstance(cam, (unicode, str)):
+                camera_nodes = self.get_dialog_cameras()
+                camera = camera_nodes.get(cam)
+            else:
+                camera = cam
+            if not camera:
+                return
+
+            def _get_camera_matrix(cam):
+                try:
+                    cam = Math.Matrix(cam)
+                except TypeError:
+                    if hasattr(cam, 'direction') and hasattr(cam, 'position'):
+                        cam = self._get_matrix_from_instance(cam)
+                    else:
+                        msg = 'Unsupported type {0} for moving'.format(cam.__class__.__name__)
+                        raise TypeError(msg)
+
+                return cam
+
+            camera_matrix = _get_camera_matrix(camera)
+            self.setControlLockByEffect(Constants.ControlLockTypes.ANIMATION, None)
+            self.onDialogCameraActivate(True)
+            current_camera_matrix = Math.Matrix(BigWorld.camera().invViewMatrix)
+            if not self.__dialog_camera:
+                self.__dialog_camera = BigWorld.FreeCamera(BigWorld.camera())
+                BigWorld.camera(self.__dialog_camera)
+            self.__dialog_camera.invViewProvider = current_camera_matrix
+            if not smoothly:
+                self.__dialog_camera.invViewProvider = camera_matrix
+            else:
+                t_start = BigWorld.time()
+                BigWorld.callback(0.0, partial(self.moveCameraLoop, camera_matrix, current_camera_matrix, self.__dialog_camera, t_start))
+            return
+
+    def rotate_cam_orbiter(self, pivot, dx, dy, dz):
+        view = Math.Matrix(self.__dialog_camera.invViewProvider)
+        if pivot.distTo(view.translation) > 5000:
+            print 'distTo pivot.distTo(view.translation)'
+            return False
+        cam_vec = view.translation - pivot
+        dist = min(5, max(0, cam_vec.length - dz / 2))
+        cam_vec.normalise()
+        yaw = cam_vec.yaw + dx
+        pitch = cam_vec.pitch - dy
+        pitch = max(-1.56, min(1.56, pitch))
+        cam_vec.setPitchYaw(pitch, yaw)
+        new_pos = pivot + cam_vec * dist
+        new_view = Math.Matrix()
+        old_cam_dir = view.applyToAxis(2)
+        pre_yaw = old_cam_dir.yaw + dx
+        pre_pitch = old_cam_dir.pitch + dy
+        pre_pitch = max(-1.56, min(1.56, pre_pitch))
+        cam_dir_pre = Math.Vector3()
+        cam_dir_pre.setPitchYaw(pre_pitch, pre_yaw)
+        need_cam_dir = -cam_vec
+        smooth = 10
+        new_cam_dir = (cam_dir_pre * smooth + need_cam_dir) / (smooth + 1)
+        new_cam_dir.normalise()
+        new_view.lookAt(new_pos, new_cam_dir, (0, 1, 0))
+        new_view.invert()
+        self.__dialog_camera.invViewProvider = new_view
+        return True
+
+    def moveCameraLoop(self, end_camera, init_camera, cam, t_start):
+        ANIM_TIME = 3.0
+        passed_time = max(0, BigWorld.time() - t_start)
+        if passed_time >= ANIM_TIME:
+            cam.invViewProvider = end_camera
+            return
+        factor = passed_time / ANIM_TIME
+        factor = math.sin(math.pi / 2 * factor)
+        m = Math.Matrix(init_camera)
+        m.blendMatrix(factor, end_camera)
+        cam.invViewProvider = m
+        BigWorld.callback(0.0, partial(self.moveCameraLoop, end_camera, init_camera, cam, t_start))
+
+    def moveCameraLoopOLD(self, end_camera, init_camera, cam):
+        pos_matr = Math.Matrix()
+        rot_matr = Math.Matrix()
+        new_pos = cam.invViewProvider.translation + (end_camera.translation - cam.invViewProvider.translation) * MOVE_COEFF
+        pos_matr.setTranslate(new_pos)
+        self.__rotate_step = min(1, self.__rotate_step + ROTATE_COEFF)
+        yaw = cam.invViewProvider.yaw + (end_camera.yaw - cam.invViewProvider.yaw) * self.__rotate_step
+        pitch = cam.invViewProvider.pitch + (end_camera.pitch - cam.invViewProvider.pitch) * self.__rotate_step
+        roll = cam.invViewProvider.roll + (end_camera.roll - cam.invViewProvider.roll) * self.__rotate_step
+        rot_matr.setRotateYPR((yaw, pitch, roll))
+        pos_matr.preMultiply(rot_matr)
+        cam.invViewProvider = pos_matr
+        v1 = Math.Vector3(end_camera.yaw, end_camera.pitch, end_camera.roll)
+        v2 = Math.Vector3(pos_matr.yaw, pos_matr.pitch, pos_matr.roll)
+        v2.normalise()
+        v1.normalise()
+        if cam.position.distTo(end_camera.translation) > 0.2 or (v1 - v2).length > 0.1:
+            BigWorld.callback(0.0, partial(self.moveCameraLoop, end_camera, init_camera, cam))
+        else:
+            cam.invViewProvider = end_camera
+
+    def onDialogCameraActivate(self, enable = True):
+        pass

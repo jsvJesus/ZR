@@ -1,0 +1,187 @@
+# Embedded file name: ./client/journal/rep_tab/available_tab.py
+import BigWorld
+import BWPersonality
+from rep_tab_view import EventType
+import colorCodes as cc
+from journal.tab import Tab
+from show_hide_group import ShowHideGroup
+from Localization import lc
+from soGUI.soTextField import soTextField3
+import GUI
+from soGUI.soHyperLinkComponent import soHyperLinkComponent as HyperLink
+import QuestDispatcher as qd
+from rep_data_provider import IdET
+import Quest
+
+def time_to_string(time_delta):
+    time_delta = int(time_delta)
+    h = time_delta / 3600
+    remain = time_delta % 3600
+    m = remain / 60
+    return u'{0:02d}:{1:02d}'.format(h, m)
+
+
+class AutoLine:
+
+    def __init__(self, font, vertical_anchor, vertical_position_mode):
+        comp = GUI.Text()
+        comp.font = font
+        comp.colourFormatting = True
+        comp.horizontalAnchor, comp.verticalAnchor = 'LEFT', vertical_anchor
+        comp.horizontalPositionMode, comp.verticalPositionMode = 'PIXEL', vertical_position_mode
+        self.component = comp
+        self.component.script = self
+
+    def initialize(self, time_data, pos_y):
+        self.component.position = (0, pos_y, 0.5)
+        self._time_data = time_data
+        self._update_content()
+
+    def _update_content(self):
+        time_delta = self._time_data - BWPersonality.gpd.server_time
+        if self._time_data < 0:
+            text = cc.red_hex + lc('GUI.QuestLog.reptab_av_2')
+        elif self._time_data == 0 or time_delta <= 0:
+            text = cc.green_hex + lc('GUI.QuestLog.reptab_av_1')
+        else:
+            text = cc.inactive_hex + lc('GUI.QuestLog.reptab_av_0').format(cc.red_hex + time_to_string(time_delta) + cc.inactive_hex)
+        self.component.text = text
+
+    def tick(self):
+        self._update_content()
+
+    def on_destroy(self):
+        pass
+
+
+class TextField(soTextField3):
+
+    def __init__(self, *args, **kargs):
+        soTextField3.__init__(self, *args, **kargs)
+        self.just_rendered_callback = lambda : None
+
+    def renderText(self):
+        soTextField3.renderText(self)
+        self.just_rendered_callback()
+
+
+class AvailableTab(Tab, ShowHideGroup):
+    INTERFACE_ID = 'rep_tab_basecontent_availabletab_interface_id'
+
+    def __init__(self, component, events_handler):
+        Tab.__init__(self, lc('GUI.QuestLog.reptab_available'), component)
+        ShowHideGroup.__init__(self)
+        self._events_handler = events_handler
+        self._tick_handler = None
+        tf = TextField(GUI.Window(), self.component.width - 19, self.component.height, textWidth=-1, hScroll=False, vScroll=True, hideScroll=True, borderWidth=0, vOffset=8, hOffset=0, textureless=1)
+        tf.just_rendered_callback = self._on_just_rendered
+        tf.INTERFACE_ID = self.INTERFACE_ID
+        comp = tf.component
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.position = (19, 0, 0.5)
+        self.component.addChild(comp, 'description')
+        self._tf = tf
+        comp = GUI.Window()
+        pos_y = tf.component.textRendererPlane.position.y
+        height = tf.component.textRendererPlane.height
+        comp.widthMode, comp.heightMode = ('CLIP', 'PIXEL')
+        comp.width, comp.height = 1, height
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'PIXEL')
+        comp.position = (0, pos_y, 0.9)
+        self._tf.component.addChild(comp, 'appendix')
+        return
+
+    def _hlink_event(self, event, data):
+        if event != HyperLink.EVENT_CLICK:
+            return
+        data, interface_id = data
+        if interface_id == self.INTERFACE_ID:
+            quest_id = int(data)
+            data = {'quest_id': quest_id}
+            self._events_handler(EventType.OnQuestClick, data)
+
+    def on_show(self):
+        Tab.on_show(self)
+        ShowHideGroup.on_show(self)
+        BWPersonality.GUICore.addListener('hlinkEvent', self._hlink_event)
+        self._tick()
+
+    def _cancel_tick(self):
+        if self._tick_handler:
+            BigWorld.cancelCallback(self._tick_handler)
+            self._tick_handler = None
+        return
+
+    def _tick(self):
+        self._cancel_tick()
+        for _, child in self._tf.component.appendix.children:
+            child.script.tick()
+
+        self._tick_handler = BigWorld.callback(5, self._tick)
+
+    def on_hide(self):
+        Tab.on_hide(self)
+        ShowHideGroup.on_hide(self)
+        BWPersonality.GUICore.removeListener('hlinkEvent', self._hlink_event)
+        self._cancel_tick()
+
+    def _on_itemdata_event(self, event_type, data):
+        if event_type == IdET.OnQuestsChanged:
+            mode = data['mode']
+            if mode == Quest.AVAILABLE_REP_QUEST:
+                self._update_content()
+                if self.item_data.available_quests is None:
+                    data = {'id': self.item_data.rep_id}
+                    self._events_handler(EventType.AvailableQuestsEmptyVisible, data)
+        return
+
+    def on_group_changed(self, item_data, old_item_data):
+        if old_item_data:
+            old_item_data.del_callback_listener(self._on_itemdata_event)
+        if item_data:
+            item_data.add_callback_listener(self._on_itemdata_event)
+        if self.item_data and self.item_data.available_quests is None:
+            data = {'id': self.item_data.rep_id}
+            self._events_handler(EventType.AvailableQuestsEmptyVisible, data)
+        self._update_content()
+        return
+
+    def _on_just_rendered(self):
+        renderer = self._tf.component.textRendererPlane
+        appendix = self._tf.component.appendix
+        for _, child in appendix.children:
+            child.script.on_destroy()
+            _lines_pool.append(child.script)
+            appendix.delChild(child)
+
+        if not self.item_data or not self.item_data.available_quests:
+            return
+        pos = self._tf.scrollCursor[1]
+        for q_index in xrange(pos, len(self.item_data.available_quests)):
+            line_index = q_index - pos
+            if len(renderer.children) <= line_index:
+                break
+            time_data = self.item_data.available_quests[q_index][1]
+            t = renderer.children[line_index][1]
+            if _lines_pool:
+                auto_line = _lines_pool.pop()
+            else:
+                auto_line = AutoLine(t.font, t.verticalAnchor, t.verticalPositionMode)
+            appendix.addChild(auto_line.component)
+            auto_line.initialize(time_data, t.position[1])
+
+    def _update_content(self):
+        text = u'<font=RobotoCondensedRegular_16.font>'
+        if self.item_data and self.item_data.available_quests:
+            for q_id, _ in self.item_data.available_quests:
+                text += u'<hlink={0};{1}>\n'.format(qd.getQuestTitleByID(q_id), q_id)
+
+            if text:
+                text = text[:-1]
+        self._tf.setText(text, immidiate=True)
+
+
+_lines_pool = []

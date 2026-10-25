@@ -1,0 +1,208 @@
+# Embedded file name: ./client/set_abils/set_abils_controller.py
+import BWPersonality
+import ItemsUtils
+from collections import defaultdict
+from Items import ItemsCatalog
+import BigWorld
+from utils import Destructable, Tickable
+from abil_win import AbilWin
+import set_abil_utils
+from abils import AbilEventType, get_abil_class_by_name
+import gui_jokes
+from Localization import lc
+from ChatChannelConfig import CHANNEL_CONSTS
+
+class SetAbilsController(Tickable, Destructable):
+
+    def __init__(self):
+        Destructable.__init__(self)
+        Tickable.__init__(self, 1.0)
+        self._p = BigWorld.player()
+        self._abil = None
+        self._valid_set = None
+        self._win = None
+        self.start_tick()
+        return
+
+    def equipped_armor_changed(self, old_value):
+        if self._check_equipped_abil():
+            self.start_tick()
+
+    def _check_equipped_abil(self):
+        equip_sets = {}
+        for item_data in self._p.EquippedArmor.values():
+            item_id, item_type = item_data['itemID'], item_data['itemType']
+            if item_id <= 0 or item_type <= 0:
+                continue
+            item_params = ItemsCatalog.GetItemParam(item_type)
+            set_equip = item_params.get('SetEquip')
+            if set_equip:
+                equip_sets[item_id] = set_equip
+
+        valid_set = None
+        need_tick = False
+        if len(equip_sets) >= set_abil_utils.ITEMS_TO_ABIL:
+            need_tick = True
+            counts = defaultdict(int)
+            mains = {}
+            item_id_to_item = {}
+            for complex_item in ItemsUtils.get_multiple_items_by_ids(self._p, equip_sets.keys()):
+                item_id_to_item[complex_item['complexItemID']] = complex_item
+
+            for item_id, set_equip in equip_sets.iteritems():
+                complex_item = item_id_to_item[item_id]
+                if ItemsUtils.is_item_broken(complex_item, entity=self._p):
+                    continue
+                counts[set_equip] += 1
+                item_params = ItemsCatalog.GetItemParam(complex_item['complexItemType'])
+                is_main = item_params.get('SetEquipMain', False)
+                if is_main:
+                    if not ItemsUtils.GetSingleInconstantParam(complex_item, ItemsCatalog.INC_SETCHARGE):
+                        cur_charge = 0
+                        mains[set_equip] = cur_charge
+                    valid_set = counts[set_equip] >= set_abil_utils.ITEMS_TO_ABIL and set_equip in mains and set_equip
+                    break
+
+        self.valid_set = valid_set
+        if self.abil:
+            self.abil.charge = mains.get(set_equip, 0)
+        return need_tick
+
+    def request_item_charge(self, item):
+        result = set_abil_utils.parse_main_set_item(self._p)
+        if not result:
+            self._p.putMessage(CHANNEL_CONSTS.SYSTEM, lc('abils.charge.noequipment'))
+            return False
+        if not result['needed_charges']:
+            self._p.putMessage(CHANNEL_CONSTS.SYSTEM, lc('abils.charge.charged'))
+            return False
+        set_name = ItemsCatalog.GetItemParam(item['complexItemType']).get('SetEquipCharge')
+        if set_name != result['set_name']:
+            self._p.putMessage(CHANNEL_CONSTS.SYSTEM, lc('abils.charge.invalidset'))
+            return False
+        uses = ItemsUtils.GetItemNumberOrUses(item)
+        if uses <= 0:
+            self._p.putMessage(CHANNEL_CONSTS.SYSTEM, lc('abils.charge.nocharge'))
+            return False
+        return True
+
+    def request_npc_charge(self):
+
+        def callback(event):
+            BWPersonality.GUICore.mouseAltMode = False
+            BWPersonality.GUICore.setBestCursor()
+            if event != gui_jokes.askUserYesNo.YES:
+                return
+            if result['total_money'] > self._p.CreditNumber:
+                self._p.putMessage(CHANNEL_CONSTS.SYSTEM, lc('abils.charge.nomoney'))
+                return
+            if result['spend_item_type'] and result['spend_count']:
+                cur_count = ItemsUtils.get_item_number_by_type(self._p, result['spend_item_type'])
+                if result['spend_count'] > cur_count:
+                    self._p.putMessage(CHANNEL_CONSTS.SYSTEM, lc('abils.charge.noitems'))
+                    return
+            self._p.cell.request_set_npc_charge()
+
+        result = set_abil_utils.parse_main_set_item(self._p)
+        if not result:
+            self._p.putMessage(CHANNEL_CONSTS.SYSTEM, lc('abils.charge.noequipment'))
+            return
+        if not result['needed_charges']:
+            self._p.putMessage(CHANNEL_CONSTS.SYSTEM, lc('abils.charge.charged'))
+            return
+        text = lc('abils.charge.askmoney').format(result['total_money'])
+        if result['spend_item_type'] and result['spend_count']:
+            item_name = ItemsUtils.GetItemName(result['spend_item_type'], fGetShortName=True)
+            text += u'\n' + lc('abils.charge.askitems').format(item_name, result['spend_count'])
+        gui_jokes.askUserYesNo(u'', text, callback=callback)
+        BWPersonality.GUICore.setMouseAltState(True, True)
+
+    def use_clicked(self):
+        if self.abil:
+            if not self.abil.is_in_cooldown():
+                if self.abil.charge <= 0:
+                    self._p.putMessage(CHANNEL_CONSTS.SYSTEM, lc('abils.use.nocharge'))
+                    return
+                self.abil.start_use()
+
+    @property
+    def valid_set(self):
+        return self._valid_set
+
+    @valid_set.setter
+    def valid_set(self, value):
+        if self._valid_set == value:
+            return
+        else:
+            self._valid_set = value
+            if self.valid_set:
+                abil_config = set_abil_utils.get_abil_config(self.valid_set)
+                last_use_time = 0
+                for cld in self._p.set_abil_cld:
+                    if cld['abil_id'] == abil_config['id']:
+                        last_use_time = cld['use_time']
+                        break
+
+                abil_class = get_abil_class_by_name(abil_config['class'])
+                self.abil = abil_class(last_use_time, abil_config)
+            else:
+                self.abil = None
+            return
+
+    def _on_abil_event(self, event_type, data):
+        if event_type == AbilEventType.OnJustUse:
+            last_use_time = data['last_use_time']
+            abil_id = self.abil.get_id()
+            for cld in self._p.set_abil_cld:
+                if cld['abil_id'] == abil_id:
+                    cld['use_time'] = last_use_time
+                    break
+            else:
+                self._p.set_abil_cld.append({'abil_id': abil_id,
+                 'use_time': last_use_time})
+
+            self._p.base.apply_set_abil_use0(abil_id)
+
+    @property
+    def abil(self):
+        return self._abil
+
+    @abil.setter
+    def abil(self, value):
+        if value == self._abil:
+            return
+        if self._abil:
+            self._abil.remove_listener(self._on_abil_event)
+        self._abil = value
+        if self._abil:
+            self._abil.add_listener(self._on_abil_event)
+            if not self._win:
+                self._win = AbilWin()
+                BWPersonality.GUICore.worldLayer.addChild(self._win.component, 'setabilwin')
+            self._win.show(self.abil)
+        elif self._win:
+            self._win.hide()
+
+    def reset_cooldown(self):
+        if not self.abil:
+            return
+        clds = self._p.set_abil_cld
+        for i in range(len(clds) - 1, -1, -1):
+            if clds[i]['abil_id'] != self.abil.get_id():
+                continue
+            del clds[i]
+
+        self.abil.reset_cooldown()
+
+    def can_tick(self):
+        if self._p.isDestroyed:
+            return False
+        return self._check_equipped_abil()
+
+    def on_release(self):
+        self.stop_tick()
+        self.valid_set = None
+        self.abil = None
+        if self._win:
+            self._win.hide()
+        return

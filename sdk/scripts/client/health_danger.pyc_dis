@@ -1,0 +1,65 @@
+# Embedded file name: ./client/health_danger.py
+from PostProcessing import addPPChainByName, removePPChain, getPPChainByID
+from Helpers.BWCoroutine import BWMemberCoroutine, BWWaitForPeriod
+from Math import Vector4
+from tmp_blends import HalfBlend
+import Stats
+PPCHAIN = 'health_danger'
+DANGER_HEALTH = 0.15
+color_correct_alpha_max_health = 0.01
+color_correct_alpha_min_health = 0.15
+vignette_color_max_health = Vector4(0.35, 0, 0.07, 0.01)
+vignette_color_min_health = Vector4(0.5, 0, 0.07, 0.05)
+_diff_alpha = color_correct_alpha_min_health - color_correct_alpha_max_health
+_diff_vignette = vignette_color_min_health - vignette_color_max_health
+
+class HealthDanger(object):
+    _danger_pp_id = None
+    _danger_coroutine = None
+
+    def onEnterWorld(self):
+        self._danger_blend = HalfBlend()
+        self._startHealtDanger()
+
+    def onLeaveWorld(self):
+        self._stopHealtDanger()
+        self._removeHealthDangerPP()
+
+    @BWMemberCoroutine
+    def _healtDangerLoop(self):
+        while True:
+            perc = self.GetStatValue(Stats.ch_HitPoints) / (self.GetStatValue(Stats.ch_MaxHitPoints) + 1.0)
+            if perc > DANGER_HEALTH and self._danger_pp_id:
+                self._removeHealthDangerPP()
+                self._danger_blend.setCurrentValue(1.0)
+            elif perc < DANGER_HEALTH:
+                if not self._danger_pp_id:
+                    self._danger_pp_id = addPPChainByName(PPCHAIN)
+                    self._danger_pp = getPPChainByID(self._danger_pp_id)[1]
+                self._danger_blend.setValueTo(perc / DANGER_HEALTH)
+                self._danger_blend.updateBlend(0.1)
+                mod = self._danger_blend.getCurrentValue()
+                self._danger_pp[0].phases[1].material.alpha = color_correct_alpha_min_health - _diff_alpha * mod
+                self._danger_pp[1].phases[0].material.vignetteColour = vignette_color_min_health - _diff_vignette * mod
+            yield BWWaitForPeriod(0)
+
+    def _stopHealtDanger(self):
+        if not self._danger_coroutine:
+            return
+        else:
+            self._danger_coroutine.stop()
+            self._danger_coroutine = None
+            return
+
+    def _startHealtDanger(self):
+        if self._danger_coroutine:
+            self._stopHealtDanger()
+        self._danger_coroutine = self._healtDangerLoop()
+        self._danger_coroutine.run()
+
+    def _removeHealthDangerPP(self):
+        if self._danger_pp_id:
+            removePPChain(self._danger_pp_id)
+            self._danger_pp_id = None
+            self._danger_pp = None
+        return

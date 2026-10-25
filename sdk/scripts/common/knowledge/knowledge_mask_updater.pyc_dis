@@ -1,0 +1,81 @@
+# Embedded file name: ./common/knowledge/knowledge_mask_updater.py
+import os
+import sys
+sys.path.append(os.path.join(os.getcwd(), '../../../../sys/res/scripts/common/Lib'))
+sys.path.append(os.path.join(os.getcwd(), '../'))
+import pyson
+from Constants import KnowledgeTypes as KT
+import cPickle
+data_path = os.path.join(os.getcwd(), '../Knowledges.pyson')
+ids_mask = []
+with open(data_path) as f:
+    raw_data = pyson.loads(f.read())
+    version = raw_data['version']
+    npcs = {}
+    for npc_id, npc_data in raw_data['items']['NPC'].items():
+        ids_mask.append(npc_data['KID'])
+        for base_know in npc_data['base']:
+            know_id = base_know['KID']
+            ids_mask.append(know_id)
+            if base_know['KType'] not in (KT.ACQUAINTANCE, KT.COORD, KT.FRACTION):
+                raise NotImplementedError
+
+        for add_know in npc_data['additional']:
+            know_id = add_know['KID']
+            ids_mask.append(know_id)
+            for child_know in add_know.get('children', []):
+                know_id = child_know['KID']
+                ids_mask.append(know_id)
+
+    for fr_id, fr_data in raw_data['items']['FRACTION'].items():
+        ids_mask.append(fr_data['KID'])
+        base_data = fr_data['base'][0]
+        raise base_data['KType'] == KT.ACQUAINTANCE or AssertionError
+        ids_mask.append(base_data['KID'])
+        for add_know in fr_data['additional']:
+            know_id = add_know['KID']
+            ids_mask.append(know_id)
+            for child_know in add_know.get('children', []):
+                know_id = child_know['KID']
+                ids_mask.append(know_id)
+
+    for ct_id, ct_data in raw_data['items']['AREA'].items():
+        base_data = ct_data['base']
+        raise len(base_data) == 1 or AssertionError
+        raise base_data[0]['KType'] == KT.COORD or AssertionError
+        ids_mask.append(base_data[0]['KID'])
+        for add_know in ct_data['additional']:
+            know_id = add_know['KID']
+            ids_mask.append(know_id)
+
+mask_folder = os.path.join(os.getcwd(), 'masks')
+max_existing_version = None
+for mask_path in os.listdir(mask_folder):
+    mask_version = int(os.path.splitext(mask_path)[0])
+    if mask_version == version:
+        continue
+    if max_existing_version is None or mask_version > max_existing_version:
+        max_existing_version = mask_version
+
+if max_existing_version is not None:
+    old_mask_path = os.path.join(mask_folder, '{0}.msk'.format(max_existing_version))
+    with open(old_mask_path) as f:
+        ids_old_mask = cPickle.load(f)
+    old_set = set(ids_old_mask)
+    new_set = set(ids_mask)
+    removed_indices = []
+    for removed_id in old_set - new_set:
+        removed_indices.append(ids_old_mask.index(removed_id))
+
+    for added_id in new_set - old_set:
+        if removed_indices:
+            index = removed_indices.pop()
+            ids_old_mask[index] = added_id
+        else:
+            ids_old_mask.append(added_id)
+
+    ids_mask = ids_old_mask
+mask_file_path = os.path.join(mask_folder, '{0}.msk'.format(version))
+if not os.path.exists(mask_file_path):
+    with open(mask_file_path, 'w') as f:
+        cPickle.dump(ids_mask, f)

@@ -1,0 +1,281 @@
+# Embedded file name: ./client/Music.py
+import sounds_manager as sounds
+import BigWorld
+import math_bw
+from Settings import Settings
+from utils import ignoreError
+import BWPersonality
+import traceback
+import bisect
+from datetime import datetime, timedelta
+import time
+time.tzname = ('RTZ 4 (\xe7\xe8\xec\xe0)', 'RTZ 4 (\xeb\xe5\xf2\xee)')
+DEBUG_DAYTIME = False
+
+def switchDebugMode():
+    global DEBUG_DAYTIME
+    DEBUG_DAYTIME = not DEBUG_DAYTIME
+    return DEBUG_DAYTIME
+
+
+def pdebug(*args):
+    if not DEBUG_DAYTIME:
+        return
+    line = ' | '.join(map(str, args))
+    msg = 'DEBUG [%s] %s' % (BigWorld.timeOfDay(), line)
+    print msg
+    player = BigWorld.player()
+    if player:
+        player.systemMsgChat(msg)
+
+
+def parse_time_string(time_string):
+    formats = ('%H:%M:%S', '%H:%M', '%H')
+    for form in formats:
+        try:
+            return datetime.strptime(time_string, form)
+        except:
+            pass
+
+    raise RuntimeError("time_string: '%s'" % time_string)
+
+
+SCHEDULE = [(parse_time_string('00:00:00'), 'night'),
+ (parse_time_string('06:00:00'), 'morning'),
+ (parse_time_string('12:00:00'), 'day'),
+ (parse_time_string('18:00:00'), 'evening')]
+TIMEKEYS = [ t[0] for t in SCHEDULE ]
+
+class Music(object):
+    instance = None
+
+    def __new__(cls):
+        if cls.instance is None:
+            cls.instance = object.__new__(cls)
+        return cls.instance
+
+    def __init__(self):
+        pass
+
+    def onInit(self):
+        print 'Music::onInit'
+        self.currentTrack = None
+        self.menuTrack = None
+        self.tracks = None
+        self.musicEnabled = True
+        self.lastSpaceSound = None
+        self.lastSpaceSoundName = ''
+        self._music_stack = []
+        self._cur_music = None
+        self._music = None
+        self._ambient_sound = None
+        self._wind_speed = 0.0
+        self.initMusicTracks()
+        self.startMenuTrack()
+        self._playMusicTheme('music/menu_theme')
+        self._play_ambient()
+        self.updateVolume()
+        BWPersonality.game.addListener('on_local_timeofday_changed', self._on_time_changed)
+        return
+
+    def update_param(self, name, val):
+        if self.lastSpaceSound:
+            self.lastSpaceSound.set_param(name, val)
+
+    def update_music_param_daytime(self):
+        pdebug('update_music_param_daytime', self._param_daytime_val, self._cur_music)
+        if self._music and self._param_daytime_val:
+            if self._cur_music != 'music/spaces/outlands':
+                return
+            self._music.set_param('daytime', self._param_daytime_val)
+            pdebug('-> set_param', self._param_daytime_val)
+
+    def update_windspeed(self):
+        ws = math_bw.clamp(self._wind_speed, 0, 12.0)
+        ws /= 12.0
+        if self.lastSpaceSound:
+            self.lastSpaceSound.set_param('wind', ws)
+
+    def wind_speed_changed(self, wind_speed):
+        self._wind_speed = wind_speed
+        self.update_windspeed()
+
+    def updateVolume(self):
+        s = Settings()
+        shell_modif = 1
+        player = BigWorld.player()
+        if player:
+            shell_modif = player.getSoundVolumeInShell()
+        if self.lastSpaceSound and not self.lastSpaceSound.isVirtual:
+            self.lastSpaceSound.volume = s.getEnvironmentVolume() * shell_modif
+            if BWPersonality.GUICore:
+                BWPersonality.GUICore.drawSound('A:shell', shell_modif)
+
+    def initMusicTracks(self):
+        pass
+
+    def setMusicState(self, state):
+        self.musicEnabled = state
+        for mus in self.tracks:
+            mus.muted = not self.musicEnabled
+
+        if not self.musicEnabled:
+            self.stopAllMusic()
+        else:
+            self.startRandomTrack()
+
+    def toggleMusic(self):
+        self.musicEnabled = not self.musicEnabled
+        self.setMusicState(self.musicEnabled)
+
+    def stopAllMusic(self):
+        self._play_music(None)
+        self._music_stack = []
+        self._stop_ambient()
+        return
+
+    def startMenuTrack(self):
+        pass
+
+    def startRandomTrack(self):
+        print 'Music::startRandomTrack'
+
+    def onGenericMusicStarted(self, snd):
+        pass
+
+    def onGenericMusicFinished(self, snd):
+        pass
+
+    def updateSpaceSoundVolume(self):
+        self.updateVolume()
+
+    def playSpaceSound(self, spacename):
+        try:
+            soundName = 'ambient/' + spacename
+            self._playMusicTheme('music/' + spacename)
+            self.update_music_param_daytime()
+            if self.lastSpaceSound is not None and self.lastSpaceSoundName != soundName:
+                self.lastSpaceSound.stop()
+            if self.lastSpaceSoundName != soundName:
+                self.lastSpaceSoundName = soundName
+                self.lastSpaceSound = sounds.getSound(soundName)
+                if self.lastSpaceSound:
+                    self.lastSpaceSound.play()
+            elif self.lastSpaceSound:
+                self.lastSpaceSound.play()
+            self.update_windspeed()
+        except:
+            traceback.print_exc()
+
+        return
+
+    def stopSpaceSound(self):
+        print 'Music::stopSpaceSound', repr(self.lastSpaceSoundName)
+        if self.lastSpaceSound:
+            try:
+                self.lastSpaceSound.stop()
+            except:
+                traceback.print_exc()
+
+        self.lastSpaceSound = None
+        self.lastSpaceSoundName = ''
+        self._stopMusicTheme()
+        if self._update_daytime_cid:
+            BigWorld.cancelCallback(self._update_daytime_cid)
+            self._update_daytime_cid = 0
+        return
+
+    def _on_time_changed(self):
+        pdebug('_on_time_changed')
+        self._update_daytime()
+
+    _update_daytime_cid = 0
+    _param_daytime_val = ''
+
+    def _update_daytime(self):
+        if self._update_daytime_cid:
+            BigWorld.cancelCallback(self._update_daytime_cid)
+            self._update_daytime_cid = 0
+        spaceID = BigWorld.player().spaceID
+        pdebug('_update_daytime', spaceID)
+        if spaceID not in BWPersonality._tod_inits:
+            self._update_daytime_cid = BigWorld.callback(3, self._update_daytime)
+            return
+        timeOfDay = BigWorld.timeOfDay()
+        if not timeOfDay:
+            self._update_daytime_cid = BigWorld.callback(3, self._update_daytime)
+            return
+        cur_time = parse_time_string(timeOfDay)
+        index = bisect.bisect_right(TIMEKEYS, cur_time) - 1
+        self._param_daytime_val = SCHEDULE[index][1]
+        self.update_music_param_daytime()
+        next_index = (index + 1) % len(SCHEDULE)
+        next_schedule_delay = SCHEDULE[next_index][0] - cur_time
+        if next_schedule_delay < timedelta(0):
+            next_schedule_delay += timedelta(86400)
+        next_schedule_delay = float(next_schedule_delay.seconds) / BWPersonality._tod_inits[spaceID]['gameSecondsPerSecond']
+        self._update_daytime_cid = BigWorld.callback(next_schedule_delay + 1, self._update_daytime)
+
+    def onConnecting(self):
+        self._playMusicTheme('music/menu_theme')
+
+    def onDisconnected(self):
+        self._playMusicTheme('music/menu_theme')
+        self._play_ambient()
+
+    def onPlayerAccount(self):
+        self._playMusicTheme('music/menu_theme')
+        self._stop_ambient()
+
+    def pop_music_theme(self, uid):
+        self._music_stack = filter(lambda m: m[0] != uid, self._music_stack)
+        path = self._music_stack and self._music_stack[-1][1] or None
+        self._play_music(path)
+        return
+
+    def push_music_theme(self, uid, path):
+        self._music_stack.append((uid, path))
+        self._play_music(path)
+
+    def _play_music(self, path):
+        if self._cur_music == path:
+            return
+        else:
+            self._cur_music = path
+            if self._music:
+                self._music.stop()
+                self._music.releaseSound()
+                self._music = None
+            if path:
+                self._music = sounds.getMusic(path)
+                if self._music:
+                    self._music.play()
+            return
+
+    def _playMusicTheme(self, path):
+        self._music_stack = [(None, path)]
+        self._play_music(path)
+        return
+
+    def _stopMusicTheme(self):
+        self._music_stack = []
+        self._cur_music = None
+        if self._music:
+            self._music.stop()
+            self._music.releaseSound()
+            self._music = None
+        return
+
+    def update_music_param(self, path, name, val):
+        if self._cur_music != path:
+            self._playMusicTheme(path)
+        self._music.set_param(name, val)
+
+    def _play_ambient(self):
+        self._ambient_sound = sounds.playSound('ambient/spaces/login')
+
+    def _stop_ambient(self):
+        if self._ambient_sound:
+            self._ambient_sound.stop()
+            self._ambient_sound = None
+        return

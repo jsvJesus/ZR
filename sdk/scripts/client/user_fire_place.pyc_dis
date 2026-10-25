@@ -1,0 +1,267 @@
+# Embedded file name: ./client/user_fire_place.py
+from EffectData import EffectNames
+from Math import Vector3, Vector4
+import ItemsUtils
+import Constants
+import BigWorld
+import RestrictionsUtils
+import traceback
+from Items import ItemsCatalog
+from Localization import lc
+import Durations
+import BWPersonality
+MODEL_NAME = 'models/misc/fireplace/bonfire/bonfire_on.model'
+MAX_DIST_UF = 1.5
+
+class UserFirePlace:
+    _uf_place_progress = False
+    _uf_place_model = None
+    __tid = 0
+    __tidcr = 0
+    playing_animation_uf = False
+
+    @property
+    def uf_place_progress(self):
+        return self._uf_place_progress
+
+    def startUserFirePlace(self, item):
+        self.stopUserFirePlace()
+        self._uf_err_code = ItemsUtils.FAIL_UF_GROUND
+        self._uf_position = None
+        self._uf_yaw = 0
+        self._uf_player_pos = None
+        self.uf_item = item
+        self._uf_place_progress = True
+        BigWorld.fetchModel(MODEL_NAME, self.__onLoadUFmodel)
+        self.__loop()
+        BWPersonality.GUICore.showInventory(False)
+        self.setControlLock(Constants.ControlLockTypes.USER_FIRE, False)
+        self.cancel_action_start(self.stopUserFirePlace)
+        return
+
+    def stopUserFirePlace(self):
+        if self.playing_animation_uf:
+            self.UpdateCrouch(False)
+            self.playing_animation_uf = False
+        self._uf_err_code = ItemsUtils.FAIL_UF_GROUND
+        self._uf_position = None
+        self._uf_player_pos = None
+        self.uf_item = None
+        self._tmp_hl_model = None
+        if self._uf_place_model:
+            try:
+                self.delModel(self._uf_place_model)
+            except:
+                traceback.print_exc()
+
+            self._uf_place_model = None
+        if self.__tid:
+            BigWorld.cancelCallback(self.__tid)
+        if self.__tidcr:
+            BigWorld.cancelCallback(self.__tidcr)
+        self.__tid = 0
+        self.__tidcr = 0
+        self.setControlLock(Constants.ControlLockTypes.USER_FIRE, False)
+        self.moving_locked = False
+        if self._uf_place_progress:
+            self.cancel_action_clear()
+            self._uf_place_progress = False
+        return
+
+    def lockUserFirePlace(self):
+        if self.__tid:
+            BigWorld.cancelCallback(self.__tid)
+        self.__tid = 0
+        if self._uf_place_model:
+            self._uf_place_model.bonfure = 'Default'
+
+    def ManipulateTarget(self):
+        if not self._uf_place_progress:
+            return False
+        self.createUserFire()
+        return True
+
+    def onLeftMouseButton(self, isDown, event = None):
+        if not self._uf_place_progress:
+            return False
+        if not isDown:
+            return True
+        self.createUserFire()
+        return True
+
+    def onRightMouseButton(self, isDown, event = None):
+        if not self._uf_place_progress:
+            return False
+        if not isDown:
+            return True
+        self.cancel_using_uf()
+        return True
+
+    def cancel_using_uf(self):
+        self.cancel_using_item()
+
+    def gotoUserFireAndCreate(self):
+
+        def create_callback():
+            if not self.uf_item:
+                return
+            itemID = self.uf_item['complexItemID']
+            itemType = self.uf_item['complexItemType']
+            self.lockUserFirePlace()
+            local = 'Items.GUIStrings.USING'
+            item_param = ItemsCatalog.GetItemParam(itemType)
+            local = item_param.get('Action_use_cast_local', local)
+            duration = Durations.GetItemUseDuration(self, itemType)
+            duration = item_param.get('Action_use_time', duration)
+            self.physics.velocity = (0, 0, 0)
+            self.DoAction(RestrictionsUtils.CHANNEL_ITEMS, duration, lc(local))
+            self.cell.startCreateUserFire(self._uf_position, self._uf_yaw, itemID, itemType)
+
+        def gotoUserFire():
+
+            def callback(success):
+                if success:
+                    create_callback()
+
+            dir_uf = self._uf_position - self._uf_player_pos
+            x, y, z = self._uf_player_pos
+            dest = Vector4(x, y, z, dir_uf.yaw)
+            self.moving_locked = True
+            timeout = 5.0
+            speed = 1.5
+            heightTolerance = 0.9
+            self.physics.seek(dest, speed, timeout, heightTolerance, callback)
+            self.physics.seekEnableYaw = True
+
+        gotoUserFire()
+        return True
+
+    def createUserFire(self):
+        if self._uf_err_code != ItemsUtils.FAIL_NO:
+            self.ReportCodedMessage(self._uf_err_code)
+            return
+        if not self._uf_position:
+            return
+        if not self.CheckRestriction(RestrictionsUtils.CHANNEL_ITEMS):
+            return
+        if self.isPlayerJump():
+            return
+        self.gotoUserFireAndCreate()
+        self.resetFootTwist()
+        self.setControlLock(Constants.ControlLockTypes.USER_FIRE, True)
+
+    def ProceedCreateUserFire(self, duration):
+        """ \xd1\x81\xd0\xb5\xd1\x80\xd0\xb2\xd0\xb5\xd1\x80 \xd1\x80\xd0\xb0\xd0\xb7\xd1\x80\xd0\xb5\xd1\x88\xd0\xb8\xd0\xbb \xd0\xb8 \xd0\xbf\xd1\x80\xd0\xb8\xd1\x81\xd1\x82\xd1\x83\xd0\xbf\xd0\xb8\xd0\xbb \xd0\xba \xd1\x80\xd0\xb0\xd0\xb7\xd0\xb6\xd0\xb8\xd0\xb3\xd0\xb0\xd0\xbd\xd0\xb8\xd1\x8e \xd0\xba\xd0\xbe\xd1\x81\xd1\x82\xd1\x80\xd0\xb0 """
+        if duration < 0:
+            self.stopUserFirePlace()
+            self.setControlLock(Constants.ControlLockTypes.USER_FIRE, False)
+            return
+        else:
+
+            def onEndCreate():
+                if self.isDestroyed:
+                    return
+                self.stopUserFirePlace()
+
+            self.__tidcr = BigWorld.callback(duration + 1.0, onEndCreate)
+            self._tmp_hl_model = None
+            if self.IsAvatarStand():
+                self.UpdateCrouch(True)
+            self.DrawUseItem(ItemsCatalog.FIREPLACE['TypeID'], duration)
+            self.playing_animation_uf = True
+            return
+
+    def __onLoadUFmodel(self, model):
+        if self.isDestroyed:
+            return
+        if not self._uf_place_progress:
+            return
+        if self._uf_place_model:
+            return
+        self.addModel(model)
+        self._uf_place_model = model
+
+    _last_cam_dir = None
+    _last_cam_diff = None
+
+    def __loop(self):
+        if self.isDestroyed:
+            return
+        elif not self.canUse():
+            return self.stopUserFirePlace()
+        elif not self._uf_place_progress:
+            return False
+        else:
+            cam = BigWorld.camera()
+            src = cam.position
+            if not self.lookingaround or not self._last_cam_dir:
+                src = cam.position
+                dir_ = cam.direction
+                self._last_cam_dir = dir_
+                self._last_cam_diff = cam.position - self.position
+            else:
+                src = self._last_cam_diff + self.position
+                dir_ = self._last_cam_dir
+            dist = MAX_DIST_UF
+            if not self.isFPScamera:
+                dist += cam.pivotMaxDist
+            dest = src + dir_ * dist
+            res = BigWorld.collide(self.spaceID, src, dest)
+            fw = Vector3(dir_)
+            fw[1] = 0
+            fw.normalise()
+            if not fw:
+                fw = Vector3(1, 0, 0)
+            self._uf_position = None
+            if res:
+                self._uf_position = res[0]
+            else:
+                dwn = Vector3(dest)
+                dwn.y = self.position.y - 0.2
+                res = BigWorld.collide(self.spaceID, dest, dwn)
+                if res:
+                    self._uf_position = res[0]
+            self._uf_err_code = self.hitFirePlaceTest(self._uf_position)
+            if not self._uf_position:
+                self._uf_position = self.position + fw * 0.9
+            self._uf_yaw = (self._uf_position - self.position).yaw
+            self.__tid = BigWorld.callback(0.001, self.__loop)
+            if self._uf_place_model:
+                self._uf_place_model.position = self._uf_position
+                self._uf_place_model.yaw = self._uf_yaw
+                self._tmp_hl_model = self._uf_place_model
+                if self._uf_err_code == ItemsUtils.FAIL_NO:
+                    self._uf_place_model.bonfure = 'green'
+                else:
+                    self._uf_place_model.bonfure = 'red'
+            self._uf_player_pos = self.position
+            return
+
+    def hitFirePlaceTest(self, firePos):
+        if not firePos:
+            return ItemsUtils.FAIL_UF_GROUND
+        if BigWorld.waterCollide(firePos + Vector3(0, 2, 0), firePos - Vector3(0, 0.1, 0)):
+            return ItemsUtils.FAIL_UF_WATER
+        if self.isAffectedBy(EffectNames.Safe_Area):
+            return ItemsUtils.FAIL_UF_SAFE_AREA
+        if not self._checkFirePlacePossible(firePos):
+            return ItemsUtils.FAIL_UF_GEOMETRY
+        if self.isOutsideShell():
+            if self.isColdSpace() and not self.isAffectedBy(EffectNames.AllowCreationUserFire):
+                return ItemsUtils.FAIL_UF_COLD_SPACE
+        allow_uf_cold_space = bool(self.isColdSpace() and self.isAffectedBy(EffectNames.AllowCreationUserFire))
+        fire_range_restr = ('ZoneEffects', 'AreaWatcher', 'UserFire')
+        base_flag_restr = ('BaseFlagToCapture', 'BaseFlag')
+        base_flag_range = 5.0
+        for entity in BigWorld.entities.values():
+            entity_name = entity.__class__.__name__
+            if entity_name in fire_range_restr:
+                if allow_uf_cold_space and entity_name == 'ZoneEffects':
+                    continue
+                if self.position.distTo(entity.position) < Constants.MIN_RADIUS_OTHER_USER_FIRE:
+                    return ItemsUtils.FAIL_UF_OTHER_UF
+            elif entity_name in base_flag_restr:
+                if self.position.distTo(entity.position) < base_flag_range:
+                    return ItemsUtils.FAIL_UF_FLAG
+
+        return ItemsUtils.FAIL_NO

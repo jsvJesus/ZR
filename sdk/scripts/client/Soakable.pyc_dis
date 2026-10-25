@@ -1,0 +1,482 @@
+# Embedded file name: ./client/Soakable.py
+"""
+        \xd0\xbc\xd0\xbe\xd0\xb4\xd1\x83\xd0\xbb\xd1\x8c \xd0\xbe\xd1\x82\xd0\xb2\xd0\xb5\xd1\x87\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xb7\xd0\xb0 \xd0\xbf\xd1\x80\xd0\xbe\xd1\x8f\xd0\xb2\xd0\xbb\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5 \xd0\xbc\xd0\xbe\xd0\xba\xd1\x80\xd1\x8b\xd1\x85 \xd0\xbf\xd1\x8f\xd1\x82\xd0\xb5\xd0\xbd \xd0\xbd\xd0\xb0 \xd0\xbc\xd0\xbe\xd0\xb4\xd0\xb5\xd0\xbb\xd1\x8f\xd1\x85
+"""
+import BigWorld
+import BWPersonality
+import math_bw
+from collections import defaultdict
+from Math import Matrix
+import pyson
+import os
+import functools
+from Helpers.BWCoroutine import BWWaitForPeriod, BWMemberCoroutine
+from wound_and_soak_parameters import model_soak_params, material_colors, SOAK_CHANNEL
+import traceback
+_LOCK_SOAK = False
+_SOAK_SPEED = 1500
+_DRY_TIME = 30
+_DRY_DELAY = 40
+_INTER_DEPTH = 0.075
+_SOAK_LEVEL_DISP = 0.15
+_SOAK_VISIBLE_DISTANCE = 10
+_MESH_DATA_CACHE = defaultdict(dict)
+
+class BoxGroup(object):
+
+    def __init__(self, parent, model_name, index, adress1, adress2, indices):
+        self._parent = parent
+        self._model_name = model_name
+        self._index = index
+        self._adress1 = adress1
+        self._adress2 = adress2
+        self._indices = indices
+        self._wet_indices = []
+        self._dry_indices = set(self._indices)
+        self._processed_data = []
+        box = self._parent.skeletonCollider.getCollider(self._index)
+        self._points = ((box.minBounds[0], box.minBounds[1], box.minBounds[2]),
+         (box.minBounds[0], box.minBounds[1], box.maxBounds[2]),
+         (box.minBounds[0], box.maxBounds[1], box.minBounds[2]),
+         (box.minBounds[0], box.maxBounds[1], box.maxBounds[2]),
+         (box.maxBounds[0], box.minBounds[1], box.minBounds[2]),
+         (box.maxBounds[0], box.minBounds[1], box.maxBounds[2]),
+         (box.maxBounds[0], box.maxBounds[1], box.minBounds[2]),
+         (box.maxBounds[0], box.maxBounds[1], box.maxBounds[2]))
+        base_matrix = self._parent._get_base_model_matrix(box.name)
+        base_matrix_inv = Matrix(base_matrix)
+        base_matrix_inv.invert()
+        self._matrix = base_matrix_inv
+
+    def _box_water_position(self, box, water_height):
+        """
+                -1 - \xd0\xb2\xd1\x81\xd1\x91 \xd0\xbf\xd0\xbe\xd0\xb4 \xd0\xb2\xd0\xbe\xd0\xb4\xd0\xbe\xd0\xb9
+                 1 - \xd0\xb2\xd1\x81\xd1\x91 \xd0\xbd\xd0\xb0\xd0\xb4 \xd0\xb2\xd0\xbe\xd0\xb4\xd0\xbe\xd0\xb9
+                 0 - \xd0\xbf\xd0\xbe \xd1\x80\xd0\xb0\xd0\xb7\xd0\xbd\xd0\xbe\xd0\xbc\xd1\x83
+        """
+        water_sum = sum([ box.worldTransform.applyPoint(point)[1] < water_height for point in self._points ])
+        if water_sum == len(self._points):
+            return -1
+        elif water_sum == 0:
+            return 1
+        else:
+            return 0
+
+    def _soak_all(self):
+        for index in self._dry_indices:
+            self._processed_data.append([index, 0.0])
+
+        self._dry_indices.clear()
+
+    def _soak_index(self, index):
+        self._dry_indices.remove(index)
+        self._processed_data.append([index, 0.0])
+
+    def update_soak(self, water_height, time_delta):
+        if len(self._wet_indices) == len(self._indices):
+            return
+        box = self._parent.skeletonCollider.getCollider(self._index)
+        matrix = Matrix(self._matrix)
+        matrix.postMultiply(box.worldTransform)
+        water_pos = self._box_water_position(box, water_height)
+        if water_pos == -1:
+            self._soak_all()
+        else:
+            if water_pos == 1:
+                return
+            if self._model_name in _MESH_DATA_CACHE:
+                mesh_data = _MESH_DATA_CACHE[self._model_name]['mesh']
+                remove_indices = []
+                try:
+                    for index in self._dry_indices:
+                        vertex = mesh_data[self._adress1][self._adress2]['vertices'][index]
+                        world_vertex = matrix.applyPoint(vertex)
+                        world_height = world_vertex[1]
+                        if world_height < water_height:
+                            remove_indices.append(index)
+
+                except:
+                    self._dry_indices.clear()
+                    print 'Soakable (ERROR): bad index', self._model_name, self._adress1, self._adress2, index
+                    try:
+                        print len(mesh_data[self._adress1][self._adress2]['vertices'])
+                    except:
+                        traceback.print_exc()
+
+                    traceback.print_exc()
+                    traceback.print_stack()
+
+                for index in remove_indices:
+                    self._soak_index(index)
+
+        self._process_data(water_height, matrix, time_delta)
+
+    def update_dry(self, dry_time):
+        if dry_time >= _DRY_TIME:
+            self.clear(clear_color=False)
+            return
+        if self._wet_indices:
+            self._processed_data.extend([ [index, 255] for index in self._wet_indices ])
+            self._wet_indices = []
+        delta = dry_time / _DRY_TIME * 255
+        remove_indices = []
+        for i in xrange(len(self._processed_data) - 1, -1, -1):
+            data = self._processed_data[i]
+            data[1] -= delta
+            if data[1] <= 0:
+                data[1] = 0
+                self._dry_indices.add(data[0])
+                remove_indices.append(i)
+
+        indices = [ d[0] for d in self._processed_data ]
+        colors = [ int(d[1]) for d in self._processed_data ]
+        self._parent.model.setSeveralVertexColourIntensity(self._model_name, SOAK_CHANNEL, self._adress1, self._adress2, indices, colors)
+        for index in remove_indices:
+            del self._processed_data[index]
+
+    def _process_data(self, water_height, matrix, time_delta):
+        remove_indices = []
+        for i in xrange(len(self._processed_data) - 1, -1, -1):
+            data = self._processed_data[i]
+            mesh_data = _MESH_DATA_CACHE[self._model_name]['mesh']
+            vertex = mesh_data[self._adress1][self._adress2]['vertices'][data[0]]
+            depth = water_height - matrix.applyPoint(vertex)[1]
+            constraint = math_bw.lerp(0, 255, depth / _INTER_DEPTH)
+            constraint = math_bw.clamp(constraint, 0, 255)
+            constraint = max(constraint, data[1])
+            data[1] += time_delta * _SOAK_SPEED
+            data[1] = min(data[1], constraint)
+            if data[1] >= 255:
+                data[1] = 255
+                self._wet_indices.append(data[0])
+                remove_indices.append(i)
+
+        indices = [ d[0] for d in self._processed_data ]
+        colors = [ int(d[1]) for d in self._processed_data ]
+        self._parent.model.setSeveralVertexColourIntensity(self._model_name, SOAK_CHANNEL, self._adress1, self._adress2, indices, colors)
+        for index in remove_indices:
+            del self._processed_data[index]
+
+    def on_destroy(self):
+        pass
+
+    def clear(self, clear_color = True):
+        if clear_color:
+            colors = [0] * len(self._indices)
+            self._parent.model.setSeveralVertexColourIntensity(self._model_name, SOAK_CHANNEL, self._adress1, self._adress2, self._indices, colors)
+        self._dry_indices = set(self._indices)
+        self._wet_indices = []
+        self._processed_data = []
+
+
+class Soakable(object):
+
+    @staticmethod
+    def _on_soakable_settings_changed(enabled):
+        for e in BigWorld.entities.values():
+            if isinstance(e, Soakable):
+                e._check_soak_enabled()
+
+    def __init__(self):
+        self._water_level = None
+        self._pot_controller = None
+        self._potted = True
+        self._processed_vertices = []
+        self._boxgroups = None
+        self._soak_water_listener = None
+        self._dry_controller = None
+        self._dry_start_time = None
+        self._tick_controller_id = None
+        self._soak_enabled = False
+        self._frame_index = 0
+        return
+
+    def onChangeModel(self):
+        if self._boxgroups:
+            for boxgroup in self._boxgroups:
+                boxgroup.on_destroy()
+
+            self._boxgroups = None
+        if self._dry_controller:
+            BigWorld.cancelCallback(self._dry_controller)
+            self._dry_controller = None
+        if self._water_level is not None:
+            self._prepare_data()
+        return
+
+    def onEnterWorld(self):
+        if self is BigWorld.player():
+            self._pot_controller = None
+            self._potted = True
+        else:
+            self._potted = False
+            self._pot_controller = BigWorld.addPot(self.matrix, _SOAK_VISIBLE_DISTANCE, self._hit_pot)
+        self._check_soak_enabled()
+        return
+
+    def onLeaveWorld(self):
+        self._check_soak_enabled()
+        if self._pot_controller:
+            BigWorld.delPot(self._pot_controller)
+            self._pot_controller = None
+        if self._soak_water_listener is not None:
+            BigWorld.delWaterVolumeListener(self._soak_water_listener)
+            self._soak_water_listener = None
+        if self._dry_controller:
+            BigWorld.cancelCallback(self._dry_controller)
+            self._dry_controller = None
+        return
+
+    def _hit_pot(self, entered, handle):
+        if self.isDestroyed:
+            return
+        self._potted = entered
+        self._check_soak_enabled()
+
+    def _check_soak_enabled(self):
+        if not _LOCK_SOAK:
+            enabled = BWPersonality.settings.getSetting('settings').get('soakable')
+            return self._soak_enabled == enabled and None
+        else:
+            self._soak_enabled = enabled
+            if self._soak_enabled:
+                self._soak_water_listener = BigWorld.addWaterVolumeListener(self.matrix, self._water_listener)
+            else:
+                self._clear_soak()
+                self._water_level = None
+                if self._soak_water_listener is not None:
+                    BigWorld.delWaterVolumeListener(self._soak_water_listener)
+                    self._soak_water_listener = None
+            return
+
+    def _water_listener(self, enter, volume):
+        if self.isDestroyed:
+            return
+        else:
+            if enter:
+                if self._dry_controller:
+                    BigWorld.cancelCallback(self._dry_controller)
+                self._dry_controller = None
+                self._prepare_data()
+                self.model.cancelFadeoutVertexIntensivity()
+                collision = self.waterCollide(self.model.position + (0, 2, 0), self.model.position - (0, 2, 0))
+                if not (collision and collision[0][1] + _SOAK_LEVEL_DISP):
+                    self._water_level = None
+                    dry_time = self._boxgroups and self._dry_start_time and BigWorld.time() - self._dry_start_time
+                    self._dry_start_time = None
+                    for boxgroup in self._boxgroups:
+                        boxgroup.update_dry(dry_time)
+
+                self._tick_s()
+            else:
+                self._water_level = None
+                self._dry_controller = BigWorld.callback(_DRY_DELAY, self._start_dry)
+            return
+
+    def _debug_soak_completeley(self):
+        """ \xd0\xbd\xd0\xb0\xd0\xbc\xd0\xbe\xd0\xba\xd0\xbd\xd1\x83\xd1\x82\xd1\x8c \xd1\x86\xd0\xb5\xd0\xbb\xd0\xb8\xd0\xba\xd0\xbe\xd0\xbc (\xd1\x82\xd0\xbe\xd0\xbb\xd1\x8c\xd0\xba\xd0\xbe \xd0\xb4\xd0\xbb\xd1\x8f \xd0\xbe\xd1\x82\xd0\xbb\xd0\xb0\xd0\xb4\xd0\xba\xd0\xb8) """
+        prev_level = self._water_level
+        if prev_level is None:
+            self._water_listener(True, None)
+            self._water_level = self.position[1] + 10
+            self._tick_s()
+
+        def end_soak():
+            self._water_level = prev_level
+            if prev_level is None:
+                self._water_listener(False, None)
+            return
+
+        BigWorld.callback(1.0, end_soak)
+        return
+
+    def _start_dry(self):
+        if self.isDestroyed:
+            return
+        self.model.fadeoutVertexIntensivity(_DRY_TIME, SOAK_CHANNEL)
+        self._dry_start_time = BigWorld.time()
+
+    def _tick_s(self):
+        if self.isDestroyed:
+            return
+        else:
+            self._frame_index += 1
+            if self._tick_controller_id:
+                BigWorld.cancelCallback(self._tick_controller_id)
+                self._tick_controller_id = None
+            if self._water_level is None:
+                return
+            distance = BigWorld.camera().position.distTo(self.position)
+            if distance > 20.0:
+                skip = 20
+            elif distance > 10.0:
+                skip = 5
+            elif distance > 5:
+                skip = 2
+            else:
+                skip = 1
+            if self._frame_index % skip == 0:
+                time_delta = BigWorld.getTimeDelta() * skip
+                if self._boxgroups:
+                    for boxgroup in self._boxgroups:
+                        boxgroup.update_soak(self._water_level, time_delta)
+
+            self._tick_controller_id = BigWorld.callback(0, self._tick_s)
+            return
+
+    def _clear_soak(self):
+        if self._boxgroups:
+            for boxgroup in self._boxgroups:
+                boxgroup.clear()
+
+        if self._water_level is None:
+            if self._boxgroups:
+                for boxgroup in self._boxgroups:
+                    boxgroup.on_destroy()
+
+                self._boxgroups = None
+        if self._dry_controller:
+            BigWorld.cancelCallback(self._dry_controller)
+            self._dry_controller = None
+        return
+
+    def _update_boxgroups(self):
+        if self._boxgroups:
+            return
+        self._boxgroups = []
+        for model_name in self.model.sources:
+            if model_name not in material_colors or model_name not in model_soak_params:
+                continue
+            if 'boxvertices' not in _MESH_DATA_CACHE[model_name]:
+                continue
+            for (box_index, adress1, adress2), indices in _MESH_DATA_CACHE[model_name]['boxvertices'].iteritems():
+                self._boxgroups.append(BoxGroup(self, model_name, box_index, adress1, adress2, indices))
+
+    def _prepare_data(self):
+        load_models = []
+        for model_name in self.model.sources:
+            colors = material_colors.get(model_name)
+            if not colors or model_name not in model_soak_params:
+                continue
+            self.model.createVertexColour(model_name)
+            self.model.setVertexColorParametrs(model_name, *colors)
+            if model_name not in _MESH_DATA_CACHE:
+                mesh_data = self.model.getMesh(model_name)
+                _MESH_DATA_CACHE[model_name]['mesh'] = mesh_data
+                file_name = os.path.basename(model_name)
+                file_name = os.path.splitext(file_name)[0]
+                file_name = 'scripts/client/data/SoakCache/' + file_name + '.skc'
+                load_models.append((file_name, model_name))
+
+        def callback(prereqs):
+            for file_name, model_name in load_models:
+                if file_name in prereqs.failedIDs:
+                    print "Soakable (ERROR): can't find cached data", model_name, file_name
+                    _MESH_DATA_CACHE[model_name]['boxvertices'] = {}
+                else:
+                    _MESH_DATA_CACHE[model_name]['boxvertices'] = pyson.loads(prereqs[file_name].asBinary)
+
+            if not self._boxgroups:
+                self._update_boxgroups()
+
+        if load_models:
+            BigWorld.loadResourceListBG([ m[0] for m in load_models ], callback)
+        elif not self._boxgroups:
+            self._update_boxgroups()
+
+    def _generate_all_models(self, override_existed = True):
+        BWPersonality.unkickable = True
+        self._generate_data_coroutine(override_existed).run()
+        _MESH_DATA_CACHE.clear()
+
+    @BWMemberCoroutine
+    def _generate_data_coroutine(self, override_existed):
+        for index, (model_name, use) in enumerate(model_soak_params.items()):
+            if not use:
+                continue
+            if not override_existed:
+                file_path = self._get_file_path(model_name)
+                if os.path.exists(file_path):
+                    continue
+            try:
+                model = BigWorld.Model(model_name)
+            except:
+                print 'WARNING:', repr(model_name)
+                continue
+
+            mesh_data = model.getMesh(model_name)
+            _MESH_DATA_CACHE[model_name]['mesh'] = mesh_data
+            self._generate_data(model_name)
+            print '{0}of{1}'.format(index + 1, len(model_soak_params)), model_name
+            yield BWWaitForPeriod(0.5)
+
+    def _generate_data(self, model_name):
+        t_inv_matrices = []
+        t_scale = {}
+        for i in xrange(self.skeletonCollider.nColliders()):
+            box = self.skeletonCollider.getCollider(i)
+            matrix = Matrix(self._get_base_model_matrix(box.name))
+            scale = (matrix.applyToAxis(0).length, matrix.applyToAxis(2).length, matrix.applyToAxis(2).length)
+            matrix.invert()
+            t_inv_matrices.append((box, matrix))
+            t_scale[i] = scale
+
+        def find_nearest_box(vertex):
+            min_dist = 10000
+            for i, (box, matrix) in enumerate(t_inv_matrices):
+                local_vertex = matrix.applyPoint(vertex)
+                minBounds = box.minBounds
+                maxBounds = box.maxBounds
+                if minBounds[0] <= local_vertex[0] <= maxBounds[0]:
+                    x_min = 0
+                else:
+                    x_min = min(abs(local_vertex[0] - minBounds[0]), abs(local_vertex[0] - maxBounds[0])) * t_scale[i][0]
+                if minBounds[1] <= local_vertex[1] <= maxBounds[1]:
+                    y_min = 0
+                else:
+                    y_min = min(abs(local_vertex[1] - minBounds[1]), abs(local_vertex[1] - maxBounds[1])) * t_scale[i][1]
+                if minBounds[2] <= local_vertex[2] <= maxBounds[2]:
+                    z_min = 0
+                else:
+                    z_min = min(abs(local_vertex[2] - minBounds[2]), abs(local_vertex[2] - maxBounds[2])) * t_scale[i][2]
+                m = x_min * x_min + y_min * y_min + z_min * z_min
+                if m < min_dist:
+                    min_dist = m
+                    min_box_index = i
+
+            return min_box_index
+
+        result = defaultdict(list)
+        mesh_data = _MESH_DATA_CACHE[model_name]['mesh']
+        for adress1 in xrange(len(mesh_data)):
+            for adress2 in xrange(len(mesh_data[adress1])):
+                for i in xrange(len(mesh_data[adress1][adress2]['vertices'])):
+                    vertex = mesh_data[adress1][adress2]['vertices'][i]
+                    box_index = find_nearest_box(vertex)
+                    result[box_index, adress1, adress2].append(i)
+
+        self._write_to_file(model_name, result)
+        return result
+
+    def _get_file_path(self, model_name):
+        file_name = os.path.basename(model_name)
+        file_name = os.path.splitext(file_name)[0]
+        return os.path.join(os.getcwd(), '../res/scripts/client/data/SoakCache/' + file_name + '.skc')
+
+    def _write_to_file(self, model_name, data):
+        with open(self._get_file_path(model_name), 'wb+') as fh:
+            fh.write(pyson.dumps(data))
+
+
+def try_connect_to_settings(attempts):
+    if attempts <= 0:
+        print "Soakable (ERROR): couldn't connect to settings"
+        traceback.print_stack()
+        return
+    if hasattr(BWPersonality, 'settings'):
+        BWPersonality.settings.soak_settings_observers.append(Soakable._on_soakable_settings_changed)
+    else:
+        BigWorld.callback(0, functools.partial(try_connect_to_settings, attempts - 1))
+
+
+try_connect_to_settings(100)

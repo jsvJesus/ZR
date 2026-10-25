@@ -1,0 +1,283 @@
+# Embedded file name: ./client/Helpers/capsule_collider.py
+from Math import Vector3, Matrix
+import math
+from draw_utils_extend import Cylinder
+import BigWorld
+import traceback
+MAXFLT = 999999999
+DEBUG_DRAW = False
+RED = (1, 0, 0, 1)
+GREEN = (0, 1, 0, 1)
+BLUE = (0, 0, 1, 1)
+YELLOW = (1, 1, 0, 1)
+WHITE = (1, 1, 1, 1)
+DARK = (0, 0, 0, 1)
+
+class Capsule(object):
+    """docstring for Capsule"""
+
+    def __init__(self, matr, min_ = None, max_ = None):
+        self.matr = matr
+        self.min_ = Vector3(min_) if min_ else Vector3(-1, 0, -1)
+        self.max_ = Vector3(max_) if max_ else Vector3(2, 1, 1)
+        self.updateMatrix(matr)
+        self.updateValues()
+
+    def updateValues(self):
+        self._cyl_radius = (self.max_.x - self.min_.x) * 0.5
+        self._cyl_radius_sqr = self._cyl_radius * self._cyl_radius
+        center = self.min_ + (self.max_ - self.min_) * 0.5
+        self._fw_center = Vector3(center)
+        self._bw_center = Vector3(center)
+        self._fw_center.z = self.max_.z
+        self._bw_center.z = self.min_.z
+
+    def updateMatrix(self, matrix):
+        self.matr = Matrix()
+        self.matr.setRotateY(matrix.yaw)
+        self.matr.translation = matrix.translation
+        self.matr_inv = Matrix(self.matr)
+        self.matr_inv.invert()
+
+    def isInstersectPoint(self, position_ws):
+        pos = self.matr_inv.applyPoint(position_ws)
+        min_, max_ = self.min_, self.max_
+        if not min_[1] <= pos[1] <= max_[1]:
+            return False
+        for i in (0, 1):
+            if not min_[i] <= pos[i] <= max_[i]:
+                break
+        else:
+            return True
+
+        if pos.flatDistSqrTo(self._fw_center) <= self._cyl_radius_sqr:
+            return True
+        if pos.flatDistSqrTo(self._bw_center) <= self._cyl_radius_sqr:
+            return True
+        return False
+
+    def _getDirCollide(self, position_ws):
+        pos = self.matr_inv.applyPoint(position_ws)
+        center = Vector3(self._fw_center)
+        pos.y = 0
+        center.y = 0
+        if pos.z < self.min_.z:
+            center.z = self.min_.z
+        elif pos.z > self.max_.z:
+            center.z = self.max_.z
+        else:
+            center.z = pos.z
+        wscenter = self.matr.applyPoint(center)
+        dir_ = pos - center
+        dir_.normalise()
+        ws_dir = self.matr.applyVector(dir_)
+        ws_dir.y = 0
+        ws_dir.normalise()
+        return (wscenter, ws_dir)
+
+    def getDirNuge(self, position):
+        position = Vector3(position)
+        position.y = 0
+        self._getDirCollide(position)
+        wscenter, dir_ = self._getDirCollide(position)
+        start = wscenter + dir_ * 1000
+        start.y = 0
+        hitPoint, normal = self.collide2D(start, -dir_)
+        if not hitPoint:
+            return None
+        else:
+            hitPoint.y = 0
+            diff = hitPoint - position
+            dist = diff.length + 0.0
+            diff.normalise()
+            normal.y = 0
+            normal.normalise()
+            if diff.dot(normal) < 0:
+                return None
+            max_dist = BigWorld.getTimeDelta() * 8.0
+            dist = min(max_dist, dist)
+            diff = diff * dist
+            return diff
+
+    def draw(self):
+        if not DEBUG_DRAW:
+            return
+        else:
+            if not getattr(self, 'drawer', None):
+                self.drawer = Cylinder(max_lines=1000)
+            self.drawer.clear()
+            self.drawer.setMatrix(self.matr)
+            radius = (self.max_.x - self.min_.x) * 0.5
+            center = self.min_ + (self.max_ - self.min_) * 0.5
+            center.z = self.min_.z
+            center.y = self.min_.y
+            dest = Vector3(center)
+            dest.y = self.max_.y
+            self.drawer.drawCylinder(center, dest, radius, numberOfFaces=18, color=(1, 1, 0, 1))
+            center = self.min_ + (self.max_ - self.min_) * 0.5
+            center.z = self.max_.z
+            center.y = self.min_.y
+            dest = Vector3(center)
+            dest.y = self.max_.y
+            self.drawer.drawCylinder(center, dest, radius, numberOfFaces=18, color=(0, 1, 0, 1))
+            self.drawer.addLine(self.min_, self.max_)
+            self.drawer.drawBox(self.min_, self.max_)
+            return
+
+    def instersectSphere(self, wspoint, radius):
+        matr = Matrix(self.matr)
+        matr.invert()
+        point = matr.applyPoint(wspoint)
+        if self._isInstersectSphereCylinder(point, radius, False):
+            return True
+        if self._isInstersectSphereBB(point, radius):
+            return True
+        if self._isInstersectSphereCylinder(point, radius, True):
+            return True
+        return False
+
+    def _isInstersectSphereBB(self, point, radius):
+        min_ = self.min_
+        max_ = self.max_
+        sqDist = 0.0
+        for i in xrange(3):
+            v = point[i]
+            if v < min_[i]:
+                sqDist += (min_[i] - v) * (min_[i] - v)
+            if v > max_[i]:
+                sqDist += (v - max_[i]) * (v - max_[i])
+
+        return sqDist <= radius * radius
+
+    def _isInstersectSphereCylinder(self, point, radius, forward = False):
+        if point.y - radius > self.max_.y:
+            return False
+        if point.y + radius < self.min_.y:
+            return False
+        center = self.min_ + (self.max_ - self.min_) * 0.5
+        center.z = self.max_.z if forward else self.min_.z
+        return point.flatDistTo(center) < self._cyl_radius + radius
+
+    def collide2D(self, ws_from, ws_dir):
+        m = Matrix(self.matr)
+        m.invert()
+        from_point = m.applyPoint(ws_from)
+        from_dir = m.applyVector(ws_dir)
+        from_point.y = 0
+        from_dir.y = 0
+        from_dir.normalise()
+        results = [self._intersectsRayBB2D(from_point, from_dir), self._intersectsRayCylinder(from_point, from_dir, forward=False), self._intersectsRayCylinder(from_point, from_dir, forward=True)]
+        bets_dist = MAXFLT
+        best_point = None
+        best_normal = None
+        for dist, point, normal in results:
+            if not point:
+                continue
+            if bets_dist > dist:
+                bets_dist = dist
+                best_point = point
+                best_normal = normal
+
+        if best_point:
+            best_point = self.matr.applyPoint(best_point)
+            best_normal = self.matr.applyVector(best_normal)
+        return (best_point, best_normal)
+
+    def intersectsRayBB(self, wspoint, wsdir_):
+        m = Matrix(self.matr)
+        m.invert()
+        point = m.applyPoint(wspoint)
+        dir_ = m.applyVector(wsdir_)
+        dist, result, normal = self._intersectsRayBB(point, dir_)
+        if result:
+            result = self.matr.applyPoint(result)
+            normal = self.matr.applyVector(normal)
+        return (result, normal)
+
+    def _intersectsRayBB(self, origin, dir_):
+        bounds = [self.min_, self.max_]
+        min_, max_ = self.min_, self.max_
+        best_dist = MAXFLT
+        best_point = None
+        normal = None
+        for bound in (0, 1):
+            for axis in (0, 1, 2):
+                if dir_[axis] != 0.0:
+                    t = (bounds[bound][axis] - origin[axis]) / dir_[axis]
+                    if t > 0.0:
+                        ptOnPlane = origin + t * dir_
+                        nextAxis = (axis + 1) % 3
+                        prevAxis = (axis + 2) % 3
+                        if min_[nextAxis] < ptOnPlane[nextAxis] and ptOnPlane[nextAxis] < max_[nextAxis] and min_[prevAxis] < ptOnPlane[prevAxis]:
+                            if ptOnPlane[prevAxis] < max_[prevAxis]:
+                                best_dist = best_dist > t and t
+                                best_point = ptOnPlane
+                                normal = Vector3()
+                                normal[axis] = -1 if bound == 0 else 1
+
+        return (best_dist, best_point, normal)
+
+    def _intersectsRayBB2D(self, origin, dir_):
+        origin = Vector3(origin)
+        origin.y = self.min_.y + (self.max_.y - self.min_.y) * 0.5
+        bounds = [self.min_, self.max_]
+        min_, max_ = self.min_, self.max_
+        best_dist = MAXFLT
+        best_point = None
+        normal = None
+        for bound in (0, 1):
+            for axis in (0, 2):
+                if dir_[axis] != 0.0:
+                    t = (bounds[bound][axis] - origin[axis]) / dir_[axis]
+                    if t > 0.0:
+                        ptOnPlane = origin + t * dir_
+                        nextAxis = (axis + 1) % 3
+                        prevAxis = (axis + 2) % 3
+                        if min_[nextAxis] < ptOnPlane[nextAxis] and ptOnPlane[nextAxis] < max_[nextAxis] and min_[prevAxis] < ptOnPlane[prevAxis]:
+                            if ptOnPlane[prevAxis] < max_[prevAxis]:
+                                best_dist = best_dist > t and t
+                                best_point = ptOnPlane
+                                normal = Vector3()
+                                normal[axis] = -1 if bound == 0 else 1
+
+        if best_point:
+            best_point.y = 0
+        return (best_dist, best_point, normal)
+
+    def intersectsRayCylinder(self, wspoint, wsdir_):
+        m = Matrix(self.matr)
+        m.invert()
+        point = m.applyPoint(wspoint)
+        dir_ = m.applyVector(wsdir_)
+        dist, result, normal = self._intersectsRayCylinder(point, dir_)
+        if result:
+            result = self.matr.applyPoint(result)
+            normal = self.matr.applyVector(normal)
+        return (result, normal)
+
+    def _intersectsRayCylinder(self, ray_st, ray_dir, forward = False):
+        ray_st = Vector3(ray_st)
+        ray_st.y = 0
+        F_EPS = 1e-09
+        sp_rad = self._cyl_radius ** 2
+        sp_cen = self.min_ + (self.max_ - self.min_) * 0.5
+        if forward:
+            sp_cen.z = self.max_.z
+        else:
+            sp_cen.z = self.min_.z
+        sp_cen.y = 0
+        dpos = sp_cen - ray_st
+        middle = ray_st + ray_dir * ray_dir.dot(dpos)
+        len2 = (middle - sp_cen).lengthSquared
+        if len2 > sp_rad:
+            return (MAXFLT, None, None)
+        elif abs(len2 - sp_rad) < F_EPS:
+            normal = middle - sp_cen
+            normal.normalise()
+            return (ray_st.distTo(middle), middle, normal)
+        else:
+            dist = math.sqrt(sp_rad - len2)
+            res1 = middle - ray_dir * dist
+            normal = res1 - sp_cen
+            normal.normalise()
+            return (ray_st.distTo(res1), res1, normal)

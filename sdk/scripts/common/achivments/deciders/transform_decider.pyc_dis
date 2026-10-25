@@ -1,0 +1,119 @@
+# Embedded file name: ./common/achivments/deciders/transform_decider.py
+from achivments import achives_parser
+ET = achives_parser.EssenceTypes
+from hashlib import md5
+import FunTransform
+import common_decider
+
+def is_interested_in_transform(achmask, transform_id):
+    for ach_id in _ach_ids:
+        if achives_parser.get_bitvalue(ach_id, achmask):
+            continue
+        if _validate_ach(ach_id, transform_id, None, None):
+            return True
+
+    return False
+
+
+def is_interested_in_killing(achmask, transform_id, enemy_transform_id):
+    for ach_id in _ach_ids:
+        if achives_parser.get_bitvalue(ach_id, achmask):
+            continue
+        if _validate_ach(ach_id, transform_id, enemy_transform_id, None):
+            return True
+
+    return False
+
+
+def _get_action_name(transform_id, action_id):
+    if not action_id:
+        return None
+    else:
+        data = FunTransform._read_data(transform_id)[2]
+        return data and data.get(action_id)
+
+
+def is_interested_in_action(achmask, transform_id, action_id):
+    action_name = _get_action_name(transform_id, action_id)
+    if not action_name:
+        return False
+    else:
+        for ach_id in _ach_ids:
+            if achives_parser.get_bitvalue(ach_id, achmask):
+                continue
+            if _validate_ach(ach_id, transform_id, None, action_name):
+                return True
+
+        return False
+
+
+def decide(user, transform_id, enemy_transform_id, action_id):
+    action_name = _get_action_name(transform_id, action_id)
+
+    def area_validator(areas):
+        for area in areas:
+            if user.is_inside_area(area):
+                return True
+
+        return False
+
+    def validate_ach(ach_id):
+        return _validate_ach(ach_id, transform_id, enemy_transform_id, action_name, area_validator=area_validator)
+
+    common_decider.decide(user, _ach_ids, get_col_name, validate_ach, 4)
+
+
+def _validate_ach(ach_id, transform_id, enemy_transform_id, action, area_validator = None):
+    essence_params = achives_parser.get_achiv(ach_id)['essence']['params']
+    _transform_ids, _enemy_transform_id, areas, _action, _ = essence_params
+    if _transform_ids is not None:
+        if not _transform_ids:
+            if transform_id is None:
+                return False
+        elif transform_id not in _transform_ids:
+            return False
+    if _enemy_transform_id is not None:
+        if _enemy_transform_id == 0:
+            if enemy_transform_id is None:
+                return False
+        elif _enemy_transform_id != enemy_transform_id:
+            return False
+    if _action and _action != action:
+        return False
+    elif areas and area_validator and not area_validator(areas):
+        return False
+    else:
+        return True
+
+
+def get_col_name(ach_id):
+    essence = achives_parser.get_achiv(ach_id)['essence']
+    if not essence['id'] == ET.Transform:
+        raise AssertionError
+        transform_id, enemy_transform_id, spaces, action, amount = essence['params']
+        if transform_id is None and enemy_transform_id is None:
+            raise RuntimeError
+        if action and enemy_transform_id is not None:
+            raise RuntimeError
+        if spaces and not action and enemy_transform_id is None:
+            raise RuntimeError
+        return amount in (0, 1, None) and None
+    else:
+        db_key = 'ess' + str(essence['id'])
+        db_sub_key = ''
+        if transform_id not in (0, None):
+            db_sub_key += '_t' + str(transform_id)
+        if enemy_transform_id not in (0, None):
+            db_sub_key += '_e' + str(enemy_transform_id)
+        if spaces:
+            for space_name in spaces:
+                db_sub_key += '_s' + space_name
+
+        if action:
+            db_sub_key += '_a' + action
+        if len(db_sub_key) > 10:
+            db_sub_key = md5(db_sub_key).hexdigest()[:9]
+        return db_key + db_sub_key
+
+
+_ach_ids = [ ach['id'] for ach in achives_parser.filter_achs_by_essence(ET.Transform) ]

@@ -1,0 +1,518 @@
+# Embedded file name: ./common/utils_bw.py
+import os
+import re
+import inspect
+from types import ClassType
+import BigWorld
+import ResMgr
+import utils
+import time
+
+def isBaseApp():
+    return BigWorld.component == 'base'
+
+
+def isClient():
+    return BigWorld.component == 'client'
+
+
+def isCellApp():
+    return BigWorld.component == 'cell'
+
+
+def isClientConsumer():
+    return isClient() and BigWorld.isConsumer()
+
+
+PORTALS_DEPTH_COLLIDE = 2
+IGNORE_MATERIAL = [139, 140, 255]
+IGNORE_MATERIAL_FOR_SHOT = [139,
+ 140,
+ 255,
+ 3]
+VALID_USERNAME_REGEX = u'(?:^[\u0430-\u044f]+[\u0430-\u044f0-9\\_]{2,})|(?:^[a-z]+[a-z0-9\\_]{2,})$'
+REGEX_NAME = u'^(([\u0430-\u044f0-9\\_]*)|([a-z0-9\\_]*))$'
+MAIL_REGEX = '^[A-Za-z0-9\\.\\+_-]+@[A-Za-z0-9\\._-]+\\.[a-zA-Z]*$'
+
+class BSP_FLAGS:
+    TRIANGLE_CAMERANOCOLLIDE = 1
+    TRIANGLE_TRANSPARENT = 2
+    TRIANGLE_BLENDED = 4
+    TRIANGLE_TERRAIN = 8
+    TRIANGLE_NOCOLLIDE = 16
+    ANY = TRIANGLE_CAMERANOCOLLIDE | TRIANGLE_TRANSPARENT | TRIANGLE_BLENDED | TRIANGLE_TERRAIN | TRIANGLE_NOCOLLIDE
+
+
+def collide(spaceID, start_pos, end_pos, level = 0):
+    """ \xd0\xbc\xd0\xb5\xd1\x82\xd0\xbe\xd0\xb4 \xd1\x83\xd1\x81\xd1\x82\xd0\xb0\xd1\x80\xd0\xb5\xd0\xbb, \xd1\x80\xd0\xb5\xd0\xba\xd0\xbe\xd0\xbc\xd0\xb5\xd0\xbd\xd0\xb4\xd1\x83\xd0\xb5\xd1\x82\xd1\x81\xd1\x8f \xd0\xb8\xd1\x81\xd0\xbf\xd0\xbe\xd0\xbb\xd1\x8c\xd0\xb7\xd0\xbe\xd0\xb2\xd0\xb0\xd1\x82\xd1\x8c BigWorld.collideIgnoreFlags """
+    result = BigWorld.collide(spaceID, start_pos, end_pos)
+    if result is None:
+        return
+    elif result[2] in IGNORE_MATERIAL and result[0].distTo(end_pos) > 0.01:
+        if level > 10:
+            return
+        direct = end_pos - result[0]
+        direct.normalise()
+        result[0] + direct * 0.1
+        return collide(spaceID, result[0] + direct * 0.1, end_pos, level + 1)
+    else:
+        return result
+
+
+def collideIgnoreNoVisible(spaceID, start_pos, end_pos):
+    return BigWorld.collideIgnoreFlags(spaceID, start_pos, end_pos, IGNORE_MATERIAL)
+
+
+def collideForShooting(spaceID, start_pos, end_pos):
+    result = BigWorld.collideIgnoreFlags(spaceID, start_pos, end_pos, IGNORE_MATERIAL_FOR_SHOT)
+    if result and result[0]:
+        return result
+    else:
+        return None
+
+
+def double_sided(material_id, flags):
+    """ \xd0\xbe\xd0\xbf\xd1\x80\xd0\xb5\xd0\xb4\xd0\xb5\xd0\xbb\xd1\x8f\xd0\xb5\xd1\x82 \xd0\xb4\xd0\xb2\xd1\x83\xd1\x85\xd1\x81\xd1\x82\xd0\xbe\xd1\x80\xd0\xbe\xd0\xbd\xd0\xbd\xd0\xb8\xd0\xb9 \xd0\xbc\xd0\xb0\xd1\x82\xd0\xb5\xd1\x80\xd0\xb8\xd0\xb0\xd0\xbb
+            flags - \xd1\x84\xd0\xbb\xd0\xb0\xd0\xb3\xd0\xb8 \xd0\xba\xd0\xbe\xd0\xbb\xd0\xbb\xd0\xb8\xd0\xb7\xd0\xb8\xd0\xb8
+    """
+    if material_id == 120:
+        return False
+    return flags & 32
+
+
+def get_class(class_name, module_name = None):
+    """
+            Loads class by name of class (and module optionally)
+    
+            >>> get_class('Avatar')
+            <class 'Avatar.Avatar'>
+            >>> get_class('Avatar.Avatar')
+            <class 'Avatar.Avatar'>
+            >>> get_class('Anomaly.AnomalyVisitor')
+    
+            <class 'Anomaly.AnomalyVisitor'>
+    
+    """
+    if module_name is not None:
+        class_parts = filter(None, class_name.split('.'))
+        module_parts = filter(None, module_name.split('.'))
+    else:
+        parts = filter(None, class_name.split('.'))
+        if not parts:
+            return
+        module_parts = parts[:-1]
+        class_parts = [parts[-1]]
+        if module_parts:
+            module_name = '.'.join(module_parts)
+        else:
+            module_name = class_parts[0]
+    m = __import__(module_name)
+    for module_part in module_parts[1:]:
+        m = getattr(m, module_part)
+
+    for class_part in class_parts:
+        m = getattr(m, class_part)
+
+    return m
+
+
+if isBaseApp():
+
+    def is_entity(entity_or_mailbox):
+        return isinstance(entity_or_mailbox, (BigWorld.Base, BigWorld.Proxy))
+
+
+elif isCellApp():
+
+    def is_entity(entity_or_mailbox):
+        return isinstance(entity_or_mailbox, BigWorld.Entity)
+
+
+else:
+
+    def is_entity(entity_or_mailbox):
+        return True
+
+
+def get_classname(obj):
+    if hasattr(obj, 'className'):
+        if not getattr(obj, 'isDestroyed', None):
+            return obj.className
+        else:
+            return repr(obj).split(' ', 1)[0]
+    return obj.__class__.__name__
+
+
+def if_not_destroyed(func):
+
+    def if_not_destroyed_wrapper(self, *args, **kwargs):
+        if not self.isDestroyed:
+            return func(self, *args, **kwargs)
+
+    return if_not_destroyed_wrapper
+
+
+def isinstance_ext(entity_or_mailbox, classes_or_classnames, __cache = {}):
+    """
+            Extended isinstance
+            works on entities, mailboxes
+            class objects, classnames, dotted notation of package-module-classname
+    
+            isinstance_ext(entity,Avatar)
+            isinstance_ext(entity,'Avatar')
+            isinstance_ext(mailbox,['NPC','Creature'])
+            isinstance_ext(mailbox,'AvatarInterface')
+            isinstance_ext(mailbox,(Victim,'Damager'))
+            isinstance_ext(entity,'Anomaly.AnomalyVisitor')
+    """
+    if classes_or_classnames.__class__ not in (list, tuple):
+        classes_or_classnames = [classes_or_classnames]
+    for class_or_classname in classes_or_classnames:
+        if class_or_classname.__class__ == str:
+            cls = None
+            clsname = class_or_classname
+        else:
+            cls = class_or_classname
+            clsname = class_or_classname.__name__
+        ent_classname = get_classname(entity_or_mailbox)
+        if ent_classname == clsname:
+            return True
+        cache_key = (ent_classname, clsname)
+        if __cache.has_key(cache_key):
+            if __cache[cache_key]:
+                return True
+        else:
+            if cls is None:
+                cls = get_class(class_or_classname)
+            if is_entity(entity_or_mailbox):
+                result = isinstance(entity_or_mailbox, cls)
+            else:
+                check_class = get_class(entity_or_mailbox.className)
+                result = issubclass(check_class, cls)
+            __cache[cache_key] = result
+            if result:
+                return True
+
+    return False
+
+
+def is_ent_npc(ent):
+    return get_classname(ent) == 'NPC'
+
+
+def packDict(d):
+    """Packs a dict into appropriate FixedDict of arrays."""
+    return dict(keys=d.keys(), values=d.values())
+
+
+def unpackDict(d):
+    """Unpacks a dict from appropriate FixedDict of arrays."""
+    return dict(zip(d['keys'], d['values']))
+
+
+def writeDataSectionValue(datasection, key, value):
+    """ call valid method on datasection regarding type of value """
+    if isinstance(value, bool):
+        datasection.writeBool(key, value)
+    elif isinstance(value, basestring):
+        datasection.writeString(key, value)
+    elif isinstance(value, float):
+        datasection.writeFloat(key, value)
+    elif isinstance(value, int):
+        datasection.writeInt(key, int(value))
+    else:
+        raise ValueError('This value type is not supported yet')
+
+
+def printDataSection(data, level = 0):
+    for k, v in data.items():
+        print ' ' * level, '"' + k + '" : ', v.asString
+        if type(v) == ResMgr.DataSection:
+            printDataSection(v, level + 4)
+
+
+def requires_instanceof(cls):
+
+    def decorator(f):
+
+        def wrapper(self, *a, **aa):
+            if not isinstance_ext(self, cls):
+                raise ValueError('%s must be subclass of %s' % (self.__class__.__name__, cls))
+            return f(self, *a, **aa)
+
+        return wrapper
+
+    return decorator
+
+
+def is_username_valid(username):
+    from Localization import lc
+    pattern = VALID_USERNAME_REGEX
+    return bool(re.match(pattern, username.lower()))
+
+
+def entities_in_range(entity, radius, class_names, position = None):
+    """ Entity.entitiesInRange for list of classes.
+            It was tested (BigWorld 2.0.5) that multiple calls to entitiesInRange with different classes
+            is faster than one call to get all entites and manual search after.
+    """
+    return sum([ entity.entitiesInRange(radius, cls, position) for cls in class_names ], [])
+
+
+def check_udo_loaded(udo_list, valid_class_names, attrib_name, drop_invalid = False):
+    for i in xrange(len(udo_list) - 1, -1, -1):
+        udo = udo_list[i]
+        class_name = udo.__class__.__name__
+        if class_name == 'UserDataObjectRef':
+            return False
+        if class_name in valid_class_names:
+            try:
+                getattr(udo, attrib_name)
+            except BigWorld.UnresolvedUDORefException:
+                return False
+
+        elif drop_invalid:
+            udo_list.pop(i)
+
+    return True
+
+
+def remove_invalid_udos(udo_list, valid_class_names):
+    """Remove all invalid UDOs. UDOs must be loaded before run this func."""
+    removed = []
+    for i in xrange(len(udo_list) - 1, -1, -1):
+        udo = udo_list[i]
+        if udo.__class__.__name__ not in valid_class_names:
+            removed.append(udo_list.pop(i))
+
+    return removed
+
+
+def get_enum_from_alias_widget(param_name):
+    section = ResMgr.openSection('scripts/entity_defs/alias.xml/' + param_name + '/Widget')
+    res = {}
+    for _, v in section.items():
+        res[v['display'].asString] = v['value'].asInt
+
+    return res
+
+
+if isClient():
+    from Helpers.BWCoroutine import BWCoroutine, BWWaitForCondition, BWCoroutineTimeoutException, _BWCoroutineFunction, BWWaitForCoroutine
+    CURRENT_CORUTINES = {}
+
+    @BWCoroutine
+    def __wait__(condition_callable, on_success_callable, timeout = None, on_timeout_callable = None, string_id = ''):
+        try:
+            if isinstance(condition_callable, _BWCoroutineFunction):
+                yield BWWaitForCoroutine(condition_callable, timeout)
+            else:
+                yield BWWaitForCondition(condition_callable, timeout)
+        except BWCoroutineTimeoutException:
+            if callable(on_timeout_callable):
+                on_timeout_callable()
+                stop_wait(string_id)
+            raise StopIteration()
+
+        on_success_callable()
+        stop_wait(string_id, True)
+
+
+    def wait(condition_callable, on_success_callable, timeout = None, on_timeout_callable = None, string_id = ''):
+        global CURRENT_CORUTINES
+        corutine = __wait__(condition_callable, on_success_callable, timeout, on_timeout_callable, string_id)
+        if string_id:
+            if not CURRENT_CORUTINES.has_key(string_id):
+                CURRENT_CORUTINES[string_id] = corutine
+            else:
+                print 'SAVED CORUTINE ERROR', string_id
+                import traceback
+                traceback.print_stack()
+        corutine.run()
+
+
+    def stop_wait(string_id, only_clear = False):
+        if not CURRENT_CORUTINES.has_key(string_id):
+            return False
+        else:
+            if not only_clear:
+                CURRENT_CORUTINES[string_id].stop()
+            CURRENT_CORUTINES[string_id] = None
+            del CURRENT_CORUTINES[string_id]
+            return True
+
+
+    def inRange(entity1, entity2, dist = 2.0):
+        if not entity1:
+            return False
+        if not entity2:
+            return False
+        return (entity1.position - entity2.position).length < dist
+
+
+class ServerEntityDebugger:
+    _instance = None
+
+    def __init__(self):
+        from testGetSize import SizeOfData
+        self.dir_path = os.path.join(utils.stalker_path(), 'usercontent/debug')
+        self.dir_path = os.path.join(self.dir_path, 'serverentitydebug.csv')
+        self.sizer = SizeOfData()
+        self.call_method_subscribed = False
+        self.property_event_subscribed = False
+        self.property_update_subscribed = False
+        self.log_file = None
+        return
+
+    def _subscribe_call_method(self, subscribe):
+        if self.call_method_subscribed == subscribe:
+            return
+        else:
+            BigWorld.registerServerEntityCallMethods(self._debug if subscribe else None)
+            self.call_method_subscribed = subscribe
+            self._update_file_state()
+            return
+
+    def _subscribe_property_event(self, subscribe):
+        if self.property_event_subscribed == subscribe:
+            return
+        else:
+            BigWorld.registerServerEntityCallProp(self._debug if subscribe else None)
+            self.property_event_subscribed = subscribe
+            self._update_file_state()
+            return
+
+    def _subscribe_property_update(self, subscribe):
+        if self.property_update_subscribed == subscribe:
+            return
+        else:
+            BigWorld.registerServerEntityPropUpdate(self._debug if subscribe else None)
+            self.property_update_subscribed = subscribe
+            self._update_file_state()
+            return
+
+    def _update_file_state(self):
+        if not self.call_method_subscribed:
+            if not self.property_event_subscribed:
+                need_open = self.property_update_subscribed
+                self.log_file = need_open and not self.log_file and open(self.dir_path, 'a')
+            not need_open and self.log_file and self.log_file.close()
+            self.log_file = None
+        return
+
+    def subscribe(self, subscribe, mode):
+        if not mode:
+            self._subscribe_call_method(subscribe)
+            self._subscribe_property_event(subscribe)
+            self._subscribe_property_update(subscribe)
+        elif mode == 'callMethod':
+            self._subscribe_call_method(subscribe)
+        elif mode == 'propertyEvent':
+            self._subscribe_property_event(subscribe)
+        elif mode == 'propertyUpdate':
+            self._subscribe_property_update(subscribe)
+        else:
+            BigWorld.player().systemMsgChat(self, '\xd0\xbd\xd0\xb5\xd0\xbf\xd0\xbe\xd0\xbd\xd1\x8f\xd1\x82\xd0\xbd\xd1\x8b\xd0\xb9 \xd0\xbf\xd0\xb0\xd1\x80\xd0\xb0\xd0\xbc\xd0\xb5\xd1\x82\xd1\x80')
+
+    def _debug(self, type_, entity_id, prop_or_method, value):
+        line = '{0:.3f}\t{1}\t{2}\t{3}\t{4}\n'.format(time.time(), type_, entity_id, prop_or_method, self.sizer.get_size(value))
+        self.log_file.write(line)
+
+    @staticmethod
+    def instance():
+        if not ServerEntityDebugger._instance:
+            ServerEntityDebugger._instance = ServerEntityDebugger()
+        return ServerEntityDebugger._instance
+
+
+__packed = None
+
+def isPackedClient():
+    global __packed
+    if __packed is not None:
+        return __packed
+    else:
+        import os
+        if os.path.isfile('../res/scripts_config.xml'):
+            __packed = False
+        else:
+            __packed = True
+        return __packed
+
+
+_SERVER_NAMES = {'server_EKB': 'RU1(EKB)',
+ 'spb-test': 'RU2(SPB)',
+ 'server_MSK': 'RU3(MSK)',
+ 'steam-eu1': 'EU',
+ 'steam-us1': 'US'}
+
+def loc_server_name(server_name):
+    return str(_SERVER_NAMES.get(server_name, server_name))
+
+
+def not_safe_animation_callback(foo):
+
+    def wrap(*w, **kw):
+        return foo(*w, **kw)
+
+    wrap.not_safe_call = True
+    return wrap
+
+
+def execute_db_command(command, callback, *args, **kargs):
+    """ \xd0\xbf\xd1\x80\xd0\xbe\xd1\x82\xd0\xb8\xd0\xb2\xd0\xbe sql-\xd0\xb8\xd0\xbd\xd1\x8a\xd0\xb5\xd0\xba\xd1\x86\xd0\xb8\xd0\xbe\xd0\xbd\xd0\xbd\xd0\xbe\xd0\xb5 \xd1\x81\xd1\x80\xd0\xb5\xd0\xb4\xd1\x81\xd1\x82\xd0\xb2\xd0\xbe """
+    args = list(args)
+    for i in xrange(len(args)):
+        args[i] = escape_value(args[i])
+
+    for key in kargs:
+        kargs[key] = escape_value(kargs[key])
+
+    try:
+        command = command.format(*args, **kargs)
+    except:
+        print 'sql utils ERROR', (args, kargs)
+        raise
+
+    BigWorld.executeRawDatabaseCommand(command, callback)
+
+
+def escape_value(value):
+    if isinstance(value, str):
+        return escape_string(value)
+    elif isinstance(value, unicode):
+        return escape_unicode(value)
+    else:
+        return escape_string(str(value))
+
+
+def escape_string(value):
+    value = value.replace('\\', '\\\\')
+    value = value.replace('\x00', '\\0')
+    value = value.replace('\n', '\\n')
+    value = value.replace('\r', '\\r')
+    value = value.replace('\x1a', '\\Z')
+    value = value.replace("'", "\\'")
+    value = value.replace('"', '\\"')
+    value = value.replace('\x08', '\\b')
+    value = value.replace('\t', '\\t')
+    value = value.replace('\x1a', '\\z')
+    value = value.replace('%', '\\%')
+    return value
+
+
+_escape_table = [ unichr(x) for x in xrange(128) ]
+_escape_table[0] = u'\\0'
+_escape_table[ord('\\')] = u'\\\\'
+_escape_table[ord('\n')] = u'\\n'
+_escape_table[ord('\r')] = u'\\r'
+_escape_table[ord('\x1a')] = u'\\Z'
+_escape_table[ord('"')] = u'\\"'
+_escape_table[ord("'")] = u"\\'"
+_escape_table[ord('\x08')] = u'\\b'
+_escape_table[ord('\t')] = u'\\t'
+_escape_table[ord('\x1a')] = u'\\z'
+_escape_table[ord('%')] = u'\\%'
+
+def escape_unicode(value):
+    return value.translate(_escape_table)

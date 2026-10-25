@@ -1,0 +1,105 @@
+# Embedded file name: ./client/clanboard_gui/map/map_loader.py
+from functools import partial
+import BigWorld
+from utils import Listenable
+from base_to_capture_common.utils import NotifyEventType as NET
+from maputils import config_parser
+
+class EventType:
+    OnLoaded, OnChangedOwner, OnChangedState, OnSpotsLoaded, OnOwnersLoaded = ((r, 'clanmaploader') for r in range(5))
+
+
+class MapLoader(Listenable):
+
+    def __init__(self):
+        Listenable.__init__(self)
+        self._request_id = 1
+        self._load_data = {}
+        self._load_spots = set()
+        self._delay_load = 0
+        self._delay_load_spots = 0
+
+    def start_load(self, space_name):
+
+        def load():
+            self._delay_load = 0
+            self._awaited_request_id = self._request_id
+            self._request_id = (self._request_id + 1) % 127
+            p = BigWorld.player()
+            p.base.listen_to_basecapture(True, self._awaited_request_id)
+            p.got_base_map_data = self._got_base_map_data
+            p.on_got_basespot_data = self._on_got_basespot_data
+            p.on_bases_owners_load = self._on_bases_owners_load
+            p.notify_capture_event = self._got_capture_event
+            texture_name = config_parser.get_map_texture_name(space_name)
+            BigWorld.loadResourceListBG([texture_name], partial(self._on_texture_loaded, self._awaited_request_id))
+
+        if self._delay_load:
+            BigWorld.cancelCallback(self._delay_load)
+        self._delay_load = BigWorld.callback(0.5, load)
+
+    def _star_load_spots(self):
+        if self._load_spots:
+            BigWorld.player().base.load_basespot_data0(list(self._load_spots))
+            self._load_spots.clear()
+
+    def load_bases_owners(self, base_ids):
+        BigWorld.player().base.load_bases_owners0(base_ids)
+
+    def stop_load_spot(self, base_id):
+        if self._delay_load_spots:
+            BigWorld.cancelCallback(self._delay_load_spots)
+            self._delay_load_spots = 0
+        if base_id in self._load_spots:
+            self._load_spots.remove(base_id)
+        if self._load_spots:
+            self._delay_load_spots = BigWorld.callback(0.5, self._star_load_spots)
+
+    def load_spot(self, base_id):
+        if self._delay_load_spots:
+            BigWorld.cancelCallback(self._delay_load_spots)
+        self._load_spots.add(base_id)
+        self._delay_load_spots = BigWorld.callback(0.5, self._star_load_spots)
+
+    def _on_texture_loaded(self, request_id, resource):
+        if request_id != self._awaited_request_id:
+            return
+        self._load_data['texture'] = resource.produce(0)
+        if len(self._load_data) == 2:
+            self.notify_listeners(EventType.OnLoaded, self._load_data)
+
+    def _got_capture_event(self, event_data, ints):
+        if event_data == NET.OnOwnerChanged:
+            data = {'base_id': ints[0],
+             'clan_id': ints[1]}
+            self.notify_listeners(EventType.OnChangedOwner, data)
+        elif event_data == NET.OnStateChanged:
+            data = {'base_id': ints[0],
+             'state_id': ints[1]}
+            self.notify_listeners(EventType.OnChangedState, data)
+
+    def _got_base_map_data(self, data, request_id):
+        if request_id != self._awaited_request_id:
+            return
+        self._load_data['bases'] = data
+        if len(self._load_data) == 2:
+            self.notify_listeners(EventType.OnLoaded, self._load_data)
+
+    def _on_got_basespot_data(self, result):
+        self.notify_listeners(EventType.OnSpotsLoaded, result)
+
+    def _on_bases_owners_load(self, result):
+        self.notify_listeners(EventType.OnOwnersLoaded, result)
+
+    def stop_load(self):
+        if self._delay_load:
+            BigWorld.cancelCallback(self._delay_load)
+            self._delay_load = 0
+        if self._delay_load_spots:
+            BigWorld.cancelCallback(self._delay_load_spots)
+            self._delay_load_spots = 0
+        self._awaited_request_id = None
+        self._load_spots.clear()
+        self._load_data = {}
+        BigWorld.player().base.listen_to_basecapture(False, 0)
+        return

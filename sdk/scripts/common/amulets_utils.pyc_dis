@@ -1,0 +1,526 @@
+# Embedded file name: ./common/amulets_utils.py
+import traceback
+import ResMgr
+import math_bw
+import time
+import BigWorld
+import random
+from Items import ItemsCatalog
+from collections import defaultdict
+from copy import deepcopy
+
+class AmuletWrapper(object):
+
+    def __init__(self, amulet_item):
+        self._amulet_item = amulet_item
+        self._raw_materials = None
+        self._materials_list = None
+        self._slot_materials = None
+        self._slot_mats = None
+        self._slot_artefacts = None
+        self._max_condition = None
+        self._max_capacity = None
+        self._max_time = None
+        self._artefacts = None
+        self._inc_params = None
+        self._actions_extractor = None
+        self._eff_summ = None
+        self._might = None
+        return
+
+    @property
+    def might(self):
+        if self._might is None:
+            self._might = 0
+            for art_type in self.artefacts:
+                self._might += ItemsCatalog.GetItemParam(art_type).get('Might', 0)
+
+        return self._might
+
+    @property
+    def raw_materials(self):
+        """ \xd1\x81\xd0\xbb\xd0\xbe\xd0\xb2\xd0\xb0\xd1\x80\xd0\xb8\xd0\xba \xd1\x81 \xd0\xbc\xd0\xb0\xd1\x82\xd0\xb5\xd1\x80\xd0\xb8\xd0\xb0\xd0\xbb\xd0\xb0\xd0\xbc\xd0\xb8 \xd0\xb8 \xd0\xb4\xd0\xbe\xd0\xbb\xd1\x8f\xd0\xbc\xd0\xb8 \xd0\xbc\xd0\xb0\xd1\x82\xd0\xb5\xd1\x80\xd0\xb8\xd0\xb0\xd0\xbb\xd0\xbe\xd0\xb2 """
+        if not self._raw_materials:
+            self._raw_materials = parse_materials(self._amulet_item)
+        return self._raw_materials
+
+    @property
+    def slot_mats(self):
+        """ \xd1\x81\xd0\xbf\xd0\xb8\xd1\x81\xd0\xbe\xd0\xba \xd0\xbc\xd0\xb0\xd1\x82\xd0\xb5\xd1\x80\xd0\xb8\xd0\xb0\xd0\xbb\xd0\xbe\xd0\xb2 \xd0\xb1\xd0\xb5\xd0\xb7 p """
+        if not self._slot_mats:
+            self._slot_mats = [ m[0] for m in self.slot_materials ]
+        return self._slot_mats
+
+    @property
+    def slot_materials(self):
+        """ \xd1\x81\xd0\xbf\xd0\xb8\xd1\x81\xd0\xbe\xd0\xba \xd1\x82\xd1\x83\xd0\xbf\xd0\xbb\xd0\xbe\xd0\xb2 (mat_id, p) """
+        if not self._slot_materials:
+            self._slot_materials = [(self.raw_materials['m1'], self.raw_materials['p1']), (self.raw_materials['m2'], self.raw_materials['p2']), (self.raw_materials['m3'], self.raw_materials['p3'])]
+        return self._slot_materials
+
+    @property
+    def slot_artefacts(self):
+        """ \xd1\x81\xd0\xbf\xd0\xb8\xd1\x81\xd0\xbe\xd0\xba \xd1\x82\xd0\xb8\xd0\xbf\xd0\xbe\xd0\xb2 \xd0\xb0\xd1\x80\xd1\x82\xd0\xb5\xd1\x84\xd0\xb0\xd0\xba\xd1\x82\xd0\xbe\xd0\xb2 \xd0\xbf\xd0\xbe \xd1\x81\xd0\xbb\xd0\xbe\xd1\x82\xd0\xb0\xd0\xbc """
+        if not self._slot_artefacts:
+            self._slot_artefacts = parse_artefacts(self._amulet_item)
+        return self._slot_artefacts
+
+    @property
+    def artefacts(self):
+        """ \xd1\x81\xd0\xbf\xd0\xb8\xd1\x81\xd0\xbe\xd0\xba \xd1\x82\xd0\xb8\xd0\xbf\xd0\xbe\xd0\xb2 \xd0\xb0\xd1\x80\xd1\x82\xd0\xb5\xd1\x84\xd0\xb0\xd0\xba\xd1\x82\xd0\xbe\xd0\xb2 """
+        if not self._artefacts:
+            self._artefacts = filter(lambda x: bool(x), self.slot_artefacts)
+        return self._artefacts
+
+    @property
+    def materials_list(self):
+        """ \xd1\x81\xd0\xbf\xd0\xb8\xd1\x81\xd0\xbe\xd0\xba \xd1\x83\xd0\xbd\xd0\xb8\xd0\xba\xd0\xb0\xd0\xbb\xd1\x8c\xd0\xbd\xd1\x8b\xd1\x85 \xd0\xbc\xd0\xb0\xd1\x82\xd0\xb5\xd1\x80\xd0\xb8\xd0\xb0\xd0\xbb\xd0\xbe\xd0\xb2 """
+        if not self._materials_list:
+            self._materials_list = list(set([ sm[0] for sm in self.slot_materials if sm[1] ]))
+        return self._materials_list
+
+    @property
+    def max_condition(self):
+        """ \xd0\xbc\xd0\xb0\xd0\xba\xd1\x81\xd0\xb8\xd0\xbc\xd0\xb0\xd0\xbb\xd1\x8c\xd0\xbd\xd1\x8b\xd0\xb9 condition """
+        if self._max_condition is None:
+            self._max_condition = 0
+            for m_id, p in self.slot_materials:
+                self._max_condition += _material_by_id[m_id]['condition'] * p
+
+            self._max_condition = int(self._max_condition)
+        return self._max_condition
+
+    @property
+    def condition(self):
+        """ \xd1\x82\xd0\xb5\xd0\xba\xd1\x83\xd1\x89\xd0\xb8\xd0\xb9 condition (\xd0\xbd\xd0\xb5 \xd0\xba\xd1\x8d\xd1\x88\xd0\xb8\xd1\x80\xd1\x83\xd0\xb5\xd1\x82\xd1\x81\xd1\x8f) """
+        return self._get_inc_value(ItemsCatalog.INC_AMCOND, 0)
+
+    def spend_condition(self, value):
+        new_value = max(0, int(self.condition - value))
+        self._set_inc_value(ItemsCatalog.INC_AMCOND, new_value)
+
+    @property
+    def max_capacity(self):
+        """ \xd0\xbc\xd0\xb0\xd0\xba\xd1\x81\xd0\xb8\xd0\xbc\xd0\xb0\xd0\xbb\xd1\x8c\xd0\xbd\xd1\x8b\xd0\xb9 capacity """
+        if self._max_capacity is None:
+            self._max_capacity = 0
+            for m_id, p in self.slot_materials:
+                self._max_capacity += _material_by_id[m_id]['capacity'] * p
+
+            self._max_capacity = int(self._max_capacity)
+        return self._max_capacity
+
+    @property
+    def capacity(self):
+        """ \xd1\x82\xd0\xb5\xd0\xba\xd1\x83\xd1\x89\xd0\xb8\xd0\xb9 capacity (\xd0\xbd\xd0\xb5 \xd0\xba\xd1\x8d\xd1\x88\xd0\xb8\xd1\x80\xd1\x83\xd0\xb5\xd1\x82\xd1\x81\xd1\x8f) """
+        return self._get_inc_value(ItemsCatalog.INC_CAPACITY, 0)
+
+    def spend_capacity(self, value):
+        new_value = max(0, int(self.capacity - value))
+        self._set_inc_value(ItemsCatalog.INC_CAPACITY, new_value)
+
+    @property
+    def max_time(self):
+        """ \xd0\xbc\xd0\xb0\xd0\xba\xd1\x81\xd0\xb8\xd0\xbc\xd0\xb0\xd0\xbb\xd1\x8c\xd0\xbd\xd0\xbe\xd0\xb5 \xd0\xb2\xd1\x80\xd0\xb5\xd0\xbc\xd1\x8f \xd0\xb4\xd0\xb5\xd0\xb9\xd1\x81\xd1\x82\xd0\xb2\xd0\xb8\xd1\x8f (\xd0\xb2 \xd1\x81\xd0\xb5\xd0\xba\xd1\x83\xd0\xbd\xd0\xb4\xd0\xb0\xd1\x85) """
+        if self._max_time is None:
+            self._max_time = 0
+            for m_id, p in self.slot_materials:
+                self._max_time += _material_by_id[m_id]['time'] * p
+
+            self._max_time = int(self._max_time)
+        return self._max_time
+
+    def _get_inc_value(self, inc_key, default_value = None):
+        keys = self._amulet_item['complexItemParametresKeys']
+        values = self._amulet_item['complexItemParametresValues']
+        if inc_key not in keys:
+            return default_value
+        return values[keys.index(inc_key)]
+
+    def _set_inc_value(self, inc_key, new_value):
+        keys = self._amulet_item['complexItemParametresKeys']
+        values = self._amulet_item['complexItemParametresValues']
+        if inc_key not in keys:
+            keys.append(inc_key)
+            values.append(new_value)
+        values[keys.index(inc_key)] = new_value
+
+    @property
+    def time_to_live(self):
+        """ \xd1\x81\xd0\xba\xd0\xbe\xd0\xbb\xd1\x8c\xd0\xba\xd0\xbe \xd0\xb5\xd0\xbc\xd1\x83 \xd0\xb6\xd0\xb8\xd1\x82\xd1\x8c \xd0\xbe\xd1\x81\xd1\x82\xd0\xb0\xd0\xbb\xd0\xbe\xd1\x81\xd1\x8c (\xd0\xb2 \xd1\x81\xd0\xb5\xd0\xba\xd1\x83\xd0\xbd\xd0\xb4\xd0\xb0\xd1\x85) """
+        import BWPersonality
+        if not self.artefacts:
+            return self.max_time
+        cur_time = BWPersonality.gpd.server_time if BigWorld.component == 'client' else time.time()
+        return max(0, self._amulet_item['creationTime'] - cur_time + self.max_time)
+
+    def is_working(self):
+        if not self.artefacts:
+            return False
+        if self.condition <= 0 or self.capacity <= 0:
+            return False
+        if self.time_to_live <= 0:
+            return False
+        return True
+
+    def calc_capacity_from_adding_artefacts(self, add_amount):
+        """ \xd0\xba\xd0\xb0\xd0\xba\xd0\xb0\xd1\x8f \xd0\xb1\xd1\x83\xd0\xb4\xd0\xb5\xd1\x82 \xd1\x91\xd0\xbc\xd0\xba\xd0\xbe\xd1\x81\xd1\x82\xd1\x8c, \xd0\xb5\xd1\x81\xd0\xbb\xd0\xb8 \xd0\xb2\xd1\x81\xd1\x82\xd0\xb0\xd0\xb2\xd0\xb8\xd1\x82\xd1\x8c \xd0\xb5\xd1\x89\xd1\x91 \xd0\xb0\xd1\x80\xd1\x82\xd0\xb5\xd1\x84\xd0\xb0\xd0\xba\xd1\x82\xd1\x8b """
+        prev_art_amount = len(self.artefacts)
+        if not prev_art_amount or not add_amount:
+            return self.max_capacity
+        else:
+            delta_capacity = self.max_capacity - self.capacity
+            if prev_art_amount == 2:
+                delta_capacity *= 0.25
+            elif add_amount == 2:
+                delta_capacity *= 0.75
+            else:
+                delta_capacity *= 0.5
+            return int(math_bw.clamp(self.capacity + delta_capacity, 0, self.max_capacity))
+
+    @property
+    def actions_extractor(self):
+        if self._actions_extractor is None:
+            self._actions_extractor = ActionsExtractor(self.slot_artefacts, self.slot_mats)
+        return self._actions_extractor
+
+    def get_shield(self, damage_type):
+        """ \xd0\xb2\xd0\xbe\xd0\xb7\xd0\xb2\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd1\x8d\xd0\xba\xd1\x80\xd0\xb0\xd0\xbd\xd0\xb8\xd1\x80\xd1\x83\xd0\xb5\xd0\xbc\xd1\x83\xd1\x8e \xd0\xb4\xd0\xbe\xd0\xbb\xd1\x8e (0..1) \xd0\xb4\xd0\xbb\xd1\x8f damage_type """
+        if not self.is_working():
+            return 0
+        return self.actions_extractor.get_shield(damage_type)
+
+    def get_absorb(self, effect_id):
+        """ \xd0\xb2\xd0\xbe\xd0\xb7\xd0\xb2\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xba\xd0\xbe\xd0\xbb\xd0\xb8\xd1\x87\xd0\xb5\xd1\x81\xd1\x82\xd0\xb2\xd0\xbe \xd1\x81\xd1\x82\xd0\xb0\xd0\xba\xd0\xbe\xd0\xb2 \xd0\xb2 \xd1\x81\xd0\xb5\xd0\xba\xd1\x83\xd0\xbd\xd0\xb4\xd1\x83 \xd0\xb4\xd0\xbb\xd1\x8f \xd0\xbf\xd0\xbe\xd0\xb3\xd0\xbb\xd0\xbe\xd1\x89\xd0\xb5\xd0\xbd\xd0\xb8\xd1\x8f effect_id """
+        if not self.is_working():
+            return 0
+        return self.actions_extractor.get_absorb(effect_id)
+
+    def get_all_absorbs(self):
+        """ \xd0\xb2\xd0\xbe\xd0\xb7\xd0\xb2\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xba\xd0\xbe\xd0\xbb\xd0\xb8\xd1\x87\xd0\xb5\xd1\x81\xd1\x82\xd0\xb2\xd0\xbe \xd1\x81\xd1\x82\xd0\xb0\xd0\xba\xd0\xbe\xd0\xb2 \xd0\xb2 \xd1\x81\xd0\xb5\xd0\xba\xd1\x83\xd0\xbd\xd0\xb4\xd1\x83 \xd0\xb4\xd0\xbb\xd1\x8f \xd0\xbf\xd0\xbe\xd0\xb3\xd0\xbb\xd0\xbe\xd1\x89\xd0\xb5\xd0\xbd\xd0\xb8\xd1\x8f """
+        if not self.is_working():
+            return {}
+        return self.actions_extractor.get_all_absorbs()
+
+    def get_stat(self, stat_id):
+        """ \xd0\xb2\xd0\xbe\xd0\xb7\xd0\xb2\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xbf\xd0\xbe\xd0\xb2\xd1\x8b\xd1\x88\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5 \xd1\x81\xd1\x82\xd0\xb0\xd1\x82\xd0\xb0 stat_id """
+        if not self.is_working():
+            return 0
+        return self.actions_extractor.get_stat(stat_id)
+
+
+class ActionsExtractor(object):
+
+    def __init__(self, art_types, slot_materials):
+        self._shields = {}
+        self._absorbs = {}
+        self._stats = {}
+        self._base_shields = {}
+        self._base_absorbs = {}
+        self._base_stats = {}
+        self._has_hidden_actions = False
+
+        def type_to_group(art_type):
+            return ItemsCatalog.GetItemParam(art_type).get('ArtGroup')
+
+        def add_actions(shield_dict, absorb_dict, stat_dict, factor):
+            actions_added = False
+            for damage_type, shield_value in shield_dict.items():
+                prev_value = self._shields.get(damage_type, 0)
+                self._shields[damage_type] = prev_value + shield_value * 0.01 * (1.0 - prev_value) * factor
+                actions_added = True
+
+            for eff_id, absorb_value in absorb_dict.items():
+                prev_value = self._absorbs.get(eff_id, 0)
+                self._absorbs[eff_id] = prev_value + absorb_value * factor
+                actions_added = True
+
+            for stat_id, stat_value in stat_dict.items():
+                prev_value = self._stats.get(stat_id, 0)
+                self._stats[stat_id] = prev_value + stat_value * factor
+                actions_added = True
+
+            return actions_added
+
+        def add_actions_from_art(art_type, factor):
+            params = ItemsCatalog.GetItemParam(art_type)
+            shield_dict = params.get('AmuletAbsorbingDamage', {})
+            absorb_dict = params.get('AmuletAbsorbingEff', {})
+            stat_dict = params.get('AmuletStats', {})
+            add_actions(shield_dict, absorb_dict, stat_dict, factor)
+
+        def add_actions_from_synergy(synergy):
+            shield_dict = synergy['shield']
+            absorb_dict = synergy['absorb']
+            stat_dict = synergy['stats']
+            if add_actions(shield_dict, absorb_dict, stat_dict, 1.0):
+                self._has_hidden_actions = True
+
+        material_to_arttype = defaultdict(list)
+        for i in xrange(3):
+            art_type = art_types[i]
+            if art_type:
+                mat_id = slot_materials[i]
+                material_to_arttype[mat_id].append(art_type)
+
+        for mat_id, art_types in material_to_arttype.items():
+            for art_type in art_types:
+                add_actions_from_art(art_type, 1.0)
+
+            if len(art_types) > 1:
+                bonus_group = None
+                art_groups = map(type_to_group, art_types)
+                groups = set()
+                for art_group in art_groups:
+                    if art_group in groups:
+                        bonus_group = art_group
+                        break
+                    groups.add(art_group)
+
+                if bonus_group:
+                    for art_type in art_types:
+                        if type_to_group(art_type) == bonus_group:
+                            add_actions_from_art(art_type, 0.5)
+
+        self._base_shields = deepcopy(self._shields)
+        self._base_absorbs = deepcopy(self._absorbs)
+        self._base_stats = deepcopy(self._stats)
+        for mat_id, art_types in material_to_arttype.items():
+            if len(art_types) <= 1:
+                continue
+            for i in xrange(len(art_types)):
+                for j in xrange(i + 1, len(art_types)):
+                    gr1 = type_to_group(art_types[i])
+                    gr2 = type_to_group(art_types[j])
+                    add_actions_from_synergy(get_synergy(gr1, gr2))
+
+        def round_values(data_dict):
+            for key in data_dict.keys():
+                data_dict[key] = int(data_dict[key])
+
+        round_values(self._absorbs)
+        round_values(self._stats)
+        return
+
+    def get_shield(self, damage_type):
+        return self._shields.get(damage_type, 0)
+
+    def get_absorb(self, eff_id):
+        return self._absorbs.get(eff_id, 0)
+
+    def get_stat(self, stat_id):
+        return self._stats.get(stat_id, 0)
+
+    def get_all_shields(self, show_hidden = True):
+        if show_hidden:
+            return self._shields
+        return self._base_shields
+
+    def get_all_absorbs(self, show_hidden = True):
+        if show_hidden:
+            return self._absorbs
+        return self._base_absorbs
+
+    def get_all_stats(self, show_hidden = True):
+        if show_hidden:
+            return self._stats
+        return self._base_stats
+
+    @property
+    def has_hidden_actions(self):
+        return self._has_hidden_actions
+
+
+def generate_random_structure():
+    """ \xd0\xb2\xd0\xbe\xd0\xb7\xd0\xb2\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82:
+                    \xd1\x83\xd0\xbf\xd0\xb0\xd0\xba\xd0\xbe\xd0\xb2\xd0\xb0\xd0\xbd\xd1\x8b\xd0\xb9 \xd0\xb2 int64 \xd1\x81\xd0\xbe\xd1\x81\xd1\x82\xd0\xb0\xd0\xb2 \xd0\xb4\xd0\xbb\xd1\x8f ItemsCatalog.INC_AMMATERIALS
+                            \xd0\xb1\xd0\xb0\xd0\xb9\xd1\x82\xd1\x8b: material_id1, material_id2, material_id3, percent1, percent2
+                    \xd1\x81\xd0\xbe\xd1\x81\xd1\x82\xd0\xbe\xd1\x8f\xd0\xbd\xd0\xb8\xd0\xb5 (condition)
+    """
+    mat_id1 = random.randint(1, 5)
+    mat_id2 = random.randint(1, 5)
+    mat_id3 = random.randint(1, 5)
+    b1 = random.uniform(0, 0.66)
+    b2 = random.uniform(0.33, 1)
+    if b1 > b2:
+        b1, b2 = b2, b1
+    p1 = b1
+    p2 = 1 - b2
+    p3 = 1 - p1 - p2
+    condition = 0
+    capacity = 0
+    for mat_id, p in ((mat_id1, p1), (mat_id2, p2), (mat_id3, p3)):
+        condition += _material_by_id[mat_id]['condition'] * p
+        capacity += _material_by_id[mat_id]['capacity'] * p
+
+    condition = int(condition)
+    capacity = int(capacity)
+    result = mat_id1
+    result <<= 8
+    result += mat_id2
+    result <<= 8
+    result += mat_id3
+    result <<= 8
+    result += int(round(p1 * 2 * 100))
+    result <<= 8
+    result += int(round(p2 * 2 * 100))
+    return (result, condition, capacity)
+
+
+def parse_materials(amulet_item):
+    """ \xd0\xb2\xd0\xbe\xd0\xb7\xd0\xb2\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd1\x81\xd0\xbb\xd0\xbe\xd0\xb2\xd0\xb0\xd1\x80\xd1\x8c m1, m2, m3, p1, p2, p3
+    """
+    mask = 255
+    inc_index = amulet_item['complexItemParametresKeys'].index(ItemsCatalog.INC_AMMATERIALS)
+    inc_mat_value = amulet_item['complexItemParametresValues'][inc_index]
+    p2 = (inc_mat_value & mask) * 0.5 * 0.01
+    inc_mat_value >>= 8
+    p1 = (inc_mat_value & mask) * 0.5 * 0.01
+    inc_mat_value >>= 8
+    m3 = int(inc_mat_value & mask)
+    inc_mat_value >>= 8
+    m2 = int(inc_mat_value & mask)
+    inc_mat_value >>= 8
+    m1 = int(inc_mat_value & mask)
+    return {'m1': m1,
+     'm2': m2,
+     'm3': m3,
+     'p1': p1,
+     'p2': p2,
+     'p3': 1 - p2 - p1}
+
+
+def pack_artefacts(amulet_item, art_types, keep_old = False):
+    """ \xd0\xb7\xd0\xb0\xd0\xbf\xd0\xb0\xd0\xba\xd0\xbe\xd0\xb2\xd1\x8b\xd0\xb2\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xb2 int64 \xd1\x81\xd0\xbf\xd0\xb8\xd1\x81\xd0\xbe\xd0\xba \xd1\x82\xd0\xb8\xd0\xbf\xd0\xbe\xd0\xb2 \xd0\xb0\xd1\x80\xd1\x82\xd0\xb5\xd1\x84\xd0\xb0\xd0\xba\xd1\x82\xd0\xbe\xd0\xb2 \xd0\xb8 \xd1\x81\xd1\x83\xd1\x91\xd1\x82 \xd0\xb2 inc_params
+            \xd0\xb4\xd0\xbe \xd0\xba\xd1\x83\xd1\x87\xd0\xb8 \xd0\xbe\xd0\xb1\xd0\xbd\xd0\xbe\xd0\xb2\xd0\xbb\xd1\x8f\xd0\xb5\xd1\x82 creation time \xd1\x81 \xd1\x83\xd1\x87\xd1\x91\xd1\x82\xd0\xbe\xd0\xbc \xd0\xb2\xd1\x81\xd0\xb5\xd1\x85 \xd1\x84\xd0\xb0\xd0\xba\xd1\x82\xd0\xbe\xd1\x80\xd0\xbe\xd0\xb2
+    """
+    if not BigWorld.component != 'client':
+        raise AssertionError
+        ckeys = amulet_item['complexItemParametresKeys']
+        cvalues = amulet_item['complexItemParametresValues']
+        if ItemsCatalog.INC_AMARTS not in ckeys:
+            ckeys.append(ItemsCatalog.INC_AMARTS)
+            cvalues.append(0)
+        amulet = AmuletWrapper(amulet_item)
+        add_art_amount = 0
+        old_value = keep_old and amulet.slot_artefacts
+    result = 0
+    for i, at in enumerate(art_types):
+        result <<= 16
+        if at:
+            art_id = ItemsCatalog.getArtIDByItemType(at)
+            add_art_amount += 1
+        elif keep_old and old_value[i]:
+            art_id = ItemsCatalog.getArtIDByItemType(old_value[i])
+        else:
+            art_id = 0
+        result += art_id
+
+    new_capacity = amulet.calc_capacity_from_adding_artefacts(add_art_amount)
+    inc_index = ckeys.index(ItemsCatalog.INC_AMARTS)
+    cvalues[inc_index] = result
+    inc_index = ckeys.index(ItemsCatalog.INC_CAPACITY)
+    cvalues[inc_index] = new_capacity
+    amulet_item['creationTime'] = time.time()
+
+
+def parse_artefacts(amulet_item):
+    """ \xd0\xb2\xd0\xbe\xd0\xb7\xd0\xb2\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd1\x81\xd0\xbf\xd0\xb8\xd1\x81\xd0\xbe\xd0\xba \xd1\x81\xd1\x82\xd0\xb0\xd0\xbd\xd0\xb4\xd0\xb0\xd1\x80\xd1\x82\xd0\xbd\xd1\x8b\xd1\x85 \xd1\x82\xd0\xb8\xd0\xbf\xd0\xbe\xd0\xb2 \xd0\xb0\xd1\x80\xd1\x82\xd0\xb5\xd1\x84\xd0\xb0\xd0\xba\xd1\x82\xd0\xbe\xd0\xb2 """
+    ckeys = amulet_item['complexItemParametresKeys']
+    if ItemsCatalog.INC_AMARTS not in ckeys:
+        return [None, None, None]
+    else:
+        mask = 65535
+        inc_index = ckeys.index(ItemsCatalog.INC_AMARTS)
+        inc_arts_value = amulet_item['complexItemParametresValues'][inc_index]
+        a_ids = [inc_arts_value & mask]
+        inc_arts_value >>= 16
+        a_ids.append(inc_arts_value & mask)
+        inc_arts_value >>= 16
+        a_ids.append(inc_arts_value & mask)
+        a_ids.reverse()
+        return [ (ItemsCatalog.getItemTypeByArtID(a_id) if a_id else None) for a_id in a_ids ]
+
+
+_materials = {'fir': {'id': 1,
+         'condition': 500,
+         'time': 120,
+         'capacity': 100,
+         'level': 1},
+ 'tooth': {'id': 2,
+           'condition': 1500,
+           'time': 240,
+           'capacity': 200,
+           'level': 2},
+ 'rubber': {'id': 3,
+            'condition': 500,
+            'time': 120,
+            'capacity': 600,
+            'level': 1},
+ 'gold': {'id': 4,
+          'condition': 2500,
+          'time': 320,
+          'capacity': 4000,
+          'level': 3},
+ 'bearskin': {'id': 5,
+              'condition': 800,
+              'time': 5,
+              'capacity': 100,
+              'level': 4}}
+_material_by_id = {}
+for mat in _materials.values():
+    _material_by_id[mat['id']] = mat
+
+def get_synergy(art_gr1, art_gr2):
+    key = (min(art_gr1, art_gr2), max(art_gr1, art_gr2))
+    return _synergy_data[key]
+
+
+def parse_synergy():
+    type_shield, type_absorbs, type_stats = xrange(1, 4)
+    amulet_synergy_path = 'scripts/common/amulet_arts.txt'
+    section = ResMgr.openSection(amulet_synergy_path)
+    lines = filter(lambda l: l and '#' not in l, section.asBinary.splitlines())
+    header = lines.pop(0).split('\t')
+    syn_data = {}
+    del header[0]
+    for line in lines:
+        line_data = line.split('\t')
+        art1 = int(line_data.pop(0))
+        for i, data in enumerate(line_data):
+            art2 = int(header[i])
+            if data:
+                key = (min(art1, art2), max(art1, art2))
+                if key in syn_data and syn_data[key] != data:
+                    print 'amulet_utils: synergy error', art1, art2, syn_data[key], data
+                    raise RuntimeError
+                syn_data[key] = data
+
+    result = defaultdict(lambda : deepcopy(_synergy_default_value))
+    for key, data in syn_data.items():
+        for action_data in data.split(';'):
+            action_type, param_id, value = map(int, action_data.split(':'))
+            if action_type == type_shield:
+                result[key]['shield'][param_id] += value
+            elif action_type == type_absorbs:
+                result[key]['absorb'][param_id] += value
+            elif action_type == type_stats:
+                result[key]['stats'][param_id] += value
+            else:
+                print 'amulets_utils: wrong action type', action_data
+                raise RuntimeError
+
+    return result
+
+
+_synergy_default_value = {'shield': defaultdict(int),
+ 'absorb': defaultdict(int),
+ 'stats': defaultdict(int)}
+try:
+    _synergy_data = parse_synergy()
+except:
+    traceback.print_exc()
+    traceback.print_stack()
+    _synergy_data = defaultdict(lambda : deepcopy(_synergy_default_value))
+
+EXTRACT_PRICE_FACTOR = 0.5

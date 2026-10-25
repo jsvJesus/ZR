@@ -1,0 +1,115 @@
+# Embedded file name: ./client/tmp_npc_head_provider.py
+import BigWorld
+import Math
+from Math import Matrix, Vector3, Vector2
+import math
+from math_bw import angle_between_vectors
+import traceback
+
+class MatrixProviderNPC:
+    STOP_DIST = 0.2
+    START_DIST = 0.5
+    STOP_ANGLE = math.radians(110)
+    START_ANGLE = math.radians(80)
+
+    def __init__(self, entity, directionProvider):
+        self.entity = entity
+        self.last_pitch_ = 0
+        self._se_id = 0
+        self._sh_id = 0
+        self._start_head = False
+        self._enable = False
+        self._weight = 0.0
+        self.NPCSmoothPitchModeCoef_ = 0.1
+        directionProvider.pDebugCall = self.pDebugCall
+
+    def reset(self):
+        self.last_pitch_ = self.entity.pitch
+        self._weight = 0.0
+        self._enable = False
+        if hasattr(self.entity, 'eyes_controller'):
+            self.entity.eyes_controller.track_bone(None)
+        return
+
+    def destroy(self):
+        self.entity = None
+        return
+
+    def pDebugCall(self, msource, mtarget, cammode):
+        m = Matrix()
+        source_pos = msource.translation
+        target_pos = mtarget.translation
+        direction = target_pos - source_pos
+        flat_direction = Vector3(direction)
+        flat_direction.y = 0
+        flat_dist = flat_direction.length
+        direction.normalise()
+        flat_direction.normalise()
+        model_direction = Vector3()
+        model_direction.setPitchYaw(self.entity.pitch, self.entity.yaw)
+        yaw = direction.yaw
+        self.last_pitch_ += (direction.pitch - self.last_pitch_) * self.NPCSmoothPitchModeCoef_
+        direction.setPitchYaw(self.last_pitch_, yaw)
+        head_flat_dir = msource.applyToAxis(1)
+        head_flat_dir.y = 0
+        head_flat_dir.normalise()
+        angle = angle_between_vectors(model_direction, flat_direction)
+        if self._enable:
+            if flat_dist < self.STOP_DIST:
+                self._enable = False
+                self.onStopTrack()
+            elif angle > self.STOP_ANGLE:
+                self._enable = False
+                self.onStopTrack()
+        elif not self._enable:
+            if flat_dist > self.START_DIST and angle < self.START_ANGLE:
+                self._enable = True
+                self.onStartTrack()
+        direction = direction * self._weight + model_direction * (1 - self._weight)
+        direction.normalise()
+        self.tick()
+        m.lookAt((0, 0, 0), direction, (0, 1, 0))
+        m.invert()
+        return m
+
+    def tick(self):
+        if self._enable:
+            if self._start_head:
+                self._weight += 0.05
+        else:
+            self._weight -= 0.1
+        self._weight = max(0.0, min(1.0, self._weight))
+
+    def onStartTrack(self):
+        if hasattr(self.entity, 'eyes_controller'):
+            try:
+                self.entity.eyes_controller.track_bone(BigWorld.player().model.node('Head'))
+            except:
+                traceback.print_exc()
+
+        if self._se_id:
+            BigWorld.cancelCallback(self._se_id)
+            self._se_id = 0
+        self._start_head = False
+
+        def start_head():
+            self._start_head = True
+
+        self._sh_id = BigWorld.callback(0.3, start_head)
+
+    def onStopTrack(self):
+        self._start_head = False
+        BigWorld.cancelCallback(self._sh_id)
+
+        def stop_eye():
+            if not self.entity:
+                return
+            elif self.entity.isDestroyed:
+                self.entity = None
+                return
+            else:
+                self.entity.eyes_controller.track_bone(None)
+                return
+
+        if hasattr(self.entity, 'eyes_controller'):
+            self._se_id = BigWorld.callback(0.5, stop_eye)

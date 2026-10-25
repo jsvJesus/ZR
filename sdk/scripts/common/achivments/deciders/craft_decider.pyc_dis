@@ -1,0 +1,86 @@
+# Embedded file name: ./common/achivments/deciders/craft_decider.py
+from achivments import achives_parser
+ET = achives_parser.EssenceTypes
+from hashlib import md5
+from collections import defaultdict
+from itertools import chain
+import common_decider
+
+def filter_send_to_basapp(achmask, recipe_id, success, workbench_type):
+    none_achs = _recipeid_to_achivs.get(None, [])
+    type_achs = _recipeid_to_achivs.get(recipe_id, [])
+    if not none_achs and not type_achs:
+        return False
+    else:
+        for ach_id in chain(none_achs, type_achs):
+            if achives_parser.get_bitvalue(ach_id, achmask):
+                continue
+            if _validate_ach(ach_id, recipe_id, success, workbench_type):
+                return True
+
+        return False
+
+
+def _validate_ach(ach_id, recipe_id, success, workbench_type):
+    recipe_ids, _, fail, needed_workbench_type = achives_parser.get_achiv(ach_id)['essence']['params']
+    if recipe_ids is not None:
+        if recipe_id not in recipe_ids:
+            return False
+    if fail is not None:
+        if fail == success:
+            return False
+    if needed_workbench_type is not None:
+        if needed_workbench_type != workbench_type:
+            return False
+    return True
+
+
+def decide(user, recipe_id, success, workbench_type):
+
+    def validate_ach(ach_id):
+        return _validate_ach(ach_id, recipe_id, success, workbench_type)
+
+    ach_ids = chain(_recipeid_to_achivs.get(None, []), _recipeid_to_achivs.get(recipe_id, []))
+    common_decider.decide(user, ach_ids, get_col_name, validate_ach, 1)
+    return
+
+
+def get_colname_and_hashkey(ach_id):
+    if ach_id in (305, 306):
+        return ('ess500659bfbe', (None,))
+    elif ach_id in (320, 321):
+        return ('ess596fabca11', (None,))
+    else:
+        essence = achives_parser.get_achiv(ach_id)['essence']
+        if not essence['id'] == ET.Craft:
+            raise AssertionError
+            recipe_ids, amount, fail, workbench_type = essence['params']
+            if amount in (0, None, 1):
+                return (None, None)
+            if recipe_ids is None:
+                recipe_ids = []
+            db_key = 'ess' + str(essence['id'])
+            db_sub_key = ''
+            for recipe_id in recipe_ids:
+                db_sub_key += '_' + str(recipe_id)
+
+            if fail is not None:
+                db_sub_key += '_f' + str(int(fail))
+            if workbench_type is not None:
+                db_sub_key += '_w' + str(workbench_type)
+            db_sub_key = len(db_sub_key) > 10 and md5(db_sub_key).hexdigest()[:9]
+        return (db_key + db_sub_key, (recipe_ids, fail, workbench_type))
+
+
+def get_col_name(ach_id):
+    return get_colname_and_hashkey(ach_id)[0]
+
+
+_recipeid_to_achivs = defaultdict(list)
+for ach in achives_parser.filter_achs_by_essence(ET.Craft):
+    recipe_ids = ach['essence']['params'][0]
+    if recipe_ids is None:
+        _recipeid_to_achivs[None].append(ach['id'])
+    else:
+        for recipe_id in recipe_ids:
+            _recipeid_to_achivs[recipe_id].append(ach['id'])

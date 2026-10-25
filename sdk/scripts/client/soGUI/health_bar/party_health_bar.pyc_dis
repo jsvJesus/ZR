@@ -1,0 +1,278 @@
+# Embedded file name: ./client/soGUI/health_bar/party_health_bar.py
+import BWPersonality
+import colorCodes as cc
+from math_bw import smooth_damp
+from utils import Tickable
+from soGUI.health_bar.health_bar import HealthBar
+from soGUI.equip_paint.eqp_button import EqpButton
+from party_common import PARTY_UPDATE_RANGE, MemberStatus as S
+import GUI
+import BigWorld
+from Helpers.PyGUI import Utils
+from soGUI.soCharEffectsFrame import soEffectSlot
+import EffectUtils
+
+class EffectsBlock(Tickable):
+
+    def __init__(self, component):
+        Tickable.__init__(self)
+        self.component = component
+        self.component.width = 0
+        self._visible_effects = []
+        comp = GUI.Window()
+        comp.wm, comp.hm = ('CLIP', 'CLIP')
+        comp.ha, comp.va = ('LEFT', 'CENTER')
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.width, comp.height = (2, 2)
+        comp.position = (-3, 0, 0.5)
+        self.component.addChild(comp, 'container')
+        self._container = comp
+        self._velocity = 0.0
+        self._desired_pos = -3
+        self._is_near = False
+        self.on_size_changed = lambda : None
+
+    def show(self):
+        self._desired_pos = -1
+        self.component.visible = True
+        self.start_tick()
+
+    def hide(self):
+        self._desired_pos = -3
+        self.start_tick()
+
+    def update_effects(self, effect_ids):
+        if self._visible_effects == effect_ids:
+            return
+        self._visible_effects = effect_ids
+        self._update_content()
+
+    def set_is_near(self, is_near):
+        if self._is_near == is_near:
+            return
+        self._is_near = is_near
+        self._update_content()
+
+    def on_tick(self):
+        self._container.position[0], self._velocity = smooth_damp(self._container.position[0], self._desired_pos, self._velocity, 0.1, 10000000000.0, BigWorld.getTimeDelta())
+        if abs(self._velocity) < 0.001:
+            self._velocity = 0.0
+            self._container.position[0] = self._desired_pos
+        self.component.visible = self._container.position[0] != -3
+        self.on_size_changed()
+
+    def can_tick(self):
+        if not Utils.is_visible_in_hierarchy(self.component.parent):
+            return False
+        if self._container.position[0] == self._desired_pos:
+            return False
+        return True
+
+    def _update_content(self):
+        margin = 2
+        width = 0
+        visible_effects = self._visible_effects if self._is_near else []
+        for i, effect_id in enumerate(visible_effects):
+            if len(self._container.children) == i:
+                comp = GUI.Window()
+                soEffectSlot(comp)
+                comp.materialFX = 'SOLID'
+                comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+                comp.ha, comp.va = ('LEFT', 'TOP')
+                comp.position = ((comp.width + margin) * i, 0, 0.5)
+                self._container.addChild(comp, 'effect' + str(i))
+            comp = self._container.children[i][1]
+            width = comp.position[0] + comp.width
+            effect = self._container.children[i][1].script
+            effect.component.visible = True
+            effect_data = EffectUtils.getEffect(effect_id)
+            effect.setIcon(effect_data['texture'])
+            effect.setID(effect_id)
+            effect.setTime(-1)
+            effect.setType(effect_data['type'])
+            effect.setStack(0)
+            effect._applyData()
+
+        for i in xrange(len(visible_effects), len(self._container.children)):
+            self._container.children[i][1].visible = False
+
+        if self.component.width != width:
+            self.component.width = width
+        self.on_size_changed()
+
+    def get_size(self):
+        return (self._container.position[0] + 3) * 0.5 * (self.component.width + 1)
+
+    def do_reposition(self):
+        self._update_content()
+
+
+class EffButton(EqpButton):
+    Opened, Closed = range(2)
+
+    def __init__(self, component):
+        self._state = EffButton.Closed
+        EqpButton.__init__(self, component)
+        self.on_mode_changed = lambda mode: None
+
+    @property
+    def state(self):
+        return self._state
+
+    @state.setter
+    def state(self, value):
+        if self._state == value:
+            return
+        self._state = value
+        self._update_visual()
+        self.on_mode_changed(self.state)
+
+    def update_visual(self, hovered, pressed):
+        if self.state == EffButton.Opened:
+            self.component.textureName = 'soGUI/frame/healthbar/expand_left.dds'
+        elif self.state == EffButton.Closed:
+            self.component.textureName = 'soGUI/frame/healthbar/expand_right.dds'
+        if pressed:
+            col = cc.active_rgba
+        elif hovered:
+            col = (255, 255, 255, 255)
+        else:
+            col = cc.active_rgba
+        self.component.colour = col
+
+    def on_press(self):
+        if self.state == EffButton.Opened:
+            self.state = EffButton.Closed
+        elif self.state == EffButton.Closed:
+            self.state = EffButton.Opened
+
+
+class PartyHealthBar(HealthBar):
+
+    def __init__(self, member_data, index):
+        HealthBar.__init__(self)
+        self.component.hpm, self.component.vpm = ('PIXEL', 'PIXEL')
+        self.component.name.font = 'RobotoCondensedShadow_16.font'
+        self.component.height = 40
+        self.member_data = member_data
+        self.index = index
+        self.stop_dragging_callback = lambda member_gui: None
+        comp = GUI.Window()
+        comp.materialFX = 'BLEND'
+        comp.ha, comp.va = ('LEFT', 'TOP')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = (7, 12)
+        self.component.addChild(comp, 'effbutton')
+        self._eff_btn = EffButton(comp)
+        self._eff_btn.on_mode_changed = self._on_effbtn_changed
+        comp = GUI.Window()
+        comp.materialFX = 'SOLID'
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('LEFT', 'CENTER')
+        comp.hpm, comp.vpm = ('PIXEL', 'CLIP')
+        comp.width, comp.height = (0, 80)
+        comp.position = (50, -1, 0.5)
+        comp.visible = False
+        self.component.addChild(comp)
+        self._effects_block = EffectsBlock(comp)
+        self._effects_block.on_size_changed = self._on_eff_size_changed
+        self.show()
+
+    def _on_eff_size_changed(self):
+        self.component.width = self._effects_block.component.position[0] + self._effects_block.get_size()
+
+    def show_bufs(self, show):
+        new_state = EffButton.Opened if show else EffButton.Closed
+        self._eff_btn.state = new_state
+
+    def _on_effbtn_changed(self, state):
+        if state == EffButton.Opened:
+            self._effects_block.show()
+        elif state == EffButton.Closed:
+            self._effects_block.hide()
+
+    def _on_init(self):
+        HealthBar._on_init(self)
+        self.component.name.text = self.member_data['name']
+        self.is_leader = self.member_data['status'] == S.Leader
+
+    def stopDragging(self):
+        HealthBar.stopDragging(self)
+        self.stop_dragging_callback(self)
+
+    def _do_reposition(self):
+        hp_stretch, sp_stretch = HealthBar._do_reposition(self)
+        pos_x = 20
+        comp = self.component.hpbarback
+        comp.position = (pos_x, 22, 0.7)
+        comp.width, comp.height = 155 * hp_stretch, 8
+        comp = self.component.name
+        comp.position = (pos_x, 0, 0.5)
+        comp = self.component.spbarback
+        comp.position = (pos_x, 32, 0.7)
+        comp.width, comp.height = self.component.hpbarback.width, 2
+        comp = self.component.leader
+        comp.position[0] = pos_x + self.component.hpbarback.width
+        comp = self._eff_btn.component
+        hpbarback = self.component.hpbarback
+        comp.position = (hpbarback.width + hpbarback.position[0] + 2, hpbarback.position[1], 0.2)
+        self._eff_btn.do_reposition()
+        comp = self._effects_block.component
+        btn_comp = self._eff_btn.component
+        comp.position[0] = btn_comp.position[0] + btn_comp.width + 2
+        self._effects_block.do_reposition()
+        self.component.width = self._effects_block.component.position[0] + self._effects_block.get_size()
+
+    def update_hpst(self, health, stamina):
+        self.hp_max, self.sp_max = (100, 100)
+        self.hp_value = health * self.hp_max
+        self.sp_value = stamina * self.sp_max
+
+    def set_status(self, status):
+        self.member_data['status'] = status
+        self.is_leader = status == S.Leader
+
+    def tick(self):
+        is_near = self._is_member_near()
+        if not is_near and not self._inited:
+            self.update_hpst(0, 0)
+        entity = BigWorld.entities.get(self.member_data['id'])
+        self.apply_name_color(is_near, entity and entity.karma, entity and entity.AgrFlag)
+        colour = 255 if is_near else 10
+        self.component.hpbarback.healthbar.colour[3] = colour
+        self.component.spbarback.spbar.colour[3] = colour
+        self._effects_block.set_is_near(is_near)
+
+    def update_effects(self, effect_ids):
+        self._effects_block.update_effects(effect_ids)
+
+    def destroy(self):
+        self.hide()
+        self.stop_dragging_callback = None
+        self.component.script = None
+        self.component = None
+        return
+
+    def on_context_menu(self):
+        actions = BigWorld.player().get_party_member_actions()
+        if actions:
+            BWPersonality.GUICore.showContextMenu(id(self), actions)
+            BWPersonality.GUICore.addListener('contextMenuEvent', self._on_context_event)
+
+    def _on_context_event(self, interface_id, action_id, caption, event, data = None):
+        BWPersonality.GUICore.removeListener('contextMenuEvent', self._on_context_event)
+        if interface_id != id(self):
+            return
+        BigWorld.player().on_party_action(action_id, self.member_data)
+
+    def _is_member_near(self):
+        entity = BigWorld.entities.get(self.member_data['id'])
+        if not entity or entity.isDestroyed:
+            return False
+        player = BigWorld.player()
+        if not player or player.isDestroyed:
+            return False
+        if player.position.distTo(entity.position) > PARTY_UPDATE_RANGE:
+            return False
+        return True

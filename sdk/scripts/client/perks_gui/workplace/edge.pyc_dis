@@ -1,0 +1,240 @@
+# Embedded file name: ./client/perks_gui/workplace/edge.py
+import GUI
+import BigWorld
+import Keys
+from Math import Vector2
+from math import atan2, sin, cos, pi
+from math_bw import vector_between_vectors, clamp, lerp_angle2, lerp, angle_between_vectors, point_line_distance
+SELECT_WIDTH = 0.002
+
+class Edge(object):
+
+    def __init__(self, data, component, n0, n1):
+        self._n0 = n0
+        self._n1 = n1
+        self._data = data
+        self._n0.add_node_changed_callback(self._update_shapes)
+        self._n1.add_node_changed_callback(self._update_shapes)
+        self.on_shapes_updated_callback = lambda edge: None
+        self._ratio = self._data['params'].get('ratio', 0.5)
+        self._inverted = self._data['params'].get('inverted', False)
+        self._dragged = False
+        self._component = component
+        self._selected_part = None
+        self._edge_start_change_callbacks = []
+        self._update_shapes()
+        return
+
+    def add_edge_start_change_callback(self, callback):
+        """ \xd1\x81\xd0\xb8\xd0\xb3\xd0\xbd\xd0\xb0\xd1\x82\xd1\x83\xd1\x80\xd0\xb0 callback(edge) """
+        self._edge_start_change_callbacks.append(callback)
+
+    def invert(self):
+        for c in self._edge_start_change_callbacks:
+            c(self)
+
+        self._inverted = not self._inverted
+        self._update_shapes()
+
+    def start_drag(self):
+        self._dragged = True
+        self.on_start_drag()
+        self._drag_tick()
+
+    def on_start_drag(self):
+        for c in self._edge_start_change_callbacks:
+            c(self)
+
+    def on_stop_drag(self):
+        pass
+
+    def _drag_tick(self):
+        if not BigWorld.isKeyDown(Keys.KEY_LEFTMOUSE):
+            self._dragged = False
+        if not self._dragged:
+            self.on_stop_drag()
+            return
+        cursor_pos = self._get_local_cursor_pos()
+        if self._inverted:
+            angle = angle_between_vectors(self._p0, self._p1)
+            angle0 = angle_between_vectors(self._p0, cursor_pos)
+            angle1 = angle_between_vectors(self._p1, cursor_pos)
+            if max(angle0, angle1) > angle:
+                self._ratio = 1.0 if angle0 >= angle1 else 0.0
+            else:
+                self._ratio = angle0 / angle
+        else:
+            distance = cursor_pos.length
+            len0 = self._p0.length
+            len1 = self._p1.length
+            self._ratio = clamp((distance - len0) / (len1 - len0))
+        self._update_shapes()
+        BigWorld.callback(0, self._drag_tick)
+
+    def _update_shapes(self):
+        self.cshapes = []
+        self.lshapes = []
+        length0, length1 = self._p0.length, self._p1.length
+        angle0 = atan2(self._p0[1], self._p0[0])
+        angle1 = atan2(self._p1[1], self._p1[0])
+        if abs(angle0 - angle1) > pi:
+            if angle0 < angle1:
+                angle0 += 2 * pi
+            else:
+                angle1 += 2 * pi
+        distance = length1 - length0
+        if abs(distance) < 0.01:
+            self.cshapes.append(((angle0, angle1), (length0 + length1) * 0.5))
+        elif abs(angle0 - angle1) < 0.01 or length0 < 0.01 or length1 < 0.01:
+            self.lshapes.append((self._p0, self._p1))
+        elif self._inverted:
+            angle = lerp_angle2(angle0, angle1, self._ratio)
+            radius = lerp(length0, length1, self._ratio)
+            self.cshapes.append(((angle0, angle), length0))
+            self.cshapes.append(((angle, angle1), length1))
+            p0 = Vector2(cos(angle) * length0, sin(angle) * length0)
+            p1 = Vector2(cos(angle) * length1, sin(angle) * length1)
+            self.lshapes.append((p0, p1))
+        else:
+            radius = length0 + distance * self._ratio
+            self.cshapes.append(((angle0, angle1), radius))
+            length0 = distance * (1.0 - self._ratio)
+            direction = self._p1
+            direction.normalise()
+            direction *= length0
+            p = self._p1 - direction
+            self.lshapes.append((p, self._p1))
+            length1 = distance * self._ratio
+            direction = self._p0
+            direction.normalise()
+            direction *= length1
+            p = self._p0 + direction
+            self.lshapes.append((p, self._p0))
+        self.a_cshapes = [(0, 0)] * len(self.cshapes)
+        self.a_lshapes = [(0, 0)] * len(self.lshapes)
+        if self._selected_part:
+            for i, s in enumerate(self.cshapes):
+                if s == self._selected_part:
+                    self.a_cshapes[i] = (0, 1)
+
+            for i, s in enumerate(self.lshapes):
+                if s == self._selected_part:
+                    self.a_lshapes[i] = (0, 1)
+
+        self.on_shapes_updated_callback(self)
+
+    def _get_local_cursor_pos(self):
+        cursor_pos = GUI.mcursor().position
+        cursor_pos = self._component.screenToLocal(cursor_pos)
+        return Vector2(cursor_pos[0] / self._component.width * 2.0 - 1.0, cursor_pos[1] / self._component.height * 2.0 - 1.0)
+
+    def get_selected_part(self):
+        cursor_pos = self._get_local_cursor_pos()
+        cursor_length = cursor_pos.length
+
+        def get_selected_curve():
+
+            def is_cshape_inside(shape):
+                if not vector_between_vectors(cursor_pos, self._p0, self._p1):
+                    return False
+                if abs(shape[1] - cursor_length) > SELECT_WIDTH:
+                    return False
+                return True
+
+            for shape in self.cshapes:
+                if is_cshape_inside(shape):
+                    return shape
+
+            return None
+
+        def get_selected_line():
+
+            def is_lshape_inside(shape):
+                return point_line_distance(cursor_pos, Vector2(shape[0]), Vector2(shape[1])) <= SELECT_WIDTH
+
+            for shape in self.lshapes:
+                if is_lshape_inside(shape):
+                    return shape
+
+            return None
+
+        if self._inverted:
+            return get_selected_line() or get_selected_curve()
+        else:
+            return get_selected_curve() or get_selected_line()
+
+    def set_selected(self, selected, part):
+        self._selected_part = selected and part
+        self._update_shapes()
+
+    def get_radius(self, part):
+        if isinstance(part[1], float):
+            return part[1]
+
+    def paste_radius(self, radius, part):
+        if not self._inverted:
+            for c in self._edge_start_change_callbacks:
+                c(self)
+
+            self._ratio = clamp((radius - self._p0.length) / (self._p1.length - self._p0.length))
+            self._update_shapes()
+
+    def get_angle(self, part):
+        if not isinstance(part[1], float):
+            return atan2(part[1][1], part[1][0])
+
+    def paste_angle(self, angle, part):
+        if self._inverted:
+            for c in self._edge_start_change_callbacks:
+                c(self)
+
+            cursor_pos = Vector2(cos(angle), sin(angle))
+            angle = angle_between_vectors(self._p0, self._p1)
+            angle0 = angle_between_vectors(self._p0, cursor_pos)
+            angle1 = angle_between_vectors(self._p1, cursor_pos)
+            if angle0 >= angle:
+                self._ratio = 1.0
+            elif angle1 >= angle:
+                self._ratio = 0.0
+            else:
+                self._ratio = angle0 / angle
+            self._update_shapes()
+
+    @property
+    def _p0(self):
+        return Vector2(self._n0.pos)
+
+    @property
+    def _p1(self):
+        return Vector2(self._n1.pos)
+
+    def get_state(self):
+        return (self._ratio, self._inverted)
+
+    def restore_state(self, state):
+        self._ratio, self._inverted = state
+        self._update_shapes()
+
+    @property
+    def id(self):
+        return self._data['id']
+
+    @property
+    def ratio(self):
+        return self._ratio
+
+    @property
+    def inverted(self):
+        return self._inverted
+
+    @property
+    def node0(self):
+        return self._data['node0']
+
+    @property
+    def node1(self):
+        return self._data['node1']
+
+    @property
+    def twoway(self):
+        return self._data['params'].get('twoway', False)

@@ -1,0 +1,126 @@
+# Embedded file name: ./client/Cabman.py
+import BigWorld
+from functools import partial
+DATA_PATH = 'scripts/common/data/Cabman'
+
+class Cabman(BigWorld.Entity):
+
+    def __init__(self):
+        BigWorld.Entity.__init__(self)
+        self._car = None
+        self._inited = False
+        self._waiter = set()
+        self._wait_for_part('server_seats')
+        self._pending_data = {}
+        self._wait_for_part('car')
+        self.cell.is_seats_available(BigWorld.player().id)
+        return
+
+    def on_car_ready(self, car):
+        self._car = car
+        self._on_part_ready('car')
+
+    def _wait_for_part(self, tag):
+        self._waiter.add(tag)
+
+    def _on_part_ready(self, tag):
+        self._waiter.remove(tag)
+        if not self._waiter:
+            self._on_initialized()
+
+    def _on_initialized(self):
+        """ \xd0\xb2\xd1\x8b\xd0\xb7\xd1\x8b\xd0\xb2\xd0\xb0\xd0\xb5\xd1\x82\xd1\x81\xd1\x8f, \xd0\xba\xd0\xbe\xd0\xb3\xd0\xb4\xd0\xb0 \xd0\xb2\xd1\x81\xd1\x91 \xd0\xbf\xd1\x80\xd0\xbe\xd0\xb3\xd1\x80\xd1\x83\xd0\xb7\xd0\xb8\xd0\xbb\xd0\xbe\xd1\x81\xd1\x8c \xd0\xb8 \xd0\xb2\xd1\x81\xd1\x91 \xd0\xb3\xd0\xbe\xd1\x82\xd0\xbe\xd0\xb2\xd0\xbe """
+        if self.isDestroyed:
+            return
+        else:
+            if 'server_seats' in self._pending_data:
+                self._car.available = self._pending_data['server_seats']
+            del self._pending_data
+            self._inited = True
+            is_player_sitting = bool(next((sd for sd in self.visible_seats if sd['entity_id'] == BigWorld.player().id), None))
+            self._car.show(self.state, is_player_sitting)
+
+            def check_sitting_avatars():
+                if self.isDestroyed:
+                    return
+                need_iteration = False
+                for seat_data in self.visible_seats:
+                    avatar = BigWorld.entities.get(seat_data['entity_id'])
+                    if avatar and avatar.model and not avatar.is_sitting_in_car():
+                        box_data = self._car.get_box_data_by_index(seat_data['seat_index'])
+                        avatar.prepare_to_sit_cabcar(box_data['animation'], box_data['matrix'], box_data['exit_place'], self._car, self.id)
+                    if not avatar or not avatar.model or not avatar.is_sitting_in_car():
+                        need_iteration = True
+
+                if need_iteration:
+                    BigWorld.callback(0, check_sitting_avatars)
+
+            check_sitting_avatars()
+            return
+
+    def onEnterWorld(self, prereqs = None):
+        props = {'conf_name': self.junk.car.modelname,
+         'delegate_id': self.id}
+        BigWorld.createEntity('Cabmancar', self.spaceID, 0, self.junk.car.position, self.junk.car.direction, props)
+
+    def onLeaveWorld(self):
+        if self._inited:
+            BigWorld.callback(5.0, partial(BigWorld.destroyEntity, self._car.id))
+        self._car = None
+        return
+
+    def push_player(self, player_id):
+        self.cell.push_player1(player_id)
+
+    def request_interact1(self, rider_id, seat_index, interact_callback):
+        if hasattr(self, '_interact_callback'):
+            return
+        self._interact_callback = interact_callback
+        self.cell.request_interact2(rider_id, seat_index)
+
+    def on_leave(self, rider_id):
+        self.cell.on_rider_leave1(rider_id)
+
+    def on_cabseat_interaction_failed(self):
+        self._interact_callback(False)
+        del self._interact_callback
+
+    def on_seats_available_answer(self, result):
+        if self._car:
+            self._car.available = result
+        else:
+            self._pending_data['server_seats'] = result
+        self._on_part_ready('server_seats')
+
+    def player_registered(self, registered):
+        self._car.available = registered
+
+    def setSlice_visible_seats(self, path, old_value):
+        if not self._inited:
+            return
+        if not old_value:
+            data = self.visible_seats[path[0][0]]
+            box_data = self._car.get_box_data_by_index(data['seat_index'])
+            interactor = BigWorld.entities.get(data['entity_id'])
+            if interactor:
+                interactor.prepare_to_sit_cabcar(box_data['animation'], box_data['matrix'], box_data['exit_place'], self._car, self.id)
+                if BigWorld.player() is interactor:
+                    self._interact_callback(True)
+                    del self._interact_callback
+        elif path[0][0] == path[0][1]:
+            interactor = BigWorld.entities.get(old_value[0]['entity_id'])
+            if interactor:
+                interactor.on_cabcar_leaved(self._car)
+        else:
+            raise RuntimeError
+
+    def setNested_visible_seats(self, path, old_value):
+        raise RuntimeError
+
+    def set_visible_seats(self, old_value):
+        raise RuntimeError
+
+    def set_state(self, old_value):
+        if not self._inited:
+            return
+        self._car.activate_state(self.state)

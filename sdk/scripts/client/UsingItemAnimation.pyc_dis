@@ -1,0 +1,1048 @@
+# Embedded file name: ./client/UsingItemAnimation.py
+import time
+import BigWorld
+import sounds_manager as sounds
+import Constants
+import traceback
+from functools import partial
+from BoxStatus import BoxStatus
+from Items import ItemsCatalog
+from utils_bw import if_not_destroyed
+from weapon_attachment import WeaponAttachment
+from utils import ignoreError
+import Respawn
+import use_search_anim_config
+import utils_async
+DEFAULT_DRINK_MODEL = 'characters2/items/drink/bottle_05_lod1.model'
+DEFAULT_EAT_MODEL = 'characters2/items/drink/bottle_05_lod1.model'
+DEFAULT_BOX_MODEL = 'models/entities/movable_box.model'
+BINOCULARS = 'binoculars'
+DeviceModelPath = {BINOCULARS: 'characters2/items/binoculars/binoculars_1_lod1.model'}
+DeviceModels = {}
+
+class ReloadConst:
+    RELOAD, LOAD_AMMO_IN_MAGAZINE, UNLOAD_AMMO_MAGAZINE = xrange(1, 4)
+
+
+LEFT_HAND, RIGHT_HAND = xrange(1, 3)
+
+class RadioModes:
+    NONE, SHOLDER, HAND = xrange(3)
+
+
+class UsingItemAnimation:
+
+    def __init__(self):
+        self._playing_animation_item = False
+        self.__dealyed_timer = 0
+        self._need_enable_look = False
+        self._in_hand_model_left = None
+        self._in_hand_model_right = None
+        self._using_item_action_name = ''
+        self._playing_animation_device = False
+        self._playing_animation_loot = False
+        self._playing_animation_loot_cam_pos = False
+        self.__current_action = None
+        self._anim_callback_id = None
+        self._anim_on_cancel_callback = None
+        self._anim_action_in = None
+        self._anim_action_loop = None
+        self._anim_action_out = None
+        self._using_attach_model = None
+        self._usingItemSound = None
+        self.__tmp_time = time.time()
+        return
+
+    def onPostModelChange(self):
+        self.popTrackerLock('drawStartThrowGrenade')
+        self.is_throwing = False
+
+    def _playLoopedUseItemSound(self, sound_path, delay = 0.0):
+        self._stopLoopedUseItemSound()
+        self._usingItemSound = sounds.getSound(sound_path, model=self.model)
+        if not self._usingItemSound:
+            return
+
+        def play():
+            if self.isDestroyed:
+                return
+            if not self._usingItemSound:
+                return
+            self._usingItemSound.play()
+            self._sound_dealy_id = 0
+
+        self._sound_dealy_id = BigWorld.callback(delay, play)
+
+    def _stopLoopedUseItemSound(self):
+        if getattr(self, '_sound_dealy_id', None):
+            BigWorld.cancelCallback(self._sound_dealy_id)
+        self._sound_dealy_id = 0
+        if self._usingItemSound:
+            self._usingItemSound.stop()
+            self._usingItemSound.releaseSound()
+        self._usingItemSound = None
+        return
+
+    @property
+    def item_animation(self):
+        return self._playing_animation_item
+
+    @if_not_destroyed
+    def drawUsingItemAnimation(self, item_type, duration, on_target = False):
+        if not self.model:
+            return
+        else:
+            itemParam = ItemsCatalog.GetItemParam(item_type)
+            if not itemParam:
+                return
+            if hasattr(self, 'usingGesture') and not self.isSitting():
+                self.stopAnimation()
+            hands = itemParam.get('Action_model_in_hands', False)
+            self.model.ThrowRight = None
+            self.model.ThrowLeft = None
+            self._in_hand_model_left = None
+            self._in_hand_model_right = None
+            self._using_item_action_name = ''
+            self.__wait_models = {}
+            self.__tmp_time = time.time()
+
+            def onLoaModelInHand(var_name, _model_path, model, fetch_id):
+                if self.isDestroyed:
+                    return
+                if not model:
+                    print '\ndrawUsingItemAnimation ERRORO LOAD MODEL', _model_path, self
+                    traceback.print_exc()
+                if not self.__wait_models:
+                    return
+                setattr(self, var_name, model)
+                del self.__wait_models[var_name]
+                if not self.__wait_models:
+                    self._continueDrawUsingItemAnimation(item_type, duration, on_target)
+
+            if hands:
+                if LEFT_HAND in hands and hands.get(LEFT_HAND):
+                    _model = hands.get(LEFT_HAND)
+                    self.__wait_models['_in_hand_model_left'] = BigWorld.fetchModelWithID(_model, partial(onLoaModelInHand, '_in_hand_model_left', _model))
+                if RIGHT_HAND in hands and hands.get(RIGHT_HAND):
+                    _model = hands.get(RIGHT_HAND)
+                    self.__wait_models['_in_hand_model_right'] = BigWorld.fetchModelWithID(_model, partial(onLoaModelInHand, '_in_hand_model_right', _model))
+            if not self.__wait_models:
+                self._continueDrawUsingItemAnimation(item_type, duration, on_target)
+            return
+
+    @if_not_destroyed
+    def _continueDrawUsingItemAnimation(self, item_type, duration, on_target = False):
+        if not self.model:
+            return
+        else:
+            itemParam = ItemsCatalog.GetItemParam(item_type)
+            if on_target:
+                action_name = itemParam.get('Action_anim_action_on_target', None)
+            else:
+                action_name = itemParam.get('Action_anim_action', None)
+            if not action_name and ItemsCatalog.EFFECTS_RECIPE in itemParam.get('Effect', []):
+                action_name = ['use_craft_in', 'use_craft_loop', 'use_craft_out']
+            _blocked = itemParam.get('Action_movement_block', False)
+            if _blocked:
+                self.setControlLockByEffect(Constants.ControlLockTypes.USE_ITEM, duration)
+            action = None
+            if action_name and isinstance(action_name, list):
+                self._using_item_action_name = action_name[1]
+                self.playListAnimations(action_name, duration, self.stopUsingItemAnimation)
+            else:
+                if action_name and hasattr(self.model, action_name):
+                    action = getattr(self.model, action_name, None)
+                if action:
+                    self._using_item_action_name = action_name
+                    self.playAnimation(action, duration, self.stopUsingItemAnimation, stretch=True, on_cancel_callback=self.stopUsingItemAnimation)
+                else:
+                    self.stopUsingItemAnimation()
+                    return
+                if action_name and not action:
+                    print 'ERROR Play animation', action_name, 'using item', item_type, self
+            if self._using_item_action_name:
+                self.pushTrackerLockByName('drawUsingItemAnimation', 'Belly-Belly2-PistolHolster', lock_track_head=True, print_error=False)
+            self._playing_animation_item = True
+            self.flashlight_suspend()
+            return
+
+    @if_not_destroyed
+    def stopUsingItemAnimation(self):
+        self.removeControlLockByEffect(Constants.ControlLockTypes.USE_ITEM)
+        self.stopAnimation()
+        self.setUsingItem(False)
+        self.__wait_models = {}
+        self._playing_animation_item = False
+        self._in_hand_model_left = None
+        self._in_hand_model_right = None
+        self._using_item_action_name = ''
+        if self._using_attach_model:
+            try:
+                self.model.node('HP_Lhand').detach(self._using_attach_model)
+            except:
+                print '\nerror for', self, self.model, self._using_attach_model
+                print self._using_attach_model.inWorld, self._using_attach_model.sources
+                traceback.print_exc()
+
+            self._using_attach_model = None
+        self.popTrackerLock('drawUsingItemAnimation')
+        if not self.model:
+            return
+        else:
+            self.model.ThrowRight = None
+            self.model.ThrowLeft = None
+            if self.is_dead():
+                return
+            if self.usingGesture and not self.isSitting():
+                self.playAnimationByIDInList(self.usingGesture)
+            else:
+                self.CancelAction(0)
+                self.onUseAnyHandActionEnd()
+                self.returnModelToDefault()
+            return
+
+    @property
+    def binoculars_animation(self):
+        return self._playing_animation_device
+
+    def _onBinocularIn(self, *e):
+        self.onBinocularsActivate(True)
+
+    def _onBinocularOut(self, *e):
+        self.popTrackerLock('BINOCULAR')
+        self.onBinocularsAnimation(False)
+        self.model.ThrowLeft = None
+        self.model.cue('ItemToHand', None)
+        self.model.cue('onThrowItem', None)
+        self._playing_animation_device = False
+        return
+
+    def _drawBinocularsAnimationStart(self):
+        self._playing_animation_device = True
+        self.onBinocularsAnimation(True)
+        self.pushTrackerLockByName('BINOCULAR', weapon_to='Belly-Belly2-PistolHolster', lock_track_head=True)
+        if not self.model:
+            return
+
+        def onItemToHand(*e):
+            self.model.ThrowLeft.visible = True
+
+        def onThrowItem(*e):
+            if self.model.ThrowLeft:
+                self.model.ThrowLeft.visible = False
+
+        self.model.cue('ItemToHand', onItemToHand)
+        self.model.cue('onThrowItem', onThrowItem)
+
+        def on_load(prereqs):
+            if self.isDestroyed:
+                return
+            if not self.binoculing:
+                return
+            model = prereqs.produce(0)
+            try:
+                self.model.ThrowLeft = model
+                self.model.use_binocular_in(0, self._onBinocularIn, False, -1, -1, 60).use_binocular_loop()
+                self.model.ThrowLeft.visible = False
+            except:
+                print self, repr(DeviceModelPath[BINOCULARS])
+                traceback.print_exc()
+
+        utils_async.load_model(DeviceModelPath[BINOCULARS], on_load)
+
+    @if_not_destroyed
+    def _drawBinocularsAnimationStop(self):
+        if self.isDestroyed:
+            return
+        if not self.model:
+            self._playing_animation_device = False
+            return
+        self.onBinocularsActivate(False)
+        self.model.use_binocular_out(0, self._onBinocularOut)
+
+    def setBinocularsAnimation(self, value):
+        if self.isDestroyed:
+            return
+        if value:
+            self._drawBinocularsAnimationStart()
+        else:
+            self._drawBinocularsAnimationStop()
+        self.onBinocularsAction(value)
+
+    def onBinocularsAction(self, value):
+        """\xd0\xb8\xd0\xb3\xd1\x80\xd0\xbe\xd0\xba \xd0\xbd\xd0\xb0\xd0\xb6\xd0\xb0\xd0\xbb \xd0\xbe\xd1\x82\xd0\xbf\xd1\x83\xd1\x81\xd1\x82\xd0\xb8\xd0\xbb \xd0\xba\xd0\xbd\xd0\xbe\xd0\xbf\xd0\xba\xd1\x83 \xd0\xb1\xd0\xb8\xd0\xbd\xd0\xbe\xd0\xba\xd0\xbb\xd1\x8c"""
+        pass
+
+    def onBinocularsAnimation(self, value):
+        """\xd0\xb8\xd0\xb4\xd0\xb5\xd1\x82 \xd0\xb0\xd0\xbd\xd0\xb8\xd0\xbc\xd1\x86\xd0\xb8\xd1\x8f \xd1\x81 \xd0\xb1\xd0\xb8\xd0\xbd\xd0\xbe\xd0\xba\xd0\xbb\xd0\xb5\xd0\xbc"""
+        pass
+
+    def onBinocularsActivate(self, value):
+        """\xd0\xb8\xd0\xb3\xd1\x80\xd0\xbe\xd0\xba \xd1\x81\xd0\xbc\xd0\xbe\xd1\x82\xd1\x80\xd0\xb8\xd1\x82 \xd0\xb2 \xd0\xb1\xd0\xb8\xd0\xbd\xd0\xbe\xd0\xba\xd0\xbb\xd1\x8c"""
+        pass
+
+    @if_not_destroyed
+    def drawBoxPickup(self, box_type, box_status):
+        if not self.model:
+            return
+        else:
+            anim_name = BoxStatus.get_anim_by_type(box_type)
+            self.playAnimation(getattr(self.model, anim_name, None))
+            self.pushTrackerLockByName('drawBoxPickup', 'Belly-Belly2-PistolHolster', lock_track_head=True, print_error=False)
+
+            def onLoadModel(prereqs):
+                if self.isDestroyed:
+                    return
+                self._using_attach_model = prereqs.produce(0)
+                try:
+                    self.model.ThrowRight = self._using_attach_model
+                except:
+                    print self, repr(DEFAULT_BOX_MODEL)
+                    raise
+
+            box_model = BoxStatus.get_model_by_type(box_type, box_status)
+            utils_async.load_model(box_model, onLoadModel)
+            self._playing_animation_device = True
+            self.flashlight_suspend()
+            self.on_draw_box_pickup()
+            return
+
+    def on_draw_box_pickup(self):
+        pass
+
+    def stopBoxPickup(self):
+        self._playing_animation_device = False
+        if not self.model:
+            return
+        elif self.popTrackerLock('drawBoxPickup') is None:
+            return
+        else:
+            self.model.action('carry_big_box').stop()
+            self.model.action('carry_mid_box').stop()
+            self._using_attach_model = None
+            self.model.ThrowRight = None
+            return
+
+    @if_not_destroyed
+    def drawStartLootingAnimation(self, looting_type, duration, knife_type, target_id):
+        if not self.model:
+            return
+        else:
+            self._cancel_anim_callback()
+            self._playing_animation_loot = True
+            self._playing_animation_loot_cam_pos = None
+            self.model.ThrowRight = None
+            self.flashlight_suspend()
+            self.UpdateAvatarAnimationCaps()
+            self.updateBlendNodeByImpacting(True)
+            lootheight = 0
+            need_yaw = None
+            target = None
+            try:
+                target = BigWorld.entity(target_id)
+                if target:
+                    lootheight = target.getHeightContainer(self, looting_type)
+            except:
+                print 'ERROR FOR:', self
+                print 'target:', target, 'target_id:', target_id
+                traceback.print_exc()
+
+            _on_loop_start = lambda *w: self._onLootingAnimationloopStart(looting_type)
+            _on_loop_end = lambda *w: self._onLootingAnimationloopEnd(looting_type)
+            if looting_type in [Constants.TYPE_SEARCH, Constants.TYPE_LOOT_SEARCH]:
+                conf = use_search_anim_config.getConfByHeight(lootheight)
+                self._playing_animation_loot_cam_pos = conf['camera_pivot']
+                self._anim_action_in = conf['in']
+                self._anim_action_loop = conf['loop']
+                self._anim_action_out = conf['out']
+                if need_yaw is not None:
+                    self.model.yaw = need_yaw
+                if self.IsAvatarCrouched() or not self._anim_action_in:
+                    self.model.action(self._anim_action_loop)(0, _on_loop_end)
+                    self._anim_action_out = ''
+                    BigWorld.callback(0, _on_loop_start)
+                else:
+                    aq = getattr(self.model, self._anim_action_in)
+                    aq = getattr(aq(0, _on_loop_start), self._anim_action_loop)
+                    aq(0, _on_loop_end)
+            elif looting_type == Constants.TYPE_BUTCH:
+                self._anim_action_in = 'use_butchering_in'
+                self._anim_action_loop = 'use_butchering_loop'
+                self._anim_action_out = 'use_butchering_out'
+                conf = use_search_anim_config.getConfByHeight(lootheight)
+                self._playing_animation_loot_cam_pos = conf['camera_pivot']
+                gadget_param = ItemsCatalog.GetItemParam(knife_type)
+                if gadget_param.get('SubType', {}) == ItemsCatalog.KNIFE:
+                    if not gadget_param.get('ModelPath'):
+                        model_path = gadget_param.get('ModelNames', {}).get(ItemsCatalog.BODY, None)
+                        if model_path:
+
+                            def on_load(prereqs):
+                                if self.isDestroyed:
+                                    return
+                                model = prereqs.produce(0)
+                                try:
+                                    self.model.ThrowRight = model
+                                except:
+                                    print self, repr(model_path)
+                                    traceback.print_exc()
+
+                            utils_async.load_model(model_path, on_load)
+                    self.IsAvatarCrouched() and self.model.use_butchering_loop(0, _on_loop_end)
+                    self._anim_action_out = ''
+                    BigWorld.callback(0, _on_loop_start)
+                else:
+                    self.model.use_butchering_in(0, _on_loop_start).use_butchering_loop(0, _on_loop_end)
+            if self._anim_action_out:
+                duration = duration - self.model.action(self._anim_action_out).duration
+            stop_func = partial(self.drawStopLootingAnimation, [self._anim_action_in, self._anim_action_loop, self._anim_action_out])
+            self.pushTrackerLockByName('LootingAnimation', 'Belly-Belly2-PistolHolster', lock_track_head=True, print_error=False)
+            self.playAnimation(None, duration, stop_func)
+            self.updateCameraPosition()
+            return
+
+    def _onLootingAnimationloopStart(self, looting_type):
+        if looting_type == Constants.TYPE_BUTCH:
+            if self == BigWorld.player():
+                self._playLoopedUseItemSound('players/handling')
+        if looting_type in [Constants.TYPE_SEARCH, Constants.TYPE_LOOT_SEARCH]:
+            if self == BigWorld.player():
+                self._playLoopedUseItemSound('players/obysk')
+
+    def _onLootingAnimationloopEnd(self, looting_type):
+        self._stopLoopedUseItemSound()
+
+    @if_not_destroyed
+    def drawLootingAnimation(self, animation_stop, action, duration):
+        self.playAnimation(action, duration, animation_stop)
+
+    @if_not_destroyed
+    def drawStopLootingAnimation(self, action_names = None):
+        if not action_names:
+            anim_action_in, anim_action_loop, anim_action_out = (self._anim_action_in, self._anim_action_loop, self._anim_action_out)
+
+            def onEndAnim():
+                if self.isDestroyed:
+                    return
+                else:
+                    if self._playing_animation_loot:
+                        self._playing_animation_loot = False
+                        self.cancel_action_clear()
+                    self._playing_animation_loot_cam_pos = None
+                    self.returnModelToDefault()
+                    self.onUseAnyHandActionEnd()
+                    self.popTrackerLock('LootingAnimation')
+                    self.update_turn_states()
+                    return
+
+            self._cancel_anim_callback()
+            out_action = anim_action_out and self.model.action(anim_action_out)
+            self.playAnimation(out_action, out_action.duration)
+        elif anim_action_loop:
+            self.model.action(anim_action_loop).stop()
+        onEndAnim()
+        self._stopLoopedUseItemSound()
+        self.on_looting_stopped()
+
+    def _attach_grenade_model(self, grenade_type):
+        throw_param = ItemsCatalog.GetItemParam(grenade_type)
+        modelName = throw_param['modelName']
+
+        def onLoadModel(prereqs):
+            if self.isDestroyed:
+                return
+            self._using_attach_model = prereqs.produce(0)
+            try:
+                self.model.ThrowRight = self._using_attach_model
+            except:
+                print self, repr(modelName)
+                raise
+
+        if modelName:
+            utils_async.load_model(modelName, onLoadModel)
+
+    def _on_start_throw(self):
+        pass
+
+    def drawStartThrowGrenade(self, grenade_type):
+        self.is_throwing = True
+        self._on_start_throw()
+        self.pushTrackerLockByName('drawStartThrowGrenade', 'Belly-Belly2-PistolHolster', lock_track_head=True, print_error=False)
+        self.startAnimGrenadeSwnig()
+        if not self.active_transform:
+            self._attach_grenade_model(grenade_type)
+
+    def clearThrowModel(self, *args):
+        if self.isDestroyed:
+            return
+        else:
+            if not self.active_transform:
+                self._using_attach_model = None
+            if self.model:
+                if not self.active_transform:
+                    self.model.ThrowRight = None
+                self.model.cue('onThrowItem', None)
+            return
+
+    def drawStopThrowGrenade(self):
+        self.stopAnimGrenadeSwnig()
+
+        def onEndAnim(*e):
+            self.popTrackerLock('drawStartThrowGrenade')
+            self.is_throwing = False
+
+        self.playAnimation(self.model.use_stone_out, callback=onEndAnim)
+
+    @ignoreError
+    def cancelThrowGrenade(self):
+        """\xd0\xbe\xd1\x82\xd0\xbc\xd0\xb5\xd0\xbd\xd0\xb0 \xd0\xba\xd0\xb8\xd0\xb4\xd0\xb0\xd0\xbd\xd0\xb8\xd1\x8f \xd0\xb3\xd1\x80\xd0\xb0\xd0\xbd\xd0\xb0\xd1\x82\xd1\x8b"""
+        if self.is_throwing:
+            if self.model:
+                self.model.use_stone_in.stop()
+                self.model.use_stone_out.stop()
+                self.model.use_stone_loop.stop()
+                self.clearThrowModel()
+            self.popTrackerLock('drawStartThrowGrenade')
+            self.is_throwing = False
+            self._last_grenade_type = 0
+
+    _disassembling_animation = False
+
+    def drawDisassembling(self, item_type, duration):
+        if not self.model:
+            return
+        self.pushTrackerLockByName('drawDisassembling', 'Belly-Belly2-PistolHolster', lock_track_torso=True, lock_track_head=True)
+        self._anim_action_in = 'use_craft_in'
+        self._anim_action_loop = 'use_craft_loop'
+        getattr(self.model.action(self._anim_action_in)(), self._anim_action_loop)()
+        self._disassembling_animation = True
+        self._disassembling_callback = BigWorld.callback(duration, self.drawEndDisassembling)
+
+    def drawEndDisassembling(self):
+        if self.isDestroyed:
+            return
+        self._disassembling_animation = False
+        if self.is_dead():
+            self.popTrackerLock('drawDisassembling')
+            return
+
+        def onEndAnim(*e):
+            self.popTrackerLock('drawDisassembling')
+
+        self.playAnimation(self.model.use_craft_out, callback=onEndAnim)
+
+    def drawCrafting(self, duration):
+        if not self.model:
+            return
+        self.pushTrackerLockByName('drawCrafting', 'Belly-Belly2-PistolHolster', lock_track_torso=True, lock_track_head=True)
+        self._anim_action_in = 'use_craft_in'
+        self._anim_action_loop = 'use_craft_loop'
+        getattr(self.model.action(self._anim_action_in)(), self._anim_action_loop)()
+        self._craft_animation = True
+        self._crafting_callback = BigWorld.callback(duration, self.drawEndCrafting)
+
+    @if_not_destroyed
+    def drawEndCrafting(self):
+        if self.is_dead():
+            self.popTrackerLock('drawCrafting')
+            return
+
+        def onEndAnim(*e):
+            self._using_attach_model = None
+            self.model.Lhand = None
+            self.is_crafting = False
+            self._craft_animation = False
+            self.returnModelToDefault()
+            self.popTrackerLock('drawCrafting')
+            return
+
+        self.playAnimation(self.model.use_craft_out, callback=onEndAnim)
+
+    def drawLoadAmmoInMagazine(self, slot, one_load_duration, unload = False):
+        if not self.model:
+            return
+        else:
+            magazine = WeaponAttachment()
+            magazine.makeFromSlot(slot)
+            item_param = magazine.getProp()
+            if unload:
+                prefix = 'un'
+            else:
+                prefix = ''
+            self._anim_action_in = str(prefix + item_param['LoadAmmoAnim'][0])
+            self._anim_action_loop = str(prefix + item_param['LoadAmmoAnim'][1])
+            self._anim_action_out = str(prefix + item_param['LoadAmmoAnim'][2])
+            anim_action_in = getattr(self.model, self._anim_action_in, None)
+            anim_action_loop = getattr(self.model, self._anim_action_loop, None)
+            self._using_attach_model = magazine.getModel()
+            self.model.node('HP_Lhand').attach(self._using_attach_model)
+            framerate = min(100, anim_action_in.frameRate * anim_action_loop.duration / one_load_duration)
+            load_ammo_sound_path = item_param.get('soundPath')
+            self.pushTrackerLockByName('drawLoadAmmoInMagazine', 'Belly-Belly2-PistolHolster', lock_track_torso=True, lock_track_head=True, print_error=False)
+            self._playing_animation_item = True
+            if load_ammo_sound_path:
+
+                def _cueLoadAmmo(cue_name, sound_path):
+                    if self.isDestroyed:
+                        return
+                    sounds.playSound(sound_path + '/' + cue_name.lower(), self._using_attach_model)
+
+                try:
+                    self.model.cue('MagazinePocketToHand', partial(_cueLoadAmmo, 'MagazinePocketToHand', load_ammo_sound_path))
+                    self.model.cue('RoundHandToMagazine', partial(_cueLoadAmmo, 'RoundHandToMagazine', load_ammo_sound_path))
+                    self.model.cue('RoundMagazineToHand', partial(_cueLoadAmmo, 'RoundMagazineToHand', load_ammo_sound_path))
+                    self.model.cue('MagazineHandToPocket', partial(_cueLoadAmmo, 'MagazineHandToPocket', load_ammo_sound_path))
+                except:
+                    traceback.print_exc()
+
+            getattr(self.model.action(self._anim_action_in)(), self._anim_action_loop)(0, None, 0, -1, -1, framerate)
+            return
+
+    def stopLoadAmmoInMagazine(self, canceled = False):
+
+        def onEndAnim(*e):
+            if self.isDestroyed:
+                return
+            elif not self.model:
+                return
+            else:
+                self.reloading = 0
+                if self._using_attach_model:
+                    try:
+                        self.model.node('HP_Lhand').detach(self._using_attach_model)
+                    except:
+                        print self, self._using_attach_model.sources
+                        traceback.print_exc()
+
+                self._using_attach_model = None
+                self.returnModelToDefault()
+                self.onUseAnyHandActionEnd()
+                self._playing_animation_item = False
+                self.popTrackerLock('drawLoadAmmoInMagazine')
+                try:
+                    self.model.cue('MagazinePocketToHand', None)
+                    self.model.cue('RoundHandToMagazine', None)
+                    self.model.cue('RoundMagazineToHand', None)
+                    self.model.cue('MagazineHandToPocket', None)
+                except:
+                    traceback.print_exc()
+
+                return
+
+        if not canceled and self._anim_action_out:
+            out_action = self.model.action(self._anim_action_out)
+            duration = out_action.duration
+            self.playAnimation(out_action, duration)
+            BigWorld.callback(duration, onEndAnim)
+        else:
+            onEndAnim()
+        if self._anim_action_in:
+            self.model.action(self._anim_action_in).stop()
+            self._anim_action_in = None
+        if self._anim_action_loop:
+            self.model.action(self._anim_action_loop).stop()
+            self._anim_action_loop = None
+        return
+
+    def drawUseRadio(self, radio_mode, radio_type = None):
+        if not self.model:
+            return
+        if self._end_use_radio_anim:
+            return
+        self._end_use_radio_anim = True
+
+        def onEndAnim():
+            self._end_use_radio_anim = False
+
+        self._playing_animation_item = True
+        if radio_mode == RadioModes.SHOLDER:
+            self._anim_action_in = 'use_radio_on'
+            self._anim_action_loop = 'use_radio_loop'
+            self._anim_action_out = 'use_radio_off'
+            self.model.use_radio_on(0, onEndAnim).use_radio_loop()
+        elif radio_mode == RadioModes.HAND:
+            self._anim_action_in = 'use_radio_hand_on'
+            self._anim_action_loop = 'use_radio_hand_loop'
+            self._anim_action_out = 'use_radio_hand_off'
+            if radio_type:
+                item_param = ItemsCatalog.GetItemParam(radio_type)
+                model_list = item_param.get('ModelNames', {}).values() if item_param else []
+
+                def on_load(prereqs):
+                    if self.isDestroyed:
+                        return
+                    model = prereqs.produce(0)
+                    try:
+                        self.model.ThrowLeft = model
+                    except:
+                        print 'model_list', model_list
+                        traceback.print_exc()
+
+                utils_async.load_model_from_list(model_list, on_load)
+            self.model.use_radio_hand_on(0, onEndAnim).use_radio_hand_loop()
+        self.pushTrackerLockByName('drawUseRadio', 'Right', lock_track_torso=True, lock_track_head=True)
+
+    def endUseRadio(self):
+        if self.isDestroyed:
+            return
+        elif not self.model:
+            return
+        else:
+            self.model.ThrowLeft = None
+            self._playing_animation_item = False
+            self._end_stop_radio_anim = False
+            self.popTrackerLock('drawUseRadio')
+            return
+
+    def stopUseRadio(self):
+        if self._end_stop_radio_anim:
+            return
+        self._end_stop_radio_anim = True
+
+        def onEndAnim(*e):
+            if self.isDestroyed:
+                return
+            if not self.model:
+                return
+            self.endUseRadio()
+            self.returnModelToDefault()
+            self.onUseAnyHandActionEnd()
+
+        if self._anim_action_out:
+            out_action = self.model.action(self._anim_action_out)
+            self.playAnimation(out_action, out_action.duration, onEndAnim, offset_mult=0.95)
+        else:
+            onEndAnim()
+        self.model.use_radio_hand_on.stop()
+        self.model.use_radio_hand_loop.stop()
+        if self._anim_action_in:
+            self.model.action(self._anim_action_in).stop()
+        if self._anim_action_loop:
+            self.model.action(self._anim_action_loop).stop()
+
+    def draw_equip_visible_attach(self, slot_type, item_type, old_item_type):
+        if not self.model:
+            return
+        import ClothAttachSlotsConfig as CASC
+        node_name = CASC.get_slot_model_node_name(slot_type)
+        try:
+            self.model.node(node_name)
+        except:
+            print '[WARNING] draw_equip_visible_attach. node not exists:', node_name, slot_type, item_type, old_item_type
+            return
+
+        anim_name_on, anim_name_off = CASC.get_slot_equip_animation(slot_type)
+        if item_type == 0:
+            anim_name = anim_name_off
+            _item_type = old_item_type
+        else:
+            _item_type = item_type
+            anim_name = anim_name_on
+        item_param = ItemsCatalog.GetItemParam(_item_type)
+        model_list = item_param.get('ModelNames', {}).values()
+
+        def on_load(prereqs):
+            if self.isDestroyed:
+                return
+            else:
+                item_model = prereqs.produce(0)
+                try:
+                    node = self.model.node(node_name)
+                except:
+                    print 'ERROR FOR:', self, 'slot_type', repr(slot_type)
+                    if self.model:
+                        print 'model:', self.model, self.model.sources
+                    traceback.print_stack()
+                    traceback.print_exc()
+                    return
+
+                action = getattr(self.model, anim_name, None)
+
+                def itemToHand(cue_name, model):
+                    try:
+                        self.model.ThrowLeft = model
+                    except Exception:
+                        traceback.print_exc()
+
+                def dropRadio(cue_name, model):
+                    self.model.ThrowLeft = None
+                    return
+
+                def itemToSlot(cue_name, model, node):
+                    self.model.ThrowLeft = None
+                    try:
+                        node.attach(model)
+                    except Exception:
+                        traceback.print_exc()
+
+                    return
+
+                def slotToHand(cue_name, model, node):
+                    for att in node.attachments:
+                        node.detach(att)
+
+                    self.model.ThrowLeft = model
+
+                self.model.cue('DropRadio', partial(dropRadio, 'DropRadio', item_model))
+                self.model.cue('ItemToHandFromPle4o', partial(slotToHand, 'ItemToHandFromPle4o', item_model, node))
+                self.model.cue('ItemToHand', partial(itemToHand, 'ItemToHand', item_model))
+                self.model.cue('itemToSlot', partial(itemToSlot, 'itemToSlot', item_model, node))
+
+                def onEndAnim():
+                    if self.isDestroyed:
+                        return
+                    elif not self.model:
+                        return
+                    else:
+                        self.model.ThrowLeft = None
+                        self._playing_animation_item = False
+                        self.popTrackerLock('equipVisibleAttach')
+                        self.model.cue('DropRadio', None)
+                        self.model.cue('ItemToHandFromPle4o', None)
+                        self.model.cue('ItemToHand', None)
+                        self.model.cue('onThrowItem', None)
+                        return
+
+                self.pushTrackerLockByName('equipVisibleAttach', 'Right', lock_track_torso=True, lock_track_head=True)
+                self.playAnimation(action, action.duration, onEndAnim, stretch=True)
+                return
+
+        utils_async.load_model_from_list(model_list, on_load)
+
+    def stop_equip_visible_attach(self):
+        self.stopAnimation()
+        self.model.ThrowLeft = None
+        self._playing_animation_item = False
+        self.popTrackerLock('equipVisibleAttach')
+        return
+
+    def playFinishDead(self, victim_id):
+        self.finish_dead_entity_id = victim_id
+        self.pushTrackerLockByName('playFinishDead', 'Belly-Belly2-PistolHolster', lock_track_head=True, lock_track_torso=True, print_error=False)
+        self.stopAnimation()
+        entity = BigWorld.entities.get(victim_id)
+        if not entity:
+            self.onEndPlayFinishDead()
+            return
+        lootheight = entity.position.y + 0.2 - self.position.y
+        conf = use_search_anim_config.getConfByHeight(lootheight)
+        self._anim_action_in = conf['in']
+        self._anim_action_loop = conf['loop']
+        self._anim_action_out = conf['out']
+
+        def _end_loop():
+            if self.isDestroyed:
+                return
+            if not self.finish_dead_entity_id:
+                return
+            if not self._anim_action_loop:
+                return
+            getattr(self.model, self._anim_action_loop).stop()
+            self.onEndPlayFinishDead()
+
+        self._end_finish_dead_id = BigWorld.callback(Respawn.FINISH_DEAD_TIME, _end_loop)
+
+        def _on_loop_start(*e):
+            pass
+
+        if self.IsAvatarCrouched() or not self._anim_action_in:
+            self.model.action(self._anim_action_loop)()
+            self._anim_action_out = ''
+            BigWorld.callback(0, _on_loop_start)
+        else:
+            aq = getattr(self.model, self._anim_action_in)
+            aq = getattr(aq(0, _on_loop_start), self._anim_action_loop)
+            aq()
+        if self == BigWorld.player():
+            self.lock_cancelation(False, 'finishdead')
+
+    def _on_end_play_finish_dead(self):
+        if getattr(self, 'finish_dead_entity_id', None):
+            self.finish_dead_entity_id = None
+            if getattr(self, '_end_finish_dead_id', None):
+                BigWorld.cancelCallback(self._end_finish_dead_id)
+                self._end_finish_dead_id = None
+            self.popTrackerLock('playFinishDead')
+            self.stopAnimation()
+            self._playing_animation_item = False
+            self.cancel_action_clear()
+        self.setControlLock(Constants.ControlLockTypes.GOTO_FINISHDEAD, False)
+        return
+
+    def onCancelPlayFinishDead(self, *e):
+        self._on_end_play_finish_dead()
+
+    def onEndPlayFinishDead(self, *e):
+        self._on_end_play_finish_dead()
+        if self == BigWorld.player():
+            self.lock_cancelation(False, 'finishdead')
+
+    def draw_start_use_abil(self, abil_id):
+        if not self.model:
+            return
+        import set_abil_utils
+        _config = set_abil_utils.get_abil_config_by_abil_id(abil_id)
+        sound_name = _config.get('sound')
+        if sound_name:
+            sounds.playSound(sound_name, self.model)
+        action_name = _config.get('start_action')
+        if not action_name:
+            return
+        action = self.model.action(action_name)
+
+        def on_end_anim():
+            if self.isDestroyed:
+                return
+            self.popTrackerLock('draw_start_use_abil')
+
+        def on_cancel_anim():
+            if self.isDestroyed:
+                return
+            self.popTrackerLock('draw_start_use_abil')
+
+        self.pushTrackerLockByName('draw_start_use_abil', 'Belly-Belly2-PistolHolster', lock_track_torso=True, lock_track_head=True)
+        self.playAnimation(action, action.duration, on_end_anim, on_cancel_callback=on_cancel_anim)
+
+    def _cancel_anim_callback(self):
+        if self._anim_callback_id:
+            BigWorld.cancelCallback(self._anim_callback_id)
+            self._anim_callback_id = None
+            if self._anim_on_cancel_callback:
+                self._anim_on_cancel_callback()
+                self._anim_on_cancel_callback = None
+        return
+
+    def playAnimation(self, action, duration = 0, callback = None, stretch = False, offset_mult = 1, on_cancel_callback = None):
+        """
+        callback \xd0\xb1\xd1\x83\xd0\xb4\xd0\xb5\xd1\x82 \xd0\xb2\xd1\x8b\xd0\xb7\xd0\xb2\xd0\xb0\xd0\xbd \xd0\xbf\xd1\x80\xd0\xb8 \xd0\xb7\xd0\xb0\xd0\xb2\xd0\xb5\xd1\x80\xd1\x88\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb8 \xd0\xb0\xd0\xbd\xd0\xb8\xd0\xbc\xd0\xb0\xd1\x86\xd0\xb8\xd0\xb8
+        on_cancel_callback \xd0\xb1\xd1\x83\xd0\xb4\xd0\xb5\xd1\x82 \xd0\xb2\xd1\x8b\xd0\xb7\xd0\xb2\xd0\xb0\xd0\xbd \xd0\xbf\xd1\x80\xd0\xb8 \xd0\xbe\xd1\x82\xd0\xbc\xd0\xb5\xd0\xbd\xd0\xb5 \xd0\xb0\xd0\xbd\xd0\xb8\xd0\xbc\xd0\xb0\xd1\x86\xd0\xb8\xd0\xb8
+        """
+        if self.isDestroyed:
+            return
+        elif self.is_dead():
+            return
+        else:
+            self.__current_action = action
+            if callback:
+
+                def _end_anim_callback():
+                    if self.isDestroyed:
+                        return
+                    else:
+                        callback()
+                        if self._anim_on_cancel_callback:
+                            self._anim_on_cancel_callback = None
+                        return
+
+                self._anim_callback_id = BigWorld.callback(duration * offset_mult, _end_anim_callback)
+                self._anim_on_cancel_callback = on_cancel_callback
+            if self.__current_action and stretch and duration:
+                framerate = action.frameRate * action.duration / duration
+                if framerate < 1:
+                    framerate = 1
+                self.__current_action(0, None, 0, -1, -1, framerate)
+                return
+            if self.__current_action:
+                self.__current_action()
+            return
+
+    def playListAnimations(self, anim_list, duration, callback = None):
+        if self.isDestroyed:
+            return
+        elif self.is_dead():
+            return
+        else:
+            self._anim_action_in = str(anim_list[0])
+            self._anim_action_loop = str(anim_list[1])
+            self._anim_action_out = str(anim_list[2])
+            duration = duration - self.model.action(anim_list[2]).duration
+
+            def end_anim(action_name, _callback):
+                if self.isDestroyed:
+                    return
+                action_stop = self.model.action(action_name)
+                self.playAnimation(action_stop, action_stop.duration, _callback)
+
+            stop_func = partial(end_anim, anim_list[2], callback or self.returnModelToDefault)
+            try:
+                act = getattr(self.model, self._anim_action_in)()
+                getattr(act, self._anim_action_loop)()
+            except:
+                print 'error for', self, anim_list, duration
+                raise
+
+            self.playAnimation(None, duration, stop_func, offset_mult=0.95)
+            return
+
+    def playAnimationClear(self, action, duration = 0, callback = None, stretch = False):
+        self.flashlight_suspend()
+        self.playAnimation(action, duration, callback, stretch)
+
+    @if_not_destroyed
+    def stopAnimationClear(self):
+        self.onUseAnyHandActionEnd()
+        self.stopAnimation()
+        self.returnModelToDefault()
+
+    def _validate_type_anim_action_name(self, action_name):
+        if not action_name:
+            return False
+        if type(action_name) != str:
+            print '\nERROR for', self
+            print 'TYPE action_name != str', repr(action_name), type(action_name)
+            traceback.print_stack()
+            return False
+        return True
+
+    @if_not_destroyed
+    def stopAnimation(self):
+        if self._validate_type_anim_action_name(self._anim_action_in):
+            self.model.action(self._anim_action_in).stop()
+        if self._validate_type_anim_action_name(self._anim_action_loop):
+            self.model.action(self._anim_action_loop).stop()
+        if self._validate_type_anim_action_name(self._anim_action_out):
+            self.model.action(self._anim_action_out).stop()
+        if self.__current_action:
+            self.__current_action.stop()
+        self._anim_action_in = None
+        self._anim_action_loop = None
+        self._anim_action_out = None
+        self.__current_action = None
+        self._cancel_anim_callback()
+        self.updateCameraPosition()
+        self.updateBlendNodeByImpacting(True)
+        self.onStopGestueAniamtionComplete()
+        self.update_turn_states()
+        return
+
+    def returnModelToDefault(self):
+        if self.isDestroyed or not self.model:
+            return
+        else:
+            self._playing_animation_device = False
+            try:
+                self.model.ThrowRight = None
+                self.model.ThrowLeft = None
+            except:
+                print '\nreturnModelToDefault ERROR', self, self.model
+                traceback.print_exc()
+
+            self.UpdateAvatarAnimationCaps()
+            self.flashlight_restore()
+            self.updateCameraPosition()
+            self.update_turn_states()
+            return
+
+    def onLeaveWorld(self):
+        self._using_attach_model = None
+        self._in_hand_model_left = None
+        self._in_hand_model_right = None
+        self.__wait_models = {}
+        self._stopLoopedUseItemSound()
+        return
+
+    def flashlight_suspend(self):
+        pass
+
+    def flashlight_restore(self):
+        pass

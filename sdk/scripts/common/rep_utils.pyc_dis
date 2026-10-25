@@ -1,0 +1,210 @@
+# Embedded file name: ./common/rep_utils.py
+import traceback
+import math_bw
+import bisect
+import pyson
+import ResMgr
+from Localization import lc
+from Quest import SortMode as SM
+rep_limit = 30000
+clan_traders_rep_id = 66
+
+class Feature:
+    """ \xd1\x85\xd1\x80\xd0\xb0\xd0\xbd\xd0\xb8\xd1\x82\xd1\x8c \xd1\x81\xd0\xb8\xd0\xbd\xd1\x85\xd1\x80\xd0\xbe\xd0\xbd\xd0\xb8\xd0\xb7\xd0\xb8\xd1\x80\xd0\xbe\xd0\xb2\xd0\xb0\xd0\xbd\xd0\xbd\xd1\x8b\xd0\xbc \xd1\x81 \xd1\x82\xd1\x83\xd0\xbb\xd0\xb7\xd0\xbe\xd0\xb9 (sys/tools/reputation_editor/utils.py) """
+    Political, Geographical, Professional, Singleton, Hidden = xrange(5)
+
+
+class Bonus:
+    """ \xd1\x85\xd1\x80\xd0\xb0\xd0\xbd\xd0\xb8\xd1\x82\xd1\x8c \xd1\x81\xd0\xb8\xd0\xbd\xd1\x85\xd1\x80\xd0\xbe\xd0\xbd\xd0\xb8\xd0\xb7\xd0\xbe\xd0\xb2\xd0\xb0\xd0\xbd\xd0\xbd\xd1\x8b\xd0\xbc \xd1\x81 \xd0\xbf\xd1\x83\xd1\x81\xd0\xbe\xd0\xbd\xd0\xbe\xd0\xbc (scripts/common/rep_groups/events_data.pyson) \xd0\xb8 \xd1\x82\xd1\x83\xd0\xbb\xd0\xb7\xd0\xbe\xd0\xb9 (sys/tools/reputation_editor/utils.py) """
+    Resp, Trade, RepeatQuests, Workbench, Enemy, Negative, Rep = (1, 2, 3, 6, 8, 9, 15)
+
+
+class RepEventType:
+    RepChanged, KnowledgeGot, KnowledgeWiped, AcquaintanceGot = xrange(4)
+
+
+file_path = 'scripts/common/rep_groups/groups.grp'
+raw_data = pyson.loads(ResMgr.openSection(file_path).asBinary)
+all_visible_group_ids = []
+groups = {}
+for group_data in raw_data['groups']:
+    groups[group_data['id']] = group_data
+    group_data['features'] = set(group_data.get('features', []))
+    group_data['events_cache'] = {}
+    for value, bonuses_data in group_data.get('events', {}).items():
+        for b_id, _ in bonuses_data:
+            if b_id not in group_data['events_cache']:
+                group_data['events_cache'][b_id] = []
+            group_data['events_cache'][b_id].append(value)
+
+    for f_id in group_data['features']:
+        if f_id == Feature.Hidden:
+            group_data['hidden'] = True
+            break
+
+    if not group_data.get('hidden', False):
+        all_visible_group_ids.append(group_data['id'])
+
+_space_to_groups = raw_data['spaces']
+file_path = 'scripts/common/rep_groups/rep_scale_data.pyson'
+groups_scale_data = [ g['value'] for g in pyson.loads(ResMgr.openSection(file_path).asBinary) ]
+file_path = 'scripts/common/rep_groups/events_data.pyson'
+raw_data = pyson.loads(ResMgr.openSection(file_path).asBinary)
+events = {}
+for event_data in raw_data:
+    events[event_data['id']] = event_data
+
+def get_name(group_id, utf8 = False):
+    return lc('RepgroupNames.name.id' + str(group_id), utf8=utf8)
+
+
+def get_desc(group_id):
+    return lc('RepgroupNames.desc.id' + str(group_id))
+
+
+def pack_int_set(spaces_set):
+    value = 0
+    for space_id in spaces_set:
+        value |= 1 << space_id
+
+    return value
+
+
+def unpack_int_mask(mask):
+    result = set()
+    index = 0
+    while mask:
+        if mask & 1:
+            result.add(index)
+        mask >>= 1
+        index += 1
+
+    return result
+
+
+def get_groups(ids, sort_mode, space_filter, feature_filter, fav_list):
+
+    def filter_feature(gr_id):
+        group_data = groups[gr_id]
+        if group_data.get('hidden', False):
+            return False
+        for f_id in feature_filter:
+            if f_id in group_data['features']:
+                return True
+
+        return False
+
+    def filter_space(gr_id):
+        group_data = groups[gr_id]
+        if Feature.Geographical not in group_data['features']:
+            return True
+        return group_data.get('space') in space_filter
+
+    def sort_key_up(gr_id):
+        group_sort_value = 2
+        is_fav = gr_id in fav_list
+        if is_group_political(gr_id):
+            group_sort_value = 1
+        elif is_group_geographical(gr_id):
+            group_sort_value = 0
+        return (is_fav, group_sort_value, get_name(gr_id))
+
+    def sort_key_down(gr_id):
+        group_sort_value = 0
+        is_fav = gr_id in fav_list
+        if is_group_political(gr_id):
+            group_sort_value = 1
+        elif is_group_geographical(gr_id):
+            group_sort_value = 2
+        return (not is_fav, group_sort_value, get_name(gr_id))
+
+    ids = filter(filter_feature, ids)
+    if Feature.Geographical in feature_filter:
+        ids = filter(filter_space, ids)
+    if sort_mode == SM.TitleUp:
+        ids.sort(key=sort_key_up, reverse=True)
+    elif sort_mode == SM.TitleDown:
+        ids.sort(key=sort_key_down)
+    else:
+        raise RuntimeError
+    return ids
+
+
+def get_old_conversion_groups(rep_id):
+    custom = groups.get(rep_id, {}).get('custom')
+    if not custom:
+        return []
+    old_groups, is_new = custom
+    if is_new:
+        return []
+    return old_groups
+
+
+def get_group_events(rep_id):
+    return groups.get(rep_id, {}).get('events', {})
+
+
+def get_group_enemies(rep_id):
+    return groups.get(rep_id, {}).get('enemies', [])
+
+
+def get_group_features(rep_id):
+    return groups.get(rep_id, {}).get('features', [])
+
+
+def get_group_lifetime(rep_id):
+    return groups.get(rep_id, {}).get('lifetime')
+
+
+def is_group_hidden(rep_id):
+    return Feature.Hidden in get_group_features(rep_id)
+
+
+def is_group_geographical(rep_id):
+    return Feature.Geographical in get_group_features(rep_id)
+
+
+def is_group_political(rep_id):
+    return Feature.Political in get_group_features(rep_id)
+
+
+def group_exists(rep_id):
+    return rep_id in groups
+
+
+def get_space_groups(space_id):
+    return _space_to_groups.get(space_id, [])
+
+
+def convert_rep_value_to_scale_ratio(value):
+    """ \xd0\xb2\xd0\xbe\xd0\xb7\xd0\xb2\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xbe\xd1\x82 0 (\xd0\xbc\xd0\xb0\xd0\xba\xd1\x81\xd0\xb8\xd0\xbc\xd1\x83\xd0\xbc value) \xd0\xb4\xd0\xbe 2 (\xd0\xbc\xd0\xb8\xd0\xbd\xd0\xb8\xd0\xbc\xd1\x83\xd0\xbc value) """
+    if value >= groups_scale_data[-1]:
+        return 0
+    if value <= groups_scale_data[0]:
+        return 2
+    index = bisect.bisect_right(groups_scale_data, value)
+    local_ratio = math_bw.inverse_lerp(groups_scale_data[index - 1], groups_scale_data[index], value)
+    ratio1 = (1 - float(index - 1) / (len(groups_scale_data) - 1)) * 2
+    ratio2 = (1 - float(index) / (len(groups_scale_data) - 1)) * 2
+    return math_bw.lerp(ratio1, ratio2, local_ratio)
+
+
+def get_bonus_values(group_id, bonus_id):
+    return groups[group_id]['events_cache'].get(bonus_id, [])
+
+
+def get_bonus_value(group_id, bonus_id):
+    try:
+        result = groups[group_id]['events_cache'].get(bonus_id, [])
+        if not result:
+            return None
+        if len(result) == 1:
+            return result[0]
+        raise RuntimeError
+    except:
+        print 'rep_utils(ERROR):', group_id, bonus_id
+        traceback.print_stack()
+        traceback.print_exc()
+        return 0
+
+    return None

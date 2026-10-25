@@ -1,0 +1,117 @@
+# Embedded file name: ./client/udo_parser_packed.py
+import os
+import ChunkUtils
+import ResMgr
+import time
+from Math import Matrix
+
+class _UDO(object):
+
+    def __init__(self, guid, matrix):
+        self.matrix = matrix
+        self.guid = guid
+        self.next_guid = None
+        self.next = None
+        self.name = None
+        return
+
+    @property
+    def position(self):
+        return self.matrix.translation
+
+    @property
+    def yaw(self):
+        return self.matrix.yaw
+
+    @property
+    def pitch(self):
+        return self.matrix.pitch
+
+    @property
+    def roll(self):
+        return self.matrix.roll
+
+
+def read_ds(datasection, list_path):
+    for key in list_path:
+        datasection = datasection[key]
+        if datasection is None:
+            return
+
+    return datasection
+
+
+class UDOSpaceParser(object):
+
+    def __init__(self, space_name, udo_type = 'CameraNode', args = None):
+        self.args = args
+        self.udo_type = udo_type
+        self.space_name = space_name
+        self.udos_by_guid = {}
+        self.udos_by_name = {}
+        self.ready = False
+
+    def parseTimeLimit(self, maxtime = 0.5, purge = False, create_links = True):
+        self.ready = False
+        start = time.time()
+        for findex, all_files in self.parse(purge=purge):
+            if time.time() - start >= maxtime:
+                start = time.time()
+                yield (findex, all_files)
+
+        if create_links:
+            self._createLinks()
+        self.ready = True
+
+    def _chunk_iterator(self, ds, game_path):
+        for fname, child_ds in ds.items():
+            if fname.endswith('.chunk'):
+                yield (game_path + '/' + fname, fname, child_ds)
+            elif fname.endswith('x') or fname == 'sep':
+                for x in self._chunk_iterator(child_ds, game_path + '/' + fname):
+                    yield x
+
+    def parse(self, purge = False):
+        self.udos_by_guid = {}
+        self.udos_by_name = {}
+        list_files = []
+        if purge:
+            ResMgr.purge(self.space_name, True)
+        spaceds = ResMgr.openSection(self.space_name)
+        print 'spaceds', spaceds
+        count = 0
+        for game_path, fname, ds in self._chunk_iterator(spaceds, self.space_name):
+            count += 1
+            if ds is None:
+                continue
+            for item_type, item_ds in ds.items():
+                if item_type == 'UserDataObject' and item_ds['type'].asString == 'CameraNode':
+                    guid = item_ds['guid'].asString
+                    ch_pos = ChunkUtils.get_chunk_position(fname)
+                    w_matr = Matrix()
+                    w_matr.translation = ch_pos
+                    w_matr.preMultiply(item_ds['transform'].asMatrix)
+                    udo = _UDO(guid, w_matr)
+                    udo.space_name = self.space_name
+                    udo.game_path = game_path
+                    name_ds = read_ds(item_ds, ['properties', 'name'])
+                    if name_ds is not None:
+                        udo.name = name_ds.asString
+                        if udo.name in self.udos_by_name:
+                            print 'WARNING duplicate name', guid, game_path, [udo.name]
+                        self.udos_by_name[udo.name] = udo
+                        print udo.name
+                    next_guid = read_ds(item_ds, ['properties', 'next', 'guid'])
+                    if next_guid is not None:
+                        udo.next_guid = next_guid.asString
+                    if guid in self.udos_by_guid:
+                        print 'WARNING duplicate udo', guid, game_path
+                    self.udos_by_guid[guid] = udo
+                yield (count, len(list_files))
+
+        return
+
+    def _createLinks(self):
+        for udo in self.udos_by_guid.values():
+            if udo.next_guid and udo.next_guid in self.udos_by_guid:
+                udo.next = self.udos_by_guid[udo.next_guid]

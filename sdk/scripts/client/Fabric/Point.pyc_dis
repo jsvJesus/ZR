@@ -1,0 +1,229 @@
+# Embedded file name: ./client/Fabric/Point.py
+import BigWorld
+import math_bw
+from Math import Vector3, Matrix
+from Element import Element
+from DrawPrimitivesUtils import one_draw_line
+from spring_fabric_settings import PUSH_ALGORITHM0, PUSH_ALGORITHM1, PUSH_ALGORITHM_BOTH
+point_transform, prev_tranform_inv, change_transform = Matrix(), Matrix(), Matrix()
+local_transform, box_transform_inv, moved_transform = Matrix(), Matrix(), Matrix()
+
+class Point(Element):
+    DAMP = 0.05
+
+    def __init__(self, name, position, disp, movable, prev_box_transform, skeleton_collider, debug):
+        Element.__init__(self, prev_box_transform, skeleton_collider, debug)
+        self.position = position
+        self.draw_alpha = 0.0
+        self.model = None
+        self.name = name
+        if self.debug:
+            if movable:
+                self.model = BigWorld.Model('models/bolvan/sphere.model')
+                self.model.newScaleTest = (0.05, 0.05, 0.05)
+            else:
+                self.model = BigWorld.Model('helpers/models/unit_sphere.model')
+                self.model.newScaleTest = (0.01, 0.01, 0.01)
+            BigWorld.addModel(self.model)
+        self.movable = movable
+        self.disp = disp
+        return
+
+    def draw(self, alpha):
+        self.draw_alpha = alpha
+        if not self.debug:
+            return
+        if self.model:
+            self.model.position = self.interpolated_position
+
+    def destroy(self):
+        if self.model:
+            BigWorld.delModel(self.model)
+
+    @property
+    def interpolated_position(self):
+        return self.position
+
+
+class StaticPoint(Point):
+
+    def __init__(self, name, position, disp, debug):
+        Point.__init__(self, name, position, disp, False, None, None, debug)
+        self.old_position = Vector3(position)
+        self.new_position = Vector3(position)
+        return
+
+    def stick_to_bone(self, world_m, smooth_index):
+        self.old_position = Vector3(self.new_position)
+        self.new_position = world_m.translation
+        if self.disp:
+            self.new_position += world_m.applyVector(self.disp)
+        self.position = Vector3(self.new_position)
+        self.smooth_step = (self.new_position - self.old_position) / smooth_index
+        self.smoothed_position = self.old_position
+
+    def fixed_update(self, dtime):
+        self.smoothed_position += self.smooth_step
+        self.position = Vector3(self.smoothed_position)
+
+
+class DynamicPoint(Point):
+
+    def __init__(self, name, position, rigid, collidable, world_collidable, prev_box_transform, skeleton_collider, mass, use_wind, push_algorithm, lock_rotate, stretch, debug):
+        Point.__init__(self, name, position, None, True, prev_box_transform, skeleton_collider, debug)
+        self._position = position
+        self.acceleration = Vector3(0, 0, 0)
+        self.mass = mass
+        self.old_position = Vector3(self.position)
+        self.collidable = collidable
+        self.world_collidable = world_collidable
+        self.rigid = rigid
+        self.use_wind = use_wind
+        self._interpolated_cache = None
+        self.push_algorithm = push_algorithm
+        self.lock_rotate = lock_rotate
+        self.stretch = stretch
+        return
+
+    def update(self, dtime):
+        if self.push_algorithm == PUSH_ALGORITHM0:
+            self.move_out_of_box1()
+        elif self.push_algorithm == PUSH_ALGORITHM1:
+            self.move_out_of_box2()
+        elif self.push_algorithm == PUSH_ALGORITHM_BOTH:
+            if self.move_out_of_box1():
+                self.move_out_of_box2()
+        if self.world_collidable:
+            self.move_out_of_world()
+
+    def fixed_update(self, dtime):
+        self._interpolated_cache = None
+        temp_position = Vector3(self.position)
+        seudo_velocity = math_bw.clamp_vector(self.position - self.old_position, 0.0, 0.05)
+        new_position = self.position + seudo_velocity * (1.0 - self.DAMP) + self.acceleration * dtime * dtime
+        if self.collide_move(new_position):
+            new_position = Vector3(self.position)
+        self.position = new_position
+        self.old_position = temp_position
+        self.acceleration = Vector3(0, 0, 0)
+        return
+
+    def move_out_of_box1(self):
+        box = self.get_inside_box()
+        if not box:
+            return False
+        prev_tranform = self.get_prev_transform(box)
+        prev_tranform_inv.set(prev_tranform)
+        try:
+            prev_tranform_inv.invert()
+        except ValueError:
+            return True
+
+        cur_transform = box.worldTransform
+        change_transform.set(cur_transform)
+        change_transform.preMultiply(prev_tranform_inv)
+        point_transform.setTranslate(self.position)
+        moved_transform.set(point_transform)
+        moved_transform.postMultiply(change_transform)
+        self.position = moved_transform.translation
+        return True
+
+    def move_out_of_box2(self):
+        box = self.get_inside_box()
+        if not box:
+            return False
+        box_transform_inv.set(box.worldTransform)
+        box_transform_inv.invert()
+        local_transform.setTranslate(self.position)
+        local_transform.postMultiply(box_transform_inv)
+        local_disp = local_transform.translation
+        x_max, y_max, z_max = box.maxBounds
+        x_min, y_min, z_min = box.minBounds
+        x_abs0 = abs(local_disp[0] - x_min)
+        x_abs1 = abs(local_disp[0] - x_max)
+        y_abs0 = abs(local_disp[1] - y_min)
+        y_abs1 = abs(local_disp[1] - y_max)
+        z_abs0 = abs(local_disp[2] - z_min)
+        z_abs1 = abs(local_disp[2] - z_max)
+        min_abs = min(x_abs0, x_abs1, y_abs0, y_abs1, z_abs0, z_abs1)
+        space = 0.01
+        if min_abs == x_abs0:
+            local_disp[0] = x_min - space
+        elif min_abs == x_abs1:
+            local_disp[0] = x_max + space
+        elif min_abs == y_abs0:
+            local_disp[1] = y_min - space
+        elif min_abs == y_abs1:
+            local_disp[1] = y_max + space
+        elif min_abs == z_abs0:
+            local_disp[2] = z_min - space
+        elif min_abs == z_abs1:
+            local_disp[2] = z_max + space
+        needed_local_pos = local_disp
+        self.position = box.worldTransform.applyPoint(needed_local_pos)
+        return True
+
+    def move_out_of_world(self):
+        p = BigWorld.player()
+        if not p:
+            return
+        spaceID = p.spaceID
+        if not spaceID:
+            return
+        collision = BigWorld.collide(spaceID, self.position, self.position + Vector3(0, 0.1, 0))
+        if collision and (collision[0] - self.position).lengthSquared <= 0.001:
+            delta = p.position - self.position
+            delta *= 0.01
+            self.position += delta
+
+    def draw(self, alpha):
+        Point.draw(self, alpha)
+        self._interpolated_cache = None
+        return
+
+    def get_inside_box(self):
+        """ \xd0\xb2\xd0\xb5\xd1\x80\xd0\xbd\xd1\x83\xd1\x82\xd1\x8c \xd0\xb1\xd0\xbe\xd0\xba\xd1\x81 \xd0\xb2 \xd0\xba\xd0\xbe\xd1\x82\xd0\xbe\xd1\x80\xd0\xbe\xd0\xbc \xd0\xbd\xd0\xb0\xd1\x85\xd0\xbe\xd0\xb4\xd0\xb8\xd1\x82\xd1\x81\xd1\x8f \xd1\x88\xd0\xb0\xd1\x80 """
+        if self.collidable and self.sc and self.sc.doCollide(self.position, Vector3(0, 1, 0)):
+            if (self.sc.impactPoint - self.position).lengthSquared < 0.001:
+                return self.sc.impactCollider
+        return None
+
+    def collide_move(self, next_point):
+        if self.collidable and self.sc:
+            if self.sc.doCollide(self.position, next_point - self.position):
+                if (self.position - self.sc.impactPoint).lengthSquared <= (self.position - next_point).lengthSquared + 0.01:
+                    return (self.sc.impactPoint, self.sc.impactCollider)
+        if self.world_collidable:
+            p = BigWorld.player()
+            if not p:
+                return False
+            spaceID = p.spaceID
+            if not spaceID:
+                return False
+            delta = next_point - self.position
+            delta.normalise()
+            delta *= 0.01
+            next_point = next_point + delta
+            world_collision = BigWorld.collide(spaceID, self.position, next_point)
+            if world_collision:
+                return (world_collision[0], world_collision[1])
+        return False
+
+    def add_force(self, f):
+        self.acceleration += f / self.mass
+
+    @property
+    def position(self):
+        return self._position
+
+    @position.setter
+    def position(self, value):
+        self._interpolated_cache = None
+        self._position = value
+        return
+
+    @property
+    def interpolated_position(self):
+        if self._interpolated_cache is None:
+            self._interpolated_cache = self.position * self.draw_alpha + self.old_position * (1.0 - self.draw_alpha)
+        return self._interpolated_cache

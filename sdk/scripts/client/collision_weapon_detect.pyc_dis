@@ -1,0 +1,183 @@
+# Embedded file name: ./client/collision_weapon_detect.py
+"""
+        \xd0\xbe\xd0\xbf\xd1\x80\xd0\xb5\xd0\xb4\xd0\xb5\xd0\xbb\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5 \xd0\xba\xd0\xbe\xd0\xbb\xd0\xb8\xd0\xb7\xd0\xb8\xd0\xb8  \xd0\xbe\xd1\x80\xd1\x83\xd0\xb6\xd0\xb8\xd1\x8f PlayerAvatar 
+"""
+import BigWorld
+import Constants
+from Math import Matrix, Vector3
+from time import time
+from utils_bw import BSP_FLAGS
+import draw_utils_extend
+drw = draw_utils_extend.LinesHolder(0, auto_clear=5)
+DEBUG = False
+TIME_WAIT_COLLISION = 0.01
+
+class CollisionWeaponDetect:
+    _is_weapon_collide = False
+    _is_weapon_collide_off_time = 0
+    _wcolide_point = None
+    _gunr_limit_node = None
+
+    def EnableCollisionWeapon(self):
+        if self.in_transport:
+            return self.DisableCollisionWeapon()
+        else:
+            if getattr(self, 'tracker_gun', None):
+                self.tracker_gun.pRotateTestCallBack = self.__gunRotateTest
+                self.tracker_gun.rotate_collide_enable = True
+            if self.weaponStatus == Constants.WEAPON_BORED or not self.active_weapon:
+                self._set_weapon_collide(None)
+            self._gunr_limit_node = self.model.node('HP_GUNR_LIMIT')
+            return
+
+    def DisableCollisionWeapon(self):
+        if getattr(self, 'tracker_gun', None):
+            self.tracker_gun.pRotateTestCallBack = None
+            self.tracker_gun.rotate_collide_enable = False
+        self._gunr_limit_node = None
+        self._wcolide_point = None
+        self._set_weapon_collide(None)
+        return
+
+    def _set_weapon_collide(self, val):
+        val = bool(val)
+        if bool(self._is_weapon_collide) == val:
+            return
+        self._is_weapon_collide = val
+        self.cell.SetWeaponCollide(val)
+        self._update_weapon_limits()
+
+    def __gunRotateTest(self, lookAtInWS, dirInWS, parentMatrixInv, directionVectorWS):
+        if not self.model:
+            return directionVectorWS
+        elif self.weaponStatus == Constants.WEAPON_BORED:
+            self._set_weapon_collide(None)
+            return directionVectorWS
+        else:
+            if not self._is_weapon_collide or not self._wcolide_point:
+                if self.active_weapon_model:
+                    m = Matrix(self._gunr_limit_node)
+                    m.invert()
+                    w_sys = Matrix(self.active_weapon_model.node('HP_AIMSYS')).translation
+                    self._wcolide_point = m.applyPoint(w_sys)
+            if not self._wcolide_point:
+                return directionVectorWS
+            m = Matrix(self._gunr_limit_node)
+            pos = m.applyPoint(self._wcolide_point)
+            param = self.getActiveWeaponParam()
+            depthFw = param.get('gabarite_depth', 0.9)
+            height = param.get('gabarite_height', 0.1)
+            width = param.get('gabarite_width', 0.1)
+            if self._is_weapon_collide:
+                width = width + 0.05
+                height = height + 0.05
+                depthFw = depthFw
+            if DEBUG:
+                drw.clear()
+            detect_ = None
+
+            def detect_bsp(pos):
+                res = collideBoxTestInters(self, pos, directionVectorWS, width=width, height=height, depth=depthFw, vector_up=V_UP)
+                return res is not None
+
+            if detect_bsp(pos):
+                detect_ = True
+            if not detect_:
+                detect_collider = BigWorld.traceBullet(pos, pos + directionVectorWS * depthFw, self.id)
+                if detect_collider:
+                    entityID, point, collider_name = detect_collider
+                    entity = BigWorld.entity(entityID)
+                    if entity.__class__.__name__ not in Constants.WEAPON_NO_COLLISION_ENTITY:
+                        detect_ = True
+            if detect_ == self._is_weapon_collide:
+                return directionVectorWS
+            elif detect_ and not self._is_weapon_collide:
+                self._set_weapon_collide(detect_)
+                self._is_weapon_collide_off_time = 0
+                return directionVectorWS
+            t = time()
+            if self._is_weapon_collide_off_time:
+                dt = t - self._is_weapon_collide_off_time
+                if dt > TIME_WAIT_COLLISION:
+                    self._is_weapon_collide_off_time = 0
+                    self._set_weapon_collide(detect_)
+            else:
+                self._is_weapon_collide_off_time = t
+            return directionVectorWS
+
+
+V_UP = Vector3(0, 0.99, 0.005)
+
+def collideBoxTestInters(ent, pos, direction, width = 0.5, height = 1, depth = 0.5, vector_up = V_UP):
+    height2 = height / 2.0
+    width2 = width / 2.0
+    m = Matrix()
+    m.lookAt((0, 0, 0), direction, vector_up)
+    m.invert()
+    v0 = Vector3(pos) + m.applyVector((-width2, -height2, 0))
+    v1 = Vector3(pos) + m.applyVector((width2, -height2, 0))
+    v2 = Vector3(pos) + m.applyVector((width2, height2, 0))
+    v3 = Vector3(pos) + m.applyVector((-width2, height2, 0))
+    color = (0.1, 0.1, 0.6, 0.2)
+    if DEBUG:
+
+        def drawpoly(*poly):
+            last = poly[-1]
+            for x in poly:
+                drw.add(x, last, color)
+                last = x
+
+        drawpoly(v0, v1, v2, v3)
+
+    def is_all_portal():
+        start_p = BigWorld.camera().position
+        for end_p in (v0,
+         v1,
+         v2,
+         v3):
+            in_portal = BigWorld.collidePortal(start_p, end_p)
+            if DEBUG:
+                if in_portal:
+                    drw.add(start_p, end_p, (1, 0, 0, 1), 1)
+                else:
+                    drw.add(start_p, end_p, (0, 1, 0, 1), 1)
+            if not in_portal:
+                return False
+
+        return True
+
+    res = None
+    if not is_all_portal():
+        dest = v0 + direction * depth
+        res = BigWorld.naturalCollideBox(v0, v1, v2, v3, direction, dest, depth, 1, BSP_FLAGS.ANY)
+    if DEBUG:
+        collision_advance = depth
+        if res:
+            collision_advance = res[4]
+            color = (0.7, 0.1, 0, 0.9)
+            hit = res[0]
+            drw.add(hit + (0, -0.05, 0), hit + (0, 0.05, 0), (1, 1, 1, 1))
+            drw.add(hit + (-0.05, 0, 0), hit + (0.05, 0, 0), (1, 1, 1, 1))
+            drw.add(hit + (0, 0, -0.05), hit + (0, 0, 0.05), (1, 1, 1, 1))
+            hittri = res[1]
+            drw.add(hittri[0], hittri[1], (1, 1, 0, 1))
+            drw.add(hittri[1], hittri[2], (1, 1, 0, 1))
+            drw.add(hittri[2], hittri[0], (1, 1, 0, 1))
+        else:
+            color = (0.1, 0.6, 0.2, 0.9)
+        dv0 = v0 + direction * collision_advance
+        dv1 = v1 + direction * collision_advance
+        dv2 = v2 + direction * collision_advance
+        dv3 = v3 + direction * collision_advance
+        drw.add(dv0, dv1, color)
+        drw.add(dv1, dv2, color)
+        drw.add(dv2, dv3, color)
+        drw.add(dv3, dv0, color)
+        drw.add(v0, dv0, color)
+        drw.add(v1, dv1, color)
+        drw.add(v2, dv2, color)
+        drw.add(v3, dv3, color)
+    if res:
+        return True
+    else:
+        return

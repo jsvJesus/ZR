@@ -1,0 +1,374 @@
+# Embedded file name: ./client/soGUI/equip_paint/paint_block/templates/templates_tablegrid.py
+from Localization import lc
+import colorCodes as cc
+import BigWorld
+import DyeConstant
+from functools import partial
+import GUI
+from soGUI.equip_paint.tablegrid.tablegrid import TableGrid, Cell
+from soGUI.equip_paint.tablegrid.table_model import TableModel, ItemData
+from soGUI.equip_paint.eqp_button import EqpButton
+from soGUI.donat_shop.window.auxwins.auxwins import Auxwins
+from sounds_manager import playSound
+
+class ItemDataET:
+    OnSelectedChanged, OnColorChanged, OnRestored, OnEnabledChanged = ((r, 'equiptemplateitem') for r in range(4))
+
+
+class TemplateItemData(ItemData):
+
+    def __init__(self, data):
+        ItemData.__init__(self, data)
+        self._selected = False
+        self._enabled = True
+        if data:
+            self.file_name = data['name']
+            self.camo_id = data['camo_id']
+            self.colors = tuple(data['colors'])
+            self.colors01 = []
+            for color in self.colors:
+                self.colors01.append(self._convert_color(color))
+
+        else:
+            self.file_name = None
+            self.camo_id = None
+            self.colors = ()
+            self.colors01 = []
+        self.mark_original()
+        return
+
+    def mark_original(self):
+        self._original_colors = self.colors
+
+    def restore_original(self):
+        if self.colors == self._original_colors:
+            return
+        self.colors = list(self._original_colors)
+        self.colors01 = []
+        for color in self.colors:
+            self.colors01.append(self._convert_color(color))
+
+        self.notify_listeners(ItemDataET.OnRestored)
+
+    def _convert_color(self, color):
+        return color and tuple([ c / 255.0 for c in color ]) or None
+
+    def change_color(self, channel, color):
+        self.colors = list(self.colors)
+        self.colors[channel] = color
+        self.colors = tuple(self.colors)
+        self.colors01[channel] = self._convert_color(color)
+        data = {'channel': channel,
+         'color': color}
+        self.notify_listeners(ItemDataET.OnColorChanged, data)
+
+    @property
+    def enabled(self):
+        return self._enabled
+
+    @enabled.setter
+    def enabled(self, value):
+        if self._enabled == value:
+            return
+        self._enabled = value
+        self.notify_listeners(ItemDataET.OnEnabledChanged)
+
+    @property
+    def selected(self):
+        return self._selected
+
+    @selected.setter
+    def selected(self, value):
+        if self._selected == value:
+            return
+        self._selected = value
+        self.notify_listeners(ItemDataET.OnSelectedChanged)
+
+
+class ModelET:
+    OnSelectedChanged, = ((r, 'TemplateTM') for r in range(1))
+
+
+class TemplatesTableModel(TableModel):
+
+    def __init__(self):
+        TableModel.__init__(self)
+        self._selected_items = set()
+        self._before_item_select_trigger = None
+        return
+
+    def set_items(self, items):
+        TableModel.set_items(self, items)
+        self._update_del_available()
+
+    def on_before_single_item_select(self, item):
+        self._before_item_select_trigger = (BigWorld.time(), item)
+
+    def edit_current_template(self, channel, color):
+        raise len(self._selected_items) == 1 or AssertionError
+        item = list(self._selected_items)[0]
+        item.change_color(channel, color)
+
+    def get_current_single_selected(self):
+        if len(self._selected_items) != 1:
+            return None
+        else:
+            return list(self._selected_items)[0]
+
+    def mark_original(self, file_name):
+        for item in self._selected_items:
+            if item.file_name == file_name:
+                item.mark_original()
+
+    def restore_original(self, name = None):
+        for item in self._items:
+            if not name or item.file_name == name:
+                item.restore_original()
+
+    def _update_del_available(self):
+        if len(self._items) > 1:
+            self._items[1].enabled = any((s.file_name for s in self._selected_items if s.file_name))
+
+    def add_template(self, template):
+        self.prepend_item(template)
+
+    def delete_templates(self, file_names):
+        items = []
+        for i in range(len(self._items) - 1, -1, -1):
+            item = self._items[i]
+            if item.file_name in file_names:
+                items.append(item)
+
+        if items:
+            TableModel.del_items(self, items)
+            prev_count = len(self._selected_items)
+            self._selected_items = self._selected_items.difference(items)
+            if prev_count != len(self._selected_items):
+                data = {'items': self._selected_items}
+                self.notify_listeners(ModelET.OnSelectedChanged, data)
+                self._update_del_available()
+
+    def select_items(self, camo_id, colors):
+        valid_items = set()
+        for item in self._items:
+            if item.camo_id != camo_id:
+                continue
+            if not camo_id:
+                valid_items.add(item)
+                continue
+            for i, c in enumerate(item.colors):
+                if not c:
+                    continue
+                if colors[i] != c:
+                    break
+            else:
+                valid_items.add(item)
+
+        if self._before_item_select_trigger:
+            trigger_time, item = self._before_item_select_trigger
+            self._before_item_select_trigger = None
+            if trigger_time == BigWorld.time() and item in valid_items:
+                valid_items = set([item])
+        for item in self._selected_items - valid_items:
+            item.selected = False
+
+        for item in valid_items - self._selected_items:
+            item.selected = True
+
+        if self._selected_items != valid_items:
+            self._selected_items = valid_items
+            data = {'items': self._selected_items}
+            self.notify_listeners(ModelET.OnSelectedChanged, data)
+            self._update_del_available()
+        return
+
+    def _create_item_data(self, data):
+        return TemplateItemData(data)
+
+
+class CellET:
+    OnSelectRequested, OnDeleteRequested, OnTooltipRequested = ((r, 'templatecell') for r in range(3))
+
+
+class TemplatesCell(Cell):
+    _request_id = 0
+
+    def __init__(self, component):
+        Cell.__init__(self, component)
+        comp = GUI.Simple(u'')
+        comp.materialFX = 'BLEND'
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.filterType = 'NONE'
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.position = (0, 0, 0.7)
+        self.component.addChild(comp, 'image')
+        comp = GUI.Window('soGUI/frame/paint/borderslot.dds')
+        comp.materialFX = 'SOLID'
+        comp.wm, comp.hm = ('CLIP', 'CLIP')
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.position = (0, 0, 0.9)
+        comp.width, comp.height = (2, 2)
+        comp.visible = False
+        self.component.addChild(comp, 'selection')
+
+    def _on_mouse_down(self):
+        if self._item and self._item.enabled:
+            data = {'item': self._item}
+            self.notify_listeners(CellET.OnSelectRequested, data)
+
+    def _update_visual(self):
+        if not self._item:
+            return
+        if self._item.selected:
+            self.component.selection.visible = True
+            self.component.image.colour[3] = 240
+        else:
+            self.component.selection.visible = False
+            self.component.image.colour[3] = 160
+
+    def _on_itemdata_event(self, event_type, data):
+        Cell._on_itemdata_event(self, event_type, data)
+        if event_type in (ItemDataET.OnSelectedChanged, ItemDataET.OnEnabledChanged):
+            self._update_visual()
+
+
+class ColoredCell(TemplatesCell):
+
+    def __init__(self, component):
+        TemplatesCell.__init__(self, component)
+        comp = self.component.image
+        comp.width, comp.height = self.component.width - 2, self.component.height - 2
+        self._wait_request = None
+        return
+
+    def set_item(self, item):
+        TemplatesCell.set_item(self, item)
+        self._update_mask()
+
+    def _update_mask(self):
+        self._wait_request = None
+        if not self._item:
+            return
+        else:
+            mask_texture = DyeConstant.cammo_previews[self._item.camo_id]
+
+            def callback(request_id, texture):
+                if request_id != self._wait_request:
+                    return
+                self.component.image.texture = texture
+
+            TemplatesCell._request_id += 1
+            self._wait_request = TemplatesCell._request_id
+            colors = [ (1, 0, 1, 1) for c in self._item.colors01 if not c ]
+            BigWorld.getCamouflage(mask_texture, colors, partial(callback, TemplatesCell._request_id))
+            self._update_visual()
+            return
+
+    def get_tooltip_text(self):
+        if self._item:
+            data = {'item': self._item}
+            return self.ask_listeners(CellET.OnTooltipRequested, data)
+
+    def _on_itemdata_event(self, event_type, data):
+        TemplatesCell._on_itemdata_event(self, event_type, data)
+        if event_type in (ItemDataET.OnColorChanged, ItemDataET.OnRestored):
+            self._update_mask()
+
+
+class EmptyCell(TemplatesCell):
+
+    def __init__(self, component):
+        TemplatesCell.__init__(self, component)
+        comp = self.component.image
+        comp.filterType = 'LINEAR'
+        comp.width, comp.height = self.component.width * 0.5, self.component.height * 0.5
+        self.component.image.textureName = 'soGUI/frame/paint/no_camo.dds'
+
+    def set_item(self, item):
+        TemplatesCell.set_item(self, item)
+        self._update_visual()
+
+
+class DelCell(EqpButton, TemplatesCell):
+
+    def __init__(self, component):
+        TemplatesCell.__init__(self, component)
+        EqpButton.__init__(self, component)
+        comp = self.component.image
+        comp.filterType = 'LINEAR'
+        comp.width, comp.height = self.component.width * 0.5, self.component.height * 0.5
+        self.component.image.textureName = 'soGUI/frame/paint/delete.dds'
+
+    def update_visual(self, hovered, pressed):
+        if self._item:
+            enabled = self._item.enabled
+            color = enabled or (46, 46, 46, 255)
+        elif pressed:
+            color = cc.inactive_rgba
+        elif hovered:
+            color = cc.active_rgba
+        else:
+            color = cc.inactive_rgba
+        self.component.image.colour = color
+
+    def handleMouseEnterEvent(self, comp):
+        playSound('ui/equip_modification/soft_hover')
+        return EqpButton.handleMouseEnterEvent(self, comp)
+
+    def set_item(self, item):
+        TemplatesCell.set_item(self, item)
+        self._update_visual()
+
+    def _on_mouse_down(self):
+        pass
+
+    def on_click(self):
+        self.notify_listeners(CellET.OnDeleteRequested)
+
+
+class TableGridET:
+    OnTemplateChangeRequest, OnTemplateDeleteRequested, IsCammoValid = ((r, 'templatetablegrid') for r in range(3))
+
+
+class TemplatesTableGrid(TableGrid):
+
+    def _get_cell_class(self, col, row):
+        if row == 0:
+            if col == 0:
+                return EmptyCell
+            if col == 1:
+                return DelCell
+        return ColoredCell
+
+    def _on_cell_event(self, event_type, data):
+        if event_type == CellET.OnTooltipRequested:
+            item = data['item']
+            data = {'camo_id': item.camo_id,
+             'colors': item.colors}
+            if self.ask_listeners(TableGridET.IsCammoValid, data):
+                return lc('colourItemWindow.CAMMO_' + str(item.camo_id))
+            else:
+                return lc('EquipPaint.painttab.btntemplates.invalidcamo')
+        elif event_type == CellET.OnSelectRequested:
+            item = data['item']
+            data = {'camo_id': item.camo_id,
+             'colors': item.colors}
+            self._tm.on_before_single_item_select(item)
+            prev_selected = set(self._tm._selected_items)
+            self.notify_listeners(TableGridET.OnTemplateChangeRequest, data)
+            if self._tm._selected_items != prev_selected:
+                playSound('ui/menu_click')
+        elif event_type == CellET.OnDeleteRequested:
+
+            def callback():
+                playSound('ui/equip_modification/delete')
+                data = {'file_names': file_names}
+                self.notify_listeners(TableGridET.OnTemplateDeleteRequested, data)
+
+            file_names = filter(None, (item.file_name for item in self._tm._selected_items))
+            if file_names:
+                text = lc('EquipPaint.painttab.btntemplates.delconfirm')
+                Auxwins.show_ok_cancel_message(text, callback)
+        return

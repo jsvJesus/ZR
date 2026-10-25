@@ -1,0 +1,130 @@
+# Embedded file name: ./client/Rocket.py
+import BigWorld
+import Math
+import FX
+from Grenade import Grenade
+from SfxCatalog import Mat
+import math_bw
+import traceback
+from Throwable import Throwable
+import utils_bw
+GRAVITY_VECTOR = Math.Vector3(0, -9.8, 0)
+
+class Rocket(Grenade):
+    ACCELERATION = 5.0
+    MAX_LIFETIME = 30.0
+    START_VELOCITY = 120.0
+
+    def __init__(self):
+        Grenade.__init__(self)
+        self.life_time = 0
+        self.normalized_position = 0
+        self.initial_position = self.position
+        self.ghost_model = None
+        self.collided = False
+        return
+
+    def onEnterWorld(self, prereqs):
+        Grenade.onEnterWorld(self, prereqs)
+        model_name = self.getModelName()
+        try:
+            self.ghost_model = prereqs[model_name]
+        except:
+            print self, repr(model_name)
+            traceback.print_exc()
+            self.ghost_model = BigWorld.Model('models/bolvan/helpers/xyz.model')
+
+        self.ghost_model.position = self.model.position
+        self.addModel(self.ghost_model)
+        self.ghost_model.alignToVector(self.velocity, self.position, False)
+        self.show_model_sfx(True, self.ghost_model)
+
+    def onLeaveWorld(self):
+        Grenade.onLeaveWorld(self)
+        if self.ghost_model:
+            self.delModel(self.ghost_model)
+        self.ghost_model = None
+        return
+
+    def throw(self):
+        self.tick()
+        self.set_explode_timer()
+        return (self.position,
+         self.velocity,
+         self.id,
+         None,
+         None)
+
+    def get_tick_period(self):
+        return 0
+
+    def get_cur_position(self):
+        return self.ghost_model and self.ghost_model.position or self.position
+
+    def _check_water_collide(self, position_from, position_to):
+        water_collision = BigWorld.waterCollide(position_from, position_to)
+        if water_collision:
+            self.under_water = True
+            self.show_model_sfx(False)
+            self.splash_model = BigWorld.Model('')
+            self.splash_model.position = position_to
+            self.splash_model.pushBoundingBox((-5, -2, -5), (5, 4, 5))
+            self.addModel(self.splash_model)
+            FX.bufferedOneShotEffect(Throwable.SPLASH_SFX, self.splash_model)
+        else:
+            self.under_water = False
+
+    def _check_collide(self, position_from, position_to):
+        wall_collision = utils_bw.collideIgnoreNoVisible(self.spaceID, position_from, position_to)
+        if wall_collision and wall_collision[0]:
+            mat_id = wall_collision[2]
+            self.ghost_model.position = wall_collision[0]
+            reflection, normal = math_bw.calculate_reflection(wall_collision[0], wall_collision[0] - position_from, wall_collision[1])
+            self.set_contact_data(self.get_cur_position(), normal, None, 0, None, mat_id)
+            return True
+        else:
+            direction = position_to - position_from
+            if direction.length > 0:
+                trace = BigWorld.traceBullet(position_from, position_to, self.ownerID)
+                if trace:
+                    entity_id, point, collider_name = trace
+                    victim = BigWorld.entities[entity_id]
+                    if victim:
+                        self.ghost_model.position = point
+                        direction.normalise()
+                        self.set_contact_data(self.get_cur_position(), direction, self.velocity, entity_id, None, Mat.Flesh)
+                        return True
+            return False
+
+    def explode_effect(self, pos, mat_id, direction):
+        if not self.collided:
+            return
+        self.ghost_model.visible = False
+        Grenade.explode_effect(self, Math.Vector3(pos), mat_id, Math.Vector3(direction))
+
+    def explode(self, victims, collision_data):
+        Grenade.explode_effect(self, collision_data['position'], collision_data['mat_id'], collision_data['direction'])
+        self.ghost_model.visible = False
+
+    def flew(self, old_position_from, old_position_to, delta_time):
+        self.life_time += delta_time
+        if self.life_time >= Rocket.MAX_LIFETIME:
+            self.removeSelfEnt()
+            return
+        if self.detonated:
+            return
+        tmp = self.life_time * self.life_time * 0.5
+        self.normalized_position = Rocket.START_VELOCITY * self.life_time + Rocket.ACCELERATION * tmp
+        if self.ghost_model:
+            new_pos = self.initial_position + self.normalized_position * self.velocity
+            if self.under_water:
+                new_pos += GRAVITY_VECTOR * tmp
+            self.ghost_model.position = new_pos
+            self._check_water_collide(old_position_to, new_pos)
+            if self._check_collide(old_position_to, new_pos):
+                self.collided = True
+                pos, direction, _, _, _, mat_id = self.get_contact_data()
+                self.explode_effect(pos, mat_id, direction + Math.Vector3(0, 0, 0.01))
+                if self.controled_by_this_client:
+                    self.detonate()
+                return

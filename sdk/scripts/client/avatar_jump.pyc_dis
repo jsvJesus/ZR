@@ -1,0 +1,536 @@
+# Embedded file name: ./client/avatar_jump.py
+import animation_jump_config
+import BigWorld
+import BWPersonality
+import Math
+from Math import Vector3, Matrix
+from utils import ignoreError, plog
+from climb import collideBoxGeometry, V_DOWN
+import Constants
+import traceback
+DEBUG = False
+TIME_WEAPON_AFTER_JUMP = 0.35
+MINFLYTIME = 0.0
+
+class AvatarJump:
+    _collide_detected = False
+    _is_jump_up_or_fly = False
+    _loop_anim_dwn_test_id = 0
+    _current_jmp = None
+    _last_jmp = None
+    _jmp_fly_high = False
+    _jmp_down_played = False
+    _need_play_action_down_move = True
+    _need_return_incombat = False
+    _unlock_cam_cid = 0
+
+    def getdrawer(self):
+        main = __import__('__main__')
+        if not getattr(main, 'drawerJump', None):
+            import draw_utils_extend
+            main.drawerJump = draw_utils_extend.LinesHolder(10)
+        return main.drawerJump
+
+    def isPlayerJump(self):
+        if self._current_jmp:
+            return True
+        if self._is_jump:
+            return True
+        return False
+
+    def _getCurrentAnimationFrames(self, info = None):
+        """
+        ret: \xd1\x82\xd0\xb5\xd0\xba\xd1\x83\xd1\x89\xd0\xb8\xd0\xb9 \xd0\xba\xd0\xb0\xd0\xb4\xd1\x80, \xd0\xb2\xd1\x81\xd0\xb5 \xd0\xba\xd0\xb0\xd0\xb4\xd1\x80\xd1\x8b
+        """
+        if not self.model:
+            return (-1, -1)
+        else:
+            if info is None:
+                info = self.model.motors[0].currentActionInfo()
+            if not info or not info['scalePlaybackSpeed'] and not info['duration']:
+                return (-1, -1)
+            anim_perc = info['played_'] % info['duration'] / info['duration']
+            cur_frame = int(info['frameCount_'] * anim_perc)
+            return (cur_frame, info['frameCount_'])
+
+    def _getDelayToFrame(self, wait_frame, info = None):
+        """
+        ret: \xd1\x87\xd0\xb5\xd1\x80\xd0\xb5\xd0\xb7 \xd1\x81\xd0\xb5\xd0\xba\xd1\x83\xd0\xbd\xd0\xb4 \xd0\xbf\xd1\x80\xd0\xbe\xd0\xb8\xd0\xb3\xd1\x80\xd0\xb0\xd1\x8e\xd1\x82\xd1\x81\xd1\x8f \xd0\xba\xd0\xb0\xd0\xb4\xd1\x80\xd1\x8b
+        """
+        if wait_frame < 1:
+            return 0
+        else:
+            if info is None:
+                info = self.model.motors[0].currentActionInfo()
+            if not info:
+                return 0
+            wait_time = float(wait_frame) / info['frameRate_']
+            return wait_time
+
+    _start_jtime = 0.0
+
+    def jumpyime(self):
+        return BigWorld.time() - self._start_jtime
+
+    def _collideDownJump(self, dist_fw = 0.7, dist_dwn = 0.7, use_jmp = True):
+        if self._current_jmp and use_jmp:
+            dist_fw = self._current_jmp.collide_fw
+            dist_dwn = self._current_jmp.collide_dwn
+        direction = Vector3(0, -0.999, -0.001)
+        direction_f = Vector3()
+        direction_f.setPitchYaw(0, self.yaw)
+        direction_f = direction_f * dist_fw
+        pos = self.position + direction_f + (0, 0.1, 0)
+        end = pos + direction * dist_dwn
+        res = BigWorld.collide(self.spaceID, pos, end)
+        return res
+
+    def _stop_loop_anim_dwn_test(self):
+        if self._loop_anim_dwn_test_id:
+            BigWorld.cancelCallback(self._loop_anim_dwn_test_id)
+        self._loop_anim_dwn_test_id = 0
+
+    def _loop_anim_dwn_test(self):
+        if not self._current_jmp:
+            return
+        if self._collideDownJump():
+            self._play_down_jump_anim()
+            return
+        if not self._jmp_down_played and not self._jmp_fly_high:
+            fw = animation_jump_config.FLY_HIGH_COLLIDE_FW
+            dwn = animation_jump_config.FLY_HIGH_COLLIDE_DWN
+            if not self._collideDownJump(fw, dwn, False):
+                self._jmp_fly_high = self._current_jmp.action_fly_high
+                self.cell.onJumpEvent(self._current_jmp.ID, animation_jump_config.JSTAT_FLY_HIGH)
+                if self._current_jmp and self._current_jmp.action_fly_high:
+                    self.model.action(self._current_jmp.action_fly_high)()
+                    self._need_play_action_down_move = True
+        self._loop_anim_dwn_test_id = BigWorld.callback(0.001, self._loop_anim_dwn_test)
+
+    def isPlayerPressMove(self):
+        return self.movingLeft or self.movingRight or self.movingBackward or self.movingForward
+
+    def onChangePressMove(self):
+        if self.isPlayerPressMove():
+            return
+        if not self._current_jmp:
+            return
+        if self._current_jmp.action_down_move and self._jmp_action_down_move_played:
+            down_act = self.model.action(self._current_jmp.action_down_move)
+            down_act.stop()
+            self.model.motors[0].lockChangeAction = False
+            fspeed = self.physics.velocity[2]
+            if fspeed > 4.5:
+                act_stop_name = 'stop_sprintR_stay_unarmed'
+            elif fspeed > 1.9:
+                act_stop_name = 'stop_runForwardR_stay_unarmed'
+            else:
+                act_stop_name = 'stop_walkForwardR_stay_unarmed'
+            self.model.action(act_stop_name)(0, self._onEndDown)
+            self._jmp_action_down_move_played = False
+
+    def _debug_tnp_jmp_smoothZZZ(self, oldPos, newPos, dTime, timeNow):
+        if self._is_jump_up_or_fly:
+            imp = self.model.getLastPromotionImpacting()
+        return newPos
+
+    def _get_best_jump(self, info = None, fall = False):
+        if not self.model:
+            return
+        else:
+            if info is None:
+                info = self.model.motors[0].currentActionInfo()
+            speed = self.model.motors[0].lastSpeed
+            cur_anim_frame, frame_count = self._getCurrentAnimationFrames(info)
+            if fall and (self.movingBackward or self.movingRight or self.movingLeft or not self.movingForward):
+                speed = -1
+            jmp = animation_jump_config.JUMPS.findBestJump(speed, cur_anim_frame, frame_count, fall=fall)
+            return jmp
+
+    def inAirNotifierJump(self, fallingVelocity, inAir):
+        if self.active_transform and self.active_transform.isDisableFallJump:
+            return
+            print ('inAir:', inAir, fallingVelocity)
+        self.cell.onInAir(inAir, fallingVelocity)
+        self.resetFootTwist()
+        if inAir and self._anomaly_drag and not self.physics.fall:
+            if self._current_jmp:
+                self.cancelAllJumpsAvatar()
+            self._is_jump = True
+            self._is_jump_up_or_fly = True
+            self._current_jmp = animation_jump_config.JUMPS.getByName('ANOMALY')
+            self.onJampChange()
+            if self._current_jmp.action_fly_high:
+                act = getattr(self.model, self._current_jmp.action_fly_high)()
+            self.updateBlendNodeByImpacting(only_factor=True)
+            self.cell.onJumpEvent(self._current_jmp.ID, animation_jump_config.JSTAT_FLY_HIGH)
+        elif not inAir and self._is_jump_up_or_fly and self._current_jmp:
+            self._play_down_jump_anim()
+        elif inAir and not self._is_jump_up_or_fly and not self._current_jmp:
+            jmp = self._get_best_jump(fall=True)
+            if jmp:
+                self._is_jump_up_or_fly = True
+                self._is_jump = True
+                self._after_jump_landing_state = True
+                self._current_jmp = jmp
+                self._jmp_up_position = self.position
+                if self._current_jmp.action_fly:
+                    act = getattr(self.model, self._current_jmp.action_fly)()
+                    self._jump_on_end_up()
+                self.updateBlendNodeByImpacting(only_factor=True)
+                self.onJampChange()
+        self.updateTorsoFlags()
+
+    def onPostModelChangeJmp(self):
+        pass
+
+    def onAnomalyDragEndedJmp(self):
+        if self._current_jmp and self._current_jmp.name == 'ANOMALY':
+            self._jump_on_end_up()
+        elif self._last_jmp and self._last_jmp.name == 'ANOMALY':
+            self.model.action(self._last_jmp.action_fly_high).stop()
+
+    def startJump(self):
+        if self._current_jmp:
+            return
+        elif self._slope_caps:
+            return
+        else:
+            fwd = Vector3()
+            fwd.setPitchYaw(0, self.yaw)
+            down_collide = collideBoxGeometry(self.spaceID, self.position, V_DOWN, width=0.3, height=0.3, depth=0.2, vector_up=fwd)
+            if down_collide is None:
+                return
+            info = self.model.motors[0].currentActionInfo()
+            if not info:
+                return
+            jmp = self._get_best_jump(info)
+            if not jmp:
+                return
+            self._jmp_action_down_move_played = False
+            cur_anim_frame, frame_count = self._getCurrentAnimationFrames(info)
+            wait_frame = jmp.getWaitFrame(cur_anim_frame, frame_count)
+            wait_time = self._getDelayToFrame(wait_frame, info)
+            self._jmp_fly_high = False
+            self._current_jmp = jmp
+            if not self.isFPSmode() and self._needLockVerticalCamForJump():
+                self._lock_cam_vertical()
+            self._is_jump_up_or_fly = True
+            self._is_jump = True
+            self._after_jump_landing_state = True
+            self._jmp_down_played = False
+            self.resetFootTwist()
+            self.rememberlastFootTwist(False)
+            if wait_time > 0:
+                BigWorld.callback(wait_time, self._jump_up)
+            else:
+                self._jump_up()
+            self.onJampChange()
+            return
+
+    def _lock_cam_vertical(self):
+        self.AvatarCam.lockVertical = True
+        self._unlock_cam_vertical(5)
+
+    def _unlock_cam_vertical(self, delay = 0):
+
+        def _unlock_cam():
+            self._unlock_cam_cid = 0
+            self.AvatarCam.lockVertical = False
+            self.AvatarCam.pDebugPython = None
+            return
+
+        if self._unlock_cam_cid:
+            BigWorld.cancelCallback(self._unlock_cam_cid)
+        self._unlock_cam_cid = BigWorld.callback(delay, _unlock_cam)
+
+    def _needLockVerticalCamForJump(self):
+        fwd = Vector3()
+        fwd.setPitchYaw(0, self.yaw)
+
+        def get_ground_height(pos):
+            res = BigWorld.collide(self.spaceID, pos, pos + (0, -5, 0))
+            if not res:
+                return pos.y - 5
+            return res[0].y
+
+        start_pos = self.position + (0, 2, 0)
+        max_dist = 4.0
+        end_pos = start_pos + fwd * max_dist
+        res = BigWorld.collide(self.spaceID, start_pos, end_pos)
+        if res:
+            max_dist = start_pos.distTo(res[0]) * 0.95
+        start_ground_h = get_ground_height(start_pos)
+        for x in xrange(1, 20):
+            cur_dist = max_dist * x / 20
+            point = start_pos + fwd * cur_dist
+            ground_h = get_ground_height(point)
+            if ground_h - start_ground_h > 0.4:
+                return False
+
+        return True
+
+    def _jump_up(self):
+        self._start_jtime = BigWorld.time()
+        self.resetFootTwist()
+        if not self._current_jmp:
+            return
+        act = getattr(self.model, self._current_jmp.action_up)
+        self._need_play_action_down_move = True
+        if self._current_jmp.action_fly:
+            getattr(act(0, self._jump_on_end_up), self._current_jmp.action_down_move)()
+            self._jmp_action_down_move_played = True
+            self._need_play_action_down_move = False
+        else:
+            act(0, self._jump_on_end_up)
+        self.physics.fall = False
+        self.set_use_max_vel_or_impacting(bool(self._current_jmp.vel_or_imp))
+        self.updateBlendNodeByImpacting(only_factor=True)
+        self.updateDCursorParam()
+        self.model.motors[0].lockChangeAction = True
+        self.updateTorsoFlags()
+        self.cell.onJumpEvent(self._current_jmp.ID, animation_jump_config.JSTAT_UP)
+        self._need_return_incombat = self.IsAvatarIncombat()
+        self.SetWeaponStatus(Constants.WEAPON_BORED)
+
+    def set_use_max_vel_or_impacting(self, value):
+        self.physics.use_max_vel_or_impacting = value
+
+    def _jump_on_end_up(self, *e):
+        self._jmp_up_position = self.position
+        self.resetFootTwist()
+        self.physics.fall = True
+        self._stop_loop_anim_dwn_test()
+        if self._collideDownJump():
+            self._play_down_jump_anim()
+        else:
+            self._loop_anim_dwn_test()
+        self._unlock_cam_vertical(animation_jump_config.LOCK_CAM_TIME)
+
+    def _onEndDown(self, *e):
+
+        def fff():
+            self._jmp_down_played = False
+            self.updateBlendNodeByImpacting(True)
+
+        BigWorld.callback(0.05, fff)
+
+        def fff2():
+            if not self._current_jmp:
+                self.rememberlastFootTwist(True)
+
+        BigWorld.callback(0.05, fff2)
+
+    _jmp_action_down_move_played = False
+
+    def _play_down_jump_anim(self):
+
+        def afrerincombat():
+            if self.isDestroyed:
+                return
+            if not self.sprinting and self._need_return_incombat:
+                self.SetWeaponStatus(Constants.WEAPON_INCOMABAT)
+            self._need_return_incombat = False
+
+        BigWorld.callback(animation_jump_config.TO_INCOMBAT_TIME, afrerincombat)
+        if not self._current_jmp:
+            return
+        self._jmp_down_played = True
+        self.resetFootTwist()
+
+        @ignoreError
+        def run_frame_to(down_act, frame_to):
+            if self.isFPSmode():
+                self.model.motors[0].lockChangeAction = False
+                return
+            info = self.model.motors[0].currentActionInfo()
+            if not info:
+                return
+            run_duration = info['duration']
+            down_duration = down_act.duration
+            if run_duration <= 0:
+                return
+            time_to = run_duration * 20 + run_duration * float(frame_to) / info['frameCount_']
+            self.__down_duration_left = down_duration
+
+            def _preTick(dTime):
+                self.__down_duration_left -= dTime
+                new_played = time_to - self.__down_duration_left
+                self.model.motors[0].serCurrentActionPlayed(max(0.0, new_played))
+
+            self.model.preTickDebug = _preTick
+
+            def off_pretick():
+                if self.model.preTickDebug == _preTick:
+                    self.model.preTickDebug = None
+                self.model.motors[0].lockChangeAction = False
+                return
+
+            BigWorld.callback(run_duration + 0.3, off_pretick)
+
+        self._is_jump_up_or_fly = False
+        jmp_high = self._jmp_up_position[1] - self.position[1]
+        if jmp_high > animation_jump_config.DOWN_HIGH and not self._slope_caps:
+            self.model.action(self._current_jmp.action_down_high)(0, self._onEndDown)
+            delay = self._current_jmp.down_high_time
+            self.model.motors[0].lockChangeAction = False
+            self.cell.onJumpEvent(self._current_jmp.ID, animation_jump_config.JSTAT_FLY_DOWN_HIGH)
+        elif self.isPlayerPressMove() and not self._collide_detected:
+            down_act = self.model.action(self._current_jmp.action_down_move)
+            if self._need_play_action_down_move:
+                down_act(0, self._onEndDown)
+                self._jmp_action_down_move_played = True
+            delay = self._current_jmp.down_move_time
+            if self._current_jmp.down_frame_to > -1:
+                run_frame_to(down_act, self._current_jmp.down_frame_to)
+                self._jmp_action_down_move_played = True
+            else:
+                self.model.motors[0].lockChangeAction = False
+            self.cell.onJumpEvent(self._current_jmp.ID, animation_jump_config.JSTAT_FLY_DOWN_MOVE)
+        else:
+            delay = 0.1
+            if self._current_jmp.action_down_stop:
+                self.model.action(self._current_jmp.action_down_stop)(0, self._onEndDown)
+                delay = self._current_jmp.down_stop_time
+            else:
+                BigWorld.callback(0.1, self._onEndDown)
+            self.cell.onJumpEvent(self._current_jmp.ID, animation_jump_config.JSTAT_FLY_DOWN_STOP)
+            self.model.motors[0].lockChangeAction = False
+
+        def _finish_jump():
+            if self.isDestroyed:
+                return
+            else:
+
+                def after_finish_jump():
+                    if self.isDestroyed:
+                        return
+                    if not self._current_jmp:
+                        self.set_use_max_vel_or_impacting(False)
+
+                BigWorld.callback(0.6, after_finish_jump)
+                self._last_jmp = self._current_jmp
+                self._finish_jump_id = 0
+                self._current_jmp = None
+                self._is_jump = False
+                self.updateTorsoFlags()
+                self._after_jump_landing_state = False
+                self._velocity_hook_value_to = None
+                self._velocity_hook = None
+                self.onJampChange()
+                if self.isImpactingPlayed():
+                    return
+                self._jmp_down_played = False
+                self.physics.lockUserDir = False
+                self.updateBlendNodeByImpacting(only_factor=True)
+                self.updateDCursorParam()
+                BigWorld.callback(TIME_WEAPON_AFTER_JUMP, self.updateHandControl)
+                if self._jmp_fly_high:
+                    self.cell.onJumpEvent(0, 0)
+                    if self.model:
+                        self.model.action(self._jmp_fly_high).stop()
+                    self._jmp_fly_high = False
+                return
+
+        self._finish_jump_id = BigWorld.callback(delay, _finish_jump)
+        self._jmp_fly_high = False
+        self._need_play_action_down_move = True
+
+    def onStartClimbAnimationForJump(self, climb_obj):
+        self.cancelAllJumps()
+
+    def onJampChange(self):
+        pass
+
+    def cancelAllJumps(self):
+        if not self._current_jmp:
+            return
+        else:
+            if getattr(self, '_finish_jump_id', 0):
+                BigWorld.cancelCallback(self._finish_jump_id)
+                self._finish_jump_id = 0
+            if self.model:
+                for act in self._current_jmp.getAllactions():
+                    if not act:
+                        continue
+                    self.model.action(act).stop()
+
+            self._current_jmp = None
+            self._is_jump = False
+            self._jmp_down_played = False
+            self._after_jump_landing_state = False
+            self._velocity_hook_value_to = None
+            self._velocity_hook = None
+            self.cell.onJumpEvent(0, 0)
+            self.updateTorsoFlags()
+            self.model.motors[0].lockChangeAction = False
+            self.rememberlastFootTwist(True)
+            self.updateBlendNodeByImpacting(only_factor=True)
+            self.onJampChange()
+            return
+
+    def cancelAllJumpsAvatar(self):
+        if getattr(self, '_finish_jump_id', 0):
+            BigWorld.cancelCallback(self._finish_jump_id)
+            self._finish_jump_id = 0
+        self._is_jump = False
+        self._jmp_down_played = False
+        self.onJampChange()
+        if not self.model:
+            return
+        for name in getattr(self, '_prev_action_names', []):
+            act = getattr(self.model, name)
+            act.stop()
+
+        self._prev_action_names = []
+        self.updateBlendNodeByImpacting(only_factor=True)
+        self.updateTorsoFlags()
+
+    def onJumpEvent(self, jmp_id, jmp_status_id):
+        if not jmp_id:
+            return self.cancelAllJumpsAvatar()
+        if not self.model:
+            return
+        jmp = animation_jump_config.JUMPS[jmp_id]
+        action_names = jmp.getActions(jmp_status_id)
+        root = self.model
+        delay = 0
+        self._prev_action_names = action_names
+        for name in action_names:
+            act = getattr(root, name)
+            delay += act.duration
+            root = act()
+
+        self._is_jump = True
+        self.onJampChange()
+        self.updateTorsoFlags()
+
+        def onEndJumpAction():
+            if self.isDestroyed:
+                return
+            self._prev_action_names = []
+            self._is_jump = False
+            self.onJampChange()
+            self.updateTorsoFlags()
+            self.updateBlendNodeByImpacting(only_factor=True)
+
+        self.updateBlendNodeByImpacting(only_factor=True)
+        if jmp.isStatusForDown(jmp_status_id):
+            BigWorld.callback(delay, onEndJumpAction)
+
+    def try_reset_falling_velocity(self):
+        if getattr(self, '_reset_falling_velocity_cid', 0):
+            BigWorld.cancelCallback(self._reset_falling_velocity_cid)
+            self._reset_falling_velocity_cid = 0
+        if getattr(self, '_inAirNotifier_status', 0) or self.is_sloping():
+            return
+        delay_reset_falling_velocity = 2.0
+        self._reset_falling_velocity_cid = BigWorld.callback(delay_reset_falling_velocity, self.reset_falling_velocity)
+
+    def reset_falling_velocity(self):
+        if self.isDestroyed:
+            return
+        if getattr(self, '_inAirNotifier_status', 0) or self.is_sloping():
+            return
+        if self.physics:
+            self.physics.fallingVelocity = 0

@@ -1,0 +1,195 @@
+# Embedded file name: ./client/candle_user.py
+import BigWorld
+import traceback
+from Items import ItemsCatalog
+from Localization import lc
+import BWPersonality
+from FX.persistent_ext_bg import loadPersistentExtBG
+from utils import ignoreError
+from Constants import MESSAGE_TYPES as MT
+sfx_path = 'sfx/player/candle.xml'
+
+class CandleUser:
+    __candle_cancel_id = 0
+    __water_listener = None
+    __manipulator_in_water = None
+    _light_candle = None
+    _candle_sfx = None
+    candle = False
+    _use_light_in_played = False
+    _use_light_out_played = False
+    underWaterLevel3 = False
+
+    def canUseCandle(self):
+        if self.dead:
+            return False
+        if self.sprinting:
+            return False
+        if getattr(self, '_portal_shell', False):
+            return False
+        if self.underWaterLevel3:
+            BWPersonality.gpd.sendHightMessage(lc('PlayerAvatar.client.CANDLE_RESTR_WATER'), MT.PERSONAL)
+            return False
+        if self.__manipulator_in_water:
+            BWPersonality.gpd.sendHightMessage(lc('PlayerAvatar.client.CANDLE_RESTR_WATER'), MT.PERSONAL)
+            return False
+        return True
+
+    def useCandle(self, item):
+        self.cancel_action_start(self.cancelCandle)
+        item_type = item['complexItemType']
+        item_params = ItemsCatalog.GetItemParam(item_type)
+        fire_time = item_params.get('BurningTime', 60)
+        BigWorld.cancelCallback(self.__candle_cancel_id)
+        self.__candle_cancel_id = BigWorld.callback(fire_time, self.cancelCandle)
+        self.candle = True
+        self._updateCandle()
+
+    def cancelCandle(self, force = False):
+        if not self.candle:
+            return
+        if self == BigWorld.player():
+            self.cell.useCandle(0)
+        self.candle = False
+        self._updateCandle()
+        self.cancel_action_clear()
+
+    def onEnterWorld(self, prereqs = None):
+        pass
+
+    def onLeaveWorld(self):
+        BigWorld.cancelCallback(self.__candle_cancel_id)
+        self._stopCandleSFX()
+        self._candle_sfx = None
+        self.__detachWaterListener()
+        return
+
+    def onPreModelChange(self):
+        if self == BigWorld.player():
+            self.setLeftHandLightUseAnimation(False)
+            if self.candle:
+                self.cancelCandle()
+        self._stopCandleSFX()
+
+    def onPostModelChange(self):
+        self._updateCandle()
+        self.__attachWaterListener()
+
+    def set_candle(self, old_value):
+        self._updateCandle()
+
+    def __detachWaterListener(self):
+        if self.__water_listener:
+            BigWorld.delWaterVolumeListener(self.__water_listener)
+            self.__water_listener = None
+        return
+
+    def __attachWaterListener(self):
+        self.__detachWaterListener()
+        if not self.model:
+            return
+        if self != BigWorld.player():
+            return
+        try:
+            node = self.model.node('HP_Lmanipulator')
+        except Exception as e:
+            print 'Error for', self
+            print e
+            return
+
+        self.__water_listener = BigWorld.addWaterVolumeListener(node, self._onManipulatorWater)
+
+    def _onManipulatorWater(self, enterWater, volume):
+        self.__manipulator_in_water = enterWater
+        self.cancelCandle()
+
+    def updateVisible(self):
+        if not self.model:
+            return
+        if self._candle_sfx and self._candle_sfx.source:
+            try:
+                self._candle_sfx.actors['light'].visible = self.model.visible
+            except Exception:
+                traceback.print_exc()
+
+    def _updateCandle(self):
+        if self.candle and self.model:
+            if self.active_weapon and not self.active_weapon.isPistol():
+                self.pushTrackerLockByName('candle', 'Belly-Belly2-PistolHolster')
+                self.UpdateAvatarAnimationCaps()
+            if not self._candle_sfx:
+                loadPersistentExtBG(sfx_path, self._onLoadCandleSFX)
+            self._use_light_in_played = True
+            self.model.use_light_in(0, self._on_light_turn_on).use_light_loop()
+            self.setLeftHandLightUseAnimation(True)
+        if (self._candle_sfx or self.left_hand_light_use) and not self.candle:
+            self._stopCandleSFX()
+            if self.model:
+                self._use_light_out_played = True
+                self.model.use_light_out(0, self._on_light_turn_off)
+            else:
+                self.setLeftHandLightUseAnimation(False)
+        if not self.candle:
+
+            def after():
+                if self.isDestroyed:
+                    return
+                if not self.candle:
+                    self.popTrackerLock('candle')
+                    self.UpdateAvatarAnimationCaps()
+
+            BigWorld.callback(0.5, after)
+
+    def _onLoadCandleSFX(self, fx_obj):
+        if self.isDestroyed:
+            return
+        if self._candle_sfx:
+            return
+        self._candle_sfx = fx_obj
+        if self.candle and self.model:
+            self._candle_sfx.attach(self.model)
+            self._candle_sfx.go()
+            self.updateVisible()
+        try:
+            priority = -55
+            if self == BigWorld.player():
+                priority = -49
+            self._candle_sfx.actors['light'].priority = priority
+        except Exception:
+            print self, fx_obj
+            traceback.print_exc()
+
+    def _on_light_turn_on(self, *e):
+        if self.isDestroyed:
+            return
+        self._use_light_in_played = False
+        if not self.candle:
+            return
+        if self._candle_sfx and not self._candle_sfx.source:
+            self._candle_sfx.attach(self.model)
+            self._candle_sfx.go()
+            self.updateVisible()
+
+    def _on_light_turn_off(self, *e):
+        if self.isDestroyed:
+            return
+        self._use_light_out_played = False
+        self.setLeftHandLightUseAnimation(False)
+
+    @property
+    def in_out_candle_played(self):
+        return self._use_light_out_played or self._use_light_in_played
+
+    @ignoreError
+    def _stopCandleSFX(self, detach = True):
+        if not self._candle_sfx:
+            return
+        try:
+            self._candle_sfx.stop()
+        except:
+            print '**********'
+            print self, self._candle_sfx
+            traceback.print_exc()
+
+        if detach:
+            self._candle_sfx.detach()

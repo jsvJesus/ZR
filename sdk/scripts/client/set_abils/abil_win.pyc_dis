@@ -1,0 +1,416 @@
+# Embedded file name: ./client/set_abils/abil_win.py
+import BigWorld
+from math import ceil, sin, pi
+from Localization import lc
+import BWPersonality
+import GUI
+from Helpers.PyGUI.PyGUIBase import DragWin
+from Helpers.PyGUI.Utils import build_circle_mesh
+from utils import Tickable
+from Helpers.PyGUI import Utils
+from abils import AbilEventType, TrenogaAbil, AdrenalinAbil
+from math_bw import clamp, lerp_rgb_colors
+from soGUI.GUIPositions import GUIPositions
+from set_abil_utils import TrenUtil
+from Helpers.BWCoroutine import BWMemberCoroutine, BWWaitForPeriod
+
+class Circle:
+
+    def __init__(self):
+        comp = GUI.DebugComponent('soGUI/frame/stuff/kd_progress.dds')
+        comp.materialFX = 'BLEND'
+        comp.filterType = 'LINEAR'
+        comp.script = self
+        self.pixelperfect = False
+        self.component = comp
+        self._ratio = 0.0
+
+    def set_ratio(self, ratio):
+        self._ratio = clamp(ratio)
+
+    def buildMesh(self):
+        return build_circle_mesh(self._ratio)
+
+
+class WinState(Tickable):
+
+    def __init__(self, component):
+        Tickable.__init__(self)
+        self.component = component
+        self._abil = None
+        return
+
+    def get_abil_image(self):
+        raise NotImplementedError
+
+    def on_enter(self, abil):
+        self._abil = abil
+        self._abil.add_listener(self._on_abil_event)
+        self.set_static_image(self.get_abil_image())
+        if self._update_content_and_check_tick():
+            self.start_tick()
+        else:
+            self.stop_tick()
+
+    def set_static_image(self, image):
+        comp = self.component.image
+        comp.textureName = image
+        comp.width, comp.height = comp.texture.width, comp.texture.height
+
+    def on_leave(self):
+        self._abil.remove_listener(self._on_abil_event)
+        self._abil = None
+        self.stop_tick()
+        return
+
+    def _on_abil_event(self, event_type, data):
+        if event_type in (AbilEventType.OnJustUse, AbilEventType.OnChargeChanged):
+            if self._update_content_and_check_tick():
+                self.start_tick()
+            else:
+                self.stop_tick()
+
+    def _update_content_and_check_tick(self):
+        time_remain = self._abil.get_time_remain()
+        self.component.ctext.text = unicode(int(ceil(self._abil.get_time_remain()))) + u' ' + lc('GUI.abils.seconds')
+        self.component.ttext.text = unicode(self._abil.charge)
+        time_elapsed = self._abil.get_cooldown_time() - time_remain
+        ratio = float(time_elapsed) / self._abil.get_cooldown_time()
+        if 1 > ratio > 0:
+            self.component.circle.circle.script.set_ratio(ratio)
+            self.component.ctext.visible = True
+            self.component.circle.visible = True
+            self.component.circleback.visible = True
+            self.component.scircle.visible = False
+            self.component.image.visible = False
+        else:
+            self.component.circleback.visible = False
+            self.component.ctext.visible = False
+            self.component.circle.visible = False
+            self.component.scircle.visible = True
+            self.component.image.visible = True
+        return time_remain > 0
+
+    def can_tick(self):
+        if not Utils.is_visible_in_hierarchy(self.component):
+            return False
+        return self._update_content_and_check_tick()
+
+
+class TrenogaState:
+    Init, Trenoga, Dead = range(3)
+
+
+class TrenogaWinState(WinState):
+    _turret_image = 'soGUI/frame/stuff/turret.dds'
+    _bimage_colour = (0, 0, 0, 125)
+
+    def __init__(self, comp):
+        WinState.__init__(self, comp)
+        icomp = self.component.image
+        comp = GUI.Window(TrenogaWinState._turret_image)
+        comp.colour = TrenogaWinState._bimage_colour
+        comp.visible = False
+        comp.materialFX = 'BLEND'
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = comp.texture.width, comp.texture.height
+        comp.hpm, comp.vpm = icomp.hpm, icomp.vpm
+        comp.ha, comp.va = icomp.ha, icomp.va
+        comp.position = icomp.position
+        shader = GUI.ClipShader()
+        shader.speed = 0
+        shader.value = 1
+        shader.mode = 'DOWN'
+        comp.addShader(shader, 'clipper')
+        self.component.addChild(comp, 'bimage')
+        self._trenoga_id = None
+        self._tr_state = None
+        self._trenoga_spawn_time = 0
+        self._twinkle_coroutine = None
+        self._last_twinkle_check = 0
+        return
+
+    def get_abil_image(self):
+        return 'soGUI/frame/stuff/hornet.dds'
+
+    def on_leave(self):
+        WinState.on_leave(self)
+        self._trenoga_id = None
+        self.tr_state = None
+        self._trenoga_spawn_time = 0
+        self.component.bimage.visible = False
+        self.component.image.clipper.value = 1
+        self._last_twinkle_check = 0
+        return
+
+    def _on_abil_event(self, event_type, data):
+        if event_type == AbilEventType.OnJustUse:
+            self._trenoga_id = data['entity_id']
+            self.tr_state = TrenogaState.Init
+        WinState._on_abil_event(self, event_type, data)
+
+    def _update_content_and_check_tick(self):
+        if not self._abil:
+            return False
+        elif self.tr_state is None:
+            return WinState._update_content_and_check_tick(self)
+        elif self.tr_state == TrenogaState.Dead:
+            trenoga = BigWorld.entities.get(self._trenoga_id)
+            if not trenoga or trenoga.isDestroyed:
+                self.tr_state = None
+                return True
+            WinState._update_content_and_check_tick(self)
+            return True
+        elif self.tr_state == TrenogaState.Init:
+            if self._trenoga_id:
+                trenoga = BigWorld.entities.get(self._trenoga_id)
+                if trenoga and trenoga.state != TrenUtil.STATE_CREATED:
+                    self.tr_state = TrenogaState.Trenoga
+            return True
+        elif self.tr_state == TrenogaState.Trenoga:
+            trenoga = BigWorld.entities.get(self._trenoga_id)
+            if not trenoga or trenoga.isDestroyed or trenoga.state != TrenUtil.STATE_ACTIVATED:
+                self.tr_state = TrenogaState.Dead
+                return True
+            life_time = trenoga.config['tren_lifetime']
+            time_elapsed = BigWorld.time() - self._trenoga_spawn_time
+            time_remain = max(0, life_time - time_elapsed)
+            time_ratio = float(time_remain) / life_time
+            time_remain = unicode(int(ceil(time_remain))) + u' ' + lc('GUI.abils.seconds')
+            self.component.ttext.text = time_remain
+            self.component.circle.circle.script.set_ratio(time_ratio)
+            self.component.image.clipper.value = clamp(trenoga.health_ratio)
+            self.component.bimage.clipper.value = clamp(1 - trenoga.health_ratio)
+            direction = BigWorld.player().position - trenoga.position
+            twinkle_dist = TrenUtil.MAX_OWNER_RADIUS * 0.7
+            if abs(direction.x) >= twinkle_dist or abs(direction.z) >= twinkle_dist:
+                self._last_twinkle_check = BigWorld.time()
+                if not self._twinkle_coroutine:
+                    self._twinkle_coroutine = self._run_twinkle_coroutine()
+                    self._twinkle_coroutine.run()
+            return True
+        else:
+            raise NotImplementedError(self.tr_state)
+            return
+
+    @BWMemberCoroutine
+    def _run_twinkle_coroutine(self):
+        rc = (255, 0, 0, 255)
+        brc = (255, 0, 0, 125)
+        wc = (255, 255, 255, 255)
+        time_passed = 0.0
+        while Utils.is_visible_in_hierarchy(self.component):
+            twinkling_now = BigWorld.time() - self._last_twinkle_check < BigWorld.getTimeDelta() * 2
+            time_passed += BigWorld.getTimeDelta() * 5
+            factor = sin(time_passed)
+            self.component.image.colour = lerp_rgb_colors(wc, rc, factor * factor)
+            self.component.bimage.colour = lerp_rgb_colors(TrenogaWinState._bimage_colour, brc, factor * factor)
+            if time_passed > 2 * pi and not twinkling_now:
+                break
+            while time_passed > 2 * pi:
+                time_passed -= 2 * pi
+
+            yield BWWaitForPeriod(0)
+
+        self.component.image.colour = wc
+        self.component.bimage.colour = TrenogaWinState._bimage_colour
+        self._twinkle_coroutine = None
+        return
+
+    def _apply_state(self):
+        if self.tr_state == TrenogaState.Init:
+            self.component.circleback.visible = False
+            self.component.ctext.visible = False
+            self.component.circle.visible = False
+            self.component.scircle.visible = True
+            self.component.image.visible = True
+            self.component.ttext.visible = False
+            self.set_static_image(TrenogaWinState._turret_image)
+        elif self.tr_state is None:
+            self.component.circleback.visible = False
+            self.component.ctext.visible = False
+            self.component.circle.visible = False
+            self.component.scircle.visible = True
+            self.component.image.visible = True
+            self.component.ttext.visible = True
+            self.set_static_image(self.get_abil_image())
+        elif self.tr_state == TrenogaState.Trenoga:
+            self.component.circleback.visible = True
+            self.component.ctext.visible = False
+            self.component.circle.visible = True
+            self.component.scircle.visible = False
+            self.component.image.visible = True
+            self.component.ttext.visible = True
+            self.set_static_image(TrenogaWinState._turret_image)
+            self._trenoga_spawn_time = BigWorld.time()
+            self.component.bimage.visible = True
+            self.component.bimage.clipper.value = 0
+        elif self.tr_state == TrenogaState.Dead:
+            self.component.ctext.visible = False
+            self.component.circle.visible = False
+            self.component.scircle.visible = True
+            self.component.image.visible = True
+            self.component.ttext.visible = True
+            self.component.image.clipper.value = 1
+            self.component.bimage.clipper.value = 0
+            self.set_static_image('soGUI/frame/stuff/turret_broke.dds')
+        else:
+            raise NotImplementedError(self.tr_state)
+        self._update_content_and_check_tick()
+        return
+
+    @property
+    def tr_state(self):
+        return self._tr_state
+
+    @tr_state.setter
+    def tr_state(self, value):
+        if self._tr_state == value:
+            return
+        self._tr_state = value
+        self._apply_state()
+
+
+class AdrenalinWinState(WinState):
+
+    def get_abil_image(self):
+        return 'soGUI/frame/stuff/adrenalin.dds'
+
+
+class AbilWin(DragWin, GUIPositions):
+
+    def __init__(self):
+        self._state = None
+        comp = GUI.Window()
+        comp.isClip = False
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('CENTER', 'BOTTOM')
+        comp.visible = False
+        DragWin.__init__(self, comp)
+        GUIPositions.__init__(self)
+        comp = GUI.Window()
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.wm, comp.hm = ('CLIP', 'CLIP')
+        comp.materialFX = 'BLEND'
+        comp.height, comp.width = (2, 2)
+        comp.position = (0.0, 0.0, 0.9)
+        self.component.addChild(comp)
+        comp = GUI.Window('soGUI/frame/paint/black.dds')
+        comp.materialFX = 'BLEND'
+        comp.colour = (255, 255, 255, 125)
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = (100, 100)
+        comp.ha, comp.va = ('CENTER', 'BOTTOM')
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.position = (0, -1, 0.5)
+        self.component.addChild(comp, 'htk')
+        comp = GUI.Text(u'', 'RobotoCondensedRegular_16.font')
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.position = (0, 0, 0.5)
+        self.component.htk.addChild(comp)
+        self._htk_text = comp
+        comp = GUI.Text(u'', 'RobotoCondensedRegular_18.font')
+        comp.vpm = 'PIXEL'
+        comp.va = 'TOP'
+        comp.position = (0, 0, 0.5)
+        self.component.addChild(comp, 'ttext')
+        comp = Circle().component
+        pcomp = GUI.Window()
+        comp.position = (0, 0, 0.1)
+        pcomp.addChild(comp, 'circle')
+        pcomp.widthMode, pcomp.heightMode = ('PIXEL', 'PIXEL')
+        pcomp.width, pcomp.height = comp.texture.width, comp.texture.height
+        pcomp.position = (0, 0, 0.1)
+        self.component.addChild(pcomp, 'circle')
+        comp = GUI.Window('soGUI/frame/stuff/adrenalin_background.dds')
+        comp.materialFX = 'BLEND'
+        comp.colour = (255, 255, 255, 125)
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.position = (0, 0, 0.9)
+        comp.width, comp.height = comp.texture.width, comp.texture.height
+        self.component.addChild(comp, 'circleback')
+        comp = GUI.Text(u'', 'RobotoCondensedRegular_16.font')
+        comp.vpm = 'PIXEL'
+        comp.position = (0, 56, 0.5)
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.position = (0, 0, 0.5)
+        self.component.addChild(comp, 'ctext')
+        comp = GUI.Window('soGUI/frame/stuff/kd_progress.dds')
+        comp.materialFX = 'BLEND'
+        comp.filterType = 'LINEAR'
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = comp.texture.width, comp.texture.height
+        self.component.addChild(comp, 'scircle')
+        comp = GUI.Window()
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        self.component.addChild(comp, 'image')
+        shader = GUI.ClipShader()
+        shader.speed = 0
+        shader.value = 1
+        shader.mode = 'UP'
+        comp.addShader(shader, 'clipper')
+        comp = self.component.scircle
+        self.component.width, self.component.height = comp.width, comp.height + 48
+        self.component.position = self._get_default_position()
+        self._states = {TrenogaAbil: TrenogaWinState(self.component),
+         AdrenalinAbil: AdrenalinWinState(self.component)}
+        return
+
+    def _update_hotkey(self):
+        self._htk_text.text = BWPersonality.get_action_key('UseSetAbil', prepend_space_if_valid=False)
+        comp = self.component.htk
+        comp.width, comp.height = self._htk_text.stringDimensions(self._htk_text.text)
+
+    def show(self, abil):
+        if self.component.visible:
+            return
+        self.component.visible = True
+        BWPersonality.GUICore.addListener('key_binding_changed', self._on_binding_changed)
+        self.abil = abil
+        self._update_hotkey()
+        GUIPositions.show(self)
+
+    def _get_default_position(self):
+        return (0, -1, 0.21)
+
+    def reset_position(self):
+        self.component.position = self._get_default_position()
+
+    def stopDragging(self):
+        DragWin.stopDragging(self)
+        GUIPositions.stopDragging(self)
+
+    @property
+    def abil(self):
+        return self._state and self._state._abil
+
+    @abil.setter
+    def abil(self, value):
+        if self.abil == value:
+            return
+        else:
+            new_state = self._states.get(value.__class__, None)
+            if self._state == new_state:
+                return
+            if self._state:
+                self._state.on_leave()
+            self._state = new_state
+            if self._state:
+                self._state.on_enter(value)
+            return
+
+    def _on_binding_changed(self, data):
+        if 'UseSetAbil' in data:
+            self._update_hotkey()
+
+    def hide(self):
+        BWPersonality.GUICore.removeListener('key_binding_changed', self._on_binding_changed)
+        self.abil = None
+        self.component.visible = False
+        return

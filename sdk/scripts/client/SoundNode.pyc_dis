@@ -1,0 +1,279 @@
+# Embedded file name: ./client/SoundNode.py
+import BigWorld
+from random import choice
+from sounds_manager import playSound
+import BWPersonality
+import Settings
+import GUI
+from utils import ignoreError
+from ClientFiguredTrapInterface import ClientFiguredTrapInterface
+from functools import partial
+from Helpers.Caps import CAP_EXCLUDE
+from client_utils import readable_space_pos
+DEBUG = False
+
+def switchDebugMode():
+    global DEBUG
+    DEBUG = not DEBUG
+    for e in BigWorld.entities.values():
+        if isinstance(e, SoundNode):
+            e.updateDebugMode()
+
+    return DEBUG
+
+
+class SoundNode(BigWorld.Entity, ClientFiguredTrapInterface):
+    MODEL = 'models/misc/particles/helper_attach.model'
+    enable_from_trigger = False
+    soundCallback = None
+
+    def __init__(self):
+        BigWorld.Entity.__init__(self)
+        ClientFiguredTrapInterface.__init__(self)
+        self.model_debug = None
+        self._textnode = None
+        self.hasPlayer = False
+        self.lastSound = None
+        self.lastSoundName = ''
+        self.wasPlayed = False
+        self.targetCaps = [CAP_EXCLUDE]
+        raise self.musicNode and (not self.playFrequency or AssertionError)
+        if not not self.triggerDriven:
+            raise AssertionError
+        return
+
+    def __repr__(self):
+        if self.isDestroyed:
+            return 'SoundNode[%s]Destroyed' % self.id
+        return 'SoundNode[%s] at %s' % (self.id, readable_space_pos(self))
+
+    def updateDebugMode(self):
+        if DEBUG and not self.model_debug:
+            self.model_debug = BigWorld.Model('models/bolvan/helpers/sound_node.model')
+            textnode = GUI.Text('node id {0}'.format(self.id))
+            textnode.explicitSize = True
+            textnode.multiline = True
+            textnode.size = (5, 1)
+            textnode.colour = (255, 205, 149, 245)
+            textnode.filterType = 'LINEAR'
+            textnode.verticalAnchor = 'BOTTOM'
+            textnode.position = (0, 1, 0)
+            atch = GUI.Attachment()
+            atch.component = textnode
+            atch.faceCamera = True
+            self.model_debug.root.attach(atch)
+            self.model_debug.position = self.position
+            self.model_debug.newScaleTest = (0.3, 0.3, 0.3)
+            self.addModel(self.model_debug)
+            self._attach = atch
+            self._textnode = textnode
+            self.model_radius = BigWorld.Model('models/Test/cylinder_1m.model')
+            self.addModel(self.model_radius)
+            self.model_radius.empty = 'Default'
+            self.model_radius.position = self.position + (0, 1, 0)
+            self.model_radius.scale = (self.radius, 0.5, self.radius)
+            self.model_radius.newScaleTest = (self.radius, 0.5, self.radius)
+            self._update_debug_text()
+            self.__timer_debug()
+        elif self.model_debug and not DEBUG:
+            self._clear_debug_attaches()
+
+    def _update_debug_text(self):
+        if not DEBUG:
+            return
+        if not self.model_debug:
+            return
+        text = ''
+        size = (5, 1)
+        if self.musicNode:
+            text = 'play music theme' if self.player_in_trap else 'music stoppped'
+        elif not self.lastSound or not self.lastSoundName:
+            text = 'sound stoped'
+        elif self.lastSoundName and self.lastSound.muted:
+            text = '%s\n(muted)' % self.lastSoundName
+            size = (2, 1)
+        elif self.lastSoundName and self.lastSound.isVirtual:
+            text = '%s\nvirtual' % self.lastSoundName
+            size = (2, 1)
+        elif self.lastSoundName:
+            text = '%s' % self.lastSoundName
+        self._textnode.text = text
+        self._textnode.size = size
+
+    def __timer_debug(self):
+        if not DEBUG:
+            return
+        if self.isDestroyed:
+            return
+        if not self._textnode:
+            return
+        BigWorld.callback(0.5, self.__timer_debug)
+        if not self.lastSound or self.lastSound.muted:
+            colour = (255, 205, 149, 245)
+        elif self.lastSound.isVirtual:
+            colour = (255, 0, 0, 255)
+        else:
+            colour = (10, 205, 10, 245)
+        self._textnode.colour = colour
+        self._update_debug_text()
+
+    def _clear_debug_attaches(self):
+        if not self.model_debug:
+            return
+        else:
+            self.model_debug.root.detach(self._attach)
+            self._attach.component = None
+            self.delModel(self.model_debug)
+            self.delModel(self.model_radius)
+            self.model_debug = None
+            self.model_radius = None
+            self._attach = None
+            self._textnode = None
+            return
+
+    def onPlayerInside(self):
+        if not self.triggerDriven or self.enable_from_trigger:
+            if DEBUG:
+                self.model_radius.empty = 'red'
+            self.playRandom()
+
+    def onPlayerOutside(self):
+        if DEBUG:
+            self.model_radius.empty = 'Default'
+        self.stopSound()
+
+    def startSound(self):
+        pass
+
+    def stopSound(self):
+        if self.musicNode:
+            BWPersonality.music.pop_music_theme(self.id)
+            self._update_debug_text()
+            return
+        if self.lastSound:
+            if self.muteOnLeave and not self.triggerDriven:
+                self.lastSound.muted = True
+            else:
+                self.lastSound.stop()
+                self.lastSoundName = ''
+        self._update_debug_text()
+
+    def onEnterWorld(self, prereq):
+        self.model = BigWorld.Model('')
+        self.updateDebugMode()
+        self.soundCallback = None
+        if not self.triggerDriven:
+            self.playRandom()
+        Settings.Settings().addSfxChangeObserver(self)
+        return
+
+    def sfxVolumeChanged(self, volume):
+        self._update_volume()
+
+    @ignoreError
+    def _update_volume(self):
+        if not self.lastSound:
+            return
+        volume = Settings.Settings().getEnvironmentVolume()
+        self.lastSound.set_volume(volume)
+
+    def onLeaveWorld(self):
+        ClientFiguredTrapInterface.onLeaveWorld(self)
+        if self.soundCallback is not None:
+            BigWorld.cancelCallback(self.soundCallback)
+        if self.lastSound != None:
+            self.lastSound.stop()
+            self.lastSound.releaseSound()
+            self.lastSound = None
+        Settings.Settings().removeSfxChangeObserver(self)
+        if self._pot_id:
+            BigWorld.delPot(self._pot_id)
+        self.model = None
+        self._clear_debug_attaches()
+        return
+
+    def playNodeSound(self):
+        pass
+
+    def playRandom(self):
+        if len(self.sounds) == 0:
+            print 'No sounds to play for SoundNode at', self.position
+            self._update_debug_text()
+            return
+        else:
+            randomSnd = choice(self.sounds)
+            if self.playOnce and self.wasPlayed:
+                self._update_debug_text()
+                return
+            if self.player_in_trap:
+                self.wasPlayed = True
+                if self.musicNode:
+                    BWPersonality.music.push_music_theme(self.id, randomSnd)
+                    self._update_debug_text()
+                    return
+                if self.lastSound:
+                    if self.muteOnLeave and self.lastSound.muted:
+                        self.lastSound.muted = False
+                        self._update_debug_text()
+                        return
+                    if self.lastSoundName != randomSnd:
+                        self.lastSound.stop()
+                if self.lastSoundName != randomSnd:
+                    if self.lastSound:
+                        self.lastSound.releaseSound()
+                    self.lastSound = playSound(randomSnd, self.model)
+                    if not self.lastSound:
+                        print 'SoundNode ERROR sound:', self.position, BWPersonality.game.get_space_name_advanced(self.spaceID), repr(randomSnd)
+                    self.lastSoundName = randomSnd
+                else:
+                    if not self.lastSound:
+                        print 'ERROR FOR', self, self.position
+                        print 'space:', BWPersonality.game.get_space_name_advanced(self.spaceID)
+                        print 'self.lastSound', repr(self.lastSound)
+                        print 'self.lastSoundName', repr(self.lastSoundName)
+                        print 'self.sounds', self.sounds
+                        raise ValueError('no sound')
+                    self.lastSound.play()
+                    self._update_volume()
+            self._update_debug_text()
+            if self.soundCallback is not None:
+                BigWorld.cancelCallback(self.soundCallback)
+            if self.playFrequency > 0.0:
+                self.soundCallback = BigWorld.callback(self.playFrequency, self.playRandom)
+            return
+
+    def play(self, index):
+        print 'SoundNode:play()'
+
+    def stop(self):
+        pass
+
+    @staticmethod
+    def create_from_udo(udo_item, space_id):
+        properties = {'sounds': udo_item.sounds,
+         'playFrequency': udo_item.playFrequency,
+         'radius': udo_item.radius,
+         'muteOnLeave': udo_item.muteOnLeave,
+         'musicNode': udo_item.musicNode,
+         'triggerDriven': 1}
+        return BigWorld.createEntity('SoundNode', space_id, 0, udo_item.position, (0, 0, 0), properties)
+
+    def activateFromTrigger(self):
+        self.enable_from_trigger = True
+        if self.radius <= 0:
+            self.player_in_trap = True
+        self.playRandom()
+
+    def deactivateFromTrigger(self):
+        self.enable_from_trigger = False
+        self.stopSound()
+
+    def destroyFromTrigger(self):
+        if self.isDestroyed or not self.inWorld:
+            return
+        else:
+            if self.lastSound:
+                self.lastSound.releaseSound()
+                self.lastSound = None
+            BigWorld.callback(0, partial(BigWorld.destroyEntity, self.id))
+            return

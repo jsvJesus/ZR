@@ -1,0 +1,119 @@
+# Embedded file name: ./client/heliutils/sticker.py
+import Constants
+import BigWorld
+from functools import partial
+import heliconstants as H
+from Vehicle import Vehicle
+
+class Sticker(object):
+
+    def try_unstick(self, helicopter_id):
+        if hasattr(self, '__wait_transport_load_callback'):
+            BigWorld.cancelCallback(self.__wait_transport_load_callback)
+            del self.__wait_transport_load_callback
+        if self.isDestroyed:
+            return
+        helicopter = BigWorld.entities.get(helicopter_id)
+        if not helicopter:
+            self.__wait_transport_load_callback = BigWorld.callback(0, partial(self.try_unstick, helicopter_id))
+            return
+        if not issubclass(helicopter.__class__, Vehicle):
+            return
+        self.setControlLock(Constants.ControlLockTypes.TRANSPORT, False, lock_id=Constants.TRANSPORT_MILD_LOCK_ID)
+        self.onUseAnyHandActionEnd()
+        self.popTrackerLock('Transport')
+        getattr(self.model, H.BASE_ANIMATION)().stop()
+        getattr(self.model, H.GUNNER_ANIMATION)().stop()
+        getattr(self.model, helicopter.get_npc_animation())().stop()
+        if helicopter.get_entrance_node():
+            self.filter.matrixProvider = helicopter.get_entrance_node()
+            self.filter.forceOutput(BigWorld.getTimeDelta())
+        self.filter = self.default_filter()
+        self.rememberlastFootTwist(True, channel='Transport')
+        self.model.motors[0].lockChangeAction = False
+        self.model.motors[0].useEntityPitchAndRoll = False
+        self.resetFootTwist()
+        self._update_tracker_flags()
+        if BigWorld.player() is self:
+            self.physics.fall = True
+            if self.physics.inAir:
+                self.inAirNotifier(0.0, True)
+        self.UpdateAvatarModel()
+        self.on_unstick()
+
+    def on_cam_mode_changed(self):
+        self.model.motors[0].resetFootTwist()
+        self.model.motors[0].lockChangeAction = True
+        self.model.motors[0].useEntityPitchAndRoll = True
+        self.physics.fall = False
+        self._update_tracker_flags()
+
+    def try_stick(self, helicopter_id):
+        if hasattr(self, '__wait_transport_load_callback'):
+            BigWorld.cancelCallback(self.__wait_transport_load_callback)
+            del self.__wait_transport_load_callback
+        helicopter = BigWorld.entities.get(self.transport_seat)
+        if self.isDestroyed:
+            return
+        elif not self.transport_seat:
+            return
+        elif not helicopter:
+            self.__wait_transport_load_callback = BigWorld.callback(0, partial(self.try_stick, helicopter_id))
+            return
+        elif not issubclass(helicopter.__class__, Vehicle):
+            return
+        else:
+            index = helicopter.get_user_seat_index(self.id)
+            if index is None:
+                self.__wait_transport_load_callback = BigWorld.callback(0, partial(self.try_stick, helicopter_id))
+                return
+
+            def on_updated():
+                sit_node, animation_name = helicopter.get_model_seat_params(self.id)
+                getattr(self.model, animation_name)()
+                cam_node = helicopter.get_cam_node()
+                self.filter = BigWorld.TransformFilter()
+                self.filter.matrixProvider = sit_node
+                self.pushTrackerLockByName('Transport', 'Belly-or-Right', lock_track_torso=True, lock_track_head=False)
+                self.setControlLock(Constants.ControlLockTypes.TRANSPORT, True, lock_id=Constants.TRANSPORT_MILD_LOCK_ID)
+                self.rememberlastFootTwist(False, channel='Transport')
+                self.model.motors[0].resetFootTwist()
+                self.model.motors[0].lockChangeAction = True
+                self.model.motors[0].useEntityPitchAndRoll = True
+                if self is BigWorld.player():
+                    self.physics.fall = False
+                from Avatar import Avatar
+                Avatar.inAirNotifier(self, 0, False)
+                self.on_stick(helicopter, sit_node, cam_node)
+                self._update_tracker_flags()
+                self.onStickComplete()
+                self.inject_repostmodel_crutch = False
+
+            self.inject_repostmodel_crutch = True
+            self.UpdateAvatarModelAsync(callback=on_updated)
+            return
+
+    def _update_tracker_flags(self):
+        if self.transport_seat and not self.is_gunpoint:
+            self.torso_nodeinfo.disableAddHipsEffect = True
+            self.tracker_torso.drawEnabled = False
+            self.fniLeft.enableCollides = False
+            self.fniRight.enableCollides = False
+            self.rememberlastFootTwist(False, channel='Transport')
+            self.model.motors[0].resetFootTwist()
+            self.model.motors[0].lockChangeAction = True
+            self.model.motors[0].useEntityPitchAndRoll = True
+            self.stop_loop_turn()
+            if self.heli_weapon:
+                self.tracker_torso.drawEnabled = True
+        else:
+            self.torso_nodeinfo.disableAddHipsEffect = False
+            self.tracker_torso.drawEnabled = True
+            self.fniLeft.enableCollides = True
+            self.fniRight.enableCollides = True
+
+    def on_stick(self, helicopter, sit_node, cam_node):
+        pass
+
+    def on_unstick(self):
+        pass

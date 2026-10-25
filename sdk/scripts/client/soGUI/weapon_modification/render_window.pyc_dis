@@ -1,0 +1,401 @@
+# Embedded file name: ./client/soGUI/weapon_modification/render_window.py
+import BigWorld
+import BWPersonality
+import GUI
+from Helpers.PyGUI.PyGUIBase import PyGUIBase
+import PostProcessing.contour_model
+import spring_fabric
+import Math
+from Math import Matrix, Vector3
+import math
+import Keys
+import traceback
+
+def getCamTransform(ws_object_transform):
+    sc_transform = Matrix(ws_object_transform)
+    sc_transform.postMultiply(BigWorld.camera().matrix)
+    return sc_transform
+
+
+class RenderWindow(PyGUIBase):
+
+    def __init__(self, component, parent):
+        PyGUIBase.__init__(self, component)
+        component.script = self
+        self._x, self._y, self._z = (0, 0, 0)
+        self._weapon = None
+        self._selected_model = None
+        self._selected_modelPP = None
+        self.need_contours_lst = []
+        self._mouse_handled_right = False
+        self._mouse_handled_left = False
+        self.parent = parent
+        self.setupRoot()
+        return
+
+    def setupRoot(self):
+        W, H = BigWorld.screenSize()
+        cmp = self.component
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'CLIP'
+        cmp.widthMode = cmp.heightMode = 'CLIP'
+        cmp.horizontalAnchor = 'CENTER'
+        cmp.verticalAnchor = 'CENTER'
+        cmp.width = cmp.height = 2.0
+        cmp.position = (0, 0, 0.4)
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.visible = True
+        cmp.focus = 0
+        cmp.crossFocus = 0
+        cmp.dragFocus = False
+        cmp.moveFocus = 1
+        cmp.dropFocus = False
+        cmp.mouseButtonFocus = 0
+        cmp = GUI.Simple('textures/default/blue_dark.dds')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'CLIP'
+        cmp.horizontalAnchor = 'CENTER'
+        cmp.verticalAnchor = 'CENTER'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.position = (0, 0.0, 0.1)
+        self.component.addChild(cmp, 'renderDummy')
+        cmp.width = W
+        cmp.height = H
+        cmp = GUI.Simple('textures/default/blue_dark.dds')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'CLIP'
+        cmp.horizontalAnchor = 'CENTER'
+        cmp.verticalAnchor = 'CENTER'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.position = (0.0, 0.0, 0.09)
+        self.component.addChild(cmp, 'renderDummyPP')
+        cmp.width = W
+        cmp.height = H
+        max_width = 4096
+        aspectRatio = W / float(H)
+        W = min(max_width, W)
+        H = min(max_width, H)
+        if aspectRatio > 1:
+            H = W / aspectRatio
+        else:
+            W = H * aspectRatio
+        self._model_renderer = BigWorld.PyModelRenderer(int(W), int(H))
+        self._model_renderer_contur = BigWorld.PyModelRenderer(int(W), int(H))
+        for zz in xrange(100):
+            self._model_renderer.delDirectionLight(0)
+            self._model_renderer.delOmniLight(0)
+            self._model_renderer_contur.delDirectionLight(0)
+            self._model_renderer_contur.delOmniLight(0)
+
+        self._model_renderer.addOmniLight((1.2, 1.2, 1.2, 1.5), (self._x, self._y, self._z), 0.2, 3)
+        self._model_renderer.addAmbientColor(tuple([0.5] * 4))
+        self._model_renderer_contur.addOmniLight((1.2, 1.2, 1.2, 1.5), (self._x, self._y, self._z), 0.2, 3)
+        self._model_renderer_contur.addAmbientColor(tuple([0.5] * 4))
+        self._model_renderer.nearPlane = 0.01
+        self._model_renderer_contur.nearPlane = 0.01
+        contur_texture = self._model_renderer_contur.texture
+        self._pp_contur = None
+        try:
+            self._pp_contur = PostProcessing.contour_model.ContourModelToTextue(contur_texture)
+            self.component.renderDummyPP.texture = self._pp_contur.output.texture
+        except:
+            self.component.renderDummyPP.visible = False
+            traceback.print_exc()
+
+        self.matrixyaw = Math.Matrix()
+        self.matrixpos = Math.Matrix()
+        self.matrixpitch = Math.Matrix()
+        self.updateView()
+        return
+
+    def onWeaponChange(self):
+        self.parent.onWeaponChange()
+
+    def onSelectedAttach(self, itemID, model = None, modelPP = None, colour = (1, 0, 0, 1)):
+        self.parent.onSelectedAttachID(itemID)
+        self._model_renderer_contur.models = []
+        self.need_contours_lst = []
+        if model and modelPP:
+            self.need_contours_lst.append((model, modelPP))
+        self._model_renderer_contur.models = [ m[1] for m in self.need_contours_lst ]
+        if self._pp_contur:
+            self._pp_contur.colour = colour
+        self._updatePPsceen()
+
+    def addContoursBoxs(self, need_contours_lst, colour = (1, 0, 0, 1)):
+        self.need_contours_lst = list(need_contours_lst)
+        self._model_renderer_contur.models = [ m[1] for m in self.need_contours_lst ]
+        if self._pp_contur:
+            self._pp_contur.colour = colour
+        self._updatePPsceen()
+
+    def onRMBAttach(self, item, attach = None):
+        self.parent.onRMBAttach(item, attach)
+
+    def onWeaponDetach(self, items):
+        self.parent.onWeaponDetach(items)
+
+    def onPiaktiniMoveAttach(self):
+        self.parent.onPiaktiniMoveAttach()
+
+    def onAttachTmpPart(self):
+        self.parent.onAttachTmpPart()
+
+    def onAttachItemType(self, *w, **kw):
+        self.parent.onAttachItemType(*w, **kw)
+
+    def onDetachTmpPart(self):
+        self.parent.onDetachTmpPart()
+
+    def handleDropEvent(self, cmp, dropped):
+        return True
+
+    def handleDragStartEvent(self, *e):
+        return True
+
+    def handleDragStopEvent(self, *e):
+        return True
+
+    def addYawRotate(self, speed):
+        if not speed:
+            return
+        self._weapon.rotateModel(speed * 0.01, 0, self.viewMatrix)
+        self._onChangePosition()
+
+    def handleMouseEvent(self, component, event):
+        if BWPersonality.GUICore.contextState:
+            return True
+        if event.dz:
+            pos = self.matrixpos.translation
+            pos[2] += event.dz * 0.0002
+            pos[2] = max(0.01, min(3.5, pos[2]))
+            self.matrixpos.setTranslate(pos)
+            self.updateView()
+            return True
+        if not self._weapon:
+            return False
+        if not self._mouse_handled_left and not self._mouse_handled_right:
+            if self._weapon.handleMouseEvent(component, event):
+                self._onChangePosition()
+                return True
+        if self._mouse_handled_left and BigWorld.isKeyDown(Keys.KEY_LEFTMOUSE):
+            x, y = event.dx, event.dy
+            if BigWorld.player().isAdminAccess() and BigWorld.isKeyDown(Keys.KEY_LALT) and BigWorld.isKeyDown(Keys.KEY_LCONTROL):
+                self.matrixyaw.setRotateY(self.matrixyaw.yaw - x * 0.01)
+                pitch = self.matrixpitch.pitch - y * 0.01
+                pitch = max(-1.2, min(1.2, pitch))
+                self.matrixpitch.setRotateX(pitch)
+                self.updateView()
+                return True
+            self._weapon.rotateModel(x * 0.01, y * 0.01, self.viewMatrix)
+            self._onChangePosition()
+            return True
+        if self._mouse_handled_right and BigWorld.isKeyDown(Keys.KEY_RIGHTMOUSE):
+            x, y = event.dx, event.dy
+            inv = Math.Matrix(self.viewMatrix)
+            inv.invert()
+            point = inv.applyVector((x, -y, 0))
+            newpos = self._model.position + point * 0.001
+            MAX_POS = 0.7
+            newpos = map(lambda z: max(-MAX_POS, min(MAX_POS, z)), newpos)
+            self._weapon.setPos(tuple(newpos))
+            self._onChangePosition()
+            return True
+        return True
+
+    debug_last_mdl_hit = None
+
+    def handleMouseButtonEvent(self, comp, event):
+        if self.debug_last_mdl_hit:
+            try:
+                self.debug_last_mdl_hit.stipple = 0
+            except:
+                pass
+
+            self.debug_last_mdl_hit = None
+        if self._weapon.handleMouseButtonEvent(comp, event):
+            self._onChangePosition()
+            return False
+        else:
+            key = event.key
+            down = event.isKeyDown()
+            if key == Keys.KEY_RIGHTMOUSE:
+                self._mouse_handled_right = down
+                return False
+            if key == Keys.KEY_LEFTMOUSE:
+                self._mouse_handled_left = down
+                return False
+            if down:
+                scr, vdir = self.getMousePosDir()
+                res = self._weapon._hitTestAttach(scr, vdir)
+                if res:
+                    self.debug_last_mdl_hit = res['attach'].model
+                    self.debug_last_mdl_hit.stipple = 1
+            return False
+            return False
+
+    def getMousePosDir(self):
+        W, H = BigWorld.screenSize()
+        fov_ = math.pi / 3.0
+        aspectRatio_ = W / float(H)
+        nearPlane_ = 0.01
+        mpos = BWPersonality.game.mcursor.position
+
+        def nearPlanePoint(xClip, yClip):
+            yLength = nearPlane_ * math.tan(fov_ * 0.5)
+            xLength = yLength * aspectRatio_
+            return Math.Vector3(xLength * xClip, yLength * yClip, nearPlane_)
+
+        cameraSpace = nearPlanePoint(mpos.x, mpos.y)
+        inv = Math.Matrix(self.viewMatrix)
+        inv.invert()
+        ray = inv.applyVector(cameraSpace)
+        ray.normalise()
+        src = inv.applyPoint(cameraSpace)
+        return (src, ray)
+
+    def updateView(self):
+        self.viewMatrix = Math.Matrix()
+        self.viewMatrix.preMultiply(self.matrixpitch)
+        self.viewMatrix.preMultiply(self.matrixyaw)
+        self.viewMatrix.postMultiply(self.matrixpos)
+        self._model_renderer.viewMatrix = self.viewMatrix
+        for zz in xrange(10):
+            self._model_renderer.delOmniLight(0)
+
+        inv = Math.Matrix(self.viewMatrix)
+        inv.invert()
+        self._model_renderer.addOmniLight((1.2, 1.2, 1.2, 1.5), inv.applyPoint((-0.2, 0.2, -5)), 3, 18)
+        self._model_renderer.addAmbientColor(tuple([0.5] * 4))
+        self._onChangeView()
+
+    def _onChangePosition(self):
+        self._updatePPsceen()
+        self._weapon.onChangePositionWM()
+
+    def _onChangeView(self):
+        self._updatePPsceen()
+
+    def _updatePPsceen(self):
+        self._model_renderer_contur.viewMatrix = self.viewMatrix
+        for m, mPP in self.need_contours_lst:
+            mPP.setWorldTransform(m.matrix)
+            mPP.attachOffset = m.attachOffset
+
+    def updateSize(self, update_model = False):
+        W, H = BigWorld.screenSize()
+        self.component.renderDummy.width = W
+        self.component.renderDummy.height = H
+        self.component.renderDummyPP.width = W
+        self.component.renderDummyPP.height = H
+        weapon = self._weapon
+        if update_model and weapon:
+            self.hide()
+            self.setupRoot()
+            self.show(weapon, animate_in_model=False)
+
+    def animateInModel(self):
+        """\xd0\xbc\xd0\xbe\xd0\xb4\xd0\xb5\xd0\xbb\xd1\x8c \xd0\xbe\xd1\x80\xd1\x83\xd0\xb6\xd0\xb8\xd1\x8f \xd0\xb2\xd1\x8b\xd0\xbf\xd0\xbb\xd1\x8b\xd0\xb2\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xb8\xd0\xb7 \xd0\xbc\xd0\xb8\xd1\x80\xd0\xb0 \xd0\xb2 \xd1\x8d\xd1\x82\xd0\xbe \xd0\xbe\xd0\xba\xd0\xbd\xd0\xbe"""
+        player = BigWorld.player()
+        ws_weapon = player.getWeaponByItemID(self._weapon.getItemID())
+        if not ws_weapon:
+            return
+        from_model = ws_weapon._getVisibleWeapon().getModel()
+        if not from_model:
+            return
+        NODE_NAME = from_model.getCouplingNodeName()
+        if NODE_NAME == 'HP_GUNR':
+            NODE_NAME = 'HP_GUNRW'
+        if not NODE_NAME:
+            return
+        node = from_model.node(NODE_NAME)
+        if not node.isActualCoords:
+            player.model.forceDraw()
+        res = getCamTransform(node)
+        hp_inv = from_model.getCouplingInverse()
+        if hp_inv:
+            res.preMultiply(hp_inv)
+        invView = Matrix(self.viewMatrix)
+        invView.invert()
+        res.postMultiply(invView)
+        self._weapon.getModel().setWorldTransform(res)
+        self._weapon.blendAnimFromMatrix(res, 0.7)
+
+    def show(self, weapon, animate_in_model = True):
+        self._weapon = weapon
+        self.clearModel()
+        self.updateView()
+        if animate_in_model:
+            self.animateInModel()
+        self._model_renderer.dynamic = True
+        self._model_renderer_contur.dynamic = True
+        self.component.renderDummy.texture = self._model_renderer.texture
+        if self._pp_contur:
+            self.component.renderDummyPP.texture = self._pp_contur.output.texture
+            self._pp_contur.enable()
+        BWPersonality.game.disable_world_drawing()
+        self._weapon.registerRender(self)
+        self._weapon.registerDebugGeometryRender(self._model_renderer.geometricManager)
+        self._weapon.addCollidersModiff()
+        spring_fabric.weapon_change(self._weapon.getModel())
+
+    def hide(self):
+        self._weapon = None
+        self._model = None
+        self._tmp_model = None
+        self.need_contours_lst = []
+        self._model_renderer.dynamic = False
+        self._model_renderer_contur.dynamic = False
+        self._model_renderer.models = []
+        self._model_renderer_contur.models = []
+        self.component.renderDummy.texture = None
+        self.component.renderDummyPP.texture = None
+        if self._pp_contur:
+            self._pp_contur.disable()
+        BigWorld.worldDrawEnabled(True)
+        self._model_renderer.geometricManager.removeAll()
+        return
+
+    def getModel(self):
+        return self._model
+
+    def resetPosition(self):
+        if self._model:
+            self._model.zoomExtents(1, 1.0)
+        if self._weapon:
+            self._weapon.setPosAndYPR((0, -0.1, 0), -1.17, -0.3)
+        translation = Vector3(-0.1, 0.05, 0.6)
+        self._x, self._y, self._z = (-0.015, 1.48, -0.415)
+        self.matrixyaw.setRotateY(0)
+        self.matrixpitch.setRotateX(0)
+        self.matrixpos.setTranslate(translation)
+        self.updateView()
+
+    def addTmpModel(self, model = None):
+        self._tmp_model = model
+        to_screen = [self._model, self._cent_empty_model]
+        if self._tmp_model:
+            to_screen.append(self._tmp_model)
+        self._model_renderer.models = []
+        self._weapon.onModelLeave()
+        self._model_renderer.models = to_screen
+
+    _tmp_model = None
+
+    def clearModel(self):
+        self._model = self._weapon.getModel(True)
+        self.resetPosition()
+        self._cent_empty_model = BigWorld.Model('')
+        self._cent_empty_model.position = (0, 0, 0)
+        self._pivot1 = BigWorld.Model('models/bolvan/helpers/xyz.model')
+        self._pivot2 = BigWorld.Model('models/bolvan/helpers/xyz.model')
+        to_screen = [self._model, self._cent_empty_model]
+        if self._tmp_model:
+            to_screen.append(self._tmp_model)
+        self._model_renderer.models = to_screen
+        self._pivot1.newScaleTest = (0.01, 0.01, 0.01)
+        self._pivot2.newScaleTest = (0.1, 0.15, 0.1)
+        self._pivot1.position = (0, 0, 0)
+        self._pivot2.position = (0.0, 0, 0.1)

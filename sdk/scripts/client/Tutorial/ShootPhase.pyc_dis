@@ -1,0 +1,161 @@
+# Embedded file name: ./client/Tutorial/ShootPhase.py
+import BigWorld
+from QuestEntity import QuestEntity
+import traceback
+import Quest
+from Localization import lc
+from SequentialPhase import SequentialPhase
+from FollowNpcPhase import FollowNpcPhase
+from WaitAnimationPhase import WaitAnimationPhase
+from TalkNPCPhase import TalkNPCPhase
+from QuestPhase import QuestPhase
+from PollPhase import PollPhase
+from functools import partial
+from ClientTrigger import ClientTrigger
+from Helpers.Caps import CAP_INTERACT
+from soGUI.donat_shop.window.element import Tickable
+
+class ShootPhase(SequentialPhase, Tickable):
+
+    def __init__(self, global_index, actor):
+        Tickable.__init__(self)
+        self.start_tick()
+        self._bullets = 0
+        self._revive_trigger = False
+        self._search_trigger_handler = None
+        animation = partial(WaitAnimationPhase, global_index, actor)
+        follow = partial(FollowNpcPhase, global_index, actor)
+        talk = partial(TalkNPCPhase, global_index, actor)
+        quest = partial(QuestPhase, ((19695, Quest.STATE_CLOSED),), global_index, actor)
+        shoot = partial(PollPhase, [self._just_shoot], global_index, actor)
+        SequentialPhase.__init__(self, [animation,
+         follow,
+         talk,
+         quest,
+         shoot], global_index, actor)
+        return
+
+    def _stand_up(self):
+        if self.completed:
+            return
+        try:
+            npc = self.actor._tutorial_manager._recorder.get_singleton_entity()
+            npc.model.idle_0_crouch_unarmed.stop()
+        except:
+            traceback.print_exc()
+            traceback.print_stack()
+
+    def _sit_down(self):
+        if self.completed:
+            return
+        try:
+            npc = self.actor._tutorial_manager._recorder.get_singleton_entity()
+            if npc:
+                npc.model.idle_0_crouch_unarmed()
+            elif self._phase_index <= 2:
+                BigWorld.callback(0, self._sit_down)
+        except:
+            traceback.print_exc()
+            traceback.print_stack()
+
+    def on_destroy(self):
+        SequentialPhase.on_destroy(self)
+        self.stop_tick()
+
+    def can_tick(self):
+        return not self.completed
+
+    def on_tick(self):
+        if self.actor.dead:
+            self._revive_trigger = True
+        if self._revive_trigger and not self.actor.dead:
+            self._revive_trigger = False
+            self._on_resurrect()
+
+    def _on_resurrect(self):
+        print '  ZIM: resurrect'
+        self._enable_trigger(False)
+        self.actor.request_tutorial_quest(self.global_index, -1)
+
+    def _run_corpse(self):
+        if self.completed:
+            return
+        else:
+            stalker_object = None
+            for e in BigWorld.entities.values():
+                if not isinstance(e, QuestEntity):
+                    continue
+                if not e.model:
+                    continue
+                for model_path in e.model.sources:
+                    if 'StalkerHaron' in model_path:
+                        stalker_object = e
+                        break
+
+                if stalker_object:
+                    break
+
+            if not stalker_object:
+                BigWorld.callback(0, self._run_corpse)
+                return
+            stalker_object.model.dead_stalker()
+            inverted_name = self.actor.name[::-1]
+            stalker_object.get_mark_name = lambda : inverted_name
+            stalker_object.get_target_mark = lambda distance: None
+            stalker_object.can_talk = lambda : False
+            stalker_object.targetCaps = [CAP_INTERACT]
+            return
+
+    def _just_shoot(self):
+        weapon = self.actor.active_weapon
+        if not weapon:
+            return False
+        prev_bullets = self._bullets
+        self._bullets = weapon.getAmmoNumber()
+        return self._bullets < prev_bullets
+
+    def create_component(self):
+        return self.create_standard_text()
+
+    def _enable_trigger(self, enable):
+        if self.completed:
+            return
+        else:
+            if self._search_trigger_handler:
+                BigWorld.cancel(self._search_trigger_handler)
+                self._search_trigger_handler = None
+            triggers = ClientTrigger._triggers_manager._triggers.get('tutorial_after_sobaki')
+            if not triggers:
+                BigWorld.callback(0, partial(self._enable_trigger, enable))
+                return
+            for trigger in triggers:
+                trigger.set_enabled(enable)
+
+            return
+
+    def on_restore(self):
+        self._enable_trigger(False)
+
+    def phase_started(self, phase, phase_index):
+        text = None
+        if phase_index == 0:
+            text = lc('Tutorial.phases.PHASE_47_0')
+            try:
+                self._run_corpse()
+            except:
+                traceback.print_exc()
+                traceback.print_stack()
+
+        elif phase_index == 1:
+            self._sit_down()
+            text = lc('Tutorial.phases.PHASE_FOLLOW')
+        elif phase_index == 2:
+            text = lc('Tutorial.phases.TALK_F')
+        elif phase_index == 3:
+            self._enable_trigger(False)
+        elif phase_index == 4:
+            self._enable_trigger(True)
+            self._stand_up()
+        self.set_standard_text(text or lc('Tutorial.phases.PHASE_47_' + str(phase_index)))
+        self.show_in_gui()
+        return

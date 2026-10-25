@@ -1,0 +1,201 @@
+# Embedded file name: ./client/Cabmancar.py
+import ResMgr
+import BigWorld
+import os
+import json
+from Cabman import DATA_PATH
+import Helpers.Caps
+from Math import Matrix, Vector3
+from soGUI.soInworldMarkers import soInworldMarker
+from ChatChannelConfig import CHANNEL_CONSTS
+from Localization import lc
+import FX
+from CabUtils import States
+from FX.persistent_ext_bg import loadPersistentExtAsync
+
+class Cabmancar(BigWorld.Entity):
+
+    def __init__(self):
+        BigWorld.Entity.__init__(self)
+        self.targetCaps = self.targetCaps + [Helpers.Caps.CAP_INTERACT]
+        self.skeletonCollider = BigWorld.SkeletonCollider()
+        self._box_data = {}
+        self.available = False
+        self._active_sfxes = []
+        self._sfxes_cache = {}
+        self.delegate = BigWorld.entities.get(self.delegate_id)
+        self.filter = BigWorld.TransformFilter()
+        config_path = os.path.join(DATA_PATH, self.conf_name)
+        section = ResMgr.openSection(config_path)
+        self._config = json.loads(section.asBinary)
+        disp = Vector3(self._config['base_model'].get('position', (0, 0, 0)))
+        direction = Vector3(self._config['base_model'].get('direction', (0, 0, 0)))
+        disp_matrix = Matrix()
+        disp_matrix.setTranslate(disp)
+        rotate_matrix = Matrix()
+        rotate_matrix.setRotateYPR(direction)
+        disp_matrix.postMultiply(rotate_matrix)
+        disp_matrix.postMultiply(self.matrix)
+        self.filter.matrixProvider = disp_matrix
+
+    def prerequisites(self):
+        models_to_load = [self._config['base_model']['source']]
+        for attach_data in self._config['attachments'].values():
+            models_to_load.extend([ ad['source'] for ad in attach_data ])
+
+        return models_to_load
+
+    def onEnterWorld(self, prereqs = None):
+        if self.delegate.isDestroyed:
+            BigWorld.destroyEntity(self.id)
+            return
+        model = self._create_model(self._config['base_model'], prereqs)
+        for node_name, attaches in self._config['attachments'].items():
+            for model_data in attaches:
+                sub_model = self._create_model(model_data, prereqs)
+                model.node(node_name).attach(sub_model)
+
+        names = sorted(list(set(self._box_data.keys())))
+        for box_name, box_data in self._box_data.items():
+            box_data['index'] = names.index(box_name)
+
+        self.model = model
+        self.delegate.on_car_ready(self)
+
+    def _run_sfxes(self, sfxes):
+        to_load = []
+        for sfx_name in sfxes:
+            if sfx_name in self._sfxes_cache:
+                sfx = self._sfxes_cache.pop(sfx_name)
+                sfx.attach(self.model)
+                sfx.go()
+                self._active_sfxes.append(sfx)
+            else:
+                to_load.append(sfx_name)
+
+        if to_load:
+
+            def on_load(prereqs):
+                if self.isDestroyed:
+                    return
+                for sfx_name in to_load:
+                    sfx = FX.PersistentExt(sfx_name, prereqs)
+                    sfx.attach(self.model)
+                    sfx.go()
+                    self._active_sfxes.append(sfx)
+
+            loadPersistentExtAsync(to_load, on_load)
+
+    def _stop_sfxes(self):
+        for sfx in self._active_sfxes:
+            sfx.stop()
+            sfx.detach()
+            self._sfxes_cache[sfx.fileName] = sfx
+
+        self._active_sfxes = []
+
+    def activate_state(self, state):
+        self._stop_sfxes()
+        sfxes = None
+        if state == States.PREPARE:
+            sfxes = self._config.get('car_sfxes', {}).get('prepare')
+        elif state == States.WAIT:
+            sfxes = self._config.get('car_sfxes', {}).get('wait')
+        if sfxes:
+            self._run_sfxes(sfxes)
+        return
+
+    def onLeaveWorld(self):
+        self._stop_sfxes()
+        self.model = None
+        self.delegate = None
+        return
+
+    def on_leave(self, interactor):
+        self.delegate.on_leave(interactor.id)
+
+    def show(self, state, is_player_sitting):
+        self.model.visible = True
+        self.activate_state(state)
+        push_radius = self._config['parameters']['push_radius']
+        player = BigWorld.player()
+        if not is_player_sitting and (player.position - self.position).length <= push_radius:
+            self.delegate.push_player(player.id)
+
+    def interact(self, interactor):
+        if not interactor.can_sit_in_cabcar():
+            return
+
+        def on_ready():
+            if self.isDestroyed:
+                interactor.onUseAnyHandActionEnd()
+                return
+
+            def on_validated(result):
+                if not result:
+                    interactor.putMessage(CHANNEL_CONSTS.SYSTEM, lc('Cabman.process.CABMAN_SEAT_BUSY'))
+                    interactor.onUseAnyHandActionEnd()
+
+            self.delegate.request_interact1(interactor.id, box_data['index'], on_validated)
+
+        source_matrix = Matrix(BigWorld.target.source)
+        direction = source_matrix.applyToAxis(2)
+        direction.normalise()
+        self.skeletonCollider.doCollide(source_matrix.translation, direction * 10)
+        box = self.skeletonCollider.impactCollider
+        box_data = self._box_data[box.name]
+        if box_data['npc_only']:
+            interactor.putMessage(CHANNEL_CONSTS.SYSTEM, lc('Cabman.process.CABMAN_SEAT_BUSY'))
+            return
+        interactor.useAnyHandAction(on_ready)
+
+    def _create_model(self, model_data, prereqs):
+        model = prereqs[str(model_data['source'])]
+        model.isObstacle = True
+        if 'dye' in model_data:
+            try:
+                setattr(model, *map(str, model_data['dye']))
+            except:
+                print "Cabmancar (ERROR): can't assign dye", model_data['dye']
+
+        if 'hitboxes' in model_data:
+            hitboxes = ResMgr.openSection(model_data['hitboxes']['source'])
+            common_animation = model_data['hitboxes']['animation']
+            box_animations = model_data.get('animations', {})
+            hitboxes = [ item[1] for item in hitboxes.items() if item[0] == 'BoxAttachment' ]
+            npc_seat = self._config['parameters'].get('npc_seat')
+            for hitbox in hitboxes:
+                box = BigWorld.BoxAttachment()
+                node_name = hitbox['nodeName'].asString
+                box_name = hitbox['boxName'].asString
+                box.name = box_name
+                box.minBounds = hitbox['minBounds'].asVector3
+                box.maxBounds = hitbox['maxBounds'].asVector3
+                box.localTransform = hitbox['transform'].asMatrix
+                model.node(node_name).attach(box)
+                self.skeletonCollider.addCollider(box)
+                exit_name = node_name + '_exit'
+                exit_place = model.hasNode(exit_name) and model.node(exit_name) or None
+                animation = box_animations.get(box_name, common_animation)
+                npc_only = box_name == npc_seat
+                self._box_data[box_name] = {'animation': animation,
+                 'exit_place': exit_place,
+                 'matrix': box.matrix,
+                 'npc_only': npc_only}
+
+        return model
+
+    def get_target_mark(self, distance):
+        if self.available and distance <= self.get_interaction_dist():
+            return soInworldMarker.MARKER_TALK
+
+    def get_box_data_by_index(self, index):
+        return next((box_data for box_data in self._box_data.values() if box_data['index'] == index))
+
+    def get_interaction_dist(self):
+        if self.available:
+            return 3.0
+        return 0.0
+
+    def get_mark_name(self):
+        return lc('Cabman.name')

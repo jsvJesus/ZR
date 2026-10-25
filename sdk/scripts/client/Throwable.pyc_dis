@@ -1,0 +1,432 @@
+# Embedded file name: ./client/Throwable.py
+import math
+import BigWorld
+import Constants
+import GUI
+from FX_extension import PersistentSFX
+from Math import Vector3
+import random
+from Items import ItemsCatalog
+import utils
+import FX
+import traceback
+from School import School
+from sounds_manager import playSound
+from FX.persistent_ext_bg import loadPersistentExtAsync
+from client_utils import readable_space_pos
+
+class Throwable:
+    TICK_PERIOD = 0.1
+    DEBUG_MODE = False
+    TROWABLES_DICT = {}
+    CONTACT_SOUND_PREFIX = 'grenade/contact/'
+    SPLASH_SFX = 'sfx/items/water_hit.xml'
+    GRAVITY = -19.6
+
+    def __init__(self):
+        self.last_distance = 99999
+        self.isJumped = False
+        self.prev_position = self.position
+        self.prev_tick_time = BigWorld.time()
+        self.under_water = False
+        player = BigWorld.player()
+        if BigWorld.entities.get(self.ownerID).__class__.__name__ in Constants.CREATURE_CLASSES:
+            self.creature_controlled = self.targetID == player.id
+            self.npc_controlled = BigWorld.entities.get(self.ownerID).__class__.__name__ in ('NPC', 'Devil') and self.targetID == player.id
+            self.originalID = self.originalID or self.id
+        Throwable.TROWABLES_DICT[self.originalID, self.ownerID] = self.id
+        self.controled_by_this_client = self.creature_controlled or self.npc_controlled or not self.fromServer
+        self.collided_anomalies = set()
+        self.cached_anomalies = None
+        self.params = ItemsCatalog.GetItemParam(self.grenade_type)
+        self.water_volume_listener = None
+        self.model_sfx = None
+        self.onFlyEnd_callback_id = None
+        self.removeSelfEnt_callback_id = None
+        self.anomaly_timer = None
+        self.custom_sound_contact = self.params.get('CustomSoundContact', None)
+        return
+
+    def __repr__(self):
+        if self.isDestroyed:
+            return 'Throwable[%s]Destroyed' % self.id
+        return 'Throwable[%s] at %s' % (self.id, readable_space_pos(self))
+
+    def get_max_existence_time(self):
+        """ None - \xd0\xb2\xd1\x8b\xd1\x87\xd0\xb8\xd1\x81\xd0\xbb\xd0\xb8\xd1\x82\xd1\x81\xd1\x8f \xd0\xb0\xd0\xb2\xd1\x82\xd0\xbe\xd0\xbc\xd0\xb0\xd1\x82\xd0\xb8\xd1\x87\xd0\xb5\xd1\x81\xd0\xba\xd0\xb8 """
+        return None
+
+    def prerequisites(self):
+        prereq = []
+        if self.getModelName():
+            prereq.append(self.getModelName())
+        return prereq
+
+    def onLeaveWorld(self):
+        pass
+
+    def get_max_bounces(self):
+        return self.params.get('maxBounces', 3)
+
+    def get_tick_period(self):
+        return Throwable.TICK_PERIOD
+
+    def tick(self):
+        """ \xd1\x82\xd0\xb8\xd0\xba\xd0\xb8 \xd0\xb2\xd0\xbe \xd0\xb2\xd1\x80\xd0\xb5\xd0\xbc\xd1\x8f \xd0\xbf\xd0\xbe\xd0\xbb\xd1\x91\xd1\x82\xd0\xb0 """
+        if self.isDestroyed:
+            return
+        elif getattr(self, 'exploded_effect_shown', None) or self.__class__.__name__ == 'Stone' and getattr(self, '_is_end_fly', None):
+            return
+        else:
+            cur_position = self.get_cur_position()
+            self.flew(self.prev_position, cur_position, BigWorld.time() - self.prev_tick_time)
+            if self.isDestroyed:
+                return
+            self.prev_position = cur_position
+            self.prev_tick_time = BigWorld.time()
+            BigWorld.callback(self.get_tick_period(), self.tick)
+            return
+
+    def get_cur_position(self):
+        return self.model.position
+
+    def flew(self, position_from, position_to, delta_time):
+        """ \xd0\xbf\xd0\xbe\xd0\xbb\xd1\x91\xd1\x82 \xd0\xb3\xd1\x80\xd0\xb0\xd0\xbd\xd0\xb0\xd1\x82\xd1\x8b \xd0\xba\xd0\xb0\xd0\xb6\xd0\xb4\xd1\x8b\xd0\xb9 \xd1\x82\xd0\xb8\xd0\xba """
+        if position_to == position_from:
+            return
+        else:
+            if Throwable.DEBUG_MODE:
+                import DrawPrimitivesUtils
+                DrawPrimitivesUtils.draw_line(position_to, position_from)
+            if self.cached_anomalies == None:
+                if self.bouncer:
+                    scan_radius = min(50.0, (position_from - self.bouncer.destPos).length + 10.0)
+                    scan_sqr_radius = scan_radius * scan_radius
+                    to_anomaly = self.bouncer.destPos - self.position
+                    to_anomaly.normalise()
+                    scan_point = self.position + to_anomaly * scan_radius * 0.2
+
+                    def filter_anomalies(entity):
+                        return entity.__class__.__name__ == 'Anomaly' and not entity.is_hidden() and entity.position.flatDistSqrTo(scan_point) <= scan_sqr_radius
+
+                    self.cached_anomalies = filter(filter_anomalies, BigWorld.entities.values())
+                else:
+                    self.cached_anomalies = []
+            for anomaly in self.cached_anomalies:
+                if anomaly.isDestroyed or anomaly.id in self.collided_anomalies or not self.can_touch_anomaly(anomaly, position_from, position_to):
+                    continue
+                if len(self.collided_anomalies) >= Constants.MAX_STONE_ANOMALY_COLLISION:
+                    return
+                radius = anomaly.get_config()['radius']
+                len1 = position_from.flatDistTo(anomaly.position)
+                len2 = position_to.flatDistTo(anomaly.position)
+                disp = position_to - position_from
+                fract = (radius - len1) / disp.length
+                if len1 < len2:
+                    res = position_from + disp * fract
+                else:
+                    res = position_from - disp * fract
+                if Throwable.DEBUG_MODE:
+                    import DrawPrimitivesUtils
+                    DrawPrimitivesUtils.draw_sphere(res, 0.1, color=(0, 1, 0, 1))
+                    DrawPrimitivesUtils.draw_sphere(position_from, 0.2)
+                    DrawPrimitivesUtils.draw_sphere(position_to, 0.2)
+                    anomaly_config = anomaly.get_config()
+                    radius = anomaly_config['radius']
+                    height_up = anomaly_config['height_up']
+                    height_down = anomaly_config['height_down']
+                    DrawPrimitivesUtils.draw_cilinder(anomaly.position - (0, height_down, 0), radius, height_down + height_up, color=(0, 0, 1, 1))
+                    test_dist = (res - self._debug_start_pos).length
+                    _height = self._debug_start_pos[1] - res[1]
+                    distance = _height + self._debug_start_pos.flatDistTo(res)
+                    print 'STONE->ANOMALY test_dist:%.1f   h+fl:%.1f' % (test_dist, distance)
+                self.collided_anomalies.add(anomaly.id)
+                self.anomaly_collision_callback(anomaly, res)
+
+            return
+
+    def CheckIsAnomaly(self):
+        dist = self.model.position.distSqrTo(self.anomaly_position)
+        if dist > self.anomaly_radius and self.last_distance >= dist:
+            self.last_distance = dist
+            self.anomaly_timer = BigWorld.callback(0.05, self.CheckIsAnomaly)
+
+    def startAnomalyEffectHit(self, anomalyEntityID, anomalyPos, anomalyRadius):
+        anomaly = BigWorld.entity(anomalyEntityID)
+        if anomaly:
+            self.anomaly_position = anomaly.position
+            aconfig = anomaly.get_config()
+            self.anomaly_radius = aconfig['radius'] ** 2
+        else:
+            self.anomaly_position = anomalyPos
+            self.anomaly_radius = anomalyRadius ** 2
+        if self.fromServer:
+            self.anomaly_timer = BigWorld.callback(0.3, self.CheckIsAnomaly)
+        else:
+            self.anomaly_timer = BigWorld.callback(0.1, self.CheckIsAnomaly)
+
+    def anomaly_collision_callback(self, anomaly, collision_position):
+        """ \xd1\x81\xd1\x82\xd0\xbe\xd0\xbb\xd0\xba\xd0\xbd\xd0\xbe\xd0\xb2\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5 \xd1\x81 \xd0\xb0\xd0\xbd\xd0\xbe\xd0\xbc\xd0\xb0\xd0\xbb\xd0\xb8\xd0\xb5\xd0\xb9 """
+        anomaly.anomaly_collide(collision_position, self.id, self.ownerID, False)
+        if BigWorld.player().id == self.ownerID:
+            BigWorld.player().cell.anomaly_got_hit(self.id, collision_position, anomaly.id)
+            BigWorld.player().on_throwable_anomaly_hit(self.id, anomaly.id)
+
+    def can_touch_anomaly(self, anomaly, point1, point2):
+        """ \xd1\x81\xd1\x82\xd0\xbe\xd0\xbb\xd0\xba\xd0\xbd\xd1\x83\xd0\xbb\xd1\x81\xd1\x8f \xd0\xbb\xd0\xb8 \xd0\xbe\xd0\xb1\xd1\x8a\xd0\xb5\xd0\xba\xd1\x82 \xd1\x81 \xd0\xb0\xd0\xbd\xd0\xbe\xd0\xbc\xd0\xb0\xd0\xbb\xd0\xb8\xd0\xb5\xd0\xb9 (\xd0\xb1\xd0\xbb\xd0\xb8\xd0\xb6\xd0\xb0\xd0\xb9\xd1\x88\xd0\xb5\xd0\xb5 \xd1\x80\xd0\xb0\xd1\x81\xd1\x81\xd1\x82\xd0\xbe\xd1\x8f\xd0\xbd\xd0\xb8\xd0\xb5 \xd0\xbe\xd1\x82 \xd1\x82\xd0\xbe\xd1\x87\xd0\xba\xd0\xb8 \xd0\xb4\xd0\xbe \xd0\xbe\xd1\x82\xd1\x80\xd0\xb5\xd0\xb7\xd0\xba\xd0\xb0) """
+        anomaly_config = anomaly.get_config()
+        radius = anomaly_config['radius']
+        height_up = anomaly_config['height_up']
+        height_down = anomaly_config['height_down']
+        if point1.y < anomaly.position.y - height_down and point2.y < anomaly.position.y - height_down:
+            return False
+        if point1.y > anomaly.position.y + height_up and point2.y > anomaly.position.y + height_up:
+            return False
+        px = point2.x - point1.x
+        pz = point2.z - point1.z
+        factor = px * px + pz * pz
+        if factor == 0:
+            dist = anomaly.position.flatDistTo(point1)
+            x = point1.x
+            z = point1.z
+        else:
+            u = ((anomaly.position.x - point1.x) * px + (anomaly.position.z - point1.z) * pz) / factor
+            if u > 1:
+                u = 1
+            elif u < 0:
+                u = 0
+            x = point1.x + u * px
+            z = point1.z + u * pz
+            dx = x - anomaly.position.x
+            dz = z - anomaly.position.z
+            dist = math.sqrt(dx * dx + dz * dz)
+        return dist <= radius
+
+    def onEnterWorld(self, prereqs):
+        model_name = self.getModelName()
+        model = None
+        try:
+            if model_name:
+                model = prereqs[model_name]
+        except:
+            print
+            print self, repr(model_name)
+            traceback.print_exc()
+            model = BigWorld.Model('models/bolvan/helpers/xyz.model')
+
+        if model:
+            self.model = model
+        else:
+            self.model = BigWorld.Model('')
+        self.model.visible = False
+        self.hit = False
+        if Throwable.DEBUG_MODE:
+            self._debug_start_pos = self.position
+            self.showID()
+        thrower = BigWorld.entities.get(self.ownerID)
+        if thrower:
+            thrower.onThrowingEntityAppears(self)
+        return
+
+    def play_material_sound(self, mat_id):
+
+        def play_sound_safe(sound_name, default_sound = ''):
+            if not playSound(sound_name, self) and default_sound:
+                playSound(default_sound, self)
+
+        if self.custom_sound_contact:
+            play_sound_safe(self.custom_sound_contact)
+            return
+        material_sound = utils.get_material_sound_by_id(mat_id)
+        if material_sound:
+            play_sound_safe(self.CONTACT_SOUND_PREFIX + material_sound, self.CONTACT_SOUND_PREFIX + 'default')
+        elif mat_id == -1:
+            play_sound_safe(self.CONTACT_SOUND_PREFIX + 'air')
+        else:
+            play_sound_safe(self.CONTACT_SOUND_PREFIX + 'default')
+
+    def onContactNotifier(self, pos, direction, vel, tagertId, body_zone, mat_id):
+        if Throwable.DEBUG_MODE:
+            import DrawPrimitivesUtils
+            DrawPrimitivesUtils.draw_line(pos, pos + (0, 10, 0), (1, 1, 0, 1))
+            test_dist = (pos - self._debug_start_pos).length
+            _height = self._debug_start_pos[1] - pos[1]
+            distance = _height + self._debug_start_pos.flatDistTo(pos)
+            print 'STONE->CONTACT test_dist:%.1f   h+fl:%.1f' % (test_dist, distance)
+        self.play_material_sound(mat_id)
+        if not self.controled_by_this_client:
+            return
+        if self.params['explode_type'] not in [ItemsCatalog.EXPLODE_CONTACT, ItemsCatalog.EXPLODE_TIMER_CONTACT]:
+            return
+        self.onContact(pos, direction, vel, tagertId, body_zone, mat_id)
+
+    def onContact(self, pos, direction, vel, tagertId, body_zone, mat_id):
+        pass
+
+    def set_explode_timer(self):
+        """ \xd1\x83\xd1\x81\xd1\x82\xd0\xb0\xd0\xbd\xd0\xbe\xd0\xb2\xd0\xb8\xd1\x82\xd1\x8c \xd1\x82\xd0\xb0\xd0\xb9\xd0\xbc\xd0\xb5\xd1\x80 \xd0\xb4\xd0\xbb\xd1\x8f \xd0\xb2\xd0\xb7\xd1\x80\xd1\x8b\xd0\xb2\xd0\xb0 """
+        pass
+
+    def water_callback(self, watered, water_volume):
+        if self.isDestroyed:
+            return
+        elif self.under_water:
+            return
+        elif not watered:
+            return
+        else:
+            self.under_water = True
+            self.show_model_sfx(False)
+            self.splash_model = BigWorld.Model('')
+            self.splash_model.position = self.model.position
+            self.splash_model.pushBoundingBox((-5, -2, -5), (5, 4, 5))
+            self.addModel(self.splash_model)
+            FX.bufferedOneShotEffect(Throwable.SPLASH_SFX, self.splash_model)
+            self.append_bouncer(0, -0.1, 0, Throwable.GRAVITY * 0.5, timeSlice=1 / 30.0)
+            shools = filter(lambda e: isinstance(e, School), BigWorld.entities.values())
+            shools = filter(lambda e: e.radius >= (self.get_cur_position() - e.original_position).length, shools)
+            for s in shools:
+                s.on_enter_water(self.get_cur_position())
+
+            if self.water_volume_listener:
+                BigWorld.delWaterVolumeListener(self.water_volume_listener)
+                self.water_volume_listener = None
+            return
+
+    def append_bouncer(self, vx, vy, vz, gravity, need_rotate = False, timeSlice = 1 / 60.0, override_start_pos = None):
+        self.bouncer = BigWorld.Bouncer()
+        self.bouncer.vx = vx
+        self.bouncer.vy = vy
+        self.bouncer.vz = vz
+        self.bouncer.tripTime = 20.0
+        self.bouncer.timeSlice = timeSlice
+        self.bouncer.playSonudsContact = self.params.get('playSoundContact', True)
+        self.bouncer.gravityDown = gravity
+        self.bouncer.contactNotifier = self.onContactNotifier
+        self.bouncer.ignorePlayerID = self.ownerID
+        self.bouncer.needRotate = need_rotate
+        elasticity = self.params.get('elasticity', 0.2)
+        radius = self.params.get('radius', 0.1)
+        maxBounces = self.get_max_bounces()
+        if not override_start_pos:
+            start_pos = self.model.position
+            timeBeforeFlyEnd = self.bouncer.estimatePath(start_pos, elasticity, radius, maxBounces)
+            if timeBeforeFlyEnd == -1:
+                print '[ERROR] Failed bouncer.estimatePath %s ownerID=%s player=%s' % (self, self.ownerID, BigWorld.player())
+                BigWorld.callback(0.1, self.removeSelfEnt)
+                raise RuntimeError
+            if not self.get_max_existence_time():
+                max_existence_time = timeBeforeFlyEnd * 2
+                self.removeSelfEnt_callback_id and BigWorld.cancelCallback(self.removeSelfEnt_callback_id)
+            self.removeSelfEnt_callback_id = BigWorld.callback(max_existence_time, self.removeSelfEnt)
+            self.onFlyEnd_callback_id and BigWorld.cancelCallback(self.onFlyEnd_callback_id)
+        self.onFlyEnd_callback_id = BigWorld.callback(min(timeBeforeFlyEnd, self.bouncer.tripTime), self.onFlyEnd)
+        self.model.motors = (self.bouncer,)
+        try:
+            self.model.ShotFly()
+        except:
+            pass
+
+        return timeBeforeFlyEnd
+
+    def show_model_sfx(self, show, override_model = None):
+        if show:
+            if self.model_sfx:
+                return
+            modelSFX = self.params.get('modelSFX')
+            if modelSFX is not None:
+
+                def on_load(prereqs):
+                    if self.isDestroyed:
+                        return
+                    self.model_sfx = PersistentSFX(modelSFX, override_model or self.model, prereqs)
+                    self.model_sfx.play()
+                    if self.grenade_type == ItemsCatalog.JELLY_SPORE_GRENADE['TypeID']:
+                        self.model.pushBoundingBox((-1, -50, -200), (1, 1, 50))
+
+                loadPersistentExtAsync([modelSFX], on_load)
+        elif self.model_sfx:
+            self.model_sfx.destroy(True)
+            self.model_sfx = None
+        return
+
+    def throw(self, override_start_pos = None):
+        self.spawn_time = BigWorld.time()
+        self.model.visible = True
+        self.show_model_sfx(True)
+        if not self.params.get('grenade_fly_gravity', False):
+            gravity = Throwable.GRAVITY
+            timeBeforeFlyEnd = self.append_bouncer(self.velocity[0], self.velocity[1], self.velocity[2], gravity, self.params.get('needRotate', False), override_start_pos=override_start_pos)
+            self.params['explode_type'] in [ItemsCatalog.EXPLODE_TIMER, ItemsCatalog.EXPLODE_TIMER_CONTACT] and self.set_explode_timer()
+        self.water_volume_listener = BigWorld.addWaterVolumeListener(self.matrix, self.water_callback)
+        if Throwable.DEBUG_MODE:
+            import DrawPrimitivesUtils
+            DrawPrimitivesUtils.clear_drawings()
+        return (self.position,
+         self.velocity,
+         self.id,
+         timeBeforeFlyEnd,
+         self.bouncer.destPos)
+
+    def onFlyEnd(self):
+        if self.isDestroyed:
+            return
+        self._is_end_fly = True
+        direction = Vector3(0, -1, 0)
+        vel = tagertId = body_zone = 0
+        mat_id = 0
+        self.onContactNotifier(self.model.position, direction, vel, tagertId, body_zone, mat_id)
+        self.model.motors = []
+        try:
+            self.model.ShotFly().stop()
+        except:
+            pass
+
+        try:
+            self.model.ShotLay()
+        except:
+            pass
+
+    def removeSelfEnt(self):
+        if self.isDestroyed:
+            return
+        if self.anomaly_timer:
+            BigWorld.cancelCallback(self.anomaly_timer)
+        if self.onFlyEnd_callback_id:
+            BigWorld.cancelCallback(self.onFlyEnd_callback_id)
+        if self.removeSelfEnt_callback_id:
+            BigWorld.cancelCallback(self.removeSelfEnt_callback_id)
+        self.show_model_sfx(False)
+        key = (self.originalID, self.ownerID)
+        if key in Throwable.TROWABLES_DICT:
+            del Throwable.TROWABLES_DICT[key]
+        if self.water_volume_listener:
+            BigWorld.delWaterVolumeListener(self.water_volume_listener)
+        BigWorld.destroyEntity(self.id)
+
+    @staticmethod
+    def get_by_origin(origin_id, owner_id):
+        stone_id = Throwable.TROWABLES_DICT.get((origin_id, owner_id))
+        if stone_id:
+            return BigWorld.entities.get(stone_id)
+
+    def getModelName(self):
+        return self.params.get('modelName', '')
+
+    def showID(self):
+        text_str = '%s' % self.id
+        if not self.fromServer:
+            text_str = 'cl-%s' % self.id
+        text = GUI.Text(text_str)
+        text.explicitSize = True
+        text.size = (0, 0.4)
+        text.colour = (255, 205, 149, 245)
+        text.filterType = 'LINEAR'
+        text.verticalAnchor = 'BOTTOM'
+        text.position = (0, 0.1 + random.random(), 0)
+        atch = GUI.Attachment()
+        atch.component = text
+        atch.faceCamera = True
+        self.text_atch = atch
+        self.model.visibleAttachments = True
+        self.model.root.attach(atch)

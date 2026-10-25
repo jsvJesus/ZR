@@ -1,0 +1,1301 @@
+# Embedded file name: ./client/soGUI/text_field3.py
+import BWPersonality
+import BigWorld
+import GUI
+import soGUI
+from soGUI.soScrollBar import soScrollBar2
+from Helpers.PyGUI.PyGUIBase import PyGUIBase
+import CallbackHelpers
+import random
+import traceback
+import colorCodes
+from functools import partial
+from Keys import KEY_LEFTMOUSE, KEY_RIGHTMOUSE
+
+class TxtToken(object):
+    TOKENTYPE_TEXT = 0
+    TOKENTYPE_PICTURE = 1
+    TOKENTYPE_HLINK = 2
+    TOKENTYPE_FONT = 3
+    TOKENTYPE_COLOR = 4
+    TOKENTYPE_NEWLINE = 5
+    TOKENTYPE_PARAGRAPH = 6
+    TOKENTYPE_DYNAMIC = 7
+    TOKENTYPE_ALIGNMENT = 8
+    TOKENTYPE_GRADE = 9
+
+    def __init__(self, tokenType = TOKENTYPE_TEXT, occurrence = 0, data = None, raw = u''):
+        self.tokenType = tokenType
+        self.tokenData = data
+        self.occurrence = occurrence
+        self.rawData = raw
+
+
+class SelectableLine:
+    isSelected = False
+
+    def __init__(self, component, parent, tooltip_text = None):
+        self.component = component
+        self.parent = parent
+        self.tooltip_text = tooltip_text
+        self.tooltipID = 'TextWithTooltip'
+        if self.tooltip_text:
+            component.crossFocus = True
+
+    def handleMouseEvent(self, cmp, event):
+        self.parent.onLinetMouseMove(cmp, event)
+        return True
+
+    def handleKeyEvent(self, cmp, event):
+        return True
+
+    def handleMouseButtonEvent(self, cmp, event):
+        self.parent.onLinetMouseButton(cmp, event)
+        return True
+
+    def select(self):
+        if self.isSelected:
+            return
+        self.isSelected = True
+        self.saveColor = tuple(self.component.colour)
+        self.component.colour = (100, 255, 255, 255)
+
+    def deselect(self):
+        if not self.isSelected:
+            return
+        self.component.colour = self.saveColor
+        self.isSelected = False
+
+    def handleMouseEnterEvent(self, comp):
+        from soGUI.soToolTipComponent import soToolTipWindow
+        BWPersonality.GUICore.showToolTip(colorCodes.tf3_regular_text_color + self.tooltip_text, style=soToolTipWindow.STYLE_FIXED_FROM_CURSOR, tooltipID=self.tooltipID, delay=0.1, delayStop=10)
+        return True
+
+    def handleMouseLeaveEvent(self, comp):
+        BWPersonality.GUICore.hideToolTip(tooltipID=self.tooltipID)
+        return True
+
+
+class soTextField3(PyGUIBase):
+    factoryString = 'soGUI.soTextField3'
+    TAG_HYPERLINK = 'hlink'
+    TAG_COLOR = 'color'
+    TAG_FONT = 'font'
+    TAG_TOOLTIP = 'tooltip'
+    TAG_PICTURE = 'img'
+    TAG_PARAGRAPH = 'p'
+    TAG_NEWLINE = 'n'
+    TAG_DYNAMICDATA = 'dyn'
+    TAG_ALIGNMENT = u'alignment'
+    TAG_GRADE = 'grade'
+    CHAR_TAGOPEN = '<'
+    CHAR_TAGCLOSE = '>'
+    SHORTEST_TAG_LEN = 1
+    LONGEST_TAG_LEN = 9
+    PROPS_TAGS = [TAG_COLOR,
+     TAG_FONT,
+     TAG_ALIGNMENT,
+     TAG_NEWLINE,
+     TAG_PARAGRAPH]
+    CONTENT_TAGS = [TAG_HYPERLINK,
+     TAG_PICTURE,
+     TAG_DYNAMICDATA,
+     TAG_GRADE]
+    TAGS = [TAG_HYPERLINK,
+     TAG_COLOR,
+     TAG_FONT,
+     TAG_PICTURE,
+     TAG_PARAGRAPH,
+     TAG_NEWLINE,
+     TAG_DYNAMICDATA,
+     TAG_ALIGNMENT,
+     TAG_GRADE,
+     TAG_TOOLTIP]
+    MINIMUM_WIDTH = 16
+    MINIMUM_HEIGHT = 16
+    INTERFACE_ID = None
+    OVERRIDE_HYPERLINK_COMPONENT = None
+    MIN_RENDER_THRESHHOLD = 0.15
+    DEFAULT_PIC_WIDTH = 50
+    DEFAULT_PIC_HEIGHT = 20
+    DEFAULT_FONT = 'RobotoCondensedRegular_14.font'
+    HLINK_STYLE = 'soGUI/visual_styles/hlink_default.xml'
+    DEFAULT_ALIGNMENT = 'left'
+    DEFAULT_COLOR = [255,
+     255,
+     255,
+     255]
+    RENDERMODE_VSCROLL = 1
+    RENDERMODE_HSCROLL = 2
+
+    def __init__(self, component, width = 100, height = 50, textWidth = 200, hScroll = True, vScroll = True, hideScroll = True, borderWidth = 1, vOffset = 1, hOffset = 1, textureless = False, autosize = False, readOnly = True, canSelect = False, maxAppends = -1, selectable_enable = False):
+        PyGUIBase.__init__(self, component)
+        component.script = self
+        self.storedTask = []
+        self.rawText = u''
+        self.selectable_enable = selectable_enable
+        self.formattedText = []
+        self.textData = ''
+        self.scrollCursor = [0, 0]
+        self.cursor = [0, 0]
+        self.nMap = [0]
+        self.hMap = []
+        self.appendMap = []
+        self.cutOffset = 0
+        self.fontMap = {}
+        self.alignMap = {}
+        self.colorMap = {}
+        self.grageMap = {}
+        self.txtConverterTaskQueue = []
+        self.unscrollableAreas = [0, 0]
+        self.autosize = autosize
+        self.readOnly = readOnly
+        self.canSelect = canSelect
+        self.maxAppends = maxAppends
+        self.width = width
+        self.height = height
+        self.maxWidth = 0
+        self.widthLimit = width
+        self._text_width = 0
+        self._text_height = 0
+        self.testTGC = GUI.Text('')
+        self.testTGC.colourFormatting = False
+        self.testTGC.multiline = False
+        self.hScroll = hScroll
+        self.vScroll = vScroll
+        if self.autosize:
+            self.hScroll = False
+            self.vScroll = False
+        self.hideScroll = hideScroll
+        self.borderWidth = borderWidth
+        self.vOffset = vOffset
+        self.hOffset = hOffset
+        self.texturless = textureless
+        if textWidth > 0:
+            self.textWidth = textWidth
+            self.fitToRenderPlane = False
+        else:
+            self.textWidth = self.width - self.borderWidth * 2 - self.hOffset * 2
+            self.fitToRenderPlane = True
+        self.maxScroll = [0, 0]
+        self.tokenPosCache = {}
+        self.setupRoot()
+        self.setupTextPlane()
+        self.setupScrolls()
+        self._refitCmps()
+
+    def setupRoot(self):
+        cmp = self.component
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.width = self.width
+        cmp.height = self.height
+        cmp.moveFocus = True
+
+    def setupTextPlane(self):
+        cmp = GUI.Window()
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.width = self.width - self.borderWidth * 2 - self.hOffset * 2
+        cmp.height = self.height - self.borderWidth * 2 - self.vOffset * 2
+        cmp.position = (self.borderWidth + self.hOffset, self.borderWidth + self.vOffset, 0.5)
+        cmp.textureName = ''
+        self.component.addChild(cmp, 'textRendererPlane')
+
+    def setupScrolls(self):
+        vSHeight = self.height - self.borderWidth * 2 if not self.hScroll else self.height - self.borderWidth * 2 - 16
+        scroll = soScrollBar2(GUI.Window(), width=16, height=vSHeight, sendOnMove=True)
+        scroll.scrollDown = partial(self.scrollHandler, 'DOWN', None)
+        scroll.scrollUp = partial(self.scrollHandler, 'UP', None)
+        scroll.scrollMoved = lambda value: self.scrollHandler('vMOVE', value)
+        cmp = scroll.component
+        cmp.horizontalAnchor = 'RIGHT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.visible = False
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.position = (self.width - self.borderWidth, self.borderWidth, 0.6)
+        self.component.addChild(cmp, 'vScroll')
+        scroll.setVisualState('normal')
+        scroll.onBound()
+        hSHeight = self.height - self.borderWidth * 2 if not self.vScroll else self.width - self.borderWidth * 2 - 16
+        scroll = soScrollBar2(GUI.Window(), width=16, height=hSHeight, horizontal=True, sendOnMove=True)
+        scroll.scrollRight = partial(self.scrollHandler, 'RIGHT', None)
+        scroll.scrollLeft = partial(self.scrollHandler, 'LEFT', None)
+        scroll.scrollMoved = lambda value: self.scrollHandler('hMOVE', value)
+        cmp = scroll.component
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'BOTTOM'
+        cmp.visible = False
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.position = (self.borderWidth, self.height - self.borderWidth, 0.6)
+        self.component.addChild(cmp, 'hScroll')
+        scroll.setVisualState('normal')
+        scroll.onBound()
+        return
+
+    def recalc_auto_height(self):
+        """ \xd0\xb5\xd1\x81\xd0\xbb\xd0\xb8 \xd0\xb2 \xd0\xb8\xd0\xbd\xd0\xb8\xd1\x86\xd0\xb8\xd0\xb0\xd0\xbb\xd0\xb8\xd0\xb7\xd0\xb0\xd1\x86\xd0\xb8\xd0\xb8 height \xd0\xbc\xd0\xb0\xd0\xbb\xd0\xb5\xd0\xbd\xd1\x8c\xd0\xba\xd0\xb8\xd0\xb9, \xd1\x82\xd0\xbe \xd1\x8d\xd1\x82\xd0\xb0 \xd1\x84\xd0\xb8\xd0\xb3\xd0\xbd\xd1\x8f \xd0\xbc\xd0\xbe\xd0\xb6\xd0\xb5\xd1\x82 \xd0\xbe\xd0\xb1\xd1\x80\xd0\xb5\xd0\xb7\xd0\xb0\xd1\x82\xd1\x8c \xd1\x82\xd0\xb5\xd0\xba\xd1\x81\xd1\x82 """
+        self.height = self.hMap[-1]
+        self._refitCmps()
+        self._recalcScrolls()
+
+    def _refitCmps(self):
+        if self.autosize:
+            self.width = self.maxWidth
+            if len(self.hMap) > 0:
+                self.height = self.hMap[-1]
+        cmp = self.component.textRendererPlane
+        self.component.width = self.width
+        self.component.height = self.height
+        dW = self.width - self.borderWidth * 2 - self.hOffset * 2
+        dH = self.height - self.borderWidth * 2 - self.vOffset * 2
+        if self.vScroll and not self.hideScroll:
+            dW -= 18
+        if self.hScroll and not self.hideScroll:
+            dH -= 18
+        cmp.width = dW
+        cmp.height = dH
+        if self.maxScroll[1] > 0 and self.vScroll:
+            self.component.vScroll.visible = True
+            cmp.width = dW - self.component.vScroll.width
+        else:
+            self.component.vScroll.visible = False
+        if self.maxScroll[0] > 0 and self.hScroll:
+            self.component.hScroll.visible = True
+            cmp.height = dW - self.component.hScroll.width
+        if self.vScroll and not self.hideScroll:
+            self.component.vScroll.visible = True
+        if self.hScroll and not self.hideScroll:
+            self.component.hScroll.visible = True
+        if self.fitToRenderPlane and not self.autosize:
+            if self.textWidth != cmp.width:
+                self._setTextWidth(cmp.width)
+        if self.component.vScroll.visible:
+            if self.component.hScroll.visible:
+                self.component.vScroll.script.setHeight(self.component.height - self.component.hScroll.width)
+            else:
+                self.component.vScroll.script.setHeight(self.component.height)
+        if self.component.hScroll.visible:
+            if self.component.vScroll.visible:
+                self.component.hScroll.script.setHeight(self.component.width - self.component.vScroll.width)
+            else:
+                self.component.hScroll.script.setHeight(self.component.width)
+
+    def setHeight(self, h):
+        self.height = h
+        if self.vScroll:
+            self.component.vScroll.script.setHeight(self.component.height)
+        self._recalcScrolls()
+        self._checkCursor()
+        CallbackHelpers.callbackHe(self.renderText, self.MIN_RENDER_THRESHHOLD, cancel_existing=True)
+
+    def _recalcScrolls(self):
+        maxHeight = self.height - self.borderWidth * 2 - self.vOffset * 2
+        if len(self.hMap) < 1:
+            self.maxScroll[1] = 0
+            self.component.vScroll.script.setSteps(self.maxScroll[1])
+            self._checkCursor()
+            return
+        if self.hMap[-1] <= maxHeight:
+            self.maxScroll[1] = 0
+            self.component.vScroll.script.setSteps(self.maxScroll[1])
+            self._checkCursor()
+            return
+        lineIdx = 0
+        while self.hMap[lineIdx] < maxHeight:
+            lineIdx += 1
+
+        self.maxScroll[1] = len(self.hMap) - lineIdx
+        self.component.vScroll.script.setSteps(self.maxScroll[1])
+        self._checkCursor()
+
+    def _checkCursor(self):
+        if self.scrollCursor[0] > self.maxScroll[0]:
+            self.scrollCursor[0] = self.maxScroll[0]
+        if self.scrollCursor[1] > self.maxScroll[1]:
+            self.scrollCursor[1] = self.maxScroll[1]
+
+    def _getFont(self, pos):
+        pos += self.cutOffset
+        if len(self.fontMap) < 1:
+            return self.DEFAULT_FONT
+        posMap = self.fontMap.keys()
+        bestPos = posMap[0]
+        for p in posMap:
+            if p <= pos:
+                if pos - bestPos < 0:
+                    bestPos = p
+                if abs(p - pos) < abs(bestPos - pos):
+                    bestPos = p
+
+        return self.fontMap[bestPos].tokenData[0]
+
+    def _getColor(self, pos):
+        pos += self.cutOffset
+        if len(self.colorMap) < 1:
+            return self.DEFAULT_COLOR
+        if self.colorMap.has_key(pos):
+            return self.colorMap[pos].tokenData
+        posMap = self.colorMap.keys()
+        bestPos = posMap[0]
+        for p in posMap:
+            if p <= pos:
+                if pos - bestPos < 0:
+                    bestPos = p
+                if abs(p - pos) < abs(bestPos - pos):
+                    bestPos = p
+
+        return self.colorMap[bestPos].tokenData
+
+    def _getAlignment(self, pos):
+        pos += self.cutOffset
+        if len(self.alignMap) < 1:
+            return self.DEFAULT_ALIGNMENT
+        posMap = self.alignMap.keys()
+        bestPos = posMap[0]
+        for p in posMap:
+            if p <= pos:
+                if pos - bestPos < 0:
+                    bestPos = p
+                if abs(p - pos) < abs(bestPos - pos):
+                    bestPos = p
+
+        return self.alignMap[bestPos].tokenData[0]
+
+    def _buildToken(self, input, occurrence = 0):
+        if len(input[1:-1]) < self.SHORTEST_TAG_LEN or input[0] != self.CHAR_TAGOPEN or input[-1] != self.CHAR_TAGCLOSE:
+            print 'incorrect token'
+            print 'input was', input
+            print 'occurance is', occurrence
+            return
+        else:
+            retVal = None
+            closingChar = input.find('=', 1)
+            if closingChar < 0:
+                closingChar = input.find('>')
+            tagStr = input[1:closingChar]
+            for tag in self.TAGS:
+                if tagStr != tag:
+                    continue
+                if tag is self.TAG_HYPERLINK:
+                    dlm1 = input.find(';', 7, -1)
+                    dlm2 = input.find(';', dlm1 + 1, -1)
+                    visText = input[7:dlm1]
+                    linkID = input[dlm1 + 1:dlm2]
+                    visStyle = input[dlm2 + 1:-1]
+                    if visStyle not in ('normal', 'color', 'textlike'):
+                        visStyle = 'normal'
+                    data = [visText, linkID, visStyle]
+                    retVal = TxtToken(tag, occurrence, data, input)
+                elif tag is self.TAG_PICTURE:
+                    dlm1 = input.find(';', 5, -1)
+                    dlm2 = input.find(';', dlm1 + 1, -1)
+                    tName = input[5:dlm1]
+                    w = input[dlm1 + 1:dlm2]
+                    if not w.isdigit():
+                        print 'warning: picture tag contains invalid width, setting to default'
+                        print 'input was:', input
+                        w = self.DEFAULT_PIC_WIDTH
+                    h = input[dlm2 + 1:-1]
+                    if not h.isdigit():
+                        print 'warning: picture tag contains invalid height, setting to default'
+                        print 'input was:', input
+                        h = self.DEFAULT_PIC_HEIGHT
+                    data = [tName, w, h]
+                    retVal = TxtToken(tag, occurrence, data, input)
+                elif tag is self.TAG_ALIGNMENT:
+                    alType = input[11:-1]
+                    if alType not in ('left', 'center', 'right'):
+                        print 'warning: invalid alignment was specified, setting to left'
+                        print 'input was:', input
+                        alType = 'left'
+                    data = [alType]
+                    retVal = TxtToken(tag, occurrence, data, input)
+                elif tag is self.TAG_TOOLTIP:
+                    raw_data = input.split('=', 1)[-1][:-1]
+                    raw_data = raw_data.replace('[n]', '\n')
+                    retVal = TxtToken(tag, occurrence, raw_data, input)
+                elif tag is self.TAG_COLOR:
+                    raw_data = input.split('=', 1)[-1]
+                    raw_data = raw_data[0:-1]
+                    if raw_data.startswith('#'):
+                        data = colorCodes.hex2rgba('c' + raw_data)
+                        if len(data) < 4:
+                            data = data + [255]
+                    else:
+                        raw_data = raw_data.replace(':', '.')
+                        data = []
+                        if '.' in raw_data:
+                            for c in raw_data.split('.'):
+                                data.append(int(c) if c.isdigit() else 0)
+
+                            if len(data) < 4:
+                                data = data + [255]
+                        else:
+                            for i in xrange(0, 12, 3):
+                                c = raw_data[i:i + 3]
+                                if not c or not c.isdigit():
+                                    c = 255
+                                data.append(int(c))
+
+                    retVal = TxtToken(tag, occurrence, data, input)
+                elif tag is self.TAG_FONT:
+                    fName = input[6:-1]
+                    data = [fName]
+                    retVal = TxtToken(tag, occurrence, data, input)
+                elif tag is self.TAG_DYNAMICDATA:
+                    tpID = input[5:-1]
+                    data = [tpID]
+                    retVal = TxtToken(tag, occurrence, data, input)
+                elif tag is self.TAG_NEWLINE:
+                    data = None
+                    retVal = TxtToken(tag, occurrence, data, input)
+                elif tag is self.TAG_PARAGRAPH:
+                    data = None
+                    retVal = TxtToken(tag, occurrence, data, input)
+                elif tag is self.TAG_GRADE:
+                    data = ['grade', 500, 240]
+                    retVal = TxtToken(tag, occurrence, data, input)
+                if retVal is not None:
+                    return retVal
+
+            return retVal
+
+    def _parseStr(self, input, offset = 0):
+        firstOccurrence = offset
+        output = []
+        cur = 0
+        plainText = ''
+        while cur < len(input):
+            if input[cur] == self.CHAR_TAGOPEN:
+                idx = cur
+                while idx < len(input) and input[idx] != self.CHAR_TAGCLOSE:
+                    idx += 1
+
+                if idx <= len(input):
+                    tagStr = input[cur:idx + 1]
+                    token = self._buildToken(tagStr, firstOccurrence + cur)
+                    if isinstance(token, TxtToken):
+                        output.append(token)
+                        plainText += ' ' * len(tagStr)
+                    else:
+                        plainText += tagStr
+                    cur = idx + 1
+            else:
+                plainText += input[cur]
+                cur += 1
+
+        output.append(plainText)
+        return output
+
+    def _recalcPropsMap(self):
+        propsMap = self._calculatePropsMap(self.rawText, 0)
+        self.fontMap = propsMap[0]
+        self.alignMap = propsMap[1]
+        self.colorMap = propsMap[2]
+        self.gradeMap = propsMap[3]
+
+    def _recalcNMap(self):
+        self.nMap = [self.cutOffset]
+        self.nMap += self._calculateNMap(self.rawText, 0, False)
+
+    def _calculatePropsMap(self, input, offset = -1):
+        if offset < 0:
+            offset = len(self.rawText)
+        fontMap = {}
+        alignMap = {}
+        colorMap = {}
+        grageMap = {}
+        parserData = self._parseStr(input, offset)
+        for token in parserData[:-1]:
+            if token.tokenType is self.TAG_FONT:
+                fontMap[token.occurrence] = token
+            elif token.tokenType is self.TAG_ALIGNMENT:
+                alignMap[token.occurrence] = token
+            elif token.tokenType is self.TAG_COLOR:
+                colorMap[token.occurrence] = token
+            elif token.tokenType is self.TAG_GRADE:
+                grageMap[token.occurrence] = token
+
+        output = [fontMap,
+         alignMap,
+         colorMap,
+         grageMap]
+        return output
+
+    def _recalcHMap(self, start):
+        if len(self.nMap) < 1 or not self.rawText:
+            return
+        self.hMap = self.hMap[:start]
+        parserData = self._parseStr(self.rawText[self.nMap[start]:], self.nMap[start])
+        lineIdx = start
+        hMap = []
+        if len(self.hMap) > 0:
+            try:
+                cH = self.hMap[start - 1]
+            except IndexError:
+                cH = 0
+
+        else:
+            cH = 0
+        currentFont = self._getFont(self.nMap[start])
+        while lineIdx < len(self.nMap):
+            rawLine = u''
+            if lineIdx + 1 >= len(self.nMap):
+                rawLine = self.rawText[self.nMap[lineIdx]:len(self.rawText)]
+            else:
+                rawLine = self.rawText[self.nMap[lineIdx]:self.nMap[lineIdx + 1]]
+            parserData = self._parseStr(rawLine, self.nMap[lineIdx])
+            tokens = parserData[0:-1]
+            lineDims = self._getTxtDims('W', currentFont)
+            for token in tokens:
+                if token.tokenType is self.TAG_FONT:
+                    currentFont = token.tokenData[0]
+                    lH = self._getTxtDims('W', currentFont)[1]
+                    if lH > lineDims[1]:
+                        lineDims[1] = lH
+                else:
+                    tH = self._getTokenDims(token)[1]
+                    if tH > lineDims[1]:
+                        lineDims[1] = tH
+
+            cH += lineDims[1]
+            hMap.append(cH)
+            lineIdx += 1
+
+        self.hMap += hMap
+
+    def _calculateNMap(self, input, offset = -1, newLine = True):
+        output = []
+        if offset < 0:
+            offset = len(self.rawText) + self.cutOffset
+        if offset > 0 and not newLine:
+            offset += self.cutOffset
+            trailingStr = self.rawText[self.nMap[-1]:len(self.rawText)]
+            if trailingStr[-3:] != u'<n>':
+                input = trailingStr + input
+                offset -= len(trailingStr)
+        if offset == 0:
+            offset += self.cutOffset
+        parserData = self._parseStr(input, offset)
+        tokens = {}
+        fonts = {}
+        plainText = parserData[-1]
+        for token in parserData[0:-1]:
+            tokens[token.occurrence] = token
+
+        for token in parserData[0:-1]:
+            if token.tokenType is self.TAG_NEWLINE:
+                if self.nMap.count(token.occurrence) == 0:
+                    output.append(token.occurrence)
+            elif token.tokenType is self.TAG_PARAGRAPH:
+                if token.occurrence > 0:
+                    output.append(token.occurrence)
+            elif token.tokenType is self.TAG_DYNAMICDATA:
+                if token.occurrence > 0:
+                    output.append(token.occurrence)
+            elif token.tokenType is self.TAG_FONT:
+                fonts[token.occurrence] = token.tokenData[0]
+
+        cur = 0
+        currentFont = self._getFont(offset)
+        strWidth = 0
+        lastWS = -1
+        lastWSW = -1
+        while cur < len(input):
+            if cur + offset in fonts:
+                currentFont = fonts[cur + offset]
+            if tokens.has_key(cur + offset):
+                if self.autosize:
+                    if tokens[cur + offset].tokenType in [self.TAG_NEWLINE, self.TAG_PARAGRAPH, self.TAG_DYNAMICDATA]:
+                        if strWidth > self.maxWidth:
+                            self.maxWidth = strWidth
+                        strWidth = 0
+                    else:
+                        strWidth += self._getTokenDims(tokens[cur + offset])[0]
+                    cur += len(tokens[cur + offset].rawData)
+                    continue
+                else:
+                    if tokens[cur + offset].tokenType in [self.TAG_NEWLINE, self.TAG_PARAGRAPH, self.TAG_DYNAMICDATA]:
+                        strWidth = 0
+                        lastWS = -1
+                        cur += len(tokens[cur + offset].rawData)
+                        continue
+                    if strWidth + self._getTokenDims(tokens[cur + offset])[0] >= self.textWidth:
+                        if strWidth == 0:
+                            cur += len(tokens[cur + offset].rawData)
+                            lastWS = -1
+                            output.append(offset + cur)
+                            continue
+                        else:
+                            output.append(offset + cur)
+                            lastWS = -1
+                            strWidth = 0
+                            continue
+                    else:
+                        strWidth += self._getTokenDims(tokens[cur + offset])[0]
+                        cur += len(tokens[cur + offset].rawData)
+                        continue
+            charWidth = 0
+            if cur < len(input):
+                charWidth = self._getTxtDims(input[cur], currentFont)[0]
+                if input[cur] == u' ':
+                    lastWS = cur
+                    lastWSW = strWidth + charWidth
+            if self.autosize:
+                if cur == len(input) - 1:
+                    if strWidth + charWidth > self.maxWidth:
+                        self.maxWidth = strWidth + charWidth
+                if strWidth + charWidth < self.widthLimit:
+                    strWidth += charWidth
+                elif lastWS > 0:
+                    cur = lastWS + 1
+                    if strWidth > self.maxWidth:
+                        self.maxWidth = strWidth
+                    strWidth = 0
+                    lastWS = -1
+                    output.append(offset + cur)
+                    continue
+                else:
+                    output.append(offset + cur)
+                    if strWidth > self.maxWidth:
+                        self.maxWidth = strWidth
+                    strWidth = charWidth
+                    lastWS = -1
+                cur += 1
+                continue
+            if strWidth + charWidth < self.textWidth:
+                strWidth += charWidth
+            elif lastWS > 0:
+                cur = lastWS + 1
+                strWidth = 0
+                lastWS = -1
+                output.append(offset + cur)
+                continue
+            else:
+                output.append(offset + cur)
+                strWidth = charWidth
+                lastWS = -1
+            cur += 1
+
+        output.sort()
+        return output
+
+    def calc_real_pixel_height(self):
+        min_pos = 0
+        for _, child in self.component.textRendererPlane.children:
+            min_pos = max(min_pos, child.position[1])
+
+        return min_pos
+
+    def _getTxtDims(self, txt, font = DEFAULT_FONT):
+        self.testTGC.font = font
+        return list(self.testTGC.stringDimensions(txt))
+
+    def textDimensions(self):
+        return (self._text_width, self._text_height)
+
+    def _getTokenDims(self, token):
+        dims = None
+        if not isinstance(token, TxtToken):
+            return dims
+        elif token.tokenType is self.TAG_NEWLINE or token.tokenType is self.TAG_PARAGRAPH:
+            self.testTGC.font = self._getFont(token.occurrence)
+            dims = [0, self.testTGC.stringDimensions('W')[1]]
+            return dims
+        elif token.tokenType in self.PROPS_TAGS:
+            dims = [0, 0]
+            return dims
+        elif token.tokenType == self.TAG_TOOLTIP:
+            dims = [0, 0]
+            return dims
+        else:
+            if token.tokenType is self.TAG_PICTURE:
+                dims = [int(token.tokenData[1]), int(token.tokenData[2])]
+            elif token.tokenType is self.TAG_HYPERLINK:
+                self.testTGC.font = self._getFont(token.occurrence)
+                dims = list(self.testTGC.stringDimensions(token.tokenData[0]))
+            elif token.tokenType is self.TAG_DYNAMICDATA:
+                self.testTGC.font = self._getFont(token.occurrence)
+                dims = [self.textWidth, self.testTGC.stringDimensions('W')[1]]
+            elif token.tokenType is self.TAG_GRADE:
+                dims = [500, 17]
+            return dims
+
+    def _create_grade_component(self, item_type_or_item = None):
+        return None
+
+    def _buildTokenManifestation(self, rawData, offset = 0):
+        token = self._buildToken(rawData, offset)
+        cmp = None
+        if token.tokenType is self.TAG_PICTURE:
+            cmp = GUI.Simple(token.tokenData[0])
+            cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+            cmp.horizontalAnchor = 'LEFT'
+            cmp.verticalAnchor = 'BOTTOM'
+            cmp.widthMode = cmp.heightMode = 'PIXEL'
+            cmp.width = int(token.tokenData[1])
+            cmp.height = int(token.tokenData[2])
+            cmp.colour = (255, 255, 255, 255)
+            cmp.materialFX = 'BLEND'
+        if token.tokenType is self.TAG_HYPERLINK:
+            from soHyperLinkComponent import soHyperLinkComponent
+            cmp = GUI.Text('')
+            cmp.width, cmp.height = (0, 0)
+            cmp.font = self._getFont(token.occurrence)
+            cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+            cmp.horizontalAnchor = 'LEFT'
+            cmp.verticalAnchor = 'BOTTOM'
+            cmp.colourFormatting = False
+            cmp.multiline = False
+            cmp.text = token.tokenData[0]
+            if not self.OVERRIDE_HYPERLINK_COMPONENT:
+                hlink = soHyperLinkComponent(cmp)
+                hlink.initVSC(self.HLINK_STYLE)
+                hlink.setVisualState('normal')
+                hlink.setToolTip(token.tokenData[1], self.INTERFACE_ID)
+                hlink.setID(token.tokenData[1])
+            cmp = token.tokenType is self.TAG_GRADE and None
+        return cmp
+
+    _select_raw = ''
+    _select_active = False
+    _select_items = False
+    _select_cmp_a = None
+    _select_cmp_b = None
+    _select_lock_add = False
+
+    def onLinetMouseMove(self, cmp, event):
+        if self._select_active:
+            if not BigWorld.isKeyDown(KEY_LEFTMOUSE):
+                self._deselectAll()
+                return
+            self.proccesSelect(cmp)
+
+    def onLinetMouseButton(self, cmp, event):
+        if event.key == KEY_LEFTMOUSE:
+            if event.isKeyDown() and (self._select_cmp_a or self._select_cmp_b):
+                self._deselectAll()
+                self._select_items = False
+                self.onDeselect()
+                return
+            if event.isKeyDown():
+                self.startSelect(cmp)
+                self._select_items = True
+            elif self._select_active:
+                self.proccesSelect(cmp)
+                self._select_active = False
+        if event.key == KEY_RIGHTMOUSE and not event.isKeyDown() and self._select_cmp_a and self._select_cmp_b:
+            self._select_raw = ''
+            inside_selected = False
+            for idd, _cmp in self.component.textRendererPlane.children:
+                if _cmp.script:
+                    if _cmp == self._select_cmp_a or _cmp == self._select_cmp_b:
+                        self._select_raw += _cmp.text + ' \n'
+                        if inside_selected or self._select_cmp_a == self._select_cmp_b:
+                            break
+                        else:
+                            inside_selected = True
+                    elif inside_selected:
+                        self._select_raw += _cmp.text + ' \n'
+
+            self.onRightBtnSelected(self._select_raw)
+
+    def onRightBtnSelected(self, rawText):
+        BWPersonality.GUICore.addListener('contextMenuEvent', self.ContextMenuEvent)
+        self._interface_id = random.random()
+        actions = {'copy': 'copy',
+         'translate': 'translate'}
+        BWPersonality.GUICore.showContextMenu(self._interface_id, actions)
+
+    def ContextMenuEvent(self, interface_id, action_id, caption, event, data = None):
+        if interface_id != self._interface_id:
+            return
+        if event == soGUI.soContextMenuComponent.EVENT_SELECT:
+            if action_id == 'copy':
+                BigWorld.clipboardSetPlainText(self._select_raw)
+            if action_id == 'translate':
+                BWPersonality.GUICore.showTranslateText(doShow=True, text=self._select_raw)
+            self._deselectAll()
+            self._select_items = False
+            self.onDeselect()
+        if event == soGUI.soContextMenuComponent.EVENT_CANCEL:
+            BWPersonality.GUICore.removeListener('contextMenuEvent', self.ContextMenuEvent)
+            self._deselectAll()
+            self._select_items = False
+            self.onDeselect()
+
+    def startSelect(self, cmp):
+        self._deselectAll()
+        self._select_active = True
+        cmp.script.select()
+        self._select_cmp_a = cmp
+
+    def proccesSelect(self, cmp):
+        self._select_cmp_b = cmp
+        inside_selected = False
+        for idd, _cmp in self.component.textRendererPlane.children:
+            if _cmp.script and hasattr(_cmp.script, 'deselect'):
+                if _cmp == self._select_cmp_a or _cmp == self._select_cmp_b:
+                    _cmp.script.select()
+                    inside_selected = not inside_selected
+                    if self._select_cmp_a == self._select_cmp_b or not self._select_cmp_b:
+                        inside_selected = False
+                elif inside_selected:
+                    _cmp.script.select()
+                else:
+                    _cmp.script.deselect()
+
+    def deselectAll(self):
+        self._deselectAll()
+        self._select_items = False
+        self.onDeselect()
+
+    def _deselectAll(self):
+        self._select_active = False
+        self._select_cmp_a = None
+        self._select_cmp_b = None
+        for idd, _cmp in self.component.textRendererPlane.children:
+            if _cmp.script and hasattr(_cmp.script, 'deselect'):
+                _cmp.script.deselect()
+
+        return
+
+    def _buildTextManifestation(self, txt, font = DEFAULT_FONT, color = DEFAULT_COLOR, alignment = DEFAULT_ALIGNMENT, tooltip_text = None):
+        cmp = GUI.Text('')
+        cmp.height, cmp.width = (0, 0)
+        if isinstance(font, (list, tuple)):
+            font = font[0]
+        cmp.font = font
+        cmp.colour = tuple(color)
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'BOTTOM'
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.colourFormatting = False
+        cmp.multiline = False
+        cmp.text = txt
+        cmp.crossFocus = self.selectable_enable
+        cmp.moveFocus = self.selectable_enable
+        cmp.mouseButtonFocus = self.selectable_enable
+        cmp.script = SelectableLine(cmp, self, tooltip_text)
+        return cmp
+
+    def _getLineIdx(self, lineN):
+        try:
+            return self.nMap[lineN] - self.cutOffset
+        except IndexError:
+            print 'soTextField3 ERROR::_getLineIdx IndexError ', lineN
+            return 0
+
+    def renderText(self):
+        try:
+            plrender = self.component.textRendererPlane
+        except:
+            self.setupTextPlane()
+
+        self.clearAllChildren(self.component.textRendererPlane)
+        visHeight = 0
+        maxHeight = self.height - self.vOffset * 2 - self.borderWidth * 2
+        lineIdx = self.scrollCursor[1]
+        currentFont = self._getFont(self._getLineIdx(lineIdx))
+        currentColor = self._getColor(self._getLineIdx(lineIdx))
+        completed = False
+        while visHeight < maxHeight and not completed:
+            rawLine = u''
+            if lineIdx + 1 >= len(self.nMap):
+                rawLine = self.rawText[self._getLineIdx(lineIdx):]
+                completed = True
+            else:
+                rawLine = self.rawText[self._getLineIdx(lineIdx):self._getLineIdx(lineIdx + 1)]
+            parserData = self._parseStr(rawLine, self._getLineIdx(lineIdx))
+            visualTokens = {}
+            tooltipTokens = {}
+            fonts = {}
+            colors = {}
+            aligns = {}
+            skips = {}
+            plainText = parserData[-1]
+            cur = 0
+            firstCharIdx = self._getLineIdx(lineIdx)
+            lineWidth = 0
+            lineDims = [0, 0]
+            buffer = u''
+            alignment = self._getAlignment(firstCharIdx)
+            toAttach = []
+            self._text_width = 0
+            self._text_height = 0
+            for token in parserData[0:-1]:
+                if token.tokenType == self.TAG_NEWLINE:
+                    lineDims[1] = self._getTokenDims(token)[1]
+                if token.tokenType in self.CONTENT_TAGS:
+                    visualTokens[token.occurrence] = token
+                elif token.tokenType in self.TAG_TOOLTIP:
+                    tooltipTokens[token.occurrence] = token
+                elif token.tokenType == self.TAG_FONT:
+                    fonts[token.occurrence] = token
+                elif token.tokenType == self.TAG_COLOR:
+                    colors[token.occurrence] = token
+                elif token.tokenType is self.TAG_ALIGNMENT:
+                    aligns[token.occurrence] = token
+                else:
+                    skips[token.occurrence] = token
+
+            tooltip_text = None
+            while cur < len(rawLine):
+                if skips.has_key(firstCharIdx + cur):
+                    w, h = self._getTokenDims(skips[firstCharIdx + cur])
+                    cur += len(skips[firstCharIdx + cur].rawData)
+                    if h > lineDims[1]:
+                        lineDims[1] = h
+                    continue
+                if tooltipTokens.has_key(firstCharIdx + cur):
+                    tooltip_text = tooltipTokens[firstCharIdx + cur].tokenData
+                    cur += len(tooltipTokens[firstCharIdx + cur].rawData)
+                if visualTokens.has_key(firstCharIdx + cur):
+                    if len(buffer) > 0:
+                        cmp = self._buildTextManifestation(buffer, currentFont, currentColor, alignment, tooltip_text)
+                        cmp.position = (lineDims[0], lineDims[0], 0.5)
+                        w, h = cmp.stringDimensions(cmp.text)
+                        lineDims[0] += w
+                        if h > lineDims[1]:
+                            lineDims[1] = h
+                        toAttach.append(cmp)
+                        buffer = ''
+                    cmp = self._buildTokenManifestation(visualTokens[firstCharIdx + cur].rawData, firstCharIdx + cur)
+                    if cmp:
+                        cmp.position = (lineDims[0], 0, 0.5)
+                        toAttach.append(cmp)
+                    w, h = self._getTokenDims(visualTokens[firstCharIdx + cur])
+                    cur += len(visualTokens[firstCharIdx + cur].rawData)
+                    lineDims[0] += w
+                    if h > lineDims[1]:
+                        lineDims[1] = h
+                    continue
+                if fonts.has_key(firstCharIdx + cur):
+                    if len(buffer) > 0:
+                        cmp = self._buildTextManifestation(buffer, currentFont, currentColor, alignment, tooltip_text)
+                        cmp.position = (lineDims[0], 0, 0.5)
+                        w, h = cmp.stringDimensions(cmp.text)
+                        lineDims[0] += w
+                        if h > lineDims[1]:
+                            lineDims[1] = h
+                        toAttach.append(cmp)
+                        currentFont = fonts[firstCharIdx + cur].tokenData
+                        cur += len(fonts[firstCharIdx + cur].rawData)
+                        buffer = ''
+                    else:
+                        currentFont = fonts[firstCharIdx + cur].tokenData
+                        cur += len(fonts[firstCharIdx + cur].rawData)
+                    continue
+                if colors.has_key(firstCharIdx + cur):
+                    if len(buffer) > 0:
+                        cmp = self._buildTextManifestation(buffer, currentFont, currentColor, alignment, tooltip_text)
+                        cmp.position = (lineDims[0], 0, 0.5)
+                        w, h = cmp.stringDimensions(cmp.text)
+                        lineDims[0] += w
+                        if h > lineDims[1]:
+                            lineDims[1] = h
+                        toAttach.append(cmp)
+                        currentColor = colors[firstCharIdx + cur].tokenData
+                        cur += len(colors[firstCharIdx + cur].rawData)
+                        buffer = ''
+                    else:
+                        currentColor = colors[firstCharIdx + cur].tokenData
+                        cur += len(colors[firstCharIdx + cur].rawData)
+                    continue
+                if aligns.has_key(firstCharIdx + cur):
+                    if len(buffer) > 0:
+                        cmp = self._buildTextManifestation(buffer, currentFont, currentColor, alignment, tooltip_text)
+                        cmp.position = (lineDims[0], 0, 0.5)
+                        w, h = cmp.stringDimensions(cmp.text)
+                        lineDims[0] += w
+                        if h > lineDims[1]:
+                            lineDims[1] = h
+                        toAttach.append(cmp)
+                        alignment = aligns[firstCharIdx + cur].tokenData[0]
+                        cur += len(aligns[firstCharIdx + cur].rawData)
+                        buffer = ''
+                    else:
+                        alignment = aligns[firstCharIdx + cur].tokenData[0]
+                        cur += len(aligns[firstCharIdx + cur].rawData)
+                    continue
+                if cur < len(rawLine):
+                    buffer += rawLine[cur]
+                cur += 1
+
+            if len(buffer) > 0:
+                cmp = self._buildTextManifestation(buffer, currentFont, currentColor, alignment, tooltip_text)
+                cmp.position = (lineDims[0], 0, 0.5)
+                w, h = cmp.stringDimensions(cmp.text)
+                lineDims[0] += w
+                if h > lineDims[1]:
+                    lineDims[1] = h
+                toAttach.append(cmp)
+            lineOffset = 0
+            if alignment == 'left':
+                lineOffset = 0
+            elif alignment == 'right':
+                lineOffset = self.textWidth - lineDims[0]
+            elif alignment == 'center':
+                lineOffset = (self.textWidth - lineDims[0]) / 2
+            for cmp in toAttach:
+                cmp.position.x += max(0, lineOffset)
+                cmp.position.y = float(visHeight + lineDims[1])
+                self.component.textRendererPlane.addChild(cmp)
+
+            if lineDims[0] > self._text_width:
+                self._text_width = lineDims[0]
+            visHeight += lineDims[1]
+            lineIdx += 1
+
+        self._text_height = visHeight
+        return
+
+    def setSelectable(self, value):
+        self.selectable_enable = value
+        for name, cmp in self.component.textRendererPlane.children:
+            cmp.crossFocus = value
+            cmp.moveFocus = value
+            cmp.mouseButtonFocus = value
+
+    def onDeselect(self):
+        if not self.storedTask:
+            return
+        try:
+            for task in self.storedTask:
+                self._addTask(task)
+
+        except:
+            print 'soTextField3 crash here'
+            traceback.print_exc()
+
+        self.storedTask = []
+
+    def setText(self, text, immidiate = False):
+        """ immidiate - \xd1\x81\xd0\xb8\xd0\xbd\xd1\x85\xd1\x80\xd0\xbe\xd0\xbd\xd0\xbd\xd0\xbe \xd0\xb1\xd0\xb5\xd0\xb7 \xd0\xba\xd0\xbe\xd0\xbb\xd0\xb1\xd1\x8d\xd0\xba\xd0\xbe\xd0\xb2 """
+        if self.selectable_enable:
+            self._deselectAll()
+            self._select_items = False
+            self.storedTask = []
+        self.maxWidth = 0
+        task = []
+        task.append('SET')
+        task.append(self.replaceNewLines(text))
+        try:
+            self._addTask(task, immidiate)
+        except:
+            print 'soTextField3 crash here'
+            import traceback
+            traceback.print_exc()
+
+    def onAddTextWhenLock(self):
+        pass
+
+    def addText(self, text, newLine = True):
+        task = []
+        task.append('ADD')
+        task.append(self.replaceNewLines(text))
+        task.append(newLine)
+        if self.selectable_enable and self._select_items:
+            self.storedTask.append(task)
+            self.onAddTextWhenLock()
+            return
+        try:
+            self._addTask(task)
+        except:
+            print 'soTextField3 crash here'
+            import traceback
+            traceback.print_exc()
+
+    def setSize(self, w, h):
+        recalcVS = False
+        self.width = w
+        if h != self.height:
+            self.height = h
+            recalcVS = True
+        self._refitCmps()
+        if recalcVS:
+            self._recalcScrolls()
+        self.component.vScroll.position = (self.width - self.borderWidth, self.borderWidth, 0.6)
+
+    def getHeight(self):
+        return self.height
+
+    def setCursor(self, h = 0, v = 0):
+        self.scrollCursor[0] = h
+        self.scrollCursor[1] = v
+        self._checkCursor()
+        self.component.vScroll.script.setValue(self.scrollCursor[1])
+        self.component.hScroll.script.setValue(self.scrollCursor[0])
+        CallbackHelpers.callbackHe(self.renderText, self.MIN_RENDER_THRESHHOLD, cancel_existing=True)
+
+    def setTextWidth(self, w):
+        self.textWidth = w
+        self.fitToRenderPlane = False
+        self._recalcNMap()
+        self._recalcHMap(0)
+        self._recalcScrolls()
+        CallbackHelpers.callbackHe(self.renderText, self.MIN_RENDER_THRESHHOLD, cancel_existing=True)
+
+    def _setTextWidth(self, w):
+        self.textWidth = w
+        self._recalcNMap()
+        self._recalcHMap(0)
+        self._recalcScrolls()
+        CallbackHelpers.callbackHe(self.renderText, self.MIN_RENDER_THRESHHOLD, cancel_existing=True)
+
+    def scrollTo(self, scroll = (0, 0)):
+        if self.selectable_enable and self._select_items:
+            return
+        self.setCursor(scroll[0], scroll[1])
+
+    def scrollToEnd(self):
+        self.scrollTo((self.maxScroll[0], self.maxScroll[1]))
+
+    def scrollToTop(self):
+        self.cursor = (self.cursor[0], 0)
+        self.component.vScroll.script.setValue(0)
+        self.renderText()
+
+    def getMaxScroll(self):
+        return self.maxScroll
+
+    def replaceNewLines(self, text):
+        return text.replace('\r\n', u'<n>').replace('\n', u'<n>')
+
+    def _newAppend(self, appendPos):
+        self.appendMap.append(appendPos + self.cutOffset)
+        cutLen = 0
+        if len(self.appendMap) > self.maxAppends:
+            del self.appendMap[0]
+            cutLen = self.appendMap[0] - self.cutOffset
+            self.cutOffset = self.appendMap[0]
+        fontIndices = self.fontMap.keys()
+        colorIndices = self.colorMap.keys()
+        alignIndices = self.alignMap.keys()
+        for index in fontIndices:
+            if index < self.cutOffset:
+                del self.fontMap[index]
+
+        for index in colorIndices:
+            if index < self.cutOffset:
+                del self.colorMap[index]
+
+        for index in alignIndices:
+            if index < self.cutOffset:
+                del self.alignMap[index]
+
+        i = 0
+        index = self.nMap[i]
+        while index < self.cutOffset:
+            del self.nMap[i]
+            i += 1
+            index = self.nMap[i]
+
+        self.rawText = self.rawText[cutLen:]
+
+    def _addTask(self, task, immidiate = False):
+        if task[0] == 'SET':
+            self.rawText = task[1]
+            self.appendMap = []
+            self._recalcPropsMap()
+            self._recalcNMap()
+            self._recalcHMap(0)
+            self._recalcScrolls()
+            self._refitCmps()
+        elif task[0] == 'ADD':
+            if task[2]:
+                task[1] = u'<n>' + task[1]
+            propsMap = self._calculatePropsMap(task[1], -1)
+            nMap = self._calculateNMap(task[1], -1, task[2])
+            appendPos = len(self.rawText)
+            self.rawText += task[1]
+            self.fontMap.update(propsMap[0])
+            self.alignMap.update(propsMap[1])
+            self.colorMap.update(propsMap[2])
+            self.grageMap.update(propsMap[3])
+            self.nMap += nMap
+            self._recalcHMap(len(self.nMap) - len(nMap) - 1)
+            if self.maxAppends > 0:
+                self._newAppend(appendPos)
+            self._recalcScrolls()
+            self._refitCmps()
+        if immidiate:
+            self.renderText()
+        else:
+            CallbackHelpers.callbackHe(self.renderText, self.MIN_RENDER_THRESHHOLD, cancel_existing=True)
+
+    def scrollHandler(self, event, data):
+        if self.selectable_enable and self._select_items:
+            return
+        if event == 'RIGHT':
+            self.scrollCursor[0] += 1
+        elif event == 'LEFT':
+            self.scrollCursor[0] -= 1
+        elif event == 'hMOVE':
+            self.scrollCursor[0] = data
+        if event == 'DOWN':
+            self.scrollCursor[1] += 1
+        elif event == 'UP':
+            self.scrollCursor[1] -= 1
+        elif event == 'vMOVE':
+            self.scrollCursor[1] = data
+        if self.scrollCursor[0] > self.maxScroll[0]:
+            self.scrollCursor[0] = self.maxScroll[0]
+        if self.scrollCursor[0] < 0:
+            self.scrollCursor[0] = 0
+        if self.scrollCursor[1] > self.maxScroll[1]:
+            self.scrollCursor[1] = self.maxScroll[1]
+        if self.scrollCursor[1] < 0:
+            self.scrollCursor[1] = 0
+        self.component.vScroll.script.setValue(self.scrollCursor[1])
+        self.component.hScroll.script.setValue(self.scrollCursor[0])
+        CallbackHelpers.callbackHe(self.renderText, 0, cancel_existing=True)
+
+    def scrolledUP(self):
+        self.scrollHandler('UP', None)
+        return
+
+    def scrolledDOWN(self):
+        self.scrollHandler('DOWN', None)
+        return
+
+    def handleMouseEnterEvent(self, comp):
+        self.wheelFocus = True
+        self.component.focus = True
+        return True
+
+    def handleMouseLeaveEvent(self, comp):
+        self.wheelFocus = False
+        self.component.focus = False
+        self.multiSelON = False
+        return True
+
+    def handleMouseEvent(self, comp, event):
+        dz = event.dz
+        if dz > 0:
+            self.scrollHandler('UP', None)
+            return True
+        elif dz < 0:
+            self.scrollHandler('DOWN', None)
+            return True
+        else:
+            return False
+
+    def fini(self):
+        try:
+            for name, cmp in self.component.textRendererPlane.children:
+                cmp.script.parent = None
+                cmp.script = None
+                self.component.textRendererPlane.delChild(name)
+
+            for name, cmp in self.component.children:
+                cmp.script = None
+                self.component.delChild(name)
+
+            CallbackHelpers.callbackHe.cancel(self.renderText)
+        except:
+            traceback.print_exc()
+
+        return

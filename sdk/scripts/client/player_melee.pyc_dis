@@ -1,0 +1,243 @@
+# Embedded file name: ./client/player_melee.py
+import BigWorld
+from Math import Matrix
+from Math import Vector3
+from Victim import Victim
+import draw_utils_extend
+import utils_bw
+import SFXer
+import Stats
+import Constants
+import VerminSpawner
+import ItemsUtils
+import BWPersonality
+from Items import ItemsCatalog
+from Localization import lc
+from ChatChannelConfig import CHANNEL_CONSTS
+import melee_avatar_skill.melee_conf
+import melee_avatar_skill.melee_skill
+from melee_avatar_skill.melee_skill import MeleeSkill
+main = __import__('__main__')
+if not getattr(main, 'drawer_melee', None):
+    main.drawer_melee = draw_utils_extend.LinesHolder(100)
+main.drawer_melee.clear()
+
+def DrawBBox(matrix, minBounds, maxBounds, color = None):
+    pos = matrix.translation
+
+    def get_vector(vect):
+        return matrix.applyVector(vect)
+
+    point00 = get_vector(Vector3(minBounds[0], minBounds[1], minBounds[2])) + pos
+    point01 = get_vector(Vector3(minBounds[0], minBounds[1], maxBounds[2])) + pos
+    point02 = get_vector(Vector3(minBounds[0], maxBounds[1], minBounds[2])) + pos
+    point03 = get_vector(Vector3(minBounds[0], maxBounds[1], maxBounds[2])) + pos
+    point10 = get_vector(Vector3(maxBounds[0], minBounds[1], minBounds[2])) + pos
+    point11 = get_vector(Vector3(maxBounds[0], maxBounds[1], minBounds[2])) + pos
+    point12 = get_vector(Vector3(maxBounds[0], minBounds[1], maxBounds[2])) + pos
+    point13 = get_vector(Vector3(maxBounds[0], maxBounds[1], maxBounds[2])) + pos
+    if not color:
+        color = (1, 0, 0, 1)
+    main.drawer_melee.addLine(point00, point10, color)
+    main.drawer_melee.addLine(point01, point12, color)
+    main.drawer_melee.addLine(point02, point11, color)
+    main.drawer_melee.addLine(point03, point13, color)
+    main.drawer_melee.addLine(point00, point01, color)
+    main.drawer_melee.addLine(point03, point02, color)
+    main.drawer_melee.addLine(point02, point00, color)
+    main.drawer_melee.addLine(point03, point01, color)
+    main.drawer_melee.addLine(point10, point11, color)
+    main.drawer_melee.addLine(point13, point12, color)
+    main.drawer_melee.addLine(point12, point10, color)
+    main.drawer_melee.addLine(point13, point11, color)
+
+
+class PlayerMelee:
+    active_melee = None
+
+    def GetEquipMeleeWeapon(self):
+        skill_name = None
+        for gadget in self.ActiveGadgetList:
+            if not gadget.GadjetID:
+                continue
+            gadget_param = ItemsCatalog.GetItemParam(gadget.GadjetType)
+            skill_name = gadget_param.get('melee_skill_name', None)
+            if skill_name:
+                return (gadget.GadjetID, gadget.GadjetType, skill_name)
+
+        item_id = item_type = 0
+        skill_name = ItemsCatalog.GetUnarmedParam().get('melee_skill_name', None)
+        return (item_id, item_type, skill_name)
+
+    def stopMelee(self, force = False):
+        if self.active_melee:
+            self.active_melee.stop()
+            if self.active_melee:
+                self.active_melee.destroy()
+            self.active_melee = None
+            self.cell.stopMeleeAttack()
+            self._stopMeleeBar()
+            if self.sprinting:
+                self.SetWeaponStatus(Constants.WEAPON_BORED)
+        return
+
+    def onMeleeSkillStop(self):
+        self.active_melee = None
+        if not self.active_weapon or self.sprinting:
+            self.SetWeaponStatus(Constants.WEAPON_BORED)
+        self.UpdateAvatarAnimationCaps()
+        self.setDirectionProviderParam(force=True)
+        return
+
+    def _showMeleeBar(self):
+        if getattr(self, '_mpgid', 0):
+            BigWorld.cancelCallback(self._mpgid)
+            self._mpgid = 0
+
+        def show():
+            if not self.active_melee:
+                return
+            self.cell.startMeleePowerful()
+            self.active_melee.onStartPowerful()
+            BWPersonality.GUICore.cast_bar.runCast(melee_avatar_skill.melee_conf.POWERFUL_MAX_TIME, hide_on_complete=False)
+
+        self._mpgid = BigWorld.callback(melee_avatar_skill.melee_conf.POWERFUL_DELAY, show)
+
+    def _stopMeleeBar(self):
+        if getattr(self, '_mpgid', 0):
+            BigWorld.cancelCallback(self._mpgid)
+        self._mpgid = 0
+        BWPersonality.GUICore.cast_bar.cancelCast()
+        if self.active_melee:
+            self.active_melee.onEndPowerful()
+            self.cell.endMeleePowerful()
+
+    def onMeleeBtn(self, isDown):
+        if isDown:
+            if getattr(self, '_melee_btn_down_time', 0):
+                return
+            self._melee_btn_down_time = BigWorld.time()
+            if not self.active_melee:
+                item_id, item_type, skill_name = self.GetEquipMeleeWeapon()
+                if not skill_name:
+                    return
+                self.active_melee = MeleeSkill(item_type, item_id=item_id)
+                self.active_melee.start(self)
+                self.cell.startMeleeAttack(self.active_melee.item_id, 0)
+                self._ignore_first_melee = True
+                if self.active_melee.item_id:
+                    item = ItemsUtils.GetComplexItemByID(self, self.active_melee.item_id)
+                    if ItemsUtils.GetItemConditionRatio(self, item) <= melee_avatar_skill.melee_conf.ITEM_PERC_COND_MSG_BROKEN:
+                        self.putMessage(CHANNEL_CONSTS.SYSTEM, lc('PlayerAvatar.client.melee_weapon_broken'))
+            else:
+                self.SetWeaponStatus(Constants.WEAPON_INCOMABAT)
+            self._showMeleeBar()
+        if not isDown:
+            if not getattr(self, '_melee_btn_down_time', 0):
+                return
+            if not self.active_melee:
+                self._melee_btn_down_time = 0
+                return
+            self._stopMeleeBar()
+            dtime = BigWorld.time() - self._melee_btn_down_time
+            self._melee_btn_down_time = 0
+            delay = melee_avatar_skill.melee_conf.POWERFUL_DELAY
+            power = (dtime - delay) / melee_avatar_skill.melee_conf.POWERFUL_MAX_TIME
+            power = max(0.0, min(power, 1.0))
+            if not power and getattr(self, '_ignore_first_melee', 0):
+                self._ignore_first_melee = False
+                return
+            stamina_cost = self.active_melee.getStaminaCost()
+            if stamina_cost and self.GetStatValue(Stats.ch_Stamina) < stamina_cost:
+                self.putMessage(CHANNEL_CONSTS.FIGHT_OUTPUT, lc('PlayerAvatar.client.melee_not_enough_stamina'))
+                return
+            attack_id = self.active_melee.startAttack(power=power)
+            if attack_id:
+                self.active_melee.addPlayAttack(attack_id)
+                self.cell.startMeleeAttack(self.active_melee.item_id, attack_id)
+                self.setDirectionProviderParam(force=True)
+
+    def _applyMeleeAttack(self, attack_id, attack_param, power):
+        main.drawer_melee.clear()
+        if not self.active_melee:
+            return
+        else:
+            pos1 = Matrix(self.model.node(attack_param['from_node'])).translation
+            dist_attack = attack_param.get('dist_attack', 0.5)
+            dir_attack = Vector3()
+            dir_attack.setPitchYaw(self.pitch, self.yaw)
+            if attack_param.get('use_attack_camera_dir') and not self.lookingaround:
+                cam = BigWorld.camera()
+                dir_attack = cam.direction
+                pos1 = cam.position + cam.direction * cam.position.distTo(pos1)
+            matrix = Matrix()
+            matrix.lookAt(pos1, dir_attack, (0, 1, 0))
+            matrix.invert()
+            m2 = Matrix()
+            m2.setRotateYPR((0, 1.57, 0))
+            matrix.preMultiply(m2)
+            w = attack_param.get('w_attack', 0.1)
+            h = attack_param.get('h_attack', 0.15)
+            collide_step = attack_param.get('collide_step', 5)
+            for i in xrange(1, collide_step + 1):
+                wh_coef = i / float(collide_step)
+                minBounds = Vector3(-w * wh_coef, 0, -h * wh_coef)
+                maxBounds = Vector3(w * wh_coef, dist_attack, h * wh_coef)
+                res = BigWorld.traceOrientedBoxWithEntities(matrix, minBounds, maxBounds, self.id)
+                if melee_avatar_skill.melee_conf.DEBUG_DRAW:
+                    color = (1, 1, 0, 1)
+                    if res:
+                        color = (1, 0, 0, 1)
+                    DrawBBox(matrix, minBounds, maxBounds, color=color)
+                if res:
+                    break
+
+            pos2 = pos1 + dir_attack * dist_attack
+            world_collision = utils_bw.collideIgnoreNoVisible(self.spaceID, pos1, pos2)
+            if not world_collision[0]:
+                world_collision = None
+            if world_collision:
+                point, target_triangle, material, flags, isIgnoredTriggered = world_collision
+                SFXer.Ricochet(self, None, point, target_triangle, material, ammo_type=self.active_melee.item_type)
+            water_pos = BigWorld.waterCollide(pos1, pos2)
+            if water_pos:
+                SFXer.waterHit(self, water_pos[0], 'sfx/hits/knife/water.xml')
+            ignoreFriendlyFire = self.pvpInstConfig.get('ignoreFriendlyFire') if self.inPVPinstance else False
+            targets_ids = []
+            body_zones = []
+            if res:
+                for e_id, hitbox, local_pos in res:
+                    entity = BigWorld.entity(e_id)
+                    if not isinstance(entity, Victim):
+                        continue
+                    if entity.__class__.__name__ == 'Maneken':
+                        continue
+                    if not entity.canTakeDamage:
+                        continue
+                    if entity.__class__.__name__ == 'Avatar':
+                        if self.checkPVPZoneForKill():
+                            continue
+                        if ignoreFriendlyFire and self.teamID == entity.teamID:
+                            continue
+                    if entity.skeletonCollider.doCollide(pos1, dir_attack):
+                        hit_pos = entity.skeletonCollider.impactPoint
+                        collider_name = entity.skeletonCollider.impactCollider.name
+                    else:
+                        hit_pos = Matrix(hitbox.matrix).applyToOrigin()
+                        collider_name = hitbox.name
+                    entity.bleedFromShoot(hit_pos, dir_attack, collider_name, self.active_melee.item_type, self.id)
+                    if entity.is_dead():
+                        self.onMeleeAttackHit(self.active_melee.item_type, attack_id, [entity.id])
+                        continue
+                    targets_ids.append(e_id)
+                    body_zones.append(entity.colliderNames.get(hitbox.name, 0))
+                    if len(targets_ids) > 5:
+                        break
+
+            if world_collision or targets_ids:
+                self.cell.meleeAttackHit(self.active_melee.item_id, attack_id, targets_ids, body_zones, power)
+            self.onMeleeAttackHit(self.active_melee.item_type, attack_id, targets_ids)
+            shot_directions = [dir_attack]
+            self.traceBulletSpiders(shot_directions, max_dist=dist_attack)
+            VerminSpawner.trace_bullet(shot_directions, max_dist=dist_attack)
+            return

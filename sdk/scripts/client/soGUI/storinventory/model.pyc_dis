@@ -1,0 +1,77 @@
+# Embedded file name: ./client/soGUI/storinventory/model.py
+import BigWorld
+import ItemsUtils
+from utils import PY, Listenable
+
+class EventType(Listenable):
+    OnItemsSet, OnFilterChanged, OnItemPending, OnGotHash = ((r, 'storinventory') for r in range(4))
+
+
+class Model(Listenable):
+
+    def __init__(self):
+        Listenable.__init__(self)
+        self._all_items = []
+        self._filtered_items = []
+        self.filter_tag = None
+        self._hash_callback = None
+        self.last_hash_value = None
+        return
+
+    def set_items(self, items):
+        items = PY(items)
+        pend_items = {}
+        for item in self._all_items:
+            if item.get('pending'):
+                item_id = item['complexItemID']
+                pend_items[item_id] = ItemsUtils.GetItemNumber(item)
+
+        for item in items:
+            item_id = item['complexItemID']
+            if item_id in pend_items:
+                if ItemsUtils.GetItemNumber(item) == pend_items[item_id]:
+                    item['pending'] = True
+
+        if self._all_items != items:
+            self._all_items = items
+            self._apply_filter()
+            self.notify_listeners(EventType.OnItemsSet)
+        if self._hash_callback:
+            BigWorld.cancelCallback(self._hash_callback)
+        self._hash_callback = BigWorld.callback(1.0, self._notify_hash)
+
+    def _notify_hash(self):
+        all_item_ids = []
+        for item in self._all_items:
+            all_item_ids.append(item['complexItemID'])
+
+        self.last_hash_value = hash(tuple(all_item_ids))
+        self.notify_listeners(EventType.OnGotHash)
+
+    def _apply_filter(self):
+
+        def is_valid(item):
+            if self.filter_tag is None:
+                return True
+            else:
+                return ItemsUtils.get_donat_tag(item['complexItemType']) == self.filter_tag
+
+        self._filtered_items = filter(is_valid, self._all_items)
+
+    def mark_pending(self, item_indices):
+        for i in item_indices:
+            self._all_items[i]['pending'] = True
+
+        self.notify_listeners(EventType.OnItemPending)
+
+    @property
+    def items(self):
+        return self._filtered_items
+
+    def set_filter(self, filter_tag):
+        if self.filter_tag == filter_tag:
+            return
+        self.filter_tag = filter_tag
+        self.notify_listeners(EventType.OnFilterChanged)
+        self._apply_filter()
+        self.notify_listeners(EventType.OnItemsSet)

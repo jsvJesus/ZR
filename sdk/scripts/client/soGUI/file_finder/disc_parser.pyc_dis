@@ -1,0 +1,91 @@
+# Embedded file name: ./client/soGUI/file_finder/disc_parser.py
+from utils import Listenable
+import os
+from functools import partial
+import BigWorld
+import ctypes
+import string
+from threading import Thread
+_file_extensions = set(['.dds',
+ '.bmp',
+ '.tga',
+ '.jpg',
+ '.png',
+ '.hdr',
+ '.pfm',
+ '.dib',
+ '.ppm'])
+
+class ElementType:
+    Disc, Folder, File = range(3)
+
+
+class ElementEventType:
+    OnSelectionChanged, = ((r, 'direlement') for r in range(1))
+
+
+class Element(Listenable):
+
+    def __init__(self, type, name, path):
+        Listenable.__init__(self)
+        self.type = type
+        self.name = name
+        self.path = path
+        self.selected = False
+
+    def set_selected(self, selected):
+        if self.selected == selected:
+            return
+        self.selected = selected
+        self.notify_listeners(ElementEventType.OnSelectionChanged)
+
+
+class ReadThread(Thread):
+
+    def __init__(self, path, callback):
+        Thread.__init__(self)
+        self._path = path
+        self._callback = callback
+
+    def run(self):
+        try:
+            elements = []
+            if self._path:
+                for item in os.listdir(self._path):
+                    full_path = os.path.join(self._path, item)
+                    attrs = ctypes.windll.kernel32.GetFileAttributesW(full_path)
+                    if attrs == -1 or attrs & 6:
+                        continue
+                    if attrs & 16:
+                        element_type = ElementType.Folder
+                    else:
+                        element_type = ElementType.File
+                        extension = os.path.splitext(item)[1]
+                        if extension not in _file_extensions:
+                            continue
+                    elements.append(Element(element_type, item, full_path))
+
+            else:
+                bitmask = ctypes.windll.kernel32.GetLogicalDrives()
+                for letter in string.ascii_uppercase:
+                    if bitmask & 1:
+                        path = unicode(letter.upper()) + u':\\'
+                        elements.append(Element(ElementType.Disc, path, path))
+                    bitmask >>= 1
+
+            self._callback(elements)
+        except:
+            print 'DiscParser (ERROR): invalid path', repr(self._path)
+            self._callback(None)
+
+        return
+
+
+def parse_path(path, callback, request_id):
+
+    def thread_callback(elements):
+        foo = partial(callback, elements, request_id)
+        BigWorld.callback(0, foo)
+
+    thread = ReadThread(path, thread_callback)
+    thread.start()

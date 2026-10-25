@@ -1,0 +1,1082 @@
+# Embedded file name: ./client/view_control.py
+"""
+        \xd0\xb4\xd0\xbb\xd1\x8f PlayerAvatar
+        \xd1\x81\xd0\xbc\xd0\xb5\xd1\x89\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5 \xd0\xba\xd0\xb0\xd0\xbc\xd0\xb5\xd1\x80\xd1\x8b
+        \xd0\xbf\xd0\xb5\xd1\x80\xd0\xb5\xd0\xba\xd0\xbb\xd1\x8e\xd1\x87\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5 \xd0\xbe\xd1\x82 1-3 \xd0\xbb\xd0\xb8\xd1\x86\xd0\xb0
+        \xd1\x83\xd0\xb2\xd0\xb5\xd0\xbb\xd0\xb8\xd1\x87\xd0\xb8\xd1\x82\xd0\xb5\xd0\xbb\xd1\x8c\xd0\xbd\xd1\x8b\xd0\xb9 \xd0\xbf\xd1\x80\xd0\xb8\xd1\x86\xd0\xb5\xd0\xbb
+        etc
+
+# \xd0\xbc\xd0\xbe\xd0\xb6\xd0\xb5\xd1\x82 \xd0\xba\xd0\xbe\xd0\xbd\xd1\x84\xd0\xbb\xd0\xb8\xd0\xba\xd1\x82\xd0\xbe\xd0\xb2\xd0\xb0\xd1\x82\xd1\x8c \xd1\x81 \xd0\xb4\xd1\x80\xd1\x83\xd0\xb3\xd0\xb8\xd0\xbc\xd0\xb8 \xd0\xba\xd0\xb0\xd0\xbc\xd0\xb5\xd1\x80\xd0\xb0\xd0\xbc\xd0\xb8!
+"""
+DEBUG_DRAW_CAM = False
+import BigWorld
+import Math
+import math
+import time
+from Math import Matrix, Vector3
+import Constants
+import traceback
+import math_bw
+import player_speed_settings
+from bw_angle import Angle
+from math_bw import clamp
+from tmp_blends import LinearBlend
+import random
+import sounds_manager as sounds
+import PostProcessing.scope_postproc
+import scope_reticle_settings
+from climb import collideBoxGeometry, clear_lines_level1
+myscope = PostProcessing.scope_postproc.myscope
+__import__('__main__').myscope = myscope
+import BWPersonality
+from Settings import Settings
+MIN_NEAR_PLANE = 0.01
+MAX_NEAR_PLANE = 0.15
+import draw_utils_extend
+dr = draw_utils_extend.LinesHolder(100)
+DEBUG_DRAW_YAW_LIM = False
+PI = math.pi
+PI2 = math.pi * 2
+
+def zoomTofov(zoom):
+    return 2 * math.atan(math.tan(player_speed_settings.FOV.DEFAULT_FOV / 2) / zoom)
+
+
+def initCameraUpdater(AvatarCam, player):
+
+    def cameraPreUpdate(dtime):
+        if player.isDestroyed:
+            AvatarCam.pDebugPreUpdate = None
+            return
+        elif player.dead:
+            return
+        else:
+            if player._view_bunocular_activate and player.binocularDevice:
+                player._updateBinocularSpread(dtime)
+            if player.model:
+                if player._camera_isWeapon or player._isFPS or player._headlight.on or player._transf_camera_attached:
+                    player.model.forceDraw()
+                    player.model.transformModsDirty = True
+                if not player._camera_isWeapon and not player._isFPS:
+                    return
+                player.setDrawModelTypes(head=False, torso=False, foot=False)
+                player.setDisableFlagParticle(True)
+                head = player.model.node('Head')
+                player.model.forceDraw(1.0, True)
+                myscope.prender.debugTickDrawPlayer(dtime, True)
+                state_3ps = AvatarCam.weaponModeFactor <= 0.799
+                myscope.paused = state_3ps
+                head_out = head.lastRenderTransform.translation.length > 0.4
+                out_from_fps = AvatarCam.weaponMode == 0
+                player.setDrawModelTypes(head=head_out, torso=state_3ps or out_from_fps, foot=True)
+                player.setDisableFlagParticle(False)
+                player.model.visible = True
+            return
+
+    AvatarCam.pDebugPreUpdate = cameraPreUpdate
+
+
+class ViewControl:
+    __prev_weapon = None
+    _last_weapon_model = None
+    _lensback_node = None
+    _lensfront_node = None
+    _near_pl_timer = 0
+    _isFPS = False
+    __reload_anim = False
+    __bolt_anim = False
+    _cam_fps_node_pivot = None
+    _cam_fps_offset = None
+    _wt_neck = None
+    _wt_neck_aim = None
+    _view_bunocular_action = False
+    _view_binocular_animation = False
+    _view_bunocular_activate = False
+    __head = True
+    __torso = True
+    __foot = True
+    __disable_particle = False
+    _snip_mode_fps_enable = True
+    head_look_cam = False
+    fps_mode = False
+    _camera_isWeapon = False
+    _player_current_fov = player_speed_settings.FOV.DEFAULT_FOV
+
+    def __init__(self):
+        pass
+
+    def initCamera(self):
+        self.AvatarCam.pFinalCalcView = self.cameraFinalCalcView
+        initCameraUpdater(self.AvatarCam, self)
+        self.updateCameraWeaponTagert()
+
+    @property
+    def isFPScamera(self):
+        return self._isFPS and self._camera_isWeapon
+
+    def isFPSmode(self):
+        return self._isFPS
+
+    def onPostModelChange1(self):
+        if self._isFPS:
+            self.enableFPS()
+
+    def onResizeScreen(self):
+        if self.isFPSmode():
+            myscope.disable()
+            myscope.enable()
+            self.updateScopeParam()
+
+    def onLeaveWorldPlayer(self):
+        myscope.disable()
+        myscope.setBinocularsMode(False)
+        dcursor = BigWorld.dcursor()
+        dcursor.pConvertMouseMove = None
+        dcursor.yawReference = None
+        dcursor.pitchReference = None
+        dcursor.autoTickLimit = False
+        dcursor.onHMEYawCam = None
+        if getattr(self, 'AvatarCam', None):
+            self.AvatarCam.pDebugPreUpdate = None
+            self.AvatarCam.pFinalCalcView = None
+            self.AvatarCam.pWeaponBlendNotifer = None
+        if self.model:
+            self.model.preDrawHook = None
+            self.model.postDrawHook = None
+        return
+
+    def onNewModel1(self):
+        self._wt_neck = None
+        self._wt_neck_aim = None
+        self._last_weapon_model = None
+        if not hasattr(self, 'AvatarCam'):
+            return
+        else:
+            self.updateCameraWeaponTagert()
+            if self._isFPS:
+                self.enableFPS()
+            return
+
+    def onChangeActiveWeapon1(self, new_weapon):
+        """ \xd0\xbd\xd0\xbe\xd0\xb2\xd0\xbe\xd0\xb5 \xd0\xb0\xd0\xba\xd1\x82\xd0\xb8\xd0\xb2\xd0\xbd\xd0\xbe\xd0\xb5 \xd0\xbe\xd1\x80\xd1\x83\xd0\xb6\xd0\xb8\xd0\xb5
+        """
+        pass
+
+    def onSwithScopeReticle(self):
+        if self.binoculing and self.binocularDevice:
+            self.binocularDevice.switchNightVision()
+            return self.updateScopeParam()
+        if not self.active_weapon:
+            return
+        attach = self.active_weapon.getCurrentIronSight()
+        if not attach:
+            return
+        if attach.switchScopeReticle():
+            self.active_weapon.playSoundScopeReticle(attach)
+            self.addWeaponSettings(reticle_index=attach._current_scope_reticle_index)
+            return self.updateScopeParam()
+        if attach.switchIronSightMode():
+            self.active_weapon.playSoundShootingMode()
+
+    def onChangeVisibleWeaponModel1(self, weapon, model):
+        if weapon:
+            new_id = weapon.getItemID()
+            active_id = self.active_weapon and self.active_weapon.getItemID()
+            return new_id and new_id != active_id and None
+        elif not hasattr(self, 'AvatarCam'):
+            return
+        elif self._last_weapon_model == model:
+            self.updateCameraWeaponTagert()
+            return
+        else:
+            self._wt_neck_aim = None
+            self._last_weapon_model = model
+            self.updateCameraWeaponTagert()
+            self.updateDCursorParam()
+            return
+
+    def onChangeModelAW1(self, new_weapon):
+        """ \xd0\xbe\xd1\x82\xd0\xbe\xd0\xb1\xd1\x80\xd0\xb0\xd0\xb6\xd0\xb0\xd0\xb5\xd0\xbc\xd0\xb0\xd1\x8f \xd0\xbc\xd0\xbe\xd0\xb4\xd0\xb5\xd0\xbb\xd1\x8c \xd1\x81\xd0\xbc\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xbb\xd0\xb0\xd1\x81\xd1\x8c (\xd0\xbd\xd0\xb0\xd0\xbf\xd1\x80\xd0\xb8\xd0\xbc\xd0\xb5\xd1\x80:\xd0\xbc\xd0\xbe\xd0\xb4\xd0\xb5\xd0\xbb\xd1\x8c \xd1\x81 \xd0\xbf\xd1\x80\xd0\xb0\xd0\xb2\xd0\xbe\xd0\xb9 \xd1\x80\xd1\x83\xd0\xba\xd0\xb8 \xd0\xbd\xd0\xb0 \xd0\xbf\xd1\x83\xd0\xb7\xd0\xbe\xd0\xba\xd0\xbe\xd1\x81\xd1\x82\xd1\x8c)
+        """
+        if not hasattr(self, 'AvatarCam'):
+            return
+        else:
+            self._wt_neck_aim = None
+            self.updateCameraWeaponTagert()
+            return
+
+    def onChangeWeaponStatus1(self):
+        if not hasattr(self, 'AvatarCam'):
+            return
+        self.updateCameraWeaponTagert()
+        can_fps = True
+        if self.active_transform and self.active_transform.getparam('camera_pivot_position') or self.active_weapon and self.active_weapon.getParam('disable_aim_camera'):
+            can_fps = False
+            self.fps_mode = False
+        if self.__isSniping() and self._snip_mode_fps_enable and can_fps and not self.lookingaround:
+            self.AvatarCam.weaponMode = 1
+            self._cam_fps_node_pivot.b_factor = 1
+            self._cam_fps_offset.b_factor = 1
+            if not self._isFPS:
+                self.enableFPS()
+            self._setHeapTagertVisible(False)
+        else:
+            if self.weaponStatus == Constants.WEAPON_BORED:
+                self._setHeapTagertVisible(False)
+            else:
+                self._setHeapTagertVisible(True)
+            self._cam_fps_node_pivot.b_factor = 0
+            self._cam_fps_offset.b_factor = 0
+            if self.model:
+                self.model.tickDisable = False
+            if self.fps_mode or self._sniping_key_pressed and self.isEquipWeaponProgress or self._view_bunocular_action:
+                if not self._isFPS:
+                    self.enableFPS()
+                    self.AvatarCam.weaponMode = 1
+            elif self._isFPS:
+                self.AvatarCam.weaponMode = 0
+                self.disableFPS()
+        if self._isFPS and self.lookingaround and not self.in_helicopter:
+            self.AvatarCam.weaponMode = 0
+            self.disableFPS()
+        self.updateScopeParam()
+        self.updateDCursorParam()
+
+    def onReloadWeapon1(self, end = False):
+        self.__reload_anim = not end
+        if not self._cam_fps_node_pivot:
+            return
+        end = 1 if end and self.__isSniping() else 0
+        self._cam_fps_node_pivot.b_factor = end
+        self._cam_fps_offset.b_factor = end
+        self.updateScopeParam()
+        if not end and self.active_weapon and self.active_weapon.getParam('reload_weapon_can_aim'):
+            return
+        self._onreloadSnipToIncombat(end)
+
+    def onBoltAnimationWeapon1(self, end = False):
+        self.__bolt_anim = not end
+        if not self._cam_fps_node_pivot:
+            return
+        end = 1 if end and self.__isSniping() else 0
+        self._cam_fps_node_pivot.b_factor = end
+        self._cam_fps_offset.b_factor = end
+        self.updateScopeParam()
+        if not end and self.active_weapon and self.active_weapon.getParam('boltAnimationCanAim'):
+            return
+        self._onreloadSnipToIncombat(end)
+
+    _return_to_snip_after_reloadw = False
+
+    def _onreloadSnipToIncombat(self, end = False):
+        if not end and self.__isSniping():
+            self._return_to_snip_after_reloadw = True
+            self.SetWeaponStatusNoValidate(Constants.WEAPON_INCOMABAT)
+        if end and self._return_to_snip_after_reloadw:
+            self._return_to_snip_after_reloadw = False
+            if self._sniping_key_pressed:
+                self.SetWeaponStatusNoValidate(Constants.WEAPON_SNIPING)
+
+    def updateViewLookArround(self, lookArround):
+        self.updateDCursorParam()
+        self.updateScopeParam()
+        self.sendHeadRotationBylookArround()
+
+    def onReloadViewSettings(self):
+        self._cam_fps_node_pivot = None
+        self._cam_fps_offset = None
+        self._wt_neck = None
+        self._wt_neck_aim = None
+        self.updateCameraWeaponTagert()
+        return
+
+    __send_head_timer = 0
+    __send_head_prev = (-100, -100)
+    __send_head_init = False
+
+    def sendHeadRotationBylookArround(self):
+        """ \xd0\xbf\xd0\xb5\xd1\x80\xd0\xb5\xd0\xb4\xd0\xb0\xd1\x87\xd0\xb0 \xd1\x87\xd0\xb5\xd1\x80\xd0\xb5\xd0\xb7 \xd1\x81\xd0\xb5\xd1\x80\xd0\xb2\xd0\xb5\xd1\x80 \xd0\xbf\xd0\xbe\xd0\xb2\xd0\xbe\xd1\x80\xd0\xbe\xd1\x82 \xd0\xb3\xd0\xbe\xd0\xbb\xd0\xbe\xd0\xb2\xd1\x8b \xd0\xb2\xd0\xbe \xd0\xb2\xd1\x80\xd0\xb5\xd0\xbc\xd1\x8f lookArround
+                (\xd0\xb8\xd0\xbb\xd0\xb8 \xd0\xb4\xd0\xb5\xd1\x80\xd0\xb6\xd0\xb0 \xd0\xbf\xd1\x83\xd0\xbb\xd0\xb5\xd0\xbc\xd0\xb5\xd1\x82 \xd0\xb2 \xd0\xb2\xd0\xb5\xd1\x80\xd1\x82\xd0\xbe\xd0\xbb\xd0\xb5\xd1\x82\xd0\xb5)
+        """
+        if self.__send_head_timer:
+            BigWorld.cancelCallback(self.__send_head_timer)
+            self.__send_head_timer = 0
+        if not self.lookingaround and not self.heli_weapon:
+            self.stopSendHeadMatrix()
+        else:
+            self._updateServerHead()
+
+    def _sendHeadMatrix(self, matr):
+        yaw, pitch = matr.yaw, matr.pitch
+        if self.in_helicopter:
+            m = Matrix()
+            m.setRotateYPR((yaw, pitch, 0))
+            he_matr = Matrix(BigWorld.entities[self.transport_seat].matrix)
+            he_matr.invert()
+            he_matr.preMultiply(m)
+            yaw, pitch = he_matr.yaw, he_matr.pitch
+        eps = 0.01
+        last_send = BigWorld.time() - getattr(self, '_send_head_ts', 0)
+        self.__send_head_init = True
+        if last_send > 2.0 or abs(self.__send_head_prev[0] - yaw) > eps or abs(self.__send_head_prev[1] - pitch) > eps:
+            self.__send_head_prev = (yaw, pitch)
+            self._send_head_ts = BigWorld.time()
+            self.cell.sendHeadDirection(self.__send_head_prev)
+
+    def stopSendHeadMatrix(self):
+        if self.__send_head_init:
+            self.cell.sendHeadDirection((-100, -100))
+            self.__send_head_init = False
+
+    def _updateServerHead(self):
+        if self.isDestroyed:
+            return
+        if not self.lookingaround and not self.heli_weapon:
+            return
+        if not self.tracker_head:
+            return
+        if self._isFPS:
+            self._sendHeadMatrix(BigWorld.dcursor())
+        elif self.tracker_head.directionProvider == self.headProvider_cam_self:
+            self._sendHeadMatrix(Matrix(self.headProvider_cam_self))
+        elif self.head_look_cam:
+            self._sendHeadMatrix(Matrix(self.tracker_head.directionProvider))
+        else:
+            self.stopSendHeadMatrix()
+            return
+        self.__send_head_timer = BigWorld.callback(0.03, self._updateServerHead)
+
+    def __preDrawHook(self):
+        if self.model:
+            self.model.setDrawModelFlagByType(self.__head, self.__torso, self.__foot, True)
+            self.model.setDisableFlagParticle(self.__disable_particle)
+
+    def __postDrawHook(self):
+        if self.model:
+            self.model.setDrawModelFlagByType(True, True, True, True)
+            self.model.setDisableFlagParticle(False)
+
+    def setDrawModelTypes(self, head = True, torso = True, foot = True):
+        self.__head = head
+        self.__torso = torso
+        self.__foot = foot
+
+    def setDisableFlagParticle(self, disable):
+        self.__disable_particle = disable
+
+    def enableFPS(self):
+        self._isFPS = True
+        self.updateTorsoFlags()
+        self.updateSoundBreathing()
+        BWPersonality.GUICore.interactHighLightGUI.onChangeViewMode()
+        if BigWorld.camera() != self.AvatarCam:
+            return
+        self.AvatarCam.collideScene = False
+        BigWorld.projection().rampFov(player_speed_settings.FOV.FPS_FOV, player_speed_settings.FOV.FPS_FOV_RF_TIME)
+        if self._view_bunocular_action:
+            self.AvatarCam.blendWeaponStep = 3.0
+        else:
+            camera_speed = self.get_perk_action_val('AIM_CAMERA_SPEED') + 1.0
+            if self.active_weapon:
+                camera_speed += self.active_weapon.getParam().get('add_aim_speed', 0)
+            self.AvatarCam.blendWeaponStep = 4.0 * camera_speed
+        self.AvatarCam.pFinalCalcView = self.cameraFinalCalcView
+        myscope.enable()
+        if self._near_pl_timer:
+            BigWorld.cancelCallback(self._near_pl_timer)
+        self._nearPlaneCheck()
+        self.updateDCursorParam()
+        self.updateScopeParam()
+
+        def onCamWeaponMode(isWeapon):
+            self._camera_isWeapon = isWeapon
+            self.updateSoundBreathing()
+            if isWeapon:
+                self.head_nodeInfo.pLookAttoPython = self._DebugHeadLookAt
+            else:
+                if self.model:
+                    self.model.preDrawHook = None
+                    self.model.postDrawHook = None
+                    self.model.setDrawModelFlagByType(True, True, True, True)
+                    self.model.setDisableFlagParticle(False)
+                    self.model.visible = True
+                    self.model.tickDisable = False
+                BigWorld.callback(0.01, self.UpdateAvatarAnimationCaps)
+            return
+
+        self.AvatarCam.pWeaponBlendNotifer = onCamWeaponMode
+        self.tracker_torso.rotate_collide_enable = False
+        if self.AvatarCam.weaponModeFactor >= 0.999:
+            onCamWeaponMode(True)
+        if self.model:
+            self.setDrawModelTypes()
+            self.model.preDrawHook = self.__preDrawHook
+            self.model.postDrawHook = self.__postDrawHook
+        self.UpdateAvatarAnimationCaps()
+        self.updateGunProvider()
+        self.onCahngeFPSMode(self.isFPSmode())
+
+    def disableFPS(self, force = False):
+        if force:
+            if self.model:
+                self.model.preDrawHook = None
+                self.model.postDrawHook = None
+                self.model.tickDisable = False
+        self._isFPS = False
+        self.updateSoundBreathing()
+        self.updateTorsoFlags()
+        BWPersonality.GUICore.interactHighLightGUI.onChangeViewMode()
+        BigWorld.projection().rampFov(player_speed_settings.FOV.DEFAULT_FOV, player_speed_settings.FOV.DEFAULT_FOV_RF_TIME)
+        self.AvatarCam.weaponMode = 0
+        self.AvatarCam.collideScene = True
+        myscope.disable()
+        BigWorld.cancelCallback(self._near_pl_timer)
+        self.updateDCursorParam()
+        self.head_nodeInfo.pLookAttoPython = None
+        BigWorld.projection().nearPlane = MAX_NEAR_PLANE
+        self.AvatarCam.uprightDirection = Vector3(0, 1, 0)
+        self.UpdateAvatarAnimationCaps()
+        self.updateGunProvider()
+        self.onCahngeFPSMode(self.isFPSmode())
+        return
+
+    _debug_prev_original_view = Vector3()
+
+    def draw_cam(self, cam_m):
+        return
+        cam_m = Matrix(cam_m)
+        proj = BigWorld.projection()
+        points = [(-1, -1),
+         (1, -1),
+         (1, 1),
+         (-1, 1),
+         (-1, -1)]
+        W, H = BigWorld.screenSize()
+        aspectRatio_ = W / float(H)
+        nearPlane_ = 0.02
+
+        def nearPlanePoint(xClip, yClip):
+            yLength = nearPlane_ * math.tan(proj.fov * 0.5)
+            xLength = yLength * aspectRatio_
+            return Math.Vector3(xLength * xClip, yLength * yClip, nearPlane_)
+
+        prev_p = None
+        for p in points:
+            cameraSpace = nearPlanePoint(p[0] * 1.003, p[1] * 1.003)
+            ray = cam_m.applyVector(cameraSpace)
+            ray.normalise()
+            src = cam_m.applyPoint(cameraSpace)
+            coll_point = None
+            res = BigWorld.collide(self.spaceID, src, src + ray * 0.9)
+            if res:
+                coll_point = res[0]
+            if prev_p:
+                src0, ray0, prev_colp = prev_p
+                self.model.addLineOneDraw(src, src + ray, (0, 0.3, 0, 1), 0)
+                self.model.addLineOneDraw(src, src0, (0, 0.3, 0, 1), 0)
+                self.model.addLineOneDraw(src + ray, src0 + ray0, (0, 0.3, 0, 1), 0)
+                self.model.addLineOneDraw(src + ray * 0.15, src0 + ray0 * 0.15, (0, 0.1, 0, 1), 0)
+                if prev_colp and coll_point:
+                    self.model.addLineOneDraw(prev_colp, coll_point, (0.9, 0.0, 0, 1), 0)
+            prev_p = (src, ray, coll_point)
+
+        if self._debug_prev_original_view:
+            self.model.addLineOneDraw(self._debug_prev_original_view, self._debug_prev_original_view + (0, 0.03, 0), (0.9, 0.3, 0, 1), 0)
+            self.model.addLineOneDraw(self._debug_prev_original_view + (0.01, 0, 0), self._debug_prev_original_view + (-0.01, 0, 0), (0.9, 0.3, 0, 1), 0)
+            self.model.addLineOneDraw(self._debug_prev_original_view + (0, 0, 0.01), self._debug_prev_original_view + (0, 0, -0.01), (0.9, 0.3, 0, 1), 0)
+            self.model.addLineOneDraw(self._debug_prev_original_view, self._debug_prev_original_view + cam_m.applyToAxis(2) * 0.15, (0.9, 0.3, 0, 1), 0)
+        spine = Matrix(self.model.node('Spine3'))
+        spine_pos = spine.translation
+        self.model.addLineOneDraw(spine_pos, spine_pos + spine.applyToAxis(0) * 0.5, (0.9, 0.3, 0, 1), 0)
+        self.model.addLineOneDraw(spine_pos, spine_pos + spine.applyToAxis(1) * 0.3, (0.0, 0.9, 0, 1), 0)
+        self.model.addLineOneDraw(spine_pos, spine_pos + spine.applyToAxis(2) * 0.6, (0.0, 0.0, 1, 1), 0)
+        return
+
+    _head_matr_by_animation = None
+
+    def _DebugHeadLookAt(self, angleYawTo_, anglePitchTo_, blendFaktorCurr_, addRollResult_, addPitchResult_, addYawResult_, mPrimaryNodeWS, mPrimaryNodeLS, mParentWS, lookAtInWSOriginal, dirInWS, lookAtInWS, waxisPitch, waxisYaw, listnodes):
+        if self._isFPS:
+            blendFaktorCurr_ = player_speed_settings.FPS_CAMERA.CAP_TO_CAM_FACTOR
+        ret = []
+        cam_matr = Matrix(self.AvatarCam.invViewMatrix)
+        if DEBUG_DRAW_CAM:
+            self.draw_cam(cam_matr)
+        cam_dir = cam_matr.applyToAxis(2)
+        ADD_CAP_TO_CAM = Matrix()
+        tmp_rot = Matrix()
+        ADD_CAP_TO_CAM.setTranslate(player_speed_settings.FPS_CAMERA.ADD_CAP_TO_CAM)
+        tmp_rot.setRotateYPR((math.pi, -math.pi / 2, 0))
+        cam_matr.preMultiply(tmp_rot)
+        cam_matr.preMultiply(ADD_CAP_TO_CAM)
+        head_world = listnodes[-1][0]
+        head_dir = head_world.applyToAxis(1)
+        dot = max(-1, min(1, head_dir.dot(cam_dir)))
+        angle = math.acos(dot)
+        waxis = head_dir.crossProduct(cam_dir)
+        worldTr = listnodes[0][0]
+        localTr = listnodes[0][1]
+        parent = Matrix(localTr)
+        parent.invert()
+        parent.postMultiply(worldTr)
+        for node in listnodes[:-1]:
+            worldTr, localTr, yawweight, pitchweight, rollweight = node
+            inverse = Matrix(parent)
+            inverse.invert()
+            local_axis = inverse.applyVector(waxis)
+            rotation = Matrix().xfromAngleAxis(local_axis, angle * yawweight)
+            rotation.blendMatrix(1.0 - blendFaktorCurr_, Matrix())
+            localTr.preMultiply(rotation)
+            ret.append(localTr)
+            parent.preMultiply(localTr)
+
+        worldTr, localTr, yawweight, pitchweight, rollweight = listnodes[-1]
+        self._head_matr_by_animation = worldTr
+        inverse = parent
+        inverse.invert()
+        inverse.preMultiply(cam_matr)
+        inverse.blendMatrix(1.0 - blendFaktorCurr_, localTr)
+        ret.append(inverse)
+        return ret
+
+    def updateCameraWeaponTagert(self):
+        if not self._cam_fps_node_pivot:
+            self._cam_fps_node_pivot = Math.MatrixBlend()
+            self._cam_fps_node_pivot.speed = 0.2
+        if not self._cam_fps_offset:
+            self._cam_fps_offset = Math.MatrixBlend()
+            self._cam_fps_offset.speed = 0.2
+            incombat_offset = Matrix()
+            aim_offset = Matrix()
+            incombat_offset.setTranslate(player_speed_settings.FPS_CAMERA.HEAD_FPS_OFFSET)
+            aim_offset.setTranslate(player_speed_settings.FPS_CAMERA.HEAD_FPS_OFFSET_AIM)
+            self._cam_fps_offset.a = incombat_offset
+            self._cam_fps_offset.b = aim_offset
+        if not self.active_weapon:
+            myscope.turnScopeEff(False)
+        self._disable_camera_aimtoweapon = False
+        if self.active_weapon:
+            self._disable_camera_aimtoweapon = self.active_weapon.getParam().get('disable_camera_aimtoweapon', False)
+        if self.active_weapon:
+            if self.__isSniping():
+                self.updateScopeParam()
+            else:
+                myscope.turnScopeEff(False)
+            try:
+                self._lensback_node = self.active_weapon.getLensbackNode()
+            except:
+                self._lensback_node = None
+                traceback.print_exc()
+
+            try:
+                self._lensfront_node = self.active_weapon.getLensFrontNode()
+            except:
+                self._lensfront_node = None
+                traceback.print_exc()
+
+        if not self._wt_neck_aim:
+            add_pivot = Matrix()
+            add_pivot.setTranslate(player_speed_settings.FPS_CAMERA.HEAD_FPS_PIVOT_AIM)
+            self._wt_neck_aim = self.model.node('Spine3', add_pivot)
+        if not self._wt_neck:
+            add_pivot = Matrix()
+            add_pivot.setTranslate(player_speed_settings.FPS_CAMERA.HEAD_FPS_PIVOT)
+            self._wt_neck = self.model.node('Spine3', add_pivot)
+        self._cam_fps_node_pivot.a = self._wt_neck
+        self._cam_fps_node_pivot.b = self._wt_neck_aim
+        self.AvatarCam.weaponTarget = self._cam_fps_node_pivot
+        return
+
+    def onStartClimbAnimation1(self, climb_obj):
+        if climb_obj.camera_to_head_anim:
+            self.camToAnim(1)
+        self.updateScopeParam()
+
+    def onEndClimbAnimation1(self, climb_obj):
+        self.camToAnim(0)
+        self.updateScopeParam()
+
+    def onEndClimbAction1(self, climb_obj):
+        self.camToAnim(0)
+        self.updateScopeParam()
+
+    def UpdateScopeMode(self, pixels_z_shift):
+        if not self.active_weapon:
+            return
+        step = 1 if pixels_z_shift > 0 else -1
+        if self.active_weapon.addScopeZoom(step):
+            sounds.playSound('guns/scope_windup', model=self.active_weapon.getModel())
+        self.updateScopeParam(scope_switch=True)
+
+    def onCameraChanged(self, new_cam):
+        print 'onCameraChanged', new_cam
+
+    def onDialogCameraActivate1(self, enable = True):
+        if enable and self._isFPS:
+            self.disableFPS()
+
+    _cam_anim_factor = 0.0
+    _to_anim = False
+
+    def camToAnim(self, to_anim, stop = False):
+        if to_anim and not self._isFPS:
+            return
+        if to_anim:
+            self.head_nodeInfo.blendFaktor = 1
+            self._to_anim = True
+        else:
+            self.head_nodeInfo.blendFaktor = 1
+            self._to_anim = False
+        if stop:
+            self._cam_anim_factor = 0
+            self._to_anim = False
+
+    def _onDestroyed(self):
+        BigWorld.camera().pFinalCalcView = None
+        myscope.disable()
+        return
+
+    class SinAminat:
+        value = 0.0
+
+        def updateBlend(self, dtime):
+            self.value += dtime
+            if self.value > math.pi * 2:
+                self.value -= math.pi * 2
+
+    _binoc_anim = SinAminat()
+
+    def _updateBinocularSpread(self, dtime):
+        self._binoc_anim.updateBlend(dtime * self.binocularDevice.getSettings()['spread_speed'])
+
+    def _getBinocularSpreadMatrix(self):
+        if not self.binocularDevice:
+            return Matrix()
+        b_set = self.binocularDevice.getSettings()
+        yaw = math.sin(self._binoc_anim.value)
+        pitch = math.cos(self._binoc_anim.value * 2.0)
+        m1 = Matrix()
+        m1.setTranslate((yaw * b_set['spread_XY'][0], pitch * b_set['spread_XY'][1], 0))
+        m2 = Matrix()
+        m2.setRotateYPR((yaw * b_set['spread_YP'][0], pitch * b_set['spread_YP'][1], 0))
+        m2.preMultiply(m1)
+        return m2
+
+    _cam_sprint_value = 0.0
+    _cam_sprint_factor = 0.0
+
+    def _apply_sprint_camera(self, view_, deltaTime):
+        sprint_camera_matr = Matrix()
+        self._cam_sprint_value += deltaTime
+        if self._cam_sprint_value > PI2:
+            self._cam_sprint_value -= PI2
+        if self.isSprintPlayed() and self._last_maxSpeed:
+            self._cam_sprint_factor += deltaTime
+        else:
+            self._cam_sprint_factor -= deltaTime * 2
+        self._cam_sprint_factor = max(0, min(1, self._cam_sprint_factor))
+        roll = math.sin(self._cam_sprint_value * player_speed_settings.SPRINT_CAMERA.speed)
+        roll *= player_speed_settings.SPRINT_CAMERA.amplitude * self._cam_sprint_factor
+        sprint_camera_matr.setRotateYPR((0, 0, roll))
+        view_.postMultiply(sprint_camera_matr)
+        return view_
+
+    def _test_camera_in_geometry(self, view_, deltaTime):
+        view_ = self._apply_sprint_camera(view_, deltaTime)
+        if not self._isFPS:
+            return view_
+        if self.in_transport:
+            return view_
+        if self.dead or self.isGetupAnimationPlayed():
+            inv_view = Matrix(view_)
+            inv_view.invert()
+            start = inv_view.translation - (0, 0.15, 0)
+            res = BigWorld.collide(self.spaceID, start, start + (0, 1, 0))
+            if res:
+                dist = res[0].distTo(start)
+                fix_underground = Matrix()
+                fix_underground.setTranslate((0, -dist, 0))
+                view_.preMultiply(fix_underground)
+        if self.IsAvatarCrawling():
+            return view_
+        if self._view_bunocular_activate:
+            view_ = Matrix(view_)
+            view_.postMultiply(self._getBinocularSpreadMatrix())
+        clear_lines_level1()
+        return view_
+
+    def cameraFinalCalcView(self, view_, finalPosInWS, useCDIWS, uprightDirectionCurrent_, deltaTime):
+        if self.isDestroyed:
+            myscope.disable()
+            BigWorld.camera().pFinalCalcView = None
+            return
+        else:
+            head_factor = 1
+            inv_v = Matrix(view_)
+            inv_v.invert()
+            if DEBUG_DRAW_CAM:
+                self._debug_prev_original_view = inv_v.applyToOrigin()
+            if self._cam_fps_offset and self._isFPS:
+                view_.postMultiply(self._cam_fps_offset)
+            if not self._head_matr_by_animation:
+                return self._test_camera_in_geometry(view_, deltaTime)
+            if self._to_anim:
+                self._cam_anim_factor += deltaTime * 2
+            else:
+                self._cam_anim_factor -= deltaTime * 2
+            self._cam_anim_factor = max(0.0, min(0.98, self._cam_anim_factor))
+            if self._cam_anim_factor <= 0:
+                return self._test_camera_in_geometry(view_, deltaTime)
+            head_anim_offset = Matrix()
+            head_anim_offset.setTranslate(player_speed_settings.FPS_CAMERA.HEAD_ANIM_OFFSET)
+            tmp_rot = Matrix()
+            tmp_rot.setRotateYPR((math.pi, -math.pi / 2, 0))
+            head_anim_offset.preMultiply(tmp_rot)
+            view_.invert()
+            head_cam = Matrix(self._head_matr_by_animation)
+            head_cam.preMultiply(head_anim_offset)
+            head_cam.blendMatrix(1 - self._cam_anim_factor, view_)
+            head_cam.invert()
+            return self._test_camera_in_geometry(head_cam, deltaTime)
+
+    def __isSniping(self):
+        return self.weaponStatus == Constants.WEAPON_SNIPING
+
+    def __isBored(self):
+        return self.weaponStatus == Constants.WEAPON_BORED
+
+    def __isRealodAnim(self):
+        return self.__bolt_anim or self.__reload_anim
+
+    __head_in_geometry_count = 0
+
+    def __set_head_geom(self, val):
+        self.physics.disablePitch = val
+        if val != self.__head_in_geometry:
+            if not val:
+                self.__head_in_geometry_count += 1
+                if self.__head_in_geometry_count > 60:
+                    self.__head_in_geometry = val
+                return
+            self.__head_in_geometry = val
+        self.__head_in_geometry_count = 0
+
+    __head_in_geometry = False
+    __head_in_geometry_step = 0
+
+    def __head_collision_blend(self, lookAtInWS, dirInWS):
+        if self.__head_in_geometry:
+            self.__head_in_geometry_step += 0.01
+        else:
+            self.__head_in_geometry_step -= 0.01
+        self.__head_in_geometry_step = max(0, min(1, self.__head_in_geometry_step))
+        vec = Vector3(0, 0, 1)
+        new_pitch = dirInWS.pitch + (lookAtInWS.pitch - dirInWS.pitch) * (1 - self.__head_in_geometry_step)
+        vec.setPitchYaw(new_pitch, lookAtInWS.yaw)
+        return vec
+
+    def __torso_pRotateTestCallBack(self, lookAtInWS, dirInWS, parentMatrixInv, directionVectorWS):
+        neck = Matrix(self._wt_neck)
+        head_pos = neck.translation
+        center_ent = Vector3(self.position)
+        center_ent.y = head_pos.y
+        pos_c = self.position + (0, 1.3, 0)
+        direction = Vector3(0, 0, 1)
+        direction.setPitchYaw(0, lookAtInWS.yaw)
+        if not self._isFPS or self.IsAvatarCrawling():
+            clear_lines_level1()
+        if collideBoxGeometry(self.spaceID, pos_c, direction, 0.3, 0.9, 0.8, draw_level=1):
+            v = Vector3()
+            v.setPitchYaw(0, directionVectorWS.yaw)
+            return v
+        else:
+            return directionVectorWS
+        return self.__head_collision_blend(lookAtInWS, dirInWS)
+
+    __last_time = 0
+
+    def _nearPlaneCheck(self):
+        """ \xd0\xbf\xd1\x80\xd0\xb8 \xd0\xbf\xd1\x80\xd0\xb8\xd0\xb1\xd0\xbb\xd0\xb8\xd0\xb6\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb8 \xd0\xba\xd0\xb0\xd0\xbc\xd0\xb5\xd1\x80\xd1\x8b \xd0\xba \xd0\xb3\xd0\xb5\xd0\xbe\xd0\xbc\xd0\xb5\xd1\x82\xd1\x80\xd0\xb8\xd0\xb8 \xd1\x83\xd0\xbc\xd0\xb5\xd0\xbd\xd1\x8c\xd1\x88\xd0\xb0\xd1\x82\xd1\x8c nearPlane
+        """
+        if self.isDestroyed:
+            return
+        m = Matrix()
+        m.setRotateYPR((self.AvatarCam.direction.yaw, 0, self.torso_roll_value * player_speed_settings.QE_TORSO_ROLL.FPS_CAMERA_MULT))
+        v = m.applyToAxis(1)
+        self.AvatarCam.uprightDirection = v
+        proj = BigWorld.projection()
+        dtime = time.time() - self.__last_time
+        self.__last_time = time.time()
+        dtime = min(0.2, dtime)
+        cam_m = Matrix(BigWorld.camera().invViewMatrix)
+        points = [(-1, -1),
+         (1, -1),
+         (1, 1),
+         (1, 1),
+         (0, 0)]
+        W, H = BigWorld.screenSize()
+        aspectRatio_ = W / float(H)
+        nearPlane_ = MIN_NEAR_PLANE
+
+        def nearPlanePoint(xClip, yClip):
+            yLength = nearPlane_ * math.tan(proj.fov * 0.5)
+            xLength = yLength * aspectRatio_
+            return Math.Vector3(xLength * xClip, yLength * yClip, nearPlane_)
+
+        def isCollide():
+            for i in (1, 0.5):
+                for p in points:
+                    cameraSpace = nearPlanePoint(p[0] * i, p[1] * i)
+                    ray = cam_m.applyVector(cameraSpace)
+                    ray.normalise()
+                    src = cam_m.applyPoint(cameraSpace)
+                    if BigWorld.collide(self.spaceID, src, src + ray * 0.4):
+                        return True
+
+        if isCollide():
+            proj.nearPlane = MIN_NEAR_PLANE
+        else:
+            proj.nearPlane = MAX_NEAR_PLANE
+        self._near_pl_timer = BigWorld.callback(0, self._nearPlaneCheck)
+
+    def get_yaw_reference(self):
+        if self.is_gunpoint:
+            gun_point = BigWorld.entities.get(self.transport_seat)
+            if gun_point:
+                return Matrix(gun_point.matrix)
+        return self.model.node('HP_GUNR_LIMIT')
+
+    def updateDCursorParam(self):
+        if self.isDestroyed:
+            return
+        elif not self.isInWorld:
+            return
+        else:
+            dcursor = BigWorld.dcursor()
+            dcursor.onHMEYawCam = self._onHMEYawCam
+            dcconf = player_speed_settings.DCURSOR_LIMITS
+            if self._isFPS:
+                if not self.model:
+                    return
+                dcursor.pConvertMouseMove = self.pConvertMouseMoveDcursor
+                dcursor.enableLock180 = 0
+                dcursor.autoTickLimit = True
+                dcursor.yawReference = self.get_yaw_reference()
+                dcursor.pitchReference = self.model.node('HP_GUNR_LIMIT')
+                dcconf = player_speed_settings.DCURSOR_FPS_LIMITS
+                if self.isSprintPlayed():
+                    dcconf = player_speed_settings.DCURSOR_FPS_SPRINT_LIMITS
+                if self.lookingaround and not self.__isBored():
+                    dcconf = player_speed_settings.DCURSOR_FPS_lookingaround_INCOMB_LIMITS
+                if self.__isSniping() and self.lookingaround:
+                    dcconf = player_speed_settings.DCURSOR_FPS_lookingaround_AIM_LIMITS
+                    dcursor.pitchReference = self.model.node('HP_GUNR')
+                if self._view_bunocular_activate:
+                    dcconf = player_speed_settings.DCURSOR_FPS_bunocular_LIMITS
+                if self.heli_weapon:
+                    if self.is_gunpoint:
+                        dcconf = player_speed_settings.DCURSOR_FPS_STARIONARY_GUNNER_LIMITS
+                    else:
+                        dcconf = player_speed_settings.DCURSOR_FPS_IN_TRANSPORT_HELI_GUNNER_LIMITS
+                elif self.in_helicopter:
+                    dcconf = player_speed_settings.DCURSOR_FPS_IN_TRANSPORT_HELI_LIMITS
+                dcursor.minYaw = dcconf.get_min_yaw()
+                dcursor.maxYaw = dcconf.get_max_yaw()
+                dcursor.maxByNodePitch = math.radians(dcconf.node_max_pitch)
+                dcursor.minByNodePitch = math.radians(dcconf.node_min_pitch)
+            else:
+                dcursor.pConvertMouseMove = self.pConvertMouseMoveDcursor
+                dcursor.yawReference = None
+                dcursor.pitchReference = None
+                dcursor.autoTickLimit = False
+            dcursor.maxPitch = math.radians(dcconf.global_max_pitch)
+            dcursor.minPitch = math.radians(dcconf.global_min_pitch)
+            return
+
+    _debug_sens_spam = False
+
+    def pConvertMouseMoveDcursor(self, dx, dy, hvbias, msens):
+        dYaw = dx * msens
+        dPitch = dy * msens
+        m = Matrix()
+        m.setRotateYPR((0, 0, self.torso_roll_value * player_speed_settings.QE_TORSO_ROLL.FPS_CAMERA_MULT))
+        v = Vector3()
+        v.setPitchYaw(dPitch, dYaw)
+        v = m.applyVector(v)
+        dYaw = v.yaw * hvbias
+        dPitch = v.pitch * (1 - hvbias)
+        if getattr(self, '_pygunnode', None):
+            self._pygunnode.onDcursorMove(dYaw, dPitch)
+        if self._debug_sens_spam:
+            print 'DEBUG SENS', [dx,
+             dy,
+             hvbias,
+             msens], (dYaw, dPitch)
+        return (dYaw, dPitch)
+
+    def _onHMEYawCam(self, yaw_, yawCam_, dYaw):
+        if self.isDestroyed:
+            return (0, 0)
+        if self.lookingaround or not self.model:
+            return (yaw_ + dYaw, yawCam_ + dYaw)
+        rot_speed = abs(dYaw) / BigWorld.getTimeDelta()
+        if self.IsAvatarStand():
+            max_rot_speed = player_speed_settings.DCURSOR.MAX_ROT_SPEED_STAY
+        else:
+            max_rot_speed = player_speed_settings.DCURSOR.MAX_ROT_SPEED_CROUCH
+        if rot_speed > max_rot_speed:
+            minus = -1 if dYaw < 0 else 1
+            dYaw = max_rot_speed * BigWorld.getTimeDelta() * minus
+        if dYaw and self.lookingaround_smooth:
+            if self._get_angle_dc_saved_dc() > 0.7:
+                return (yaw_, yawCam_)
+            self.stopSmoothReturnDCursor()
+        return (yaw_ + dYaw, yawCam_ + dYaw)
+
+    def onChangeScopeModel(self):
+        self._wt_neck_aim = None
+        self.updateCameraWeaponTagert()
+        self.updateDCursorParam()
+        self.onChangeWeaponStatus()
+        self.updateScopeParam()
+        return
+
+    def onBinocularsAction(self, value):
+        """\xd0\xb8\xd0\xb3\xd1\x80\xd0\xbe\xd0\xba \xd0\xbd\xd0\xb0\xd0\xb6\xd0\xb0\xd0\xbb-\xd0\xbe\xd1\x82\xd0\xbf\xd1\x83\xd1\x81\xd1\x82\xd0\xb8\xd0\xbb \xd0\xba\xd0\xbd\xd0\xbe\xd0\xbf\xd0\xba\xd1\x83 \xd0\xb1\xd0\xb8\xd0\xbd\xd0\xbe\xd0\xba\xd0\xbb\xd1\x8c"""
+        if self.lookingaround:
+            value = False
+        self._view_bunocular_action = value
+        self.onChangeWeaponStatus1()
+
+    def onBinocularsAnimation(self, value):
+        """\xd0\xb8\xd0\xb4\xd0\xb5\xd1\x82 \xd0\xb0\xd0\xbd\xd0\xb8\xd0\xbc\xd1\x86\xd0\xb8\xd1\x8f \xd1\x81 \xd0\xb1\xd0\xb8\xd0\xbd\xd0\xbe\xd0\xba\xd0\xbb\xd0\xb5\xd0\xbc"""
+        pass
+
+    def onBinocularsActivate(self, value):
+        """\xd0\xb8\xd0\xb3\xd1\x80\xd0\xbe\xd0\xba \xd1\x81\xd0\xbc\xd0\xbe\xd1\x82\xd1\x80\xd0\xb8\xd1\x82 \xd0\xb2 \xd0\xb1\xd0\xb8\xd0\xbd\xd0\xbe\xd0\xba\xd0\xbb\xd1\x8c"""
+        if not self._view_bunocular_action:
+            value = False
+        self._view_bunocular_activate = value
+        if self.binocularDevice and value:
+            myscope.binocular_param = self.binocularDevice.getSettings()
+            myscope.setBinocularsBlackScreen(myscope.binocular_param['fadein_time'])
+        BWPersonality.GUICore.onChangeBinoculars(value)
+        myscope.setBinocularsMode(value)
+        if self.model.ThrowLeft:
+            if value:
+                self.model.ThrowLeft.visible = False
+            else:
+                self.model.ThrowLeft.visible = True
+        if self.binocularDevice and value:
+            fov = zoomTofov(self.binocularDevice.getCurrentZoom())
+            param = self.binocularDevice.getSettings()
+            if not self.binocularDevice.getNightVision():
+                myscope.ph_binocular.material.nightVision = False
+            else:
+                myscope.ph_binocular.material.nightVision = True
+                myscope.ph_binocular.material.nightVisionMult = param.get('nightvision_mult', 20.0)
+                myscope.ph_binocular.material.nightVisionGreen = param.get('nightvision_multG', 12.0)
+        elif not value:
+            fov = player_speed_settings.FOV.FPS_FOV
+        BigWorld.projection().fov = fov
+
+    def updateScopeParam(self, scope_switch = False):
+        global scope_reticle_settings
+        myscope.setDof(Settings().getPostProcessingQuality() < 1)
+        myscope.updateDofSettings(scope_reticle_settings.DOF)
+        if self._view_bunocular_activate:
+            if self.binocularDevice:
+                newFov = zoomTofov(self.binocularDevice.getCurrentZoom())
+                BigWorld.projection().rampFov(newFov, 0.1)
+                myscope.rampFovWeapon(-1, 0.0)
+                param = self.binocularDevice.getSettings()
+                if not self.binocularDevice.getNightVision():
+                    myscope.ph_binocular.material.nightVision = False
+                else:
+                    myscope.ph_binocular.material.nightVision = True
+                    myscope.ph_binocular.material.nightVisionMult = param.get('nightvision_mult', 20.0)
+                    myscope.ph_binocular.material.nightVisionGreen = param.get('nightvision_multG', 12.0)
+            return
+        else:
+            attach = None
+            param = None
+            param_reticle = None
+            if self.active_weapon:
+                attach = self.active_weapon.getCurrentScope()
+                if attach:
+                    param = attach.getScopeParams()
+                    param_reticle = attach.getScopeReticleParams()
+            if self.active_weapon:
+                self.active_weapon.onlookInScope(self.__isSniping())
+            newFov = player_speed_settings.FOV.DEFAULT_FOV
+            ramp_t = player_speed_settings.FOV.DEFAULT_FOV_RF_TIME
+            if self._isFPS:
+                newFov = player_speed_settings.FOV.FPS_FOV
+                ramp_t = player_speed_settings.FOV.FPS_FOV_RF_TIME
+            if self.__isSniping():
+                newFov = player_speed_settings.FOV.FPS_SNIP_FOV
+                ramp_t = player_speed_settings.FOV.FPS_SNIP_FOV_RF_TIME
+            if self.isSprintPlayed():
+                newFov = player_speed_settings.FOV.SPRINT_FOV
+                ramp_t = player_speed_settings.FOV.SPRINT_FOV_RF_TIME
+            weaponFov = -1
+            if param and param_reticle:
+                if len(param['zoom']) <= attach.current_zoom_id:
+                    attach.current_zoom_id = len(param['zoom']) - 1
+                world_scale, weapon_scale, lens_scale = param['zoom'][attach.current_zoom_id]
+                if self.__isSniping():
+                    use_mask_tints = param.get('use_mask_tints')
+                    myscope.turnScopeEff(True, attach, use_mask_tints)
+                myscope.blur_enable = param.get('blur_enable', True)
+                myscope.ph_scope.material.StaticBlureA = param.get('StaticBlureA', 2.0)
+                myscope.ph_scope.material.StaticBlureB = param.get('StaticBlureB', 2.0)
+                myscope.SetCollimatorMode(param.get('collimator_mode', False))
+                myscope.blur_brightness(param.get('blur_brightness', scope_reticle_settings.DEF_BLUR_BRIGHTNESS))
+                myscope.weapon_attenuation(param.get('weapon_attenuation', scope_reticle_settings.DEF_WEAPON_ATTENUATION))
+                if self.__isSniping() and not self.lookingaround and not self.__isRealodAnim() and not self.isImpactingPlayed():
+                    newFov = zoomTofov(world_scale)
+                    if weapon_scale > 0:
+                        weaponFov = zoomTofov(weapon_scale)
+                else:
+                    myscope.blur_brightness(scope_reticle_settings.DEF_BLUR_BRIGHTNESS)
+                    myscope.weapon_attenuation(scope_reticle_settings.DEF_WEAPON_ATTENUATION)
+                myscope.black_edge_speed = param.get('black_edge_speed', scope_reticle_settings.DEF_BLACK_EDGE_SPEED)
+                myscope.ph_scope.material.blackEnable = param.get('black_edge', False)
+                myscope.ph_scope.material.scopeRadius = param['radius']
+                myscope.ph_scope.material.scopeScale = lens_scale
+                myscope.ph_scope.material.scopeLensFactor = param.get('scopeLensFactor', 0)
+                myscope.ph_scope.material.lensColorMul = param.get('lens_mul_color', (1, 1, 1, 1))
+                myscope.ph_scope.material.lensColorAdd = param.get('lens_add_color', (0, 0, 0, 0))
+                myscope.ph_scope.material.gridSize = param_reticle['reticle_scale']
+                myscope.ph_scope.material.gridTexture = param_reticle['texture']
+                myscope.ph_scope.material.gridColorMul = param_reticle.get('reticle_color', scope_reticle_settings.DEF_RETICLE_COLOR)
+                if not param_reticle.get('nightvision_enable', False):
+                    myscope.ph_scope.material.nightVision = False
+                else:
+                    myscope.ph_scope.material.nightVision = True
+                    myscope.ph_scope.material.nightVisionMult = param.get('nightvision_mult', 20.0)
+                    myscope.ph_scope.material.nightVisionAdd = param.get('nightvision_add', 0.0)
+                    myscope.ph_scope.material.nightVisionGreen = param.get('nightvision_multG', 12.0)
+            else:
+                myscope.turnScopeEff(False)
+                myscope.blur_brightness(scope_reticle_settings.DEF_BLUR_BRIGHTNESS)
+                myscope.weapon_attenuation(scope_reticle_settings.DEF_WEAPON_ATTENUATION)
+                weaponFov = -1
+            if self.lookingaround or not self.__isSniping() or self.isImpactingPlayed():
+                weaponFov = -1
+            if scope_switch:
+                ramp_t = player_speed_settings.FOV.RAMPFOV_SCOPESWITCH_TIME
+            myscope.rampFovWeapon(weaponFov, ramp_t)
+            BigWorld.projection().rampFov(newFov, ramp_t)
+            self._player_current_fov = newFov
+            return
+
+    def _reload_scope_config(self):
+        global scope_reticle_settings
+        import scope_reticle_settings
+        reload(scope_reticle_settings)
+        import binoculars_settings
+        reload(binoculars_settings)
+        for w in self.weapon_slots.values():
+            w._weapon.resetScope()
+
+        self.updateScopeParam()

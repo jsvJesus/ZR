@@ -1,0 +1,138 @@
+# Embedded file name: ./client/transform_weapon.py
+import BigWorld
+import Constants
+import FX
+import traceback
+from Math import Matrix
+
+class TransformWeapon(object):
+
+    def __init__(self, entity, config):
+        super(TransformWeapon, self).__init__()
+        self.config = config
+        self._entity = entity
+        self._model = None
+        self._fid = 0
+        self._fire_node = None
+        self._ammo_number = self.config.get('ammo_number', 0)
+        self.trackerOverrideItemType = self.config.get('trackerOverrideItemType', 0)
+        model_path = str(self.config['model_path'])
+        BigWorld.fetchModel(model_path, self.onLoadModel)
+        return
+
+    def onLoadModel(self, model_weapon):
+        if not self._entity:
+            return
+        self.model_weapon = model_weapon
+        fire_node = self.config.get('fire_node', 'HP_effect')
+        self._fire_node = model_weapon.node(str(fire_node))
+        attach_hardpoint = self.config.get('attach_hardpoint')
+        attach_node = self.config.get('attach_node')
+        try:
+            for dye, tintname in self.config.get('tint', {}).items():
+                setattr(model_weapon, str(dye), str(tintname))
+
+        except:
+            print 'error config', self.config
+            traceback.print_exc()
+
+        if attach_hardpoint:
+            attach_hardpoint = attach_hardpoint[3:]
+            setattr(self._entity.model, attach_hardpoint, self.model_weapon)
+        elif attach_node:
+            self._entity.model.node(attach_node).attach(self.model_weapon)
+        else:
+            raise ValueError('Error attach TransformWeapon')
+
+    def onDestroy(self):
+        attach_hardpoint = self.config.get('attach_hardpoint')
+        attach_node = self.config.get('attach_node')
+        try:
+            if self._entity and self._entity.model and self.model_weapon:
+                if attach_hardpoint:
+                    attach_hardpoint = attach_hardpoint[3:]
+                    setattr(self._entity.model, attach_hardpoint, None)
+                elif attach_node:
+                    self._entity.model.node(attach_node).detach(self.model_weapon)
+        except:
+            traceback.print_exc()
+
+        self._fire_node = None
+        self.model_weapon = None
+        self._entity = None
+        self.config = None
+        if self._fid:
+            BigWorld.cancelCallback(self._fid)
+            self._fid = None
+        return
+
+    def fire(self, action_id, skill):
+        if self._fid:
+            return
+        self.action_id = action_id
+        if self.config['type'] == 'FIREWORKS':
+            self._fire_fireworks()
+        elif self.config['type'] == 'SPARKLE':
+            self._fire_sparkle()
+            BigWorld.skill = skill
+        else:
+            raise ValueError('unknown type %r' % self.config['type'])
+
+    def getAmmoNumber(self):
+        return self._ammo_number
+
+    def _fire_fireworks(self):
+        self._fid = 0
+        if self._ammo_number <= 0:
+            return
+        self._ammo_number -= 1
+        fire_sfx = self.config.get('fire_sfx')
+        if fire_sfx:
+            FX.bufferedOneShotEffect(str(fire_sfx), self.model_weapon)
+        if self._entity == BigWorld.player():
+            grenade_params = {}
+            grenade_type = self.config.get('grenade_type')
+            grenade_velocity = self.config.get('grenade_velocity', 5)
+            node = Matrix(self._fire_node)
+
+            def callbackOnThrow(param):
+                if not param:
+                    return
+                position, velocity, clientGrenadeID, timeBeforeFlyEnd, destPos = param
+                self._entity.cell.transformFireGrenade(position, velocity, clientGrenadeID, grenade_type)
+
+            position = node.translation
+            velocity = node.applyToAxis(2) * grenade_velocity
+            self._entity.throw(grenade_params, position, velocity, grenade_type, callbackOnThrow=callbackOnThrow)
+        if self._ammo_number > 0:
+            self._fid = BigWorld.callback(1.0, self._fire_fireworks)
+
+    def _fire_sparkle(self):
+        self._fid = 0
+        if self._ammo_number <= 0:
+            return
+        self._ammo_number -= 1
+        self._end_time_sparkle = BigWorld.time() + self.config['sparkle_time']
+        self._sparkle_size = self.config['sparkle_size']
+        fire_sfx = self.config.get('fire_sfx')
+        if fire_sfx:
+            FX.bufferedOneShotEffect(str(fire_sfx), self.model_weapon)
+        if self._entity == BigWorld.player():
+            self._loop_damage_sparkle()
+
+    def _loop_damage_sparkle(self):
+        self._fid = 0
+        if BigWorld.time() >= self._end_time_sparkle:
+            return
+        node = Matrix(self._fire_node)
+        src = node.translation
+        dst = src + node.applyToAxis(2) * self._sparkle_size
+        res = BigWorld.traceBullet(src, dst, self._entity.id)
+        if res:
+            entityID, point, collider_name = res
+            target = BigWorld.entity(entityID)
+            if target.__class__.__name__ in ('Avatar',) + Constants.CREATURE_CLASSES:
+                if not target.dead:
+                    self._entity.cell.transformAttack(self._entity.transformationID, self.action_id, [entityID])
+        sparkle_tick_time = self.config.get('sparkle_tick_time', 0.1)
+        self._fid = BigWorld.callback(sparkle_tick_time, self._loop_damage_sparkle)

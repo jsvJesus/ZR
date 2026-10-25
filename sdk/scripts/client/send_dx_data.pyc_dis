@@ -1,0 +1,419 @@
+# Embedded file name: ./client/send_dx_data.py
+import BigWorld
+import BWPersonality
+import os
+from datetime import date
+import xml.etree.ElementTree as ET
+import re
+import base64
+import json
+import requests
+from threading import Thread
+import subprocess
+import time
+import traceback
+from utils import plog
+SAVE_INFO_URL = 'http://k-dx-stat.stalker.so:8096/save_info2'
+SAVE_FILE_URL = 'http://k-dx-stat.stalker.so:8096/save_file'
+DATE_FORMAT = '%Y-%m'
+SYS_PARAMS_TXT = ('SystemManufacturer', 'SystemModel', 'DirectXVersion')
+DISPLAY_PARAMS_TXT = ('CardName', 'Manufacturer', 'ChipType', 'HDRSupport', 'ColorSpace', 'OutputType', 'DriverFileVersion', 'DriverVersion', 'DDIVersion', 'DriverModel')
+
+def print_log(title, *args):
+    line = ', '.join(map(str, args))
+    if line:
+        text = '[DX_DATA] {0}: {1}'.format(title, line)
+    else:
+        text = '[DX_DATA] {0}'.format(title)
+    plog(text)
+
+
+def get_comp_id():
+    from uuid import getnode
+    from random import random
+    try:
+        comp_id = str(getnode())
+    except Exception as e:
+        print_log('Failed getnode', e)
+        comp_id = 'R{0}'.format(random.random())
+
+    return comp_id
+
+
+def encrypt(data):
+    key = '2d23H0b9qVmCCI68'
+    iv = 'jk9gh0b9qV34CI51'
+    msg = json.dumps(data)
+    mod = len(msg) % 16
+    if mod:
+        msg += '\x10' * (16 - mod)
+    try:
+        encrypted = BigWorld.bwAES(msg, key, iv, True)
+    except Exception as e:
+        print_log('Failed encrypt', e)
+    else:
+        return base64.encodestring(encrypted)
+
+
+KEY_MAX_LEN = 60
+
+def processing_for_mongo(data):
+
+    def _processing(val):
+        if isinstance(val, (list, tuple)):
+            return tuple((_processing(v) for v in val))
+        if len(val) > KEY_MAX_LEN:
+            val = val[:KEY_MAX_LEN]
+        return val.replace('.', ',')
+
+    for k, val in data.items():
+        if k == 'display_devices':
+            devices = val
+            for i in xrange(len(devices)):
+                for k2, v2 in devices[i].items():
+                    devices[i][k2] = _processing(v2)
+
+        else:
+            data[k] = _processing(val)
+
+
+class Parser:
+    """Parser for dxdiag.xml"""
+
+    def __init__(self):
+        self.empty_field = None
+        return
+
+    def parse_file(self, dxdiag_path):
+
+        def get_text(section, k):
+            res = section.find(k)
+            if res is None:
+                return ''
+            elif res.text is None:
+                return ''
+            else:
+                return res.text.strip()
+
+        def get_os(section, k):
+            txt = get_text(section, k)
+            i = txt.find('(')
+            if i > 0:
+                txt = txt[:i]
+            return txt.strip()
+
+        def get_processor(section, k):
+
+            def get_freq_interval(freq):
+                if freq < 1.4:
+                    return 'below 1.4'
+                elif 1.4 <= freq < 1.6:
+                    return '1.4-1.6'
+                elif 1.6 <= freq < 1.8:
+                    return '1.6-1.8'
+                elif 1.8 <= freq < 2.0:
+                    return '1.8-2.0'
+                elif 2.0 <= freq < 2.2:
+                    return '2.0-2.2'
+                elif 2.2 <= freq < 2.4:
+                    return '2.2-2.4'
+                elif 2.4 <= freq < 2.6:
+                    return '2.4-2.6'
+                elif 2.6 <= freq < 2.8:
+                    return '2.6-2.8'
+                elif 2.8 <= freq < 3.0:
+                    return '2.8-3.0'
+                elif 3.0 <= freq < 3.2:
+                    return '3.0-3.2'
+                elif 3.2 <= freq < 3.4:
+                    return '3.2-3.4'
+                elif 3.4 <= freq < 3.6:
+                    return '3.4-3.6'
+                elif 3.6 <= freq <= 3.8:
+                    return '3.6-3.8'
+                else:
+                    return 'above 3.8'
+
+            txt = ' '.join(get_text(section, k).split())
+            cpus = None
+            pattern_cpu = '\\D(\\d{1,2})\\s?CPU[s]?\\)?\\,?'
+            res = re.search(pattern_cpu, txt)
+            if res:
+                cpus = res.group(1)
+                txt = re.sub(pattern_cpu, '', txt)
+            freq_interval = None
+            pattern_ghz = '\\D(\\d+\\.?\\d*)\\s?GHz\\)?\\,?'
+            res = re.search(pattern_ghz, txt)
+            if res:
+                freq_interval = get_freq_interval(float(res.group(1)))
+                txt = re.sub(pattern_ghz, '', txt)
+            return (txt.strip(), cpus, freq_interval)
+
+        def get_memory(section, k):
+            txt = get_text(section, k)
+            res = re.search('\\d+', txt)
+            if res:
+                return '{0:.0f}'.format(float(res.group(0)) / 1024)
+            else:
+                return None
+
+        def get_second_memory(section, k):
+            txt = get_text(section, k)
+            res = re.search('(\\d+)\\D+$', txt)
+            if res:
+                return '{0:.0f}'.format(float(res.group(1)) / 1024)
+            else:
+                return None
+
+        def get_resolution_freq(section, k):
+            txt = get_text(section, k)
+            frequency = None
+            pattern_hz = '\\D(\\d+\\.?\\d*)\\s?Hz\\)?'
+            res = re.search(pattern_hz, txt)
+            if res:
+                frequency = '{0:.0f}'.format(float(res.group(1)))
+                txt = re.sub(pattern_hz, '', txt)
+            return (txt.strip(), frequency)
+
+        def get_monitor(section, keys):
+            res_list = []
+            for k in keys:
+                txt = get_text(section, k)
+                if txt:
+                    res_list.append(txt)
+
+            if len(res_list) == 3:
+                return '/'.join(res_list)
+
+        def get_levels(section, k):
+            res_set = set()
+            for i in get_text(section, k).split(','):
+                lvl = i.strip()
+                if lvl:
+                    res_set.add(lvl.replace('.', '_'))
+
+            return tuple(res_set)
+
+        def get_valid_xml_str():
+            with open(dxdiag_path, 'r') as fh:
+                lines = fh.readlines()
+                remove_re = re.compile(u'[\x00-\x08\x0b-\x0c\x0e-\x1f\x7f]')
+                for i in xrange(len(lines)):
+                    lines[i] = remove_re.sub('', lines[i])
+
+            return ''.join(lines)
+
+        root = ET.fromstring(get_valid_xml_str())
+
+        def is_valid_value(val):
+            if val:
+                return True
+            self.empty_field = True
+
+        data = {}
+
+        def add_item(k, val):
+            if is_valid_value(val):
+                data[k] = val
+
+        def extract_value(section, k, extract_func):
+            txt = extract_func(section, k)
+            add_item(k, txt)
+
+        def parse_sys_section():
+            sys_section = root.find('SystemInformation')
+            if sys_section is None:
+                self.empty_field = True
+                return
+            else:
+                for k in SYS_PARAMS_TXT:
+                    extract_value(sys_section, k, get_text)
+
+                for k in ('Memory', 'AvaliableOSMem'):
+                    extract_value(sys_section, k, get_memory)
+
+                extract_value(sys_section, 'OperatingSystem', get_os)
+                extract_value(sys_section, 'PageFile', get_second_memory)
+                proc_name, cpus, frequency = get_processor(sys_section, 'Processor')
+                add_item('Processor', proc_name)
+                add_item('PhysicalCPUs', cpus)
+                add_item('FrequencyCPU', frequency)
+                return
+
+        parse_sys_section()
+
+        def parse_devices_section():
+            display_devices = root.find('DisplayDevices')
+            if display_devices is None:
+                self.empty_field = True
+                return
+            else:
+                devices_section = display_devices.findall('DisplayDevice')
+                device_ids = set()
+                devices_list = []
+                for device_section in devices_section:
+                    device_info = {}
+
+                    def add_info(k, val):
+                        if is_valid_value(val):
+                            device_info[k] = val
+
+                    device_id = get_text(device_section, 'DeviceIdentifier')
+                    if device_id not in device_ids:
+                        device_ids.add(device_id)
+                        for k in DISPLAY_PARAMS_TXT:
+                            txt = get_text(device_section, k)
+                            add_info(k, txt)
+
+                        for k in ('DisplayMemory', 'DedicatedMemory', 'SharedMemory'):
+                            txt = get_memory(device_section, k)
+                            add_info(k, txt)
+
+                        levels = get_levels(device_section, 'FeatureLevels')
+                        add_info('FeatureLevels', levels)
+                    outputType = get_text(device_section, 'OutputType')
+                    add_info('OutputType', outputType)
+                    for k in ('Current', 'Native'):
+                        resolution, frequency = get_resolution_freq(device_section, '{0}Mode'.format(k))
+                        add_info('{0}Resolution'.format(k), resolution)
+                        add_info('{0}Frequency'.format(k), frequency)
+
+                    monitor = get_monitor(device_section, ('MonitorName', 'MonitorModel', 'MonitorId'))
+                    add_info('Monitor', monitor)
+                    if device_info:
+                        devices_list.append(device_info)
+
+                if is_valid_value(devices_list):
+                    data['display_devices'] = devices_list
+                return
+
+        parse_devices_section()
+        processing_for_mongo(data)
+        return data
+
+
+def post_request(url, data, params):
+    response = None
+    try:
+        response = requests.post(url, data=data, params=params, verify=False)
+        if response.status_code == 200:
+            if response.text != 'saved':
+                raise Exception("Invalid content: '{0}'".format(response.content))
+        else:
+            raise Exception('Error status_code: {0} {1}'.format(url, response.status_code))
+    except Exception:
+        print_log('Failed post_request', traceback.format_exc())
+
+    if response:
+        print_log('response', type(data), response.status_code)
+        response.raw.release_conn()
+        return True
+    else:
+        return
+
+
+def run_in_thread(dxdiag_path, on_exit):
+    CREATE_NO_WINDOW = 134217728
+    subprocess.call('dxdiag /x {0}'.format(dxdiag_path), creationflags=CREATE_NO_WINDOW, shell=True)
+    for _ in xrange(30):
+        if os.path.exists(dxdiag_path):
+            break
+        else:
+            time.sleep(1.0)
+
+    params = dict(comp_id=get_comp_id())
+
+    def send_dxdiag():
+        print_log('send_dxdiag')
+        try:
+            with open(dxdiag_path, 'rb') as fh:
+                success = post_request(SAVE_FILE_URL, data=fh, params=params)
+        except Exception as e:
+            print_log('Failed send_dxdiag', e)
+        else:
+            return success
+
+    parser = Parser()
+    try:
+        data = parser.parse_file(dxdiag_path)
+    except Exception:
+        print_log('Failed parse_file', traceback.format_exc())
+        send_dxdiag()
+    else:
+        if parser.empty_field:
+            success = send_dxdiag()
+        else:
+            success = True
+        if success:
+            encrypted = encrypt(data)
+            if encrypted:
+                if post_request(SAVE_INFO_URL, data=encrypted, params=params):
+                    on_exit()
+
+    if os.path.isfile(dxdiag_path):
+        try:
+            os.remove(dxdiag_path)
+        except OSError as e:
+            print_log('Failed remove dxdiag', e)
+
+
+def send():
+
+    def get_so_dir():
+        appdata_path = os.getenv('APPDATA')
+        if appdata_path and os.path.isdir(appdata_path):
+            sub_dir = os.path.join(appdata_path, 'SOGame')
+            if not os.path.isdir(sub_dir):
+                try:
+                    os.makedirs(sub_dir)
+                except OSError as e:
+                    print_log('Failed make directory', e)
+                    return
+
+            return sub_dir
+
+    def need_send():
+        """If failed read prev_date or prev_date != curr_date then True else False"""
+
+        def check_date(timestamp):
+            d = date.fromtimestamp(timestamp)
+            prev_date = d.strftime(DATE_FORMAT)
+            curr_date = date.today().strftime(DATE_FORMAT)
+            return prev_date != curr_date
+
+        if os.path.isdir(so_dir):
+            if os.path.isfile(timestamp_path):
+                try:
+                    with open(timestamp_path, 'r') as fh:
+                        timestamp = float(fh.read().strip())
+                except Exception as e:
+                    print_log('Failed read timestamp', e)
+                else:
+                    return check_date(timestamp)
+
+        return True
+
+    def write_curr_date():
+        """Write curr_date in file"""
+        timestamp = '{0:.0f}'.format(time.mktime(date.today().timetuple()))
+        try:
+            with open(timestamp_path, 'w') as fh:
+                fh.write(timestamp)
+        except IOError as e:
+            print_log('Failed write_curr_date', e)
+
+    sub_dir = get_so_dir()
+    so_dir = sub_dir if sub_dir else BWPersonality.GAME_DIR
+    timestamp_path = os.path.join(so_dir, 'HardwareConfig')
+    dxdiag_path = os.path.join(so_dir, 'dxdiag.xml')
+    _need_send = need_send()
+    print_log('=== send_dx_data ===', _need_send)
+    if _need_send:
+        thread = Thread(target=run_in_thread, args=(dxdiag_path, write_curr_date))
+        thread.start()
+
+
+try:
+    send()
+except Exception as e:
+    print_log('Failed send_dx_data', e)

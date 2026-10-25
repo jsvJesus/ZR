@@ -1,0 +1,347 @@
+# Embedded file name: ./client/Skills.py
+import BigWorld
+import FX
+from Thrower import Thrower
+from Throwable import Throwable
+from functools import partial
+from Trackable import Trackable
+from Config.Skills import SkillsTypes
+from Config import Creatures as Cfg
+
+def print_skill_error(foo):
+
+    def wraper(self, *e, **kw):
+        try:
+            return foo(self, *e, **kw)
+        except:
+            print '\nERROR', self, 'Ent:', getattr(self, 'entity', None)
+            print 'args:', e, kw
+            raise
+
+        return
+
+    return wraper
+
+
+class Skill:
+
+    def __init__(self, entity, ignore_tracking, cfg = None):
+        self._cfg = cfg
+        self.entity = entity
+        self.actions = []
+        self.waves = []
+        self.ignore_tracking = ignore_tracking
+        self.override_tracker = {}
+
+    def add_action(self, action_name):
+        self.actions.append(action_name)
+
+    def add_override_tracker(self, value):
+        self.override_tracker = value
+
+    def add_wave(self, wave):
+        self.waves.append(wave)
+
+    def break_use(self):
+        if self.actions:
+            for action_name in self.actions:
+                self.entity.stop_named_action(action_name)
+
+    def use(self, target, callback = None):
+        if self._cfg:
+            enter_sfx = self._cfg.get(Cfg.SKILL_ENTER_SFX)
+            if enter_sfx:
+                self.entity.spawn_isolated_effect(enter_sfx)
+            actions_amount = self.actions and [len(self.actions)]
+
+            def action_callback():
+                actions_amount[0] -= 1
+                if actions_amount[0] == 0:
+                    if callback:
+                        callback()
+
+            for action_name in self.actions:
+                self.entity.do_named_action(action_name, callback=action_callback)
+
+        elif callback:
+            callback()
+
+    def on_skill_end_use(self):
+        if self._cfg:
+            leave_sfx = self._cfg.get(Cfg.SKILL_LEAVE_SFX)
+            leave_sfx and BigWorld.callback(0.1, lambda : FX.bufferedOneShotEffect(leave_sfx, self.entity.model, maxDuration=21.0))
+
+    def get_sfx(self, wave_index):
+        return self.waves and self.waves[wave_index]['sfx'] or None
+
+    def get_abilities(self, wave_index):
+        return self.waves and self.waves[wave_index]['abilities'] or []
+
+    def get_direction(self, wave_index):
+        return self.waves[wave_index]['direct']
+
+
+class TeleportSkill(Skill):
+
+    def use(self, target, callback = None):
+        Skill.use(self, target, None)
+        self.entity._notify_skills_about_teleport_end = partial(self.on_teleported, callback)
+        return
+
+    def on_teleported(self, callback):
+        if callback:
+            callback()
+        self.on_skill_end_use()
+
+
+class Skills(Thrower):
+    """ Bot interface. Implements skills using """
+
+    def __init__(self):
+        self.__wait_for_throwed = {}
+        self.__throwed_entities = {}
+        self.ignore_tracking = False
+        self.current_trackable = None
+        self.override_tracker = {}
+        self._current_skill_id = None
+        return
+
+    def onEnterWorld(self, prereqs):
+        self.check_tracking(10)
+
+    def onLeaveWorld(self):
+        self.stop_track()
+
+    def check_tracking(self, attempts):
+        if self.isDestroyed:
+            return
+        attempts -= 1
+        if self.attack_active_target_id:
+            target = BigWorld.entities.get(self.attack_active_target_id)
+            if target and target.model:
+                self.start_track(target)
+            elif attempts >= 0:
+                BigWorld.callback(1.0, partial(self.check_tracking, attempts))
+
+    def create_skill(self, skill_id):
+        raise NotImplementedError('Skills.create_skill for {0} {1} is not implemented.'.format(self, self.id))
+
+    def get_skill(self, skill_id):
+        if not hasattr(self, '__skills_cache'):
+            self.__skills_cache = {}
+        try:
+            return self.__skills_cache[skill_id]
+        except KeyError:
+            skill = self.__skills_cache[skill_id] = self.create_skill(skill_id)
+            return skill
+
+    def clear_cache(self):
+        if hasattr(self, '__skills_cache'):
+            del self.__skills_cache
+        if self.attack_active_target_id:
+            self.start_track(BigWorld.entities[self.attack_active_target_id])
+
+    def use_skill(self, skill_id, target_id):
+        self._current_skill_id = skill_id
+        skill = self.get_skill(skill_id)
+        target = BigWorld.entities.get(target_id)
+        if skill.ignore_tracking:
+            self.set_ignore_tracking(True)
+        if skill.override_tracker:
+            self.set_override_tracker(skill.override_tracker)
+        skill.use(target, self.use_skill_ended)
+
+    def on_skill_break(self):
+        if self.isDestroyed:
+            return
+        if self._current_skill_id:
+            skill = self.get_skill(self._current_skill_id)
+            if skill:
+                skill.break_use()
+            self.use_skill_ended()
+
+    def use_skill_ended(self):
+        if self.isDestroyed:
+            return
+        else:
+            self._current_skill_id = None
+            self.set_override_tracker({})
+            self.set_ignore_tracking(False)
+            return
+
+    def on_death(self):
+        actions = None
+        conf_actions = self.get_config().get('actions')
+        if self._current_skill_id:
+            conf = self.get_skill_config(self._current_skill_id)
+            if conf:
+                actions = conf.get('actions')
+        model_actions = set()
+        if actions and conf_actions:
+            for action_name in actions:
+                action_config = conf_actions.get(action_name)
+                if action_config:
+                    for an in action_config.get('model_actions', {}).get('actions', []):
+                        model_actions.add(an)
+
+        for model_action in model_actions:
+            action = getattr(self.model, model_action, None)
+            if action:
+                action.stop()
+
+        self._current_skill_id = None
+        return
+
+    def apply_wave(self, skill_id, wave_index, target_id):
+        if self.get_skill_config(skill_id)[Cfg.SKILL_TYPE] == SkillsTypes.TELEPORT:
+            return
+        skill = self.get_skill(skill_id)
+        sfx = skill.get_sfx(wave_index)
+        if sfx:
+            FX.bufferedOneShotEffect(sfx, self.model, maxDuration=21.0)
+        abilities = skill.get_abilities(wave_index)
+        for ability in abilities:
+            self.apply_ability(ability, target_id)
+
+    def apply_ability(self, ability, target_id):
+        if ability['name'] == 'PUSH':
+            self.apply_push_ability(target_id, ability)
+        else:
+            print 'Skills (ERROR): undefined ability', ability['name']
+
+    def apply_push_ability(self, target_id, push_params):
+        target = BigWorld.entities.get(target_id)
+        if not target:
+            print self, 'apply_push_ability: not found target', target_id
+            return
+        if target.isDestroyed:
+            return
+        if not hasattr(target, 'onBoarHit'):
+            return
+        try:
+            target.onBoarHit(self)
+        except Exception as e:
+            print 'ERROR FOR', self
+            print 'TARGET:', target
+            raise e
+
+    def debug_wave(self, skill_id, wave_index, vec1, vec2, vec3):
+        import DrawPrimitivesUtils
+        dir_params = self.get_skill(skill_id).get_direction(wave_index)
+        if dir_params:
+            DrawPrimitivesUtils.draw_cone(self.position, self.yaw, dir_params['angle'], dir_params['near_plane'], dir_params['far_plane'], dir_params['disp'], vec1)
+        elif vec1 and vec2 and vec3:
+            DrawPrimitivesUtils.clear_drawings()
+            DrawPrimitivesUtils.draw_sphere(vec1, 0.2)
+            DrawPrimitivesUtils.draw_sphere(vec2, 0.2)
+            DrawPrimitivesUtils.draw_sphere(vec3, 0.2)
+
+    def throw_grenade(self, skill_id, target_id, original_id, throw_item, position, velocity):
+        self.use_skill(skill_id, target_id)
+        params = {'fromServer': True,
+         'originalID': original_id,
+         'skillID': skill_id,
+         'targetID': target_id}
+        self.throw(params, position, velocity, throw_item)
+
+    def onThrowingEntityAppears(self, throwable_entity):
+        """
+        Throwable-\xd1\x81\xd1\x83\xd1\x89\xd0\xbd\xd0\xbe\xd1\x81\xd1\x82\xd1\x8c \xd1\x81\xd0\xbe\xd0\xbe\xd0\xb1\xd1\x89\xd0\xb8\xd0\xbb\xd0\xb0 \xd0\xbe \xd1\x82\xd0\xbe\xd0\xbc, \xd1\x87\xd1\x82\xd0\xbe \xd0\xb7\xd0\xb0\xd0\xb3\xd1\x80\xd1\x83\xd0\xb7\xd0\xb8\xd0\xbb\xd0\xb0\xd1\x81\xd1\x8c
+        """
+        throwable_entity.throw()
+
+    def grenade_exploded(self, original_id, victims, collision_data):
+        grenade = Throwable.get_by_origin(original_id, self.id)
+        if grenade:
+            grenade.explode(victims, collision_data)
+
+    @print_skill_error
+    def start_track(self, target):
+        if not isinstance(target, Trackable):
+            return
+        else:
+            track_config = self.get_config().get('tracker')
+            if not track_config and not self.override_tracker:
+                self.stop_track()
+                return
+
+            def get_param(param_name, default = None):
+                return self.override_tracker.get(param_name) or track_config.get(param_name) or default
+
+            primary_node_name = get_param('primary_node_name')
+            if not primary_node_name:
+                print 'WARNING empty primary_node_name', repr(primary_node_name), self, target
+                return
+            if target.model == None or self.model == None:
+                return
+            if target and self.current_trackable == target:
+                return
+            if self.current_trackable and not self.current_trackable.isDestroyed:
+                self.current_trackable.remove_listener(self)
+            self.current_trackable = target
+            self.current_trackable.add_listener(self)
+            pointing_node_name = get_param('pointing_node_name', '')
+            secondaryNodes = get_param('secondary_nodes', [])
+            minPitch = get_param('minPitch', 0)
+            maxPitch = get_param('maxPitch', 0)
+            minYaw = get_param('minYaw', 0)
+            maxYaw = get_param('maxYaw', 0)
+            angularVelocity = get_param('angularVelocity', 100)
+            focal_matrix = self.model.node(primary_node_name)
+            target_matrix = target.getTargetHeadNode()
+            if not target_matrix:
+                target_matrix = target.matrix
+            diffProvider = BigWorld.DiffDirProvider(focal_matrix, target_matrix)
+            self.get_tracker().directionProvider = diffProvider
+            nodeInfo = BigWorld.TrackerNodeInfo(self.model, primary_node_name, secondaryNodes, pointing_node_name, minPitch, maxPitch, minYaw, maxYaw, angularVelocity)
+            self.get_tracker().nodeInfo = nodeInfo
+            return
+
+    def stop_track(self):
+        if getattr(self.model, 'tracker', None):
+            self.get_tracker().nodeInfo = None
+        if self.current_trackable:
+            if not self.current_trackable.isDestroyed:
+                self.current_trackable.remove_listener(self)
+            self.current_trackable = None
+        return
+
+    def trackable_preupdate(self, target):
+        pass
+
+    def trackable_updated(self):
+        """ \xd1\x83\xd0\xb2\xd0\xb5\xd0\xb4\xd0\xbe\xd0\xbc\xd0\xbb\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5 \xd0\xbe\xd1\x82 Trackable \xd0\xbe\xd0\xb1 \xd0\xb8\xd0\xb7\xd0\xbc\xd0\xb5\xd0\xbd\xd0\xb5\xd0\xbd\xd0\xb8\xd1\x8f \xd0\xb2 \xd0\xb5\xd0\xb3\xd0\xbe \xd0\xbf\xd0\xb0\xd1\x80\xd0\xb0\xd0\xbc\xd0\xb5\xd1\x82\xd1\x80\xd0\xb0\xd1\x85 """
+        self.update_tracking()
+
+    def get_tracker(self):
+        if not getattr(self.model, 'tracker', None):
+            self.model.tracker = BigWorld.Tracker()
+        return self.model.tracker
+
+    def update_tracking(self):
+        if not self.ignore_tracking and self.attack_active_target_id and BigWorld.entities.has_key(self.attack_active_target_id):
+            target = BigWorld.entities[self.attack_active_target_id]
+            self.start_track(target)
+        else:
+            self.stop_track()
+
+    def set_override_tracker(self, value):
+        if self.override_tracker == value:
+            return
+        self.override_tracker = value
+        self.update_tracking()
+
+    def set_ignore_tracking(self, value):
+        if self.ignore_tracking == value:
+            return
+        self.ignore_tracking = value
+        self.update_tracking()
+
+    def set_attack_active_target_id(self, old_value):
+        self.update_tracking()
+
+    def onTeleportEnded(self, wasSuccessful, direction = None):
+        if getattr(self, '_notify_skills_about_teleport_end', False):
+            callback = self._notify_skills_about_teleport_end
+            del self._notify_skills_about_teleport_end
+            callback()

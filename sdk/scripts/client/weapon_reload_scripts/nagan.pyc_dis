@@ -1,0 +1,160 @@
+# Embedded file name: ./client/weapon_reload_scripts/nagan.py
+import BigWorld
+import time
+import BWPersonality
+import Math, math
+from Math import Matrix, Vector3
+import traceback
+from Items import ItemsCatalog
+from utils import ignoreError
+from utils_bw import not_safe_animation_callback
+from reload_base_script import BaseWeaponReloader
+from reload_base_script import _set_visible_magazine_from_model
+
+class Nagan(BaseWeaponReloader):
+
+    def play(self, anim_name = None):
+        act = 'reload_REVOLVER_NAGAN'
+        act_in = act + '_in'
+        act_loop = act + '_loop'
+        act_out = act + '_out'
+        need_ammo_number = getattr(self.player.active_weapon, 'need_ammo_number', 1)
+        BigWorld.callback(30.0, self.onFini)
+        player = self.player
+        to_anim_interval = 0.5
+        player.nodeInfoL.AttachedProviders = (None, to_anim_interval)
+        player.nodeInfoR.AttachedProviders = (None, to_anim_interval)
+        copy_model = self.player.active_weapon.createCopyModelWeapon()
+        player.model.Rhand = copy_model
+        copy_model.testAnimateFromTpose = True
+        self.player.blendHandOffset(copy_model, self.player.right_weapon_prov, 1, 0, to_anim_interval)
+        self.player.active_weapon.setVisibleModel(copy_model)
+
+        def onInsertAmmo(*e):
+            if self._canceled:
+                return
+            if self._onInsetAmmoCallback:
+                self._onInsetAmmoCallback(self.ammo_or_magazine_item)
+
+        def onMoveComplete(isBreak):
+            if isBreak:
+                return
+            elif not player or player.isDestroyed:
+                return
+            elif self._canceled:
+                return
+            else:
+                player.active_weapon.setVisibleModel(player.active_weapon_model)
+                player.model.Rmanipulator = None
+                player.model.Rhand = None
+                self.onFini()
+                return
+
+        def _returnHand():
+            if not player or player.isDestroyed:
+                return
+            if self._canceled:
+                return
+            player._weapon_to_attached = 'Right'
+            player._HandControl__reload_weapon_osn_anmation = False
+            player._HandControl__check()
+
+        sub_act = player.model.action(act_in)
+        duration = sub_act.duration
+        root = sub_act(0, None, 0, sub_act.firstFrame, sub_act.lastFrame, sub_act.frameRate * self.reload_speed)
+        for x in xrange(need_ammo_number):
+            sub_act = getattr(root, act_loop)
+            duration += sub_act.duration
+            root = sub_act(0, onInsertAmmo, 0, sub_act.firstFrame, sub_act.lastFrame, sub_act.frameRate * self.reload_speed)
+
+        sub_act = getattr(root, act_out)
+        duration += sub_act.duration
+        duration = duration / self.reload_speed
+        sub_act(0, None, 0, sub_act.firstFrame, sub_act.lastFrame, sub_act.frameRate * self.reload_speed)
+        BigWorld.callback(duration - 0.3, _returnHand)
+        BigWorld.callback(duration, self.onFini)
+        return
+
+    def _getActionPlayed(self, anim_name):
+        frameRate = self.player.model.action(anim_name).frameRate
+        acts = self.player.model.action(anim_name).playedInfo()
+        for a in acts:
+            if a['name_'] == anim_name:
+                played_ = a['played_']
+                played_frame = int(played_ * frameRate)
+                return (played_, played_frame)
+
+        return (None, None)
+
+    def cancelReload(self, smooth = True):
+        self.unsubscribeCues()
+        self._canceled = True
+        act = 'reload_REVOLVER_NAGAN'
+        act_in = act + '_in'
+        act_loop = act + '_loop'
+        act_out = act + '_out'
+        act_in_played, act_in_frame = self._getActionPlayed(act_in)
+        act_loop_played, act_loop_frame = self._getActionPlayed(act_loop)
+        act_out_played, act_out_frame = self._getActionPlayed(act_out)
+        if self.player.model:
+            for anim_name in (act_in, act_loop, act_out):
+                try:
+                    self.player.model.action(anim_name).stop()
+                except:
+                    print 'anim_name:', anim_name
+                    traceback.print_exc()
+
+        if act_out_played:
+            BaseWeaponReloader.cancelReload(self, smooth=smooth)
+            return
+        else:
+            back_speed = 2.5
+
+            def revert_play(root, anim_name, frame = None):
+                action = getattr(root, anim_name)
+                frameRate = action.frameRate
+                if frame is None:
+                    frame = action.frameCount
+                act_time = frame / frameRate / back_speed
+                return (action(0, None, 0, frame, 0, frameRate * back_speed), act_time)
+
+            def forward_play(root, anim_name, frame = None):
+                action = getattr(root, anim_name)
+                act_time = action.duration
+                return (action(), act_time)
+
+            delay = 0
+            act = None
+            if act_loop_played:
+                act, act_time = forward_play(self.player.model, act_out)
+                delay += act_time
+            elif act_in_played:
+                act, act_time = revert_play(self.player.model, act_in, act_in_frame)
+                delay += act_time
+            if delay > 10:
+                delay = 10
+            player = self.player
+
+            def onMoveComplete(isBreak):
+                if isBreak:
+                    return
+                if not player or player.isDestroyed:
+                    return
+                player.active_weapon.setVisibleModel(player.active_weapon_model)
+
+            def _returnHand():
+                if not player or player.isDestroyed:
+                    return
+                interval = 0.4
+                player.nodeInfoR.AttachedProviders = (player.right_weapon_prov, interval, onMoveComplete)
+
+            BigWorld.callback(delay - 0.3, _returnHand)
+
+            def continuecancel():
+                BaseWeaponReloader.cancelReload(self, smooth=smooth)
+
+            BigWorld.callback(delay + 0.3, continuecancel)
+            fake_Lhand_provider = self.player.model.Rhand.node('HP_Lhand')
+            fake_Lhand_provider.blend_factor_hand = 1.0
+            self.player.nodeInfoL.AttachedProviders = (fake_Lhand_provider, 0.2)
+            return

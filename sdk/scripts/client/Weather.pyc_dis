@@ -1,0 +1,751 @@
+# Embedded file name: ./client/Weather.py
+import BigWorld
+import ResMgr
+import FX
+import random
+from functools import partial
+import traceback
+import BloomC
+from Listener import Listenable
+import Math
+import FX_extension
+import time
+import Enviro
+from Math import Vector4, Vector4Morph
+from Config import SpacesConfig
+if BigWorld.component == 'editor':
+
+    class fake_sounds():
+
+        def playSound(self, *args, **kargs):
+            pass
+
+
+    sounds = fake_sounds()
+    import Personality
+else:
+    import sounds_manager as sounds
+    import BWPersonality as Personality
+import WeatherSystem as WeatherSystemModule
+from WeatherSystem import WeatherSystem
+from WeatherSystem import weatherXML
+import PostProcessing
+
+class FOREST_SOUND():
+    conifer_forest = 0
+    foliar_forest = 1
+
+    @staticmethod
+    def getSoundName(sound_type):
+        if sound_type == FOREST_SOUND.conifer_forest:
+            return 'conifer_forest'
+        if sound_type == FOREST_SOUND.foliar_forest:
+            return 'foliar_forest'
+
+    @staticmethod
+    def getEditorModel(sound_type):
+        if sound_type == FOREST_SOUND.conifer_forest:
+            return 'models/bolvan/foliar_sound_node.model'
+        if sound_type == FOREST_SOUND.foliar_forest:
+            return 'models/bolvan/conifer_sound_node.model'
+
+
+class DurationBlender():
+
+    def __init__(self, value, duration):
+        if duration <= 0.0001:
+            duration = 1
+        self.value = type(value)(value)
+        self.target = type(value)(value)
+        self.duration = duration
+        self.speed = 0
+
+    def updateSpeed(self):
+        if self.speed == 0:
+            diff = self.target - self.value
+            self.speed = (diff if type(diff) in (float, int) else diff.length) / self.duration
+
+    def tick(self, dt):
+        if self.target == self.value:
+            self.speed = 0
+            return
+
+        def lerp(a, b, s):
+            return a + s * (b - a)
+
+        def lenof(v):
+            if type(v) not in (float, int):
+                return v.length
+            else:
+                return v
+
+        self.updateSpeed()
+        relVal = abs(self.speed * dt / lenof(self.target - self.value))
+        self.value = lerp(self.value, self.target, min(max(relVal, 0.0), 1.0))
+
+
+class Weather(Listenable):
+    """
+    This class manages a list of WeatherSystems, and provides an API to
+    control the weather on the client and in the tools.
+    """
+    NOLOD_MODE = False
+    FADE_TIME = 30
+    FADE_TIME_IMMEDIATE = 2.5
+    FADE_TIME_RESUMMON = 0.1
+
+    def __init__(self):
+        Listenable.__init__(self)
+        self.fadeSpeed = self.FADE_TIME
+        self.system = None
+        self._to_systemName = ''
+        self.randomWeatherCallback = None
+        self.summoning = False
+        self.pendingWeatherChange = None
+        self.currentSpaceID = 0
+        self.localOverride = None
+        self.overridenWeather = None
+        self._sound_rain_nodes = []
+        self._rain_active = False
+        self._forest_nodes = {}
+        self._tickCallback = None
+        self._lastTime = time.time()
+        self._terrainSettings = Enviro.TerrainSettings()
+        self.thunder_timer_id = None
+        self.sound_callback_id = None
+        self.thunder_skybox = {}
+        self._custom_farplane = {}
+        if BigWorld.component != 'editor' and not BigWorld.isConsumer():
+            self._checkAndReloadXML()
+        self.onChangeSpace()
+        return
+
+    def isWeatherRandom(self):
+        """
+        This method returns whether or not random weather is currently enabled.
+        """
+        return self.randomWeatherCallback != None
+
+    def mainLodFactor(self, value):
+        self._mainLodFactor.value = value
+        self._mainLodFactor.target = value
+
+    def _setFadeSpeed(self, duration):
+        self.fadeSpeed = max(0.1, duration)
+        self.weatherController.duration = self.fadeSpeed
+        self.sunlightController.duration = self.fadeSpeed
+        self.ambientController.duration = self.fadeSpeed
+        self.fogController.duration = self.fadeSpeed
+        self.fogDensityController.duration = self.fadeSpeed
+        self.fakeAmbientController.duration = self.fadeSpeed
+        self.rainFogController.duration = self.fadeSpeed
+        self._terrainBlackFadeBase.duration = self.fadeSpeed
+        self._terrainBlackGlossAffect.duration = self.fadeSpeed
+        self._terrainGlossAffect.duration = self.fadeSpeed
+        self._terrainGlossAOMultiplier.duration = self.fadeSpeed
+        self._terrainSpecularFresnelConstant.duration = self.fadeSpeed
+        self._terrainSpecularFresnelMultiplier.duration = self.fadeSpeed
+        self._terrainSpecularMultiplier.duration = self.fadeSpeed
+        self._terrainSpecularPower.duration = self.fadeSpeed
+        self._terrainSpecularColor.duration = self.fadeSpeed
+        self._mainLodFactor.duration = self.fadeSpeed
+        self._fogAnimBlender.duration = self.fadeSpeed
+        self._wetMaxValue.duration = self.fadeSpeed
+        self._wetSpeedIn.duration = self.fadeSpeed
+        self._wetSpeedOut.duration = self.fadeSpeed
+        self._waterReflectFactor.duration = self.fadeSpeed
+        if self.system:
+            self.system.setFadeSpeed(self.fadeSpeed)
+
+    def registerForestSoundNode(self, node):
+        self._forest_nodes[node.id] = node
+        weather_soundname = self.system.forestsound if self.system else None
+        node.onWeatherSoundChanged(weather_soundname)
+        return
+
+    def deregisterForestSoundNode(self, node):
+        self._forest_nodes.pop(node.id, None)
+        node.onWeatherSoundChanged(None)
+        return
+
+    def updateForestSound(self):
+        weather_soundname = self.system.forestsound if self.system else None
+        for node in self._forest_nodes.values():
+            node.onWeatherSoundChanged(weather_soundname)
+
+        return
+
+    def _getDeltaTime(self):
+        return time.time() - self._lastTime
+
+    def _updateDeltaTime(self):
+        self._lastTime = time.time()
+
+    def onChangeSpace(self, spaceID = -1, spaceSettings = None):
+        """
+        This method implements a callback for when the camera space has
+        changed.  When the space is changed, appropriate weather is chosen
+        for the new space.  This is chosen by either the last known
+        weather system for the space, or the default from the weather xml file.         
+        """
+        global weatherXML
+        global s_weather
+        print 'Weather::onChangeSpace {0}'.format(spaceID)
+        self.currentSpaceID = spaceID
+        if self.thunder_timer_id:
+            BigWorld.cancelCallback(self.thunder_timer_id)
+            self.thunder_timer_id = None
+        if self.sound_callback_id:
+            BigWorld.cancelCallback(self.sound_callback_id)
+            self.sound_callback_id = None
+        m = Math.Vector4Morph()
+        m.duration = self.fadeSpeed
+        m.target = (0, 0, 0, 0)
+        m.time = m.duration
+        BigWorld.weatherController(m)
+        self.weatherController = m
+        m = Math.Vector4Morph()
+        m.duration = self.fadeSpeed
+        m.target = (1, 1, 1, 1)
+        m.time = m.duration
+        BigWorld.sunlightController(m)
+        self.sunlightController = m
+        m = Math.Vector4Morph()
+        m.duration = self.fadeSpeed
+        m.target = (1, 1, 1, 1)
+        m.time = m.duration
+        BigWorld.ambientController(m)
+        self.ambientController = m
+        m = Math.Vector4Morph()
+        m.duration = self.fadeSpeed
+        m.target = (1, 1, 1, 1)
+        m.time = m.duration
+        m2 = Math.Vector4Morph()
+        m2.duration = self.fadeSpeed
+        m2.target = (0.15, 0, 0, 0)
+        m2.time = m2.duration
+        m3 = Math.Vector4Morph()
+        m3.duration = self.fadeSpeed
+        m3.target = (1, 0, 0, 0)
+        m3.time = m3.duration
+        BigWorld.fogController(m, m2, m3)
+        self.fogController = m
+        self.fogDensityMinController = m2
+        self.fogDensityController = m3
+        m = Math.Vector4Morph()
+        m.duration = self.fadeSpeed
+        m.target = (1, 1, 1, 1)
+        m.time = m.duration
+        BigWorld.rainFogController(m)
+        self.rainFogController = m
+        m = Math.Vector4Morph()
+        m.duration = self.fadeSpeed
+        self._terrainBlackFadeBase = DurationBlender(0.0, self.fadeSpeed)
+        self._terrainBlackGlossAffect = DurationBlender(0.0, self.fadeSpeed)
+        self._terrainGlossAffect = DurationBlender(0.0, self.fadeSpeed)
+        self._terrainGlossAOMultiplier = DurationBlender(1.0, self.fadeSpeed)
+        self._terrainSpecularFresnelConstant = DurationBlender(0.05, self.fadeSpeed)
+        self._terrainSpecularFresnelMultiplier = DurationBlender(4.5, self.fadeSpeed)
+        self._terrainSpecularMultiplier = DurationBlender(1.04, self.fadeSpeed)
+        self._terrainSpecularPower = DurationBlender(60, self.fadeSpeed)
+        self._terrainSpecularColor = DurationBlender(Vector4(1, 1, 1, 1), self.fadeSpeed)
+        self._mainLodFactor = DurationBlender(1, self.fadeSpeed)
+        self._fogAnimBlender = DurationBlender(1.0, self.fadeSpeed)
+        self._wetMaxValue = DurationBlender(1.0, self.fadeSpeed)
+        self._wetSpeedIn = DurationBlender(0.2, self.fadeSpeed)
+        self._wetSpeedOut = DurationBlender(0.1, self.fadeSpeed)
+        self._waterReflectFactor = DurationBlender(0.0, self.fadeSpeed)
+        if self._tickCallback is None:
+            self._tickCallback = BigWorld.callback(0, self._onTick)
+        val = (1, 1, 1, 0)
+        lightType = 0
+        if s_weather and s_weather.system:
+            weatherName = s_weather.system.name
+            val = weatherXML.readVector4(weatherName + '/fakeAmbientColour', Vector4(1, 1, 1, 0))
+            lightType = weatherXML.readInt(weatherName + '/fakeAmbientLightType', 0)
+        m.target = val
+        m.time = m.duration
+        BigWorld.fakeAmbientController(m, lightType)
+        self.fakeAmbientController = m
+        spaceName = Personality.spaceName(spaceID)
+        default = SpacesConfig.getDefaultWeather(spaceName)
+        if BigWorld.component != 'editor':
+            game = Personality.game
+            try:
+                weather = game.lastWeatherSync[spaceID]
+                print '-------lastWeatherSync', spaceID, spaceName, weather
+            except KeyError:
+                game.lastWeatherSync[spaceID] = default
+                weather = game.lastWeatherSync[spaceID]
+                print '-------no lastWeatherSync', spaceID, spaceName, 'use default', weather
+
+            self._custom_farplane = {}
+            self.summon(weather, immediate=True, serverSync=True, resummon=True)
+            from Settings import Settings
+            Settings().updateVignette()
+        return
+
+    def updateSonuds(self):
+        if self.system:
+            self.system.updateSonuds()
+
+    def __str__(self):
+        text = 'Weather:'
+        if self.localOverride:
+            text += '[L]%s ->' % self.localOverride
+        if self.system:
+            cur_name = self.system.name
+            if cur_name != self._to_systemName:
+                text += '%s ->' % cur_name
+        else:
+            text += '(ERROR!!!)'
+        text += self._to_systemName
+        return text
+
+    def summon(self, systemName, immediate = False, serverSync = False, resummon = False):
+        """
+        This method queues a weather system for display.  Usually weather
+        systems will fade in over a period of 30 seconds or so, to make the
+        transition appear seamless to the viewer.  However, you may ask for
+        an immediate transition, this will fade the new weather system in
+        over a much shorter period of time.  The serverSync argument tells
+        the method whether or not this weather system has been summoned by
+        the server.  If not, it indicates that the user has chosen the system
+        instead; in this case if environmentSync is set to true, the server
+        will be informed of the change and this will be propogated to other
+        clients.
+        """
+        if not systemName:
+            self._to_systemName = ''
+            print time.time(), 'Weather::summon, systemName = {0}'.format(systemName), self.currentSpaceID
+            if not getattr(BigWorld.player(), 'worldLoadStatusCode', -1):
+                resummon = True
+            if self.localOverride != None:
+                self.overridenWeather = systemName
+                systemName = self.localOverride
+            if not resummon and self.system and self.system.name == systemName:
+                print 'summon:: already system', systemName
+                if self.system.shuts_down:
+                    print 'summon:: old system shuts_down', systemName, '  resummon'
+                    resummon = True
+                else:
+                    return
+            if resummon:
+                self._setFadeSpeed(self.FADE_TIME_RESUMMON)
+            elif immediate:
+                self._setFadeSpeed(self.FADE_TIME_IMMEDIATE)
+            else:
+                self._setFadeSpeed(self.FADE_TIME)
+            print self.summoning and not immediate and 'summon::  system -> pendingWeatherChange'
+            self.pendingWeatherChange = systemName
+            self.listeners.weather(systemName=systemName)
+            return
+        else:
+            for ds in weatherXML.values():
+                if ds.name == systemName:
+                    system = WeatherSystem(ds)
+                    self.summoning = True
+                    self.listeners.weather(system=system)
+                    system.prepareResources(partial(self._systemReadySummon, system, immediate, resummon), immediate)
+                    return
+
+            print 'ERROR! weather not found sysytem', repr(systemName)
+            return
+
+    def override(self, systemName, immediate = False):
+        """
+        This method allows you to set a local override to the weather systems; for example
+        if you have a regional weather system entity overriding the weather for the rest
+        of the space.
+        Calling this method with and empty string, or None as the systemName, will remove
+        the existing override, and restore the last requested system.
+        """
+        print time.time(), 'Weather::override, systemName = {0}'.format(systemName), immediate, self.currentSpaceID
+        if systemName == None or systemName == '':
+            self.localOverride = None
+            self.summon(self.overridenWeather, immediate, serverSync=False, resummon=False)
+            self.overridenWeather = None
+        else:
+            self.overridenWeather = self.system.name
+            self.summon(systemName, immediate, serverSync=False, resummon=False)
+            self.localOverride = systemName
+        return
+
+    def _checkAndReloadXML(self):
+        global weatherXML
+        if BigWorld.component == 'editor' or BigWorld.isConsumer():
+            return
+        else:
+            stamp = ResMgr.modifiedTime(WeatherSystemModule.config_path)
+            if stamp != WeatherSystemModule.weatherXMLStamp:
+                newXml, newStamp = WeatherSystemModule.loadWeatherXML(True)
+                if newXml is not None and newStamp is not None:
+                    WeatherSystemModule.weatherXML = newXml
+                    WeatherSystemModule.weatherXMLStamp = newStamp
+                    weatherXML = newXml
+                    if self.system is not None:
+                        self.summon(self.system.name, immediate=True, serverSync=False, resummon=True)
+                    print 'Reloaded weather xml:', WeatherSystemModule.config_path
+                else:
+                    print 'Failed to reload weather xml:', WeatherSystemModule.config_path
+            if hasattr(self, '_reloadCallback'):
+                BigWorld.cancelCallback(self._reloadCallback)
+            self._reloadCallback = BigWorld.callback(1, self._checkAndReloadXML)
+            return
+
+    def _onTick(self):
+        self._tickCallback = BigWorld.callback(0, self._onTick)
+        dt = self._getDeltaTime()
+        self._updateDeltaTime()
+        self._updateTerrainParameters(dt)
+        self._fogAnimBlender.tick(dt)
+        self._wetMaxValue.tick(dt)
+        self._wetSpeedIn.tick(dt)
+        self._wetSpeedOut.tick(dt)
+        self._waterReflectFactor.tick(dt)
+        Enviro.setFogTextureAnimationBlend(self._fogAnimBlender.value)
+        if self.system:
+            cubemap1 = self.system.old_waterReflectionMapTexture
+            cubemap2 = self.system.waterReflectionMapTexture
+            blendK = self._waterReflectFactor.value
+            if self._waterReflectFactor.speed:
+                Enviro.setWaterCubemaps(cubemap1, cubemap2, blendK)
+        Enviro.setWetParams(self._wetSpeedIn.value, self._wetSpeedOut.value, self._wetMaxValue.value)
+
+    def _updateTerrainParameters(self, dt):
+        self._terrainBlackFadeBase.tick(dt)
+        self._terrainBlackGlossAffect.tick(dt)
+        self._terrainGlossAffect.tick(dt)
+        self._terrainGlossAOMultiplier.tick(dt)
+        self._terrainSpecularFresnelConstant.tick(dt)
+        self._terrainSpecularFresnelMultiplier.tick(dt)
+        self._terrainSpecularMultiplier.tick(dt)
+        self._terrainSpecularPower.tick(dt)
+        self._terrainSpecularColor.tick(dt)
+        self._mainLodFactor.tick(dt)
+        if self.NOLOD_MODE:
+            self._terrainSettings.mainLodFactor = 99999999
+        else:
+            self._terrainSettings.mainLodFactor = self._mainLodFactor.value
+        self._terrainSettings.blackFadeBaseAffect = self._terrainBlackFadeBase.value
+        self._terrainSettings.blackFadeGlossAffect = self._terrainBlackGlossAffect.value
+        self._terrainSettings.glossAffect = self._terrainGlossAffect.value
+        self._terrainSettings.aoMultiplier = self._terrainGlossAOMultiplier.value
+        self._terrainSettings.specularFresnelConstant = self._terrainSpecularFresnelConstant.value
+        self._terrainSettings.specularFresnelFalloff = self._terrainSpecularFresnelMultiplier.value
+        self._terrainSettings.specularMultiplier = self._terrainSpecularMultiplier.value
+        self._terrainSettings.specularPower = self._terrainSpecularPower.value
+        self._terrainSettings.specularColor = self._terrainSpecularColor.value
+
+    def _setSystemParameters(self, system):
+        if system is None:
+            return
+        else:
+            system.old_waterReflectionMapTexture = self.system.waterReflectionMapTexture if self.system else None
+            self.system = system
+            self.system.fadeIn(True, self.fadeSpeed)
+            self.skyBoxFogFactor = system.skyBoxFogFactor
+            self.rain(system.rain)
+            self.rainFog(system.rainFog)
+            self.set_thunder_param(system.thunder)
+            self.ambient(system.ambient)
+            self.fog(system.fog, system.fogDensityMin, system.fogDensity, False)
+            self.sun(system.sun)
+            self.fakeAmbientColour(system.fakeAmbientColour)
+            self.fakeAmbientLightType(system.fakeAmbientLightType)
+            self.dynamicShadows(system.dynamicShadowsEnabled)
+            self._terrainBlackFadeBase.target = system.terrainBlackFadeBase
+            self._terrainBlackGlossAffect.target = system.terrainBlackFadeGloss
+            self._terrainGlossAffect.target = system.terrainGlossAffect
+            self._terrainGlossAOMultiplier.target = system.terrainAOGlossMultiplier
+            self._terrainSpecularFresnelConstant.target = system.terrainSpecularFresnelConstant
+            self._terrainSpecularFresnelMultiplier.target = system.terrainSpecularFresnelMultiplier
+            self._terrainSpecularMultiplier.target = system.terrainSpecularMultiplier
+            self._terrainSpecularPower.target = system.terrainSpecularPower
+            self._terrainSpecularColor.target = system.terrainSpecularColor
+            self._mainLodFactor.target = system.mainLodFactor
+            self._wetSpeedIn.target = system.wetParams[0]
+            self._wetSpeedOut.target = system.wetParams[1]
+            self._wetMaxValue.target = system.wetParams[2]
+            self._waterReflectFactor.value = 0.0
+            self._waterReflectFactor.target = 1.0
+            self.setTextureAnimation(system.textureAnimation, self.fadeSpeed)
+            self._terrainSettings.setReflectionMap(system.terrainReflectionMapTexture)
+            self.updateCustomFarPlane()
+            return
+
+    def registerFarPlaneCustom(self, entity_id, value):
+        self._custom_farplane[entity_id] = value
+        self.updateCustomFarPlane()
+
+    def deregisterFarPlaneCustom(self, entity_id):
+        if self._custom_farplane.pop(entity_id, None):
+            self.updateCustomFarPlane()
+        return
+
+    def updateCustomFarPlane(self):
+        if BigWorld.component == 'editor':
+            return
+        fp = Enviro.getFarPlaneBaseLine() * self.system.farPlaneFactor
+        if self._custom_farplane:
+            fp = min(self._custom_farplane.values())
+        Enviro.setFarPlaneBaseLineCustom(fp)
+
+    def setTextureAnimation(self, textureName, fadeSpeed, bImmediate = False):
+        self._fogAnimBlender.speed = 1.0 / fadeSpeed
+        self._fogAnimBlender.value = 1.0 if bImmediate else 0.0
+        Enviro.setFogTextureAnimationBlend(self._fogAnimBlender.value)
+        Enviro.setFogTextureAnimation(textureName)
+
+    def dynamicShadows(self, enabled):
+        try:
+            Enviro.SetShadowsDisabled(not enabled)
+        except Exception as err:
+            traceback.print_exc()
+
+    def _systemReadySummon(self, system, immediate, resummon):
+        print time.time(), 'Weather::_systemReadySummon {0}'.format(system.name)
+        if self.system:
+            self.system.fadeIn(False, self.fadeSpeed, immediate)
+            self.system = None
+        if system != None:
+            self._setSystemParameters(system)
+            BigWorld.callback(self.fadeSpeed, self._onSystemSummoned)
+        else:
+            self._onSystemSummoned()
+        self.updateForestSound()
+        return
+
+    def _onSystemSummoned(self):
+        self.listeners.weather(system=self.system)
+        self.summoning = False
+        if self.pendingWeatherChange != None:
+            self.summon(self.pendingWeatherChange)
+            self.pendingWeatherChange = None
+        return
+
+    def newSystemByName(self, systemName):
+        """
+        This method returns a new WeatherSystem instance, by name.
+        """
+        for ds in weatherXML.values():
+            if ds.name == systemName:
+                system = WeatherSystem(ds)
+                return system
+
+        return None
+
+    def _animateValue(self, value, v4a, index):
+        expected = Math.Vector4(v4a.target)
+        expected[index] = value
+        v4a.target = expected
+
+    def _animateVector4(self, v4a, value):
+        v4a.target = value
+
+    def rain(self, amount):
+        """
+        This method sets the current rain amount.  It will be overridden when
+        a new weather system is summoned.
+        """
+        self._animateValue(amount, self.weatherController, 0)
+
+    def rainFog(self, fogColour):
+        self._animateVector4(self.rainFogController, fogColour)
+
+    def fog(self, value, fogDensityMin, fogDensity, applyToSystem = True):
+        """
+        This method sets the current fog colour and density.  It will be
+        overridden when a new weather system is summoned.
+        """
+        self._animateVector4(self.fogController, value)
+        self._animateVector4(self.fogDensityMinController, fogDensityMin)
+        self._animateVector4(self.fogDensityController, fogDensity)
+        if applyToSystem:
+            self._animateValue(self.system._fogAmount(fogDensity[0]), self.system.fogDensityFader, 0)
+
+    def sun(self, value):
+        """
+        This method sets the current sun colour.  It is a multiplier over the existing
+        time of day sun colour.  It will be overridden when     a new weather
+        system is summoned.
+        """
+        value *= value.w
+        value.w = 1.0
+        self._animateVector4(self.sunlightController, value)
+        self.sun_target = self.sunlightController.target
+
+    def ambient(self, value):
+        """
+        This method sets the current ambient colour.  It is a multiplier over
+        the existing time of day sun colour.  It will be overridden when
+        a new weather system is summoned.
+        """
+        value *= value.w
+        value.w = 1.0
+        self._animateVector4(self.ambientController, value)
+        self.ambient_target = self.ambientController.target
+
+    def fakeAmbientColour(self, intensity):
+        self._animateVector4(self.fakeAmbientController, intensity)
+
+    def fakeAmbientLightType(self, lightType):
+        BigWorld.fakeAmbientController(self.fakeAmbientController, lightType)
+
+    def registerSoundRainNode(self, node):
+        self._sound_rain_nodes.append(node)
+        node.setStatusRain(self._rain_active)
+
+    def deRegisterSoundRainNode(self, node):
+        self._sound_rain_nodes.remove(node)
+
+    def setStatusRain(self, status):
+        self._rain_active = status
+        for node in self._sound_rain_nodes:
+            node.setStatusRain(self._rain_active)
+
+        if self.thunder_timer_id:
+            BigWorld.cancelCallback(self.thunder_timer_id)
+            self.thunder_timer_id = None
+        if status:
+            self.thunder()
+        return
+
+    def on_load_thunder_skybox(self, skybox_type, model):
+        self.thunder_skybox[skybox_type] = model
+
+    def set_thunder_param(self, param):
+        self.thunder_params = param
+        self.thunder_skybox = {}
+        for i in ('lightning_far', 'thunder_skybox'):
+            if not self.thunder_params.get(i):
+                continue
+            BigWorld.fetchModel(self.thunder_params[i], partial(self.on_load_thunder_skybox, i))
+
+        self.thunder()
+
+    def thunder(self):
+        if not self.thunder_params:
+            return
+        else:
+            thunder_cooldown = self.thunder_params.get('cooldown', None)
+            if thunder_cooldown is None:
+                return
+            min_time, max_time = thunder_cooldown
+            if not min_time and not max_time:
+                return
+            duration = max_time - min_time
+            if duration <= 0:
+                traceback.print_stack()
+                print 'WEATHER ERROR::Thunder time error'
+                return
+            duration = min_time + duration * random.random()
+            self.thunder_timer_id = BigWorld.callback(duration, self.on_thunder)
+            return
+
+    def on_thunder(self):
+        thunder_type = random.choice(('far', 'near'))
+        if thunder_type == 'near':
+            count = random.randint(1, 3)
+            duration = 0
+            powers = (1, 0.6, 0.8, 1.3)
+            power = []
+            for i in xrange(count):
+                power.append(random.choice(powers))
+
+            max_power = max(power)
+            sound_delay = 1 - max_power
+            self.sound_callback_id = BigWorld.callback(sound_delay, partial(sounds.playSound, 'weather/thunder_close', None, max(power)))
+            for i in power:
+                if not duration:
+                    self.on_lightning_near(i)
+                else:
+                    BigWorld.callback(duration, partial(self.on_lightning_near, i))
+                duration += 0.3
+
+        elif thunder_type == 'far':
+            self.on_lightning_far()
+        self.thunder()
+        return
+
+    def on_lightning_near(self, power = 1):
+        self.sunlightController.duration = 0.03
+        self.ambientController.duration = 0.03
+        self.sunlightController.target = (6 * power,
+         7 * power,
+         8 * power,
+         2 * power)
+        self.ambientController.target = (6 * power,
+         7 * power,
+         8 * power,
+         1 * power)
+
+        def revert_2():
+            self.sunlightController.duration = self.fadeSpeed
+            self.ambientController.duration = self.fadeSpeed
+
+        def revert():
+            self.sunlightController.target = self.sun_target
+            self.ambientController.target = self.ambient_target
+            self.sunlightController.duration = 0.2
+            self.ambientController.duration = 0.2
+            BigWorld.callback(0.2, revert_2)
+
+        BigWorld.callback(0.05, revert)
+
+    def on_lightning_far(self):
+        sounds.playSound('weather/thunder_far')
+        if not self.thunder_skybox:
+            print 'Thunder ERROR', self.thunder_skybox, self.thunder_params
+            return
+        skybox_model = self.thunder_skybox['lightning_far']
+        thunder_skybox = self.thunder_skybox['thunder_skybox']
+        skybox_model.batched = False
+        thunder_skybox.batched = False
+        fader = Vector4Morph(Vector4(0, 0, 1, 1))
+        fader.duration = 0.1
+        fader.time = fader.duration
+        fader.target = (0, 0, 1, 1)
+        fader1 = Vector4Morph(Vector4(0, 0, 1, 1))
+        fader1.duration = 0.1
+        fader1.time = fader.duration
+        fader1.target = (0, 0, 1, 1)
+        BigWorld.addSkyBox(skybox_model, fader)
+        BigWorld.addSkyBox(thunder_skybox, fader)
+
+        def revert(_fader, _fader1):
+            _fader.duration = 1.2
+            _fader.target = (0, 0, 0, 0)
+            _fader1.duration = 1.2
+            _fader1.target = (0, 0, 0, 0)
+            BigWorld.delSkyBox(skybox_model, _fader)
+            BigWorld.delSkyBox(thunder_skybox, _fader1)
+
+        BigWorld.callback(0.05, partial(revert, fader, fader1))
+
+
+s_weather = None
+
+def weather():
+    """
+    This function gets the global weather system singleton.
+    """
+    global s_weather
+    if not s_weather:
+        s_weather = Weather()
+        Personality.addCameraSpaceChangeListener(s_weather.onChangeSpace)
+    return s_weather
+
+
+def fini():
+    """
+    This function releases the new weather system. While not necessary for
+    memory leak reasons (as when scripts are shutdown, this python object
+    is also released,) we want explicit control over when the weather system
+    singleton is released.
+    """
+    global s_weather
+    if s_weather is not None:
+        Personality.delCameraSpaceChangeListener(s_weather.onChangeSpace)
+        s_weather = None
+    return

@@ -1,0 +1,285 @@
+# Embedded file name: ./client/Fabric/Fabric.py
+import BigWorld
+from Math import Vector3, Matrix
+from collections import defaultdict
+import random
+import math
+import traceback
+import Link
+import Point
+import weakref
+
+class NodeInfoWeakCarrier:
+
+    def __init__(self, node_info):
+        self._node_info = None
+        return
+
+
+class Fabric:
+    """ \xd0\xba\xd0\xbb\xd0\xb0\xd1\x81\xd1\x81 \xd1\x82\xd0\xba\xd0\xb0\xd0\xbd\xd0\xb8 """
+    GRAVITY = Vector3(0.0, -9.8, 0.0)
+    CLOTHER_DRAW_CALLS = 0
+    clother_draw_call = 0
+
+    def __init__(self, node_info, config, entity):
+        self.draw_call = 0
+        self.frame_time = 0.01
+        self.config = config
+        self.points_created = False
+        node_info.pTick = self.pTick
+        node_info.pDraw = self.pDraw
+        node_info.onLoddedout = self.onLoddedout
+        self.node_info = weakref.ref(NodeInfoWeakCarrier(node_info))
+        self._entity = entity
+        self.sc = None
+        self.accumulator = 0.0
+        self.prev_box_transform = {}
+        self.last_out = []
+        self.dt = 1.0 / config['update_rate']
+        Fabric.CLOTHER_DRAW_CALLS += 1
+        self.points_and_links = None
+        return
+
+    def __str__(self):
+        return '<%s,entity:%s, model:%s>' % (self.__class__.__name__, self._entity, self.config.get('model', '<???>'))
+
+    def _detach(self):
+        if self.node_info():
+            node_info = self.node_info()._node_info
+            node_info.pTick = node_info and None
+            node_info.pDraw = None
+            node_info.onLoddedout = None
+        return
+
+    def create_points(self, bones):
+        self.points_by_bone = defaultdict(list)
+        self.movable_points = []
+        self.points_and_links = []
+        points_to_create = defaultdict(list)
+        point_by_name = {}
+
+        def get_movable_param(param_name, point_data):
+            point_config = point_data[1] if len(point_data) > 1 else {}
+            param = point_config.get(param_name)
+            if param is None:
+                return self.config.get(param_name)
+            else:
+                return param
+
+        def get_rigid_param(param_name, pont_data):
+            point_config = point_data[2] if len(point_data) > 2 else {}
+            param = point_config.get(param_name)
+            if param is None:
+                return self.config[param_name]
+            else:
+                return param
+
+        for point_name, point_data in self.config['rigid_points'].items():
+            bone_name = point_data[0]
+            debug = get_rigid_param('debug', point_data)
+            point_params = {'disp': Vector3(point_data[1]) if len(point_data) > 1 else Vector3(0, 0, 0),
+             'debug': get_rigid_param('debug', point_data),
+             'movable': False}
+            points_to_create[bone_name].append((point_name, point_params))
+
+        for point_name, point_data in self.config['movable_points'].items():
+            bone_name = point_data[0]
+            point_params = {'disp': get_movable_param('disp', point_data) or Vector3(0, 0, 0),
+             'rigid': get_movable_param('rigid', point_data),
+             'collidable': get_movable_param('collidable', point_data),
+             'world_collidable': get_movable_param('world_collidable', point_data),
+             'debug': get_movable_param('debug', point_data),
+             'movable': True,
+             'mass': get_movable_param('mass', point_data),
+             'use_wind': get_movable_param('use_wind', point_data),
+             'push_algorithm': get_movable_param('push_algorithm', point_data),
+             'lock_rotate': get_movable_param('lock_rotate', point_data),
+             'stretch': get_movable_param('stretch', point_data)}
+            points_to_create[bone_name].append((point_name, point_params))
+
+        for chain_index, bones_chain in enumerate(bones):
+            for bone_index, (world_child, local_child) in enumerate(bones_chain):
+                bone_name = self.config['bones'][chain_index][bone_index]
+                m = Matrix()
+                for point_name, point_params in points_to_create[bone_name]:
+                    disp = point_params['disp']
+                    m.setTranslate(disp)
+                    m.postMultiply(world_child)
+                    pos = m.translation
+                    debug = point_params['debug']
+                    if point_params['movable']:
+                        point = Point.DynamicPoint(point_name, pos, point_params['rigid'], point_params['collidable'], point_params['world_collidable'], self.prev_box_transform, self.sc, point_params['mass'], point_params['use_wind'], point_params['push_algorithm'], point_params['lock_rotate'], point_params['stretch'], debug)
+                    else:
+                        point = Point.StaticPoint(point_name, pos, disp, debug)
+                    point_by_name[point_name] = (point, bone_index)
+                    self.points_by_bone[bone_name].append(point)
+                    if point_params['movable']:
+                        self.movable_points.append(point)
+                    self.points_and_links.append(point)
+
+        def get_link_param(param_name, link_data):
+            link_param = link_data[2] if len(link_data) > 2 else {}
+            param = link_param.get(param_name)
+            if param is None:
+                return self.config[param_name]
+            else:
+                return param
+
+        for link_data in self.config['links']:
+            point1_name, point2_name = link_data[:2]
+            point1, index1 = point_by_name[point1_name]
+            point2, index2 = point_by_name[point2_name]
+            if index2 >= index1:
+                parent_point, child_point = point1, point2
+            else:
+                parent_point, child_point = point2, point1
+            link = Link.Link(parent_point, child_point, get_link_param('suck_algorithm', link_data), get_link_param('stretch', link_data))
+            self.points_and_links.append(link)
+
+    def pTick(self, dtime):
+        """ \xd0\xbf\xd0\xbe\xd0\xba\xd0\xb0\xd0\xb4\xd1\x80\xd0\xbe\xd0\xb2\xd0\xbe\xd0\xb5 \xd0\xbe\xd0\xb1\xd0\xbd\xd0\xbe\xd0\xb2\xd0\xbb\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5 """
+        self.frame_time = min(0.25, dtime)
+        Fabric.clother_draw_call = 0
+        self.draw_call = 0
+
+    def onLoddedout(self, lodded):
+        if self.points_and_links:
+            for element in self.points_and_links:
+                element.relax()
+
+    def pDraw(self, wind, bones):
+        self.draw_call += 1
+        player = BigWorld.player()
+        _isFPS = False
+        if player:
+            _isFPS = player._isFPS
+        draw_call_number = 2 if _isFPS and self.last_out else 1
+        if self.draw_call == draw_call_number:
+            self.last_out = self.draw(wind, bones)
+        return self.last_out
+
+    def draw(self, wind, bones):
+        """ \xd0\xbf\xd0\xbe\xd0\xba\xd0\xb0\xd0\xb4\xd1\x80\xd0\xbe\xd0\xb2\xd0\xbe\xd0\xb5 \xd1\x80\xd0\xb8\xd1\x81\xd0\xbe\xd0\xb2\xd0\xb0\xd0\xbd\xd0\xb8\xd0\xb5 """
+        if not self.points_created:
+            try:
+                self.create_points(bones)
+            except:
+                print '\n\nERROR:', self
+                traceback.print_exc()
+                print
+                self._detach()
+                return
+
+            self.points_created = True
+            if self.sc:
+                for i in xrange(self.sc.nColliders()):
+                    box = self.sc.getCollider(i)
+                    self.prev_box_transform[box] = Matrix(box.worldTransform)
+
+        Fabric.clother_draw_call += 1
+        if self._entity and self._entity.isInsideShell():
+            wind = Vector3(0, 0, 0)
+        else:
+            wind = Vector3(wind.x, max(wind.x, wind.y) * random.uniform(-1, 1) * 5, wind.y) * 30
+        fixed_update_number = 0
+        self.accumulator += self.frame_time
+        while self.accumulator >= self.dt:
+            self.accumulator -= self.dt
+            fixed_update_number += 1
+
+        for chain_index, bones_chain in enumerate(bones):
+            for bone_index, (world_child, local_child) in enumerate(bones_chain):
+                bone_name = self.config['bones'][chain_index][bone_index]
+                for point in self.points_by_bone[bone_name]:
+                    if not point.movable:
+                        point.stick_to_bone(world_child, fixed_update_number)
+
+        for element in self.points_and_links:
+            element.update(self.frame_time)
+
+        for _ in xrange(fixed_update_number):
+            for point in self.movable_points:
+                point.add_force(Fabric.GRAVITY * point.mass)
+                if point.use_wind:
+                    point.add_force(wind)
+
+            for element in self.points_and_links:
+                element.fixed_update(self.dt)
+
+        alpha = self.accumulator / self.dt
+        for element in self.points_and_links:
+            element.draw(alpha)
+
+        out = []
+        needed_world, rotate, local = Matrix(), Matrix(), Matrix()
+        for chain_index, bones_chain in enumerate(bones):
+            bones_out = []
+            world_matrix_inited = False
+            for bone_index, (world, local) in enumerate(bones_chain):
+                bone_name = self.config['bones'][chain_index][bone_index]
+                point = self.points_by_bone[bone_name][0]
+                if not world_matrix_inited:
+                    W = Matrix(world)
+                if point.movable and point.name not in (self.config.get('ignore_bones') or []):
+                    needed_pos_world = (1.0 - point.rigid) * point.interpolated_position + point.rigid * world.translation
+                    start_point = W.translation
+                    disp = needed_pos_world - start_point
+                    disp.normalise()
+                    min_length = local.translation.length
+                    max_length = disp.length
+                    needed_length = min_length * (1 - point.stretch) + max_length * point.stretch
+                    disp *= needed_length
+                    needed_pos_world = start_point + disp
+                    if point.lock_rotate:
+                        m1 = Matrix()
+                        m1.set(world)
+                        m1.invert()
+                        m2 = Matrix()
+                        m2.setTranslate(needed_pos_world)
+                        m2.postMultiply(m1)
+                        needed_pos_local = m2.translation
+                        for axis, value in point.lock_rotate:
+                            cur_value = getattr(needed_pos_local, axis)
+                            if type(value) == tuple:
+                                setattr(needed_pos_local, axis, cur_value * (value[0] if cur_value < 0 else value[1]))
+                            else:
+                                setattr(needed_pos_local, axis, cur_value * value)
+
+                        m2.setTranslate(needed_pos_local)
+                        m3 = Matrix()
+                        m3.set(world)
+                        m3.postMultiply(m2)
+                        needed_pos_world = Matrix()
+                        needed_pos_world.set(world)
+                        needed_pos_world.preMultiply(m2)
+                        needed_pos_world = needed_pos_world.translation
+                    up = world.applyToAxis(1)
+                    needed_world.lookAt(needed_pos_world, needed_pos_world - start_point, -up)
+                    needed_world.invert()
+                    rotate.setRotateYPR((math.pi * 0.5, 0, math.pi))
+                    needed_world.preMultiply(rotate)
+                    local.set(W)
+                    local.invert()
+                    local.preMultiply(needed_world)
+                if world_matrix_inited:
+                    W.preMultiply(local)
+                world_matrix_inited = True
+                bones_out.append(local)
+
+            out.append(bones_out)
+
+        if self.sc:
+            if Fabric.clother_draw_call == Fabric.CLOTHER_DRAW_CALLS:
+                for i in xrange(self.sc.nColliders()):
+                    box = self.sc.getCollider(i)
+                    self.prev_box_transform[box] = Matrix(box.worldTransform)
+
+        return out
+
+    def destroy(self):
+        """ \xd0\xbc\xd0\xb5\xd1\x82\xd0\xbe\xd0\xb4 \xd0\xb2\xd1\x8b\xd0\xb7\xd1\x8b\xd0\xb2\xd0\xb0\xd1\x82\xd1\x8c \xd0\xbd\xd0\xb5 \xd0\xbe\xd0\xb1\xd1\x8f\xd0\xb7\xd0\xb0\xd1\x82\xd0\xb5\xd0\xbb\xd1\x8c\xd0\xbd\xd0\xbe (\xd0\xbe\xd0\xbd \xd0\xbf\xd1\x80\xd0\xbe\xd1\x81\xd1\x82\xd0\xbe \xd1\x83\xd0\xb4\xd0\xb0\xd0\xbb\xd0\xb8\xd1\x82 \xd0\xb4\xd0\xb5\xd0\xb1\xd0\xb0\xd0\xb6\xd0\xbd\xd1\x8b\xd0\xb5 \xd1\x88\xd0\xb0\xd1\x80\xd1\x8b)
+        """
+        if self.points_and_links:
+            for element in self.points_and_links:
+                element.destroy()

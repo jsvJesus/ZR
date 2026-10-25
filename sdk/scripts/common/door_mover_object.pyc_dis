@@ -1,0 +1,700 @@
+# Embedded file name: ./common/door_mover_object.py
+import BigWorld
+import math
+from time import time
+from copy import deepcopy
+from Math import Matrix, Vector3
+from utils import pyFixedToNativePythonType
+try:
+    from blender_object import Blender
+    gi = BigWorld.getGeometricInstance()
+except ImportError:
+
+    class Blender:
+
+        def __init__(self, tick_time, total_time):
+            pass
+
+        def run_blend(self, callback):
+            pass
+
+
+    gi = None
+
+if BigWorld.component == 'editor':
+
+    def print_msg(title, *args):
+        line = ' | '.join(map(str, args))
+        if line:
+            msg = '[Doors] {0}: {1}'.format(title, line)
+        else:
+            msg = '[Doors] {0}'.format(title)
+        print msg
+        return msg
+
+
+    import WorldEditor
+
+    def show_msg(title, *args):
+        msg = print_msg(title, *args)
+        WorldEditor.addCommentaryMsg(msg)
+
+
+else:
+
+    def print_msg(title, *args):
+        pass
+
+
+    def show_msg(title, *args):
+        pass
+
+
+DEFAULT_POSITION = (0, 0, 0)
+DEFAULT_DIRECTION = (0, 0, 0)
+DEFAULT_SPEED = 1.0
+DEFAULT_SPEED_ANGLE = 60
+DEFAULT_YAW = 0
+DEFAULT_PITCH = 0
+DEFAULT_ROLL = 0
+DEFAULT_MATRIX_INTERPOLATION = False
+DEFAULT_LEV_SPEED = 1.0
+DEFAULT_LEV_AMPLITUDE = 0.1
+DEFAULT_LEV_START = False
+DEFAULT_LEV_END = False
+DEFAULT_BLEND_START = False
+DEFAULT_BLEND_END = False
+DEFAULT_LOOP_YPR_END = False
+DEFAULT_LOOP_SPEED = 1
+DEFAULT_LOOP_YAW = 0
+DEFAULT_LOOP_PITCH = 0
+DEFAULT_LOOP_ROLL = 0
+
+class COLOR:
+    RED = (1, 0, 0, 1)
+    GREEN = (0, 1, 0, 1)
+    BLUE = (0, 0, 1, 1)
+    WHITE = (1, 1, 1, 1)
+    BLACK = (0, 0, 0, 1)
+    YELLOW = (1, 1, 0, 1)
+
+
+def clamp_val(val, min_val, max_val):
+    return min(max(min_val, val), max_val)
+
+
+def get_blended_val(start_val, end_val, weight):
+    delta = end_val - start_val
+    res = start_val + delta * weight
+    return res
+
+
+LOOP_INTERVAL = 0.01
+MAX_LOOP_INTERVAL = LOOP_INTERVAL * 4
+MATH_PI = math.pi
+MATH_2PI = math.pi * 2
+
+def clamp_angles(start, end):
+    rot = end - start
+    if rot[0] <= -MATH_PI:
+        end[0] += MATH_2PI
+    elif rot[0] > MATH_PI:
+        end[0] -= MATH_2PI
+    if rot[1] <= -MATH_PI:
+        end[1] += MATH_2PI
+    elif rot[1] > MATH_PI:
+        end[1] -= MATH_2PI
+    if rot[2] <= -MATH_PI:
+        end[2] += MATH_2PI
+    elif rot[2] > MATH_PI:
+        end[2] -= MATH_2PI
+
+
+def get_matrix_from_dict(matrix_dict):
+    matrix = Matrix()
+    if matrix_dict:
+        translation = matrix_dict.get('translation')
+        if translation is not None:
+            matrix.setTranslate(translation)
+        rotation = matrix_dict.get('rotation')
+        if rotation is not None:
+            m_r = Matrix()
+            m_r.setRotateYPR(rotation)
+            matrix.preMultiply(m_r)
+    return matrix
+
+
+def get_local_matrix(m1, m2):
+    m_o = Matrix(m1)
+    m_o.invert()
+    m_conv = Matrix(m2)
+    m_conv.postMultiply(m_o)
+    return m_conv
+
+
+def get_world_matrix(m1, local_matrix):
+    m = Matrix(m1)
+    m.preMultiply(local_matrix)
+    return m
+
+
+class TossSim:
+    """
+    \xd0\x94\xd0\xbb\xd1\x8f \xd1\x81\xd0\xb8\xd0\xbc\xd1\x83\xd0\xbb\xd1\x8f\xd1\x86\xd0\xb8\xd0\xb8 \xd0\xba\xd0\xb0\xd1\x87\xd0\xb0\xd0\xbd\xd0\xb8\xd1\x8f (\xd0\xbb\xd0\xb5\xd0\xb2\xd0\xb8\xd1\x82\xd0\xb0\xd1\x86\xd0\xb8\xd0\xb8)
+    """
+
+    def __init__(self):
+        self._speed_start_val = 0
+        self._speed_end_val = 1
+        self._speed_delta_val = self._speed_end_val - self._speed_start_val
+        self._blender = Blender(tick_time=0.01, total_time=1)
+
+    def _reset(self):
+        self.position = Vector3()
+        self.rotation = Vector3()
+        self._angle = 0.0
+        self._pause_speed_coef = None
+        return
+
+    def set_params(self, amplitude, frequency):
+        self._amplitude = amplitude
+        self._pitch_amplitude = amplitude / 5.0
+        self._frequency = frequency
+        self._reset()
+
+    def update(self, time_delta):
+        if self._pause_speed_coef is None:
+            self._run_blend_speed()
+            return
+        else:
+            self._angle += time_delta * self._frequency * self._pause_speed_coef
+            if self._angle >= MATH_2PI:
+                self._angle = 0
+            elif self._angle <= -MATH_2PI:
+                self._angle = 0
+            _sin = math.sin(self._angle)
+            a = self._amplitude * _sin
+            b = self._pitch_amplitude * _sin
+            self.position = Vector3(a, a, a)
+            self.rotation = Vector3(b, b, b)
+            return
+
+    def _run_blend_speed(self):
+
+        def callback(weight):
+            self._pause_speed_coef = self._speed_start_val + self._speed_delta_val * weight
+            if abs(self._pause_speed_coef - self._speed_end_val) < 0.001:
+                self._pause_speed_coef = self._speed_end_val
+
+        self._pause_speed_coef = 0
+        self._blender.run_blend(callback)
+
+
+class LoopYPRSim:
+    """
+    \xd0\x94\xd0\xbb\xd1\x8f \xd1\x81\xd0\xb8\xd0\xbc\xd1\x83\xd0\xbb\xd1\x8f\xd1\x86\xd0\xb8\xd0\xb8 \xd0\xb2\xd1\x80\xd0\xb0\xd1\x89\xd0\xb5\xd0\xbd\xd0\xb8\xd1\x8f
+    """
+
+    def __init__(self):
+        pass
+
+    def _reset(self):
+        self.rotation = Vector3()
+        self._angle = 0.0
+
+    def set_params(self, y, p, r, speed):
+        self._y = y
+        self._p = p
+        self._r = r
+        self._speed = speed
+        self._reset()
+
+    def update(self, time_delta):
+        self._angle += time_delta * self._speed
+        if self._angle >= MATH_2PI:
+            self._angle = 0
+        elif self._angle <= -MATH_2PI:
+            self._angle = 0
+        y = self._y * self._angle
+        p = self._p * self._angle
+        r = self._r * self._angle
+        self.rotation = Vector3(y, p, r)
+
+
+class DoorMover:
+    """
+    \xd0\xbe\xd0\xb1\xd1\x89\xd0\xb8\xd0\xb9 \xd0\xba\xd0\xbb\xd0\xb0\xd1\x81\xd1\x81 \xd1\x87\xd1\x82\xd0\xbe\xd0\xb1\xd1\x8b \xd0\xb4\xd0\xb2\xd0\xb8\xd0\xb3\xd0\xb0\xd1\x82\xd1\x8c \xd0\xb4\xd0\xb2\xd0\xb5\xd1\x80\xd0\xb8
+    """
+
+    def __init__(self, on_door_move_end = None):
+        self._toss_sim = TossSim()
+        self._loop_ypr_sim = LoopYPRSim()
+        self._blend_time = 1.0
+        self._blender = Blender(0.01, self._blend_time)
+        self._on_door_move_end = on_door_move_end
+        self._is_call_callback = None
+        return
+
+    def set_mover_data(self, door_states, door_params, selected_index = -1, is_once = False):
+        """
+        \xd1\x81\xd0\xbe\xd0\xb1\xd1\x80\xd0\xb0\xd1\x82\xd1\x8c \xd0\xb2\xd1\x81\xd0\xb5 \xd0\xb4\xd0\xb0\xd0\xbd\xd0\xbd\xd1\x8b\xd0\xb5 (\xd0\xbf\xd0\xbe\xd0\xb7,\xd0\xbf\xd0\xbe\xd0\xb2\xd0\xbe\xd1\x80\xd0\xbe\xd1\x82,\xd1\x81\xd0\xba\xd0\xbe\xd1\x80\xd0\xbe\xd1\x81\xd1\x82\xd1\x8c/\xd0\xba\xd0\xb0\xd0\xb4\xd1\x80\xd1\x8b)
+        """
+        self._filtered = door_states
+        self._door_params = door_params if type(door_params) == dict else pyFixedToNativePythonType(door_params)
+        self._toss_sim.set_params(door_params.get('lev_amplitude', 0), door_params.get('lev_speed', 0))
+        if self._door_params:
+            y = self._door_params['loop_yaw']
+            p = self._door_params['loop_pitch']
+            r = self._door_params['loop_roll']
+            speed = self._door_params['loop_speed'] * MATH_PI / 180.0
+            self._loop_ypr_sim.set_params(y, p, r, speed)
+        self._selected_index = selected_index
+        self._is_once = is_once
+
+    def get_door_states(self, door_ent):
+        door_states = []
+        pos0 = door_ent.position
+        dir0 = Vector3(door_ent.yaw, door_ent.pitch, door_ent.roll)
+        matrix = get_matrix_from_dict({'translation': pos0,
+         'rotation': dir0})
+        for i, x in enumerate(door_ent.state_poses):
+            local_matrix = get_matrix_from_dict({'translation': x['position'],
+             'rotation': x['direction']})
+            m = get_world_matrix(matrix, local_matrix)
+            d = {'pos': m.translation,
+             'rotate': (m.yaw, m.pitch, m.roll),
+             'speed': x.get('frames', DEFAULT_SPEED),
+             'speed_angle': x.get('speed_angle', DEFAULT_SPEED_ANGLE),
+             'yaw': x.get('yaw', DEFAULT_YAW),
+             'pitch': x.get('pitch', DEFAULT_PITCH),
+             'roll': x.get('roll', DEFAULT_ROLL)}
+            if not door_states:
+                d2 = deepcopy(d)
+                d2['pos'] = pos0
+                d2['rotate'] = dir0
+                door_states.append(d2)
+            door_states.append(d)
+
+        return door_states
+
+    def _prepare_play(self):
+        self.dist_coef = 0.0
+        self.angle_coef = 0.0
+        if self.play_forward:
+            self.dest_idx = 0
+            self.t = 1
+        else:
+            self.dest_idx = self.move_active_count - 1
+            self.t = -1
+        if self._selected_index != -1:
+            if self.is_stop:
+                self.dest_idx = self._selected_index
+        if not self.play_forward:
+            self.dest_idx += 1
+        self._finish_idx = self.dest_idx + 2 if self.play_forward else self.dest_idx - 2
+        self._blend_speed_idx = None
+        if self._door_params.get('blend_start'):
+            self._run_blend_speed(is_start=True)
+        self.draw_spline(self._door_params.get('to_show_spline'))
+        self._is_call_callback = None
+        return
+
+    def _call_callback(self):
+        if self._is_call_callback:
+            return
+        self._is_call_callback = True
+        if self._on_door_move_end:
+            self._on_door_move_end()
+
+    def play(self):
+        self.is_stop = False
+        self._play(play_forward=True)
+
+    def backplay(self):
+        self.is_stop = False
+        self._play(play_forward=False)
+
+    def stop(self):
+        self.is_stop = True
+        self._play()
+
+    def _play(self, play_forward = True):
+        self.play_forward = play_forward
+        self.is_play = 1
+        self._pause_speed_coef = 1
+        self._target_step = None
+        self.prev_move_pos = None
+        self._prepare_play()
+        return
+
+    @property
+    def move_active_count(self):
+        return len(self._filtered)
+
+    def get_filtered_elem(self, index):
+        size = len(self._filtered)
+        if self.is_loop_active:
+            if index >= size:
+                index = index - size
+        else:
+            index = clamp_val(index, 0, size - 1)
+        try:
+            return self._filtered[index]
+        except:
+            print 'size', size
+            print 'index', index
+            raise
+
+    def get_pos(self, index):
+        return Vector3(self.get_filtered_elem(index)['pos'])
+
+    def get_rotate(self, index):
+        return Vector3(self.get_filtered_elem(index)['rotate'])
+
+    def get_speed(self, index):
+        val = self.get_filtered_elem(index)['speed']
+        return val
+
+    def get_speed_angle(self, index):
+        """
+        \xd0\xb2\xd0\xbe\xd0\xb7\xd0\xb2\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd1\x80\xd0\xb0\xd0\xb4\xd0\xb8\xd0\xb0\xd0\xbd/\xd1\x81\xd0\xb5\xd0\xba
+        """
+        val = self.get_filtered_elem(index)['speed_angle'] * MATH_PI / 180.0
+        return val
+
+    def get_yaw(self, index):
+        return self.get_filtered_elem(index)['yaw']
+
+    def get_pitch(self, index):
+        return self.get_filtered_elem(index)['pitch']
+
+    def get_roll(self, index):
+        return self.get_filtered_elem(index)['roll']
+
+    def _get_blended_linear_speed(self):
+        weight = min(abs(self.t), 1)
+        s1 = self.get_speed(self.dest_idx - 1)
+        s2 = self.get_speed(self.dest_idx)
+        speed = get_blended_val(s1, s2, weight)
+        return speed
+
+    def _set_move_matrix(self, dest_idx):
+        pos = self.get_pos(dest_idx)
+        rotate = self.get_rotate(dest_idx)
+        matrix = Matrix()
+        matrix.setRotateYPR(rotate)
+        matrix.translation = pos
+        self.move_matrix = matrix
+        self.move_pos = matrix.translation
+
+    def _set_move_matrix_lev(self, dest_idx):
+        self._toss_sim.update(self._last_dt)
+        pos = self.get_pos(dest_idx) + self._toss_sim.position
+        rotate = self.get_rotate(dest_idx) + self._toss_sim.rotation
+        matrix = Matrix()
+        matrix.setRotateYPR(rotate)
+        matrix.translation = pos
+        self.move_matrix = matrix
+        self.move_pos = matrix.translation
+
+    def _apply_loop_ypr(self):
+        self._loop_ypr_sim.update(self._last_dt)
+        m_r = Matrix()
+        m_r.setRotateYPR(self._loop_ypr_sim.rotation)
+        self.move_matrix.preMultiply(m_r)
+
+    _line_ids = []
+
+    def _add_line(self, lineStart, lineEnd, colour, alwaysDraw = True):
+        self._line_ids.append(gi.addLine(lineStart, lineEnd, colour, alwaysDraw))
+
+    def remove_lines(self):
+        while self._line_ids:
+            lineid = self._line_ids.pop()
+            gi.remove(lineid)
+
+    def draw_spline(self, to_draw = False):
+        self.remove_lines()
+        if not to_draw:
+            return
+        else:
+            dest_idx = 0
+            t = 1
+            if self.move_active_count < 2:
+                return
+            step = 0.01
+            n_iter = self.move_active_count + 1
+            n_steps = int(1 / step)
+            prev_move_pos = None
+            for _ in xrange(n_iter * n_steps):
+                t += step
+                t = clamp_val(t, -1, 1)
+                if t >= 1.0 or t < 0:
+                    if t > 0:
+                        _dest_idx = dest_idx + 1
+                        if _dest_idx >= self.move_active_count:
+                            if not self.is_loop_active:
+                                return
+                            _dest_idx = 0
+                        dest_idx = _dest_idx
+                    else:
+                        _dest_idx = dest_idx - 1
+                        if _dest_idx <= 0:
+                            if not self.is_loop_active:
+                                return
+                            _dest_idx = self.move_active_count
+                        dest_idx = _dest_idx
+                    p0 = self.get_pos(dest_idx - 2)
+                    p1 = self.get_pos(dest_idx - 1)
+                    p2 = self.get_pos(dest_idx)
+                    p3 = self.get_pos(dest_idx + 1)
+                    t = 0 if t > 0 else 1
+                t2 = t * t
+                t3 = t * t2
+                move_pos = 0.5 * (2 * p1 + (-p0 + p2) * t + (2 * p0 - 5 * p1 + 4 * p2 - p3) * t2 + (-p0 + 3 * p1 - 3 * p2 + p3) * t3)
+                if prev_move_pos:
+                    self._add_line(prev_move_pos, move_pos, COLOR.RED)
+                prev_move_pos = move_pos
+
+            return
+
+    def get_total_time(self):
+        total_time = 0
+        if not self.move_active_count:
+            return total_time
+        if self._door_params.get('matrix_interpolation'):
+            for index in xrange(1, self.move_active_count):
+                speed = self.get_speed(index)
+                if speed == 0:
+                    raise ValueError('Invalid speed == 0. %s' % self._door_params)
+                total_time += 1.0 / speed
+
+            show_msg('total_time ->', total_time)
+            return total_time
+        if self.move_active_count:
+            self.play()
+        while not self.is_stop:
+            now = getattr(self, '_last_t', 0) + LOOP_INTERVAL * 2
+            dt = now - getattr(self, '_last_t', 0)
+            self._last_t = now
+            self._last_dt = min(dt, MAX_LOOP_INTERVAL)
+            self._upd_move_matrix()
+            total_time += self._last_dt
+
+        show_msg('total_time ->', total_time)
+        return total_time
+
+    _t_step = 0
+    _prev_t_step = 0
+    _last_dt = 0
+
+    def update_move_tick(self):
+        now = time()
+        dt = now - getattr(self, '_last_t', 0)
+        self._last_t = now
+        self._last_dt = min(dt, MAX_LOOP_INTERVAL)
+        self._upd_move_matrix()
+        if self.is_stop:
+            if self.play_forward:
+                if self.dest_idx <= 0:
+                    if self._door_params.get('lev_start'):
+                        self._set_move_matrix_lev(self.dest_idx)
+                elif self.dest_idx >= self.move_active_count - 1:
+                    if self._door_params.get('lev_end'):
+                        self._set_move_matrix_lev(self.dest_idx)
+                    if self._door_params.get('loop_ypr_end'):
+                        self._apply_loop_ypr()
+            elif self.dest_idx <= 1:
+                if self._door_params.get('lev_start'):
+                    self._set_move_matrix_lev(self.dest_idx - 1)
+            self._call_callback()
+        elif self._blend_speed_idx != self.dest_idx and self._door_params.get('blend_end'):
+            if self.play_forward:
+                if self.dest_idx == self.move_active_count - 1:
+                    self._run_blend_speed(is_start=False)
+            elif self.dest_idx == 1:
+                self._run_blend_speed(is_start=False)
+        return self.move_matrix
+
+    def _run_blend_speed(self, is_start):
+        if is_start:
+            self._speed_start_val = 0
+            self._speed_end_val = 1
+        else:
+            _dist = (self._next_pos - self.move_pos).length
+            _time = _dist / abs(self._result_speed)
+            if _time > self._blend_time * 0.5:
+                return
+            self._speed_start_val = 1
+            self._speed_end_val = 0.4
+        self._speed_delta_val = self._speed_end_val - self._speed_start_val
+
+        def callback(weight):
+            x = max(weight * 100, 1)
+            y = math.log(x, 10) * 0.5
+            self._pause_speed_coef = self._speed_start_val + self._speed_delta_val * y
+            if abs(self._pause_speed_coef - self._speed_end_val) < 0.001:
+                self._pause_speed_coef = self._speed_end_val
+
+        self._blender.run_blend(callback)
+        self._blend_speed_idx = self.dest_idx
+
+    def _upd_move_matrix(self):
+        if len(self._filtered) == 1:
+            self.dest_idx = 0
+            self.is_stop = True
+        if self.is_stop:
+            self._set_move_matrix(self.dest_idx)
+            return
+        elif self._door_params.get('matrix_interpolation'):
+            self._calc_move_matrix_interpolation()
+            return
+        else:
+            linear_speed = self._get_blended_linear_speed()
+            if linear_speed == 0:
+                print '[WARNING] linear_speed == 0'
+                self.is_stop = True
+                return
+            elif self._pause_speed_coef <= 0:
+                print '[WARNING] pause_speed_coef <= 0:', self._pause_speed_coef
+                self.is_stop = True
+                return
+            play_direction_mul = 1 if self.play_forward else -1
+            self._calc_dist_coef()
+            if self.dist_coef:
+                self._result_speed = linear_speed * play_direction_mul * self._pause_speed_coef
+                self._target_step = abs(self._result_speed * self._last_dt)
+                step = 0
+                for i in xrange(20):
+                    self._calc_move_matrix(step_mul=0.1)
+                    d = 0 if self.prev_move_pos is None else (self.prev_move_pos - self.move_pos).length
+                    self.prev_move_pos = self.move_pos
+                    step += d
+                    if step < self._target_step:
+                        continue
+                    break
+
+            else:
+                self._result_speed = play_direction_mul * self._pause_speed_coef
+                self._calc_move_matrix()
+            return
+
+    def _calc_dist_coef(self):
+        if not self.t >= 1.0:
+            to_calc = self.t < 0
+            if not to_calc:
+                return
+            if self.t > 0:
+                _dest_idx = self.dest_idx + 1
+                if self._is_once and _dest_idx >= self._finish_idx:
+                    return
+                if _dest_idx >= self.move_active_count:
+                    if not self.is_loop_active:
+                        self.dest_idx = self.move_active_count - 1
+                        self.is_stop = True
+                        return
+                    _dest_idx = 0
+                self.dest_idx = _dest_idx
+            else:
+                _dest_idx = self.dest_idx - 1
+                if self._is_once and _dest_idx <= self._finish_idx:
+                    return
+                if _dest_idx <= 0:
+                    if not self.is_loop_active:
+                        self.dest_idx = 0
+                        self.is_stop = True
+                        return
+                    _dest_idx = self.move_active_count
+                self.dest_idx = _dest_idx
+            p0 = self.p0 = self.get_pos(self.dest_idx - 2)
+            p1 = self.p1 = self.get_pos(self.dest_idx - 1)
+            p2 = self.p2 = self.get_pos(self.dest_idx)
+            p3 = self.p3 = self.get_pos(self.dest_idx + 1)
+            r0 = self.r0 = self.get_rotate(self.dest_idx - 2)
+            r1 = self.r1 = self.get_rotate(self.dest_idx - 1)
+            r2 = self.r2 = self.get_rotate(self.dest_idx + 0)
+            r3 = self.r3 = self.get_rotate(self.dest_idx + 1)
+            clamp_angles(self.r0, self.r1)
+            clamp_angles(self.r1, self.r2)
+            clamp_angles(self.r2, self.r3)
+            EPS = 0.01
+            d1 = (p0 - p1).length
+            d2 = (p1 - p2).length
+            d3 = (p2 - p3).length
+            _d = d1 + 2 * d2 + d3
+            self.dist_coef = abs(_d) > EPS and 1 / _d
+            self.angle_coef = 0
+        else:
+            d1 = (r0 - r1).length
+            d2 = (r1 - r2).length
+            d3 = (r2 - r3).length
+            _d = d1 + 2 * d2 + d3
+            self.dist_coef = 0
+            if abs(_d) > EPS:
+                self.angle_coef = self.get_speed_angle(self.dest_idx) * 1 / _d * 3
+            else:
+                self.angle_coef = 1000000
+        self.t = 0 if self.t > 0 else 1
+        self._next_pos = self.p3 if self.play_forward else self.p1
+
+    is_loop_active = 0
+    _speed_coef = 6.25
+
+    def _calc_move_matrix(self, step_mul = 1):
+        if self.dist_coef:
+            self.t += self._result_speed * self._speed_coef * self.dist_coef * self._last_dt * step_mul
+        else:
+            self.t += self._result_speed * self.angle_coef * self._last_dt
+        self.t = clamp_val(self.t, -1, 1)
+        self._calc_dist_coef()
+        t = self.t
+        p0 = self.p0
+        p1 = self.p1
+        p2 = self.p2
+        p3 = self.p3
+        r0 = self.r0
+        r1 = self.r1
+        r2 = self.r2
+        r3 = self.r3
+        t2 = t * t
+        t3 = t * t2
+        self.move_pos = 0.5 * (2 * p1 + (-p0 + p2) * t + (2 * p0 - 5 * p1 + 4 * p2 - p3) * t2 + (-p0 + 3 * p1 - 3 * p2 + p3) * t3)
+        move_rot = 0.5 * (2 * r1 + (-r0 + r2) * t + (2 * r0 - 5 * r1 + 4 * r2 - r3) * t2 + (-r0 + 3 * r1 - 3 * r2 + r3) * t3)
+        move_rot[0] -= math.pi * 2 * t * self.get_yaw(self.dest_idx)
+        move_rot[1] -= math.pi * 2 * t * self.get_pitch(self.dest_idx)
+        move_rot[2] -= math.pi * 2 * t * self.get_roll(self.dest_idx)
+        matrix = Matrix()
+        matrix.setRotateYPR(move_rot)
+        matrix.translation = self.move_pos
+        self.move_matrix = matrix
+
+    def _calc_move_matrix_interpolation(self):
+        s2 = self.get_speed(self.dest_idx)
+        _coef = (1 if self.play_forward else -1) * s2
+        self.t += _coef * self._last_dt
+        self.t = clamp_val(self.t, -1, 1)
+        self._calc_dist_coef()
+
+        def get_matrix_from_desc(translation = None, rotation = None):
+            matrix = Matrix()
+            if translation is not None:
+                matrix.setTranslate(Vector3(translation))
+            if rotation is not None:
+                m_r = Matrix()
+                m_r.setRotateYPR(Vector3(rotation))
+                matrix.preMultiply(m_r)
+            return matrix
+
+        m1 = get_matrix_from_desc(self.p1, self.r1)
+        m2 = get_matrix_from_desc(self.p2, self.r2)
+        factor = clamp_val(self.t, 0, 1)
+        if factor == 0:
+            matrix = m1
+        elif factor == 1:
+            matrix = m2
+        else:
+            matrix = m1
+            matrix.blendMatrix(factor, m2)
+        self.move_matrix = matrix
+        self.move_pos = matrix.translation
+        return

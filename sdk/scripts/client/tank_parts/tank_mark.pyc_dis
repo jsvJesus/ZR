@@ -1,0 +1,95 @@
+# Embedded file name: ./client/tank_parts/tank_mark.py
+import GUI
+from soGUI.soInworldMarkers import soCustomMarker
+from matrix_providers import ShiftProvider
+import math_bw
+from Helpers.BWCoroutine import BWMemberCoroutine, BWWaitForPeriod
+from Helpers.PyGUI import Utils
+
+class TankMarker(soCustomMarker):
+
+    def __init__(self, tank, height = 3):
+        soCustomMarker.__init__(self, GUI.Window())
+        self._twinkle_coroutine = None
+        mark_height = height
+        shift_provider = ShiftProvider(tank.matrix, (0, mark_height, 0))
+        self._matrix = GUI.WorldToClipMP()
+        self._matrix.target = shift_provider
+        move_shader = GUI.MatrixShader()
+        move_shader.eta = 0
+        move_shader.blend = True
+        move_shader.target = self._matrix
+        self._max_filler_width = 96
+        comp = self.component
+        comp.colour = (255, 255, 255, 255)
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+        comp.width, comp.height = self._max_filler_width + 2, 8
+        comp.addShader(move_shader, 'mover')
+        comp = GUI.Frame2('soGUI/frame/hp_atv.dds')
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+        comp.width, comp.height = (2, 2)
+        comp.position = (0, 0, 1)
+        comp.materialFX = 'BLEND'
+        self.component.addChild(comp, 'frame')
+        comp = GUI.Simple('soGUI/frame/paint/white.dds')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'CENTER')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'CLIP')
+        comp.width, comp.height = self._max_filler_width, 6
+        comp.materialFX = 'BLEND'
+        comp.position = (1, 0, 0.5)
+        self.component.addChild(comp, 'filler')
+        self.set_ratio(1.0)
+        self._visible = False
+        return
+
+    def set_ratio(self, ratio):
+        self._ratio = ratio
+        self.component.filler.width = ratio * self._max_filler_width
+        color = math_bw.lerp_rgb_colors((200, 0, 0, 255), (0, 200, 0, 255), ratio)
+        self.component.filler.colour = (color[0],
+         color[1],
+         color[2],
+         self.component.filler.colour[3])
+
+    def set_alpha(self, alpha):
+
+        def set_comp_alpha(comp):
+            comp.colour[3] = alpha * 255
+            for _, c in comp.children:
+                set_comp_alpha(c)
+
+        set_comp_alpha(self.component)
+        self._check_twinkle()
+
+    def _check_twinkle(self):
+        if self._visible:
+            need_twinkle = self._ratio < 0.3
+            if need_twinkle:
+                self._twinkle_coroutine = self._twinkle_coroutine or self._twinkle()
+                self._twinkle_coroutine.run()
+        elif self._twinkle_coroutine:
+            self._twinkle_coroutine.stop()
+            self._twinkle_coroutine = None
+        return
+
+    @BWMemberCoroutine
+    def _twinkle(self):
+        while Utils.is_visible_in_hierarchy(self.component):
+            self.component.frame.visible = False
+            self.component.filler.visible = False
+            yield BWWaitForPeriod(0.2)
+            self.component.frame.visible = True
+            self.component.filler.visible = True
+            yield BWWaitForPeriod(0.5)
+
+    def on_show(self):
+        self._visible = True
+        self._check_twinkle()
+
+    def on_hide(self):
+        self._visible = False
+        self._check_twinkle()

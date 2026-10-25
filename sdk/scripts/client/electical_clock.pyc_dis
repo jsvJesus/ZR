@@ -1,0 +1,149 @@
+# Embedded file name: ./client/electical_clock.py
+import BigWorld
+from Helpers.Caps import CAP_INTERACT
+from time import time, strftime, localtime
+from functools import partial
+FONTOFFSET = {'1': (0, -0.33),
+ '2': (0.2, -0.33),
+ '3': (0.4, -0.33),
+ '4': (0.6, -0.33),
+ '5': (0.8, -0.33),
+ '6': (0.0, 0.0),
+ '7': (0.2, 0.0),
+ '8': (0.4, 0.0),
+ '9': (0.6, 0.0),
+ '0': (0.8, 0.0),
+ '.': (0.01, 0.33),
+ ' ': (0.4, 0.33)}
+
+def getoffest(symb):
+    if symb not in FONTOFFSET:
+        symb = '.'
+    x, y = FONTOFFSET[symb]
+    return (x,
+     y,
+     0,
+     0)
+
+
+def update_text(model, text):
+    text = text.replace(':', '.')
+    if len(text) != 5:
+        raise ValueError("text '%r' != 5" % text)
+    model.electronica7.offsetRed = getoffest(text[0])
+    model.electronica7.offsetGreen = getoffest(text[1])
+    model.electronica7.offsetBlue = getoffest(text[2])
+    model.electronica7.offsetRedGreen = getoffest(text[3])
+    model.electronica7.offsetGreenBlue = getoffest(text[4])
+
+
+def toMS(time_left):
+    minutes = int(time_left / 60)
+    sec = time_left - minutes * 60
+    minutes = min(99, minutes)
+    return (minutes, sec)
+
+
+class CLOCK_TYPE:
+    CLOCK = 0
+    TIMER = 1
+    STOPWATCH = 2
+
+
+class COMP_GAME_TYPE:
+    GAME = 0
+    COMP = 1
+
+
+class ElecticalClock:
+    MODEL_PATH = 'models/entities/clock_electronica7/electronica7.model'
+
+    def __init__(self):
+        self._tid = 0
+        self._t_end = 0
+
+    def prerequisites(self):
+        return [self.MODEL_PATH]
+
+    def onEnterWorld(self, prereqs):
+        if self.MODEL_PATH in prereqs.failedIDs:
+            print self, 'Error load model %r' % self.MODEL_PATH
+            raise ValueError()
+        self.model = prereqs[self.MODEL_PATH]
+
+    def stop_tick(self):
+        if self._tid:
+            BigWorld.cancelCallback(self._tid)
+            self._tid = 0
+
+    def start_tick(self):
+        self._update_tick()
+
+    def setDynamic(self):
+        self.model.electronica7 = 'DYNAMIC'
+
+    def setDisable(self):
+        self.model.electronica7 = 'Default'
+
+    def onLeaveWorld(self):
+        self.stop_redrawtext()
+
+    def stop_redrawtext(self):
+        if getattr(self, '_tid2', None):
+            BigWorld.cancelCallback(self._tid2)
+            self._tid2 = 0
+        return
+
+    def start_timer(self, seconds):
+        raise self.clock_type in (CLOCK_TYPE.TIMER, CLOCK_TYPE.STOPWATCH) or AssertionError
+        self.setDynamic()
+        self._t_time = int(seconds)
+        self._t_start = time()
+        self._t_end = self._t_start + self._t_time
+        self._prev_time_left = 0
+        self._set_text('  .  ')
+
+    def _update_tick(self):
+        if self.isDestroyed:
+            return
+        self._on_update()
+        self._tid = BigWorld.callback(1.0, self._update_tick)
+
+    def _on_update(self):
+        if self.clock_type in (CLOCK_TYPE.TIMER, CLOCK_TYPE.STOPWATCH):
+            return self._on_tick_timer()
+        self._on_tick_clock()
+
+    def _get_time(self):
+        return int(self._t_end - time())
+
+    def _on_tick_timer(self):
+        time_left = self._get_time()
+        if self._t_end and time_left > 0:
+            if getattr(self, 'prev_time_left', 0) < 1:
+                self.prev_time_left = time_left
+            m0, s0 = toMS(self.prev_time_left)
+            pretext = '%02i %02i' % (m0, s0)
+            m, s = toMS(time_left)
+            text = '%02i.%02i' % (m, s)
+            self.prev_time_left = time_left
+        else:
+            pretext = '00 00'
+            text = '00.00'
+        self._set_text(pretext)
+        self._tid2 = BigWorld.callback(0.5, partial(self._set_text, text))
+
+    def _set_text(self, text):
+        if self.isDestroyed or not self.model:
+            return
+        update_text(self.model, text)
+
+    def _on_tick_clock(self):
+        if self.comp_game_type == COMP_GAME_TYPE.GAME:
+            text = BigWorld.timeOfDay()
+            pretext = text.replace(':', ' ')
+        else:
+            text = strftime('%H.%M', localtime())
+            pretext = strftime('%H %M', localtime())
+        self._set_text(pretext)
+        self._tid2 = BigWorld.callback(0.5, partial(self._set_text, text))

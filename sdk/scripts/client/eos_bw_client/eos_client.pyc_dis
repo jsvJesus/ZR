@@ -1,0 +1,210 @@
+# Embedded file name: ./client/eos_bw_client/eos_client.py
+"""
+\xd0\x9c\xd0\xbe\xd0\xb4\xd1\x83\xd0\xbb\xd1\x8c \xd0\xb4\xd0\xbb\xd1\x8f \xd0\xbf\xd0\xbe\xd0\xb4\xd0\xbb\xd1\x8e\xd1\x87\xd0\xb5\xd0\xbd\xd0\xb8\xd1\x8f \xd0\xba \xd1\x81\xd0\xb5\xd1\x80\xd0\xb2\xd0\xb5\xd1\x80\xd1\x83 epic, easy anicheat
+
+
+"""
+from utils import Singlton
+import traceback
+import BigWorld
+import bweos
+import os
+import time
+from packet_counter import PacketCounter
+from datetime import datetime
+
+class EOSClient(Singlton):
+    _user = None
+    _upd_id = None
+    _eos_p = None
+    _anticheat = None
+    _last_eos_tick_time = 0
+    _is_session = False
+
+    def initialization(self):
+        print 'INIT EAC', time.time()
+        self._debug_counter = PacketCounter()
+        try:
+            self._eos_p = bweos.init_platform(None)
+            self._user = self._eos_p.create_user()
+            self._user.set_disconnect_callback(self.onDisconnected)
+            self._user.set_relogin_callback(self.onRequireRelogin)
+            self._user.set_login_end_callback(self.onLogin)
+            self._upd_id = BigWorld.callback(2.0, self._updateCallback)
+            self._eos_p.set_on_sanctions_provided_callback(self._onSanction)
+        except:
+            traceback.print_exc()
+
+        try:
+            self._eos_p.set_log_callback(self._on_log)
+            if os.path.isfile('eac_log_level_very_verbose.txt'):
+                print 'ENABLE LOG_LEVEL_VERY_VERBOSE'
+                self._eos_p.set_log_level(bweos.LOG_CATEGORY_ALL_CATEGORIES, bweos.LOG_LEVEL_VERY_VERBOSE)
+            else:
+                self._eos_p.set_log_level(bweos.LOG_CATEGORY_ALL_CATEGORIES, bweos.LOG_LEVEL_INFO)
+        except:
+            traceback.print_exc()
+
+        try:
+            self._anticheat = self._eos_p.get_anticheat()
+        except RuntimeError as err:
+            print 'ERROR INIT AntiCheat!!!', err
+
+            def callback(event):
+                import gui_jokes
+                if event == gui_jokes.askUserYesNo.OK:
+                    BigWorld.quit()
+                else:
+                    import BWPersonality
+                    if BWPersonality.settings.getSetting('disable_eac_initfatal'):
+                        return
+                    if BigWorld.isConsumer():
+                        BigWorld.quit()
+
+            def show_after_start():
+                from Localization import lc
+                import gui_jokes
+                import BWPersonality
+                if not BigWorld.isConsumer() and BWPersonality.settings.getSetting('disable_eac_warning'):
+                    return
+                gui_jokes.askUserOk(lc('soGUICore.soGUI.ATTENTION'), lc('soGUICore.soGUI.NO_EAC_LAUNCH'), large=True, bg_color=(10, 10, 10, 245), callback=callback)
+
+            BigWorld.callback(0, show_after_start)
+            return
+
+        self._anticheat.set_on_violation_callback(self._onViolation)
+        self._anticheat.set_msg_to_server_callback(self._onMsgToServer)
+        return
+
+    def _on_log(self, logCatergory, logMessage, logLevel):
+        import BWPersonality
+        if hasattr(BWPersonality, 'is_user_infinite_awesome') and BWPersonality.is_user_infinite_awesome():
+            return
+        print datetime.now(), '[EAC %s %s]' % (logLevel, logCatergory), logMessage
+
+    def connect(self, token):
+        if not self._user:
+            print 'EOS:connect ERROR _user!!!'
+            return
+        self._user.login(token)
+
+    def _onSanction(self, sanct, err_str):
+        print datetime.now(), '[EAC onSanction]', sanct, err_str
+        print 'sanct.get_userid', sanct.get_userid()
+        print 'sanct.count', sanct.count
+        for i in range(sanct.count):
+            ps = sanct.get(i)
+            print ' ps', i, ps
+            print ' ps.action', ps.action
+            print ' ps.referenceID', ps.referenceID
+            print ' ps.timeExpired', ps.timeExpired
+            print ' ps.timePlaced', ps.timePlaced
+
+    def _onViolation(self, err_id, err_msg):
+        print datetime.now(), '[EAC onViolation]', [err_id, err_msg]
+
+        def callback(event):
+            import gui_jokes
+            if event == gui_jokes.askUserYesNo.OK:
+                BigWorld.quit()
+            else:
+                import BWPersonality
+                if BWPersonality.settings.getSetting('disable_eac_initfatal'):
+                    return
+                if BigWorld.isConsumer():
+                    BigWorld.quit()
+
+        def show_after():
+            from Localization import lc
+            from utils import force_unicode
+            import gui_jokes
+            gui_jokes.askUserOk(lc('soGUICore.soGUI.ATTENTION'), u'Easy anticheat msg: %s' % force_unicode(err_msg), large=True, bg_color=(10, 10, 10, 245), callback=callback)
+
+        BigWorld.callback(0, show_after)
+
+    def _updateCallback(self):
+        self._upd_id = BigWorld.callback(0.1, self._updateCallback)
+        self._eos_p.tick()
+        self._last_eos_tick_time = time.time()
+
+    def _onMsgToServer(self, msg):
+        BigWorld.player().sendMessageFromEOSClient(msg, self._debug_counter.get_next())
+
+    def onServerMsg(self, msg, servindex):
+        self._debug_counter.on_rec(servindex)
+        if self._anticheat:
+            self._anticheat.receive_message_from_server(msg)
+
+    def getLastMsgInfo(self):
+        t = time.time()
+        msg = 'EAC-info: %s\n' % datetime.now()
+        msg += ' tick=%.2f, ' % (t - self._last_eos_tick_time)
+        msg += self._debug_counter.info()
+        return msg
+
+    def onLogin(self, msg):
+        print datetime.now(), 'EOS:onLogin:', repr(msg), 'eac_user_id', self._user.get_userid()
+        if msg:
+            return
+        self._eac_user_id = self._user.get_userid()
+        if not self._eac_user_id:
+            return
+        if not self._anticheat:
+            print 'EOS: no EAC anticheat'
+            return
+        if not self._is_session:
+            try:
+                self._anticheat.begin_session(self._user)
+                self._is_session = True
+            except RuntimeError as err:
+                print 'EOS begin_session', err
+
+            BigWorld.player().base.onBwClientLoginEACComplete(self._eac_user_id)
+
+    def onDisconnected(self):
+        print datetime.now(), 'EOS:onDisconnected'
+
+    def onBWDisconnected(self):
+        print datetime.now(), 'EOS:onBWDisconnected'
+        if self._is_session:
+            try:
+                self._is_session = False
+                if self._anticheat:
+                    self._anticheat.end_session()
+            except RuntimeError as err:
+                print 'EOS end_session', err
+
+    def onRequireRelogin(self):
+        player = BigWorld.player()
+        print 'EOS:onRequireRelogin', player
+        if player:
+            player.getEOSToken()
+
+    def onGameServerConnected(self, success):
+        print 'onGameServerConnected', success, BigWorld.player()
+        if success:
+
+            def gettoken():
+                if BigWorld.player():
+                    BigWorld.player().getEOSToken()
+
+            BigWorld.callback(0.5, gettoken)
+
+    def finiGame(self):
+        print 'EOS:finiGame'
+        if self._upd_id:
+            BigWorld.cancelCallback(self._upd_id)
+        if self._anticheat and self._is_session:
+            self._is_session = False
+            try:
+                self._anticheat.end_session()
+            except RuntimeError as err:
+                print 'EOS end_session', err
+
+        self._anticheat = None
+        self._eos_p = None
+        self._user = None
+        return
+
+
+eosclient = EOSClient()

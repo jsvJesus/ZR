@@ -1,0 +1,136 @@
+# Embedded file name: ./client/craft_user.py
+from itertools import chain
+import ItemsUtils
+from Items import ItemsCatalog
+import WorkbenchUtil
+import RestrictionsUtils
+from ChatChannelConfig import CHANNEL_CONSTS
+from Localization import lc
+
+class EventType:
+    RecipesChanged, ItemsChanged, IsCraftingChanged = xrange(3)
+
+
+class CraftUser:
+
+    def onEnterWorld(self):
+        self._listeners = []
+
+    def set_KnowingRecipes(self, old):
+        self._notify(EventType.RecipesChanged, None)
+        return
+
+    def add_craft_event_listener(self, listener):
+        if listener not in self._listeners:
+            self._listeners.append(listener)
+
+    def remove_craft_event_listener(self, listener):
+        if listener in self._listeners:
+            self._listeners.remove(listener)
+
+    def onLeaveWorld(self):
+        self._listeners = []
+
+    def on_items_changed(self):
+        self._notify(EventType.ItemsChanged, None)
+        return
+
+    def _notify(self, event_type, data):
+        for l in self._listeners:
+            l.on_craft_event(event_type, data, self)
+
+    def capture_craft_item(self, item_id):
+        self.locked_items[item_id] = False
+        self.UpdateInventory(0)
+
+    def on_is_crafting_changed(self, value):
+        self._notify(EventType.IsCraftingChanged, value)
+
+    def release_craft_items(self, item_ids):
+        if not item_ids:
+            return
+        for item_id in item_ids:
+            self.unlockItemByID(item_id)
+
+        self.UpdateInventory(0)
+
+    def _validate_craft_quality_item(self, item):
+        inc_params = ItemsUtils.get_inc_param(item)
+        if ItemsUtils.IsQuestItem(item, inc_params):
+            return False
+        if ItemsUtils.IsItemEquipped(self, item['complexItemID']):
+            return False
+        item_class = ItemsCatalog.GetItemClass(item['complexItemType'])
+        if item_class == ItemsCatalog.BUFF:
+            max_num_items_in_pack = ItemsUtils.GetItemPackageSize(item=item)
+            if max_num_items_in_pack:
+                if ItemsUtils.GetBuffUsesNumber(item, inc_params) < max_num_items_in_pack:
+                    return False
+        return True
+
+    def validate_kickstart_item(self, item):
+        if not self._validate_craft_quality_item(item):
+            return False
+        if ItemsUtils.GetItemCondition(self, item) < WorkbenchUtil.SPOIL_RECIPE_GADGET:
+            return False
+        return True
+
+    def validate_craft_item(self, item, craft_recipe):
+        if not self._validate_craft_quality_item(item):
+            return False
+        item_class = ItemsCatalog.GetItemClass(item['complexItemType'])
+        if item_class == ItemsCatalog.ARTIFACT:
+            min_art_depl = ItemsUtils.getRecipieMinArtifactDepleetionPercent(craft_recipe['TypeID'])
+            if ItemsUtils.GetArtefactDepleetionPercent(item) < min_art_depl:
+                return False
+        if craft_recipe.get('cleanWaterPot') and not ItemsUtils.getWaterDirtyPot(item):
+            return False
+        return True
+
+    def provide_with_craft_item(self, item_type, count, craft_recipe):
+        result = []
+        cur_count = 0
+        for item in self.CarryingItems:
+            if item['complexItemType'] != item_type:
+                continue
+            if not self.validate_craft_item(item, craft_recipe):
+                continue
+            result.append(item['complexItemID'])
+            cur_count += ItemsUtils.GetItemNumber(item)
+            if cur_count >= count:
+                break
+
+        return result
+
+    def check_all_items_in_inventory(self, items):
+        equipped = ItemsUtils.GetEquipSetIDs(self)
+        all_ids = set((item['complexItemID'] for item in self.CarryingItems))
+        for item in items:
+            if not item:
+                continue
+            if item['complexItemID'] in equipped:
+                return False
+            if item['complexItemID'] not in all_ids:
+                return False
+
+        return True
+
+    def craft_amulet(self, amulet, artifacts, kickstart_item_ids, payed):
+        if not any(artifacts):
+            raise AssertionError
+            if self.control_locked or not self.CheckRestriction(RestrictionsUtils.CHANNEL_ITEMS):
+                self.putMessage(CHANNEL_CONSTS.ITEMS, lc('CraftWin.notification.busy'))
+                return
+            self.check_all_items_in_inventory(chain([amulet], artifacts)) or self.putMessage(CHANNEL_CONSTS.ITEMS, lc('CraftWin.notification.baditems'))
+            return
+        self.DoAction(RestrictionsUtils.CHANNEL_ITEMS, WorkbenchUtil.AMULET_CRAFT_TIME, lc('Items.GUIStrings.CRAFTING'))
+        self.cell.craft_amulet(amulet['complexItemID'], [ (a['complexItemID'] if a else 0) for a in artifacts ], kickstart_item_ids, payed)
+
+    def extract_amulet(self, amulet, kickstart_item_ids, payed):
+        if self.control_locked or not self.CheckRestriction(RestrictionsUtils.CHANNEL_ITEMS):
+            self.putMessage(CHANNEL_CONSTS.ITEMS, lc('CraftWin.notification.busy'))
+            return
+        if not self.check_all_items_in_inventory([amulet]):
+            self.putMessage(CHANNEL_CONSTS.ITEMS, lc('CraftWin.notification.baditems'))
+            return
+        self.cell.extract_amulet(amulet['complexItemID'], kickstart_item_ids, payed)

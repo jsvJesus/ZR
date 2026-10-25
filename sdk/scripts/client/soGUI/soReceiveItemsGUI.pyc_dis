@@ -1,0 +1,368 @@
+# Embedded file name: ./client/soGUI/soReceiveItemsGUI.py
+import GUI
+import math
+import BigWorld
+import gui_jokes
+import ItemsUtils
+import BWPersonality
+from Localization import lc
+from functools import partial
+from soGUI.soButton import soButton
+from soGUI.soItemView import soItemSlot
+from soGUI.soTextField import soTextField3
+from soGUI.GUIPositions import GUIPositions
+from soInventorySlot2 import soInventorySlot2
+from Helpers.PyGUI.PyGUIBase import PyGUIBase
+from Helpers.PyGUI.DraggableComponent import DraggableComponent
+from gui_const import ITSLOT
+import colorCodes as cc
+MODE_TRIGGER, MODE_COMPOUND = xrange(2)
+
+class soReceiveItemsGUI(PyGUIBase, DraggableComponent, GUIPositions):
+    factoryString = 'soGUI.soReceiveItemsGUI'
+
+    def __init__(self, component):
+        PyGUIBase.__init__(self, component)
+        DraggableComponent.__init__(self, True, True, True, xoffset=0, yoffset=0)
+        GUIPositions.__init__(self)
+        component.script = self
+        self.available = True
+        self.current_event = None
+        self.item_holder = None
+        self.remaining_items = 0
+        self.reward_list_window = None
+        self.need_slots = []
+        self.setupRoot()
+        self.setupControls()
+        return
+
+    def setupRoot(self):
+        cmp = self.component
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'CLIP'
+        cmp.horizontalAnchor = 'CENTER'
+        cmp.verticalAnchor = 'CENTER'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.height = 398
+        cmp.width = 350
+        cmp.visible = False
+        cmp.textureName = ''
+        cmp.dragFocus = True
+        cmp.dropFocus = True
+        cmp.crossFocus = True
+        cmp.moveFocus = True
+        cmp.mouseButtonFocus = True
+        cmp.position = (0, 0, 0.5)
+        cmp.visible = False
+
+    def setupControls(self):
+        cmp = GUI.Frame2('soGUI/frame/basic_frame_no_footer.dds')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'CLIP'
+        cmp.widthMode = cmp.heightMode = 'CLIP'
+        cmp.horizontalAnchor = 'CENTER'
+        cmp.verticalAnchor = 'CENTER'
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.width = 2.0
+        cmp.height = 2.0
+        cmp.position = (0, 0, 1.2)
+        self.component.addChild(cmp, 'wndFrame')
+        cmp = GUI.Text('')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'BOTTOM'
+        cmp.font = 'RobotoCondensedRegular_16.font'
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.position = (20, 21, 0.5)
+        cmp.text = lc('GUI.event_starter.title')
+        self.component.wndFrame.addChild(cmp, 'titleLabel')
+        closeBox = soButton(GUI.Window())
+        cmp = closeBox.component
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.horizontalAnchor = 'RIGHT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.width = 18
+        cmp.height = 18
+        cmp.position = (self.component.width - 8, 8, 0.3)
+        cmp.script.onClick = self.hide
+        closeBox.initVSC('soGUI/elements/closeBox.xml')
+        closeBox.onBound()
+        closeBox.setVisualState('normal')
+        self.component.addChild(cmp, 'closeBox')
+        tf = soTextField3(GUI.Window(), 289, 122, textWidth=-1, hScroll=False, vScroll=False, hideScroll=True, borderWidth=0, vOffset=0, hOffset=0, textureless=1)
+        comp = tf.component
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.position = (30, 45, 0.5)
+        self.component.wndFrame.addChild(comp, 'description')
+        cmp = GUI.Text('')
+        cmp.horizontalPositionMode = 'CLIP'
+        cmp.verticalPositionMode = 'PIXEL'
+        cmp.horizontalAnchor = 'CENTER'
+        cmp.verticalAnchor = 'BOTTOM'
+        cmp.font = 'RobotoCondensedRegular_14.font'
+        cmp.colour = (146, 146, 146, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.position = (0, self.component.height - 148, 0.3)
+        cmp.text = lc('GUI.event_starter.items_text')
+        self.component.wndFrame.addChild(cmp, 'item_info')
+
+    def stopDragging(self):
+        GUIPositions.stopDragging(self)
+        DraggableComponent.stopDragging(self)
+
+    def handleMouseButtonEvent(self, comp, event):
+        return DraggableComponent.handleMouseButtonEvent(self, comp, event)
+
+    def show(self, event, item_holder = None, mode = MODE_TRIGGER):
+        self.current_event = event
+        self.item_holder = event if item_holder is None else item_holder
+        if self.component.parent is None:
+            BWPersonality.GUICore.worldLayer.addChild(self.component, self.factoryString)
+        GUIPositions.show(self)
+        self.component.visible = True
+        self.update(event)
+        BWPersonality.GUICore.setBestCursor()
+        return
+
+    def update_positions(self):
+        self.component.height = 325 + math.ceil(len(self.need_slots) / 4.0) * 65
+        self.component.wndFrame.item_info.position.y = self.component.height - 176
+        self.component.wndFrame.itemSlot_reciever.position.y = self.component.height - 168
+
+    def hide(self):
+        self.current_event = None
+        self.component.visible = False
+        if self.component.parent is not None:
+            BWPersonality.GUICore.worldLayer.delChild(self.factoryString)
+        BWPersonality.GUICore.setBestCursor()
+        return
+
+    def update(self, event_starter):
+        if not self.current_event or self.current_event.isDestroyed:
+            return
+        if self.current_event.id != event_starter.id:
+            return
+        self.create_itemSlots(event_starter.need_items)
+        self.update_positions()
+
+    def slotEvent(self, event, slot):
+        if not self.current_event or self.current_event.isDestroyed:
+            return
+        if isinstance(slot, list):
+            slot = slot[1]
+
+        def message_check(item_id, button_result):
+            if button_result != gui_jokes.askUserYesNo.YES:
+                return
+            self.current_event.cell.get_item(item_id)
+
+        def check_item(item):
+            check_result = BigWorld.player()._check_item_can_barter(item)
+            if check_result != ItemsUtils.FAIL_NO:
+                BigWorld.player().ReportFail(check_result)
+                return False
+            return True
+
+        if event == ITSLOT.SLOTEVENT_DRAGENTER:
+            return True
+        if event == ITSLOT.SLOTEVENT_DRAGLEAVE:
+            return True
+        if event == ITSLOT.SLOTEVENT_DROP and isinstance(slot, soInventorySlot2) and slot.itemData:
+            if not self.available:
+                return
+            have_items = {}
+            for item in self.current_event.need_items:
+                if slot.itemData['complexItemType'] != item['itemType']:
+                    continue
+                if not have_items.has_key(item['itemType']):
+                    have_items[item['itemType']] = 0
+                    founded_items = ItemsUtils.GetComplexItemsByType(self.item_holder, item['itemType'])
+                    for f_item in founded_items:
+                        have_items[item['itemType']] += ItemsUtils.GetItemNumber(f_item)
+
+                if have_items[item['itemType']] < item['count']:
+                    if not check_item(slot.itemData):
+                        return
+                    item_name = cc.active_xml + ItemsUtils.GetItemName(slot.itemData['complexItemType']) + cc.inactive_xml
+                    gui_jokes.askUserYesNo(lc('GUI.event_starter.warning_title'), lc('GUI.event_starter.warning_message').format(item_name), partial(message_check, slot.itemData['complexItemID']), enter_btn=gui_jokes.askUserYesNo.YES, default_btn=gui_jokes.askUserYesNo.NO)
+
+        return True
+
+    def create_itemSlots(self, items):
+        for slot in self.need_slots:
+            self.component.wndFrame.delChild(slot)
+
+        self.need_slots = []
+
+        def create_slot():
+            slot = EventItemSlot(GUI.Window(), 0, None)
+            cmp = slot.component
+            cmp.horizontalPositionMode = 'PIXEL'
+            cmp.verticalPositionMode = 'PIXEL'
+            cmp.widthMode = cmp.heightMode = 'PIXEL'
+            cmp.horizontalAnchor = 'CENTER'
+            cmp.verticalAnchor = 'TOP'
+            cmp.colour = (255, 255, 255, 255)
+            cmp.materialFX = 'BLEND'
+            cmp.width = 64
+            cmp.height = 64
+            cmp.dropFocus = False
+            return cmp
+
+        x_coord = (self.component.width - min(len(items), 4) * 65) / 2.0
+        have_items = {}
+        self.remaining_items = 0
+        x_index = 0
+        y_index = 0
+        for item in items:
+            if not have_items.has_key(item['itemType']):
+                have_items[item['itemType']] = 0
+                _items = ItemsUtils.GetComplexItemsByType(self.item_holder, item['itemType'])
+                for _item in _items:
+                    tmp_items = ItemsUtils.GetItemNumber(_item)
+                    have_items[item['itemType']] += tmp_items
+
+            cmp = create_slot()
+            cmp.position = (x_coord + x_index * 65 + 65 / 2.0, 100 + y_index * 65, 0.5)
+            self.component.wndFrame.addChild(cmp, 'itemSlot_{0}_{1}'.format(x_index, y_index))
+            self.need_slots.append(cmp)
+            fake_item = ItemsUtils.CreateFakeItem(item['itemType'])
+            fake_item['need_count'] = item['count']
+            count_items = min(have_items[item['itemType']], fake_item['need_count'])
+            fake_item['count'] = count_items
+            self.remaining_items += fake_item['need_count'] - count_items
+            have_items[item['itemType']] = max(0, have_items[item['itemType']] - fake_item['need_count'])
+            cmp.script.setContent(fake_item)
+            x_index += 1
+            if x_index >= 4:
+                y_index += 1
+                x_index = 0
+
+        cmp = create_slot()
+        cmp.verticalPositionMode = 'PIXEL'
+        cmp.horizontalPositionMode = 'CLIP'
+        cmp.position = (0, self.component.height - 138, 0.5)
+        cmp.script.slotEvent = self.slotEvent
+        cmp.dropFocus = True
+        self.component.wndFrame.addChild(cmp, 'itemSlot_reciever')
+
+
+class EventItemSlot(soItemSlot):
+    factoryString = 'soGUI.soEventStartGUI.EventItemSlot'
+    SLOTWIDTH = 64
+    SLOTHEIGHT = 64
+
+    def __init__(self, component, slotIndex, itemData = None):
+        soItemSlot.__init__(self, component, slotIndex, itemData)
+        component.script = self
+
+    def onRemoveItem(self, sender):
+        pass
+
+    def setupRoot(self):
+        cmp = self.component
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.width = self.SLOTWIDTH
+        cmp.height = self.SLOTHEIGHT
+        cmp.dragFocus = True
+        cmp.dropFocus = True
+        cmp.crossFocus = True
+        cmp.moveFocus = True
+        cmp.mouseButtonFocus = True
+
+    def setupContent(self):
+        cmp = GUI.Frame2('soGUI/items/cell.dds')
+        cmp.verticalPositionMode = cmp.horizontalPositionMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.width = self.SLOTWIDTH
+        cmp.height = self.SLOTHEIGHT
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.position = (0, 0, 0.9)
+        cmp.visible = True
+        self.component.addChild(cmp, 'frameCmp')
+        cmp = GUI.Simple('')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.width = self.SLOTWIDTH
+        cmp.height = self.SLOTHEIGHT
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.position = (0, 0, 0.4)
+        self.component.addChild(cmp, 'itemIcon')
+        cmp = GUI.Simple('soGUI/maps/Icons/misc/ok.dds')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'CLIP'
+        cmp.horizontalAnchor = 'CENTER'
+        cmp.verticalAnchor = 'CENTER'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.width = self.SLOTWIDTH / 2.0
+        cmp.height = self.SLOTHEIGHT / 2.0
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.position = (0, 0, 0.2)
+        cmp.visible = False
+        self.component.addChild(cmp, 'itemCheck')
+        cmp = GUI.Text('')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.horizontalAnchor = 'RIGHT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.font = 'ruRU_Cyrvetica_Extra_10i.font'
+        cmp.colour = (175, 166, 112, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.position = (self.SLOTWIDTH - 5, 5, 0.3)
+        self.component.addChild(cmp, 'itemCount')
+
+    def handleMouseLeaveEvent(self, comp):
+        BWPersonality.GUICore.hideToolTip(self.factoryString)
+        return soItemSlot.handleMouseLeaveEvent(self, comp)
+
+    def _show_tooltip(self):
+        if self.haveItem():
+            from Inventory import Inventory
+            text = Inventory.GetItemString(self.itemData, includeWeight=False)
+            BWPersonality.GUICore.showToolTip(cc.tf3_regular_text_color + text, tooltipID=self.factoryString)
+        else:
+            BWPersonality.GUICore.hideToolTip(self.factoryString)
+
+    def handleMouseEnterEvent(self, comp):
+        self._show_tooltip()
+        return soItemSlot.handleMouseEnterEvent(self, comp)
+
+    def _applyItemData(self):
+        if self.haveItem():
+            if not ItemsUtils.GetIconName(self.itemData):
+                iconName = 'nottexture.dds'
+                if BWPersonality.GUICore.iconTextures is not None:
+                    if iconName not in BWPersonality.GUICore.iconTextures.failedIDs:
+                        if BWPersonality.GUICore.iconTextures.has_key(iconName):
+                            self.component.itemIcon.texture = BWPersonality.GUICore.iconTextures[iconName]
+                        else:
+                            self.component.itemIcon.textureName = iconName
+                else:
+                    self.component.itemIcon.textureName = iconName
+                self.fake_icon = self.component.itemIcon.texture
+                self.component.itemCount.text = '{0}/{1}'.format(self.itemData['count'], self.itemData['need_count'])
+                self.component.itemCheck.visible = self.itemData['count'] == self.itemData['need_count'] and True
+                self.component.itemIcon.colour = (125, 125, 125, 255)
+            else:
+                self.component.itemCheck.visible = False
+                self.component.itemIcon.colour = (255, 255, 255, 255)
+        else:
+            self.component.itemIcon.textureName = ''
+            self.component.itemCount.text = ''
+            self.fake_icon = None
+        return

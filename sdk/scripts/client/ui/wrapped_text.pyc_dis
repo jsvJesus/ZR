@@ -1,0 +1,137 @@
+# Embedded file name: ./client/ui/wrapped_text.py
+import GUI
+from panel import Panel
+from text import calc_needed_font, Align
+
+class WrappedText(Panel):
+
+    def __init__(self, parent_comp, name, size = 18, depth = 0.5, align = Align.Center):
+        Panel.__init__(self, parent_comp, name, depth=depth)
+        self.compress_width = False
+        self._scalable = True
+        self._size = size
+        self._text = None
+        self.wrapped_height = 0
+        self.ratio_wrapped_height = 0
+        self._align = align
+        self._line_space = None
+        self._margins = (0, 0, 0, 0)
+        self._color = None
+        self._line_comps = []
+        return
+
+    def set_text(self, text):
+        self._text = text.replace('\r\n', '\n').replace('\r', '\n')
+        self._update_content()
+
+    def set_alignment(self, align):
+        self._align = align
+        self._update_content()
+
+    def set_line_space(self, line_space):
+        self._line_space = line_space
+        self._update_content()
+
+    def set_unscalable(self):
+        self._scalable = False
+        self.on_size_changed()
+
+    def set_margin(self, left, right, top, bottom):
+        self._margins = (left,
+         right,
+         top,
+         bottom)
+        self._update_content()
+
+    def set_color(self, hex_color):
+        if self._color == hex_color:
+            return
+        self._color = hex_color
+        self._update_content()
+
+    def on_size_changed(self):
+        self._update_content()
+
+    def _update_content(self):
+        for comp in self._line_comps:
+            self.component.delChild(comp)
+
+        self._line_comps[:] = []
+        if not self._text:
+            return
+        font = calc_needed_font(self._size, scalable=self._scalable)
+        caliber = GUI.Text('')
+        caliber.colourFormatting = True
+        caliber.font = font
+        if self._line_space:
+            line_height = self._line_space * self.transform.pixel_ratio
+            last_line_height = caliber.stringDimensions(u'\u0429')[1]
+        else:
+            line_height = caliber.stringDimensions(u'\u0429')[1]
+            last_line_height = line_height
+        content_size = self.component.width - self._margins[0] - self._margins[1]
+
+        def parse_paragraph(paragraph):
+            result = []
+            if not paragraph:
+                return [[]]
+            else:
+                words = paragraph.split(' ')
+                if not words:
+                    return result
+                lines = None
+                for i, w in enumerate(words):
+                    if i == 0:
+                        lines = [w]
+                        text_line = w
+                        continue
+                    text_line += ' ' + w
+                    string_width = caliber.stringWidth(text_line)
+                    if string_width < content_size:
+                        lines.append(w)
+                        continue
+                    result.append(lines)
+                    lines = [w]
+                    text_line = w
+
+                if lines:
+                    result.append(lines)
+                return result
+
+        paragraph = self._text.split('\n')
+        lines = []
+        for p in paragraph:
+            lines.extend(parse_paragraph(p))
+
+        self.wrapped_height = self._margins[2] + self._margins[3]
+        if lines:
+            self.wrapped_height += (len(lines) - 1) * line_height + last_line_height
+        self.ratio_wrapped_height = self.wrapped_height / self.transform.pixel_ratio
+        max_width = 0
+        for i, words in enumerate(lines):
+            text = ' '.join(words)
+            if self._color:
+                text = self._color + text
+            comp = GUI.Text(text)
+            comp.font = font
+            comp.widthMode, comp.heightMode = ('CLIP', 'PIXEL')
+            comp.verticalAnchor = 'TOP'
+            comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+            comp.colourFormatting = True
+            pos_y = i * line_height + self._margins[2]
+            if self._align == Align.Left:
+                comp.horizontalAnchor = 'LEFT'
+                comp.position = (self._margins[0], pos_y, 0.5)
+            elif self._align == Align.Center:
+                comp.horizontalAnchor = 'CENTER'
+                comp.position = (self.component.width * 0.5, pos_y, 0.5)
+            else:
+                raise NotImplementedError
+            comp.width, comp.height = 2, last_line_height if i == len(lines) - 1 else line_height
+            self.component.addChild(comp, 'line' + str(i))
+            self._line_comps.append(comp)
+            max_width = max(max_width, comp.width)
+
+        if self.compress_width:
+            wrapped_width = self.component.width * max_width * 0.5 + self._margins[0] + self._margins[1]
+            self.component.width = wrapped_width

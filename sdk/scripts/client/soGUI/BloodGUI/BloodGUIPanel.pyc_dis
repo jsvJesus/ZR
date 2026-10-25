@@ -1,0 +1,225 @@
+# Embedded file name: ./client/soGUI/BloodGUI/BloodGUIPanel.py
+import BigWorld
+import GUI
+import Helpers.PyGUI as PyGUI
+from Helpers.BWCoroutine import BWCoroutine, BWWaitForPeriod
+import math
+from soGUI.BloodGUI.BloodGUI import BloodGUI, DEFAULT_COLOUR
+import math_bw
+
+class Panel(object):
+    JUMP_PERIOD = 0.1
+    FADE_PERIOD = 3.0
+    MIN_INTENCITY = 0.8
+    MAX_INTENCITY = 1.0
+    ONE_STRIPE = True
+    MODE_HORIZONTAL, MODE_VERTICAL, MODE_BOTH = xrange(3)
+
+    def __init__(self, name, parent, path):
+        self.name = name
+        self.parent = parent
+        self.panel = GUI.Simple(path)
+        self.panel.horizontalPositionMode = 'CLIP'
+        self.panel.verticalPositionMode = 'CLIP'
+        self.panel.widthMode = 'CLIP'
+        self.panel.heightMode = 'CLIP'
+        self.panel.materialFX = 'BLEND'
+        self.panel.colour = DEFAULT_COLOUR
+        self._colour = DEFAULT_COLOUR
+        self._scale = 0.0
+        self._alpha = 0.0
+        self.animation_corutine = None
+        self.texture_ratio = float(self.panel.texture.width) / self.panel.texture.height
+        return
+
+    def align_height(self, screen_ratio):
+        self.initial_height = self.panel.width / self.texture_ratio * screen_ratio
+        self.mode = Panel.MODE_HORIZONTAL
+        self.scale = 1.0
+
+    def align_width(self, screen_ratio):
+        self.initial_width = self.panel.height * self.texture_ratio / screen_ratio
+        self.mode = Panel.MODE_VERTICAL
+        self.scale = 1.0
+
+    def align_both(self, screen_ratio):
+        self.initial_height = self.panel.height
+        self.initial_width = self.panel.width
+        self.mode = Panel.MODE_BOTH
+        self.scale = 1.0
+
+    def start(self, damage_level, colour = DEFAULT_COLOUR):
+        self.intensity = math_bw.lerp(Panel.MIN_INTENCITY, Panel.MAX_INTENCITY, damage_level)
+        self.alpha = self.intensity
+        self.panel.colour = colour
+        self._colour = colour
+        if self.animation_corutine:
+            self.scale = min(self.scale, self.intensity)
+        else:
+            self.scale = 0.0
+            self.animation_corutine = self.animate(self)
+            self.animation_corutine.run()
+
+    @BWCoroutine
+    def animate(self):
+        cur_time = BigWorld.time()
+        while self.alpha > 0:
+            yield BWWaitForPeriod(0)
+            delta_time = BigWorld.time() - cur_time
+            cur_time += delta_time
+            if self.scale < self.intensity:
+                self.scale += delta_time / Panel.JUMP_PERIOD
+                continue
+            self.alpha -= delta_time / Panel.FADE_PERIOD
+
+        self.animation_corutine = None
+        return
+
+    @property
+    def scale(self):
+        return self._scale
+
+    @scale.setter
+    def scale(self, value):
+        if value > 0 and self._scale <= 0 and self.alpha > 0 and not self.parent.component.hasChild(self.panel, False):
+            self.parent.component.addChild(self.panel, self.name)
+        if value <= 0 and self._scale > 0 and self.parent.component.hasChild(self.panel, False):
+            self.parent.component.delChild(self.name)
+        self._scale = max(0.0, value)
+        if self.mode in [Panel.MODE_HORIZONTAL, Panel.MODE_BOTH]:
+            self.panel.height = self._scale * self.initial_height
+        elif self.mode in [Panel.MODE_VERTICAL, Panel.MODE_BOTH]:
+            self.panel.width = self._scale * self.initial_width
+
+    @property
+    def alpha(self):
+        return self._alpha
+
+    @alpha.setter
+    def alpha(self, value):
+        """ alpha \xd0\xbe\xd1\x82 0 \xd0\xb4\xd0\xbe 1 """
+        if value > 0 and self._alpha <= 0 and self.scale > 0 and not self.parent.component.hasChild(self.panel, False):
+            self.parent.component.addChild(self.panel, self.name)
+        if value <= 0 and self._alpha > 0 and self.parent.component.hasChild(self.panel, False):
+            self.parent.component.delChild(self.name)
+        self._alpha = max(0.0, value)
+        self.panel.colour = (self._colour[0],
+         self._colour[1],
+         self._colour[2],
+         self._colour[3] * self._alpha)
+
+    @property
+    def component(self):
+        return self.panel
+
+
+class BloodGUIPanel(PyGUI.PyGUIBase):
+
+    def __init__(self):
+        component = GUI.Window()
+        PyGUI.PyGUIBase.__init__(self, component)
+        component.script = self
+        self.component.verticalPositionMode = self.component.horizontalPositionMode = 'CLIP'
+        self.component.horizontalAnchor = 'CENTER'
+        self.component.verticalAnchor = 'CENTER'
+        self.component.widthMode = 'CLIP'
+        self.component.heightMode = 'CLIP'
+        self.component.width = 2
+        self.component.height = 2
+        self.component.position = (0.0, 0.0, 0.0)
+        GUI.addRoot(self.component)
+        self.setup_content()
+
+    def setup_content(self):
+        screen_ratio = BigWorld.screenWidth() / BigWorld.screenHeight()
+        top_panel = Panel('top_panel', self, 'soGUI/maps/damage_vector/DamageTop.tga')
+        top_panel.component.horizontalAnchor = 'CENTER'
+        top_panel.component.verticalAnchor = 'TOP'
+        top_panel.component.position = (0, 1, 0)
+        top_panel.component.width = 2
+        top_panel.align_height(screen_ratio)
+        bottom_panel = Panel('bottom_panel', self, 'soGUI/maps/damage_vector/DamageBottom.tga')
+        bottom_panel.component.horizontalAnchor = 'CENTER'
+        bottom_panel.component.verticalAnchor = 'BOTTOM'
+        bottom_panel.component.position = (0, -1, 0)
+        bottom_panel.component.width = 2
+        bottom_panel.align_height(screen_ratio)
+        left_panel = Panel('left_panel', self, 'soGUI/maps/damage_vector/DamageLeft.tga')
+        left_panel.component.horizontalAnchor = 'LEFT'
+        left_panel.component.verticalAnchor = 'CENTER'
+        left_panel.component.position = (-1, 0, 0)
+        left_panel.component.height = 2
+        left_panel.align_width(screen_ratio)
+        right_panel = Panel('right_panel', self, 'soGUI/maps/damage_vector/DamageRight.tga')
+        right_panel.component.horizontalAnchor = 'RIGHT'
+        right_panel.component.verticalAnchor = 'CENTER'
+        right_panel.component.position = (1, 0, 0)
+        right_panel.component.height = 2
+        right_panel.align_width(screen_ratio)
+        top_right_panel = Panel('top_right_panel', self, 'soGUI/maps/damage_vector/DamageTopRight.tga')
+        top_right_panel.component.horizontalAnchor = 'RIGHT'
+        top_right_panel.component.verticalAnchor = 'TOP'
+        top_right_panel.component.position = (1, 1, 0)
+        top_right_panel.component.height = 1.1
+        top_right_panel.component.width = 1.1
+        top_right_panel.align_both(screen_ratio)
+        top_left_panel = Panel('top_left_panel', self, 'soGUI/maps/damage_vector/DamageTopLeft.tga')
+        top_left_panel.component.horizontalAnchor = 'LEFT'
+        top_left_panel.component.verticalAnchor = 'TOP'
+        top_left_panel.component.position = (-1, 1, 0)
+        top_left_panel.component.height = 1.1
+        top_left_panel.component.width = 1.1
+        top_left_panel.align_both(screen_ratio)
+        bottom_right_panel = Panel('bottom_right_panel', self, 'soGUI/maps/damage_vector/DamageBottomRight.tga')
+        bottom_right_panel.component.horizontalAnchor = 'RIGHT'
+        bottom_right_panel.component.verticalAnchor = 'BOTTOM'
+        bottom_right_panel.component.position = (1, -1, 0)
+        bottom_right_panel.component.height = 1.1
+        bottom_right_panel.component.width = 1.1
+        bottom_right_panel.align_both(screen_ratio)
+        bottom_left_panel = Panel('bottom_left_panel', self, 'soGUI/maps/damage_vector/DamageBottomLeft.tga')
+        bottom_left_panel.component.horizontalAnchor = 'LEFT'
+        bottom_left_panel.component.verticalAnchor = 'BOTTOM'
+        bottom_left_panel.component.position = (-1, -1, 0)
+        bottom_left_panel.component.height = 1.1
+        bottom_left_panel.component.width = 1.1
+        bottom_left_panel.align_both(screen_ratio)
+        self.panels = [bottom_panel,
+         bottom_right_panel,
+         right_panel,
+         top_right_panel,
+         top_panel,
+         top_left_panel,
+         left_panel,
+         bottom_left_panel]
+
+    def draw_damage(self, damager_position, damage_level):
+        """ damage_level - \xd1\x81\xd0\xb8\xd0\xbb\xd0\xb0 \xd0\xbf\xd0\xbe\xd0\xb2\xd1\x80\xd0\xb5\xd0\xb6\xd0\xb4\xd0\xb5\xd0\xbd\xd0\xb8\xd1\x8f \xd0\xbe\xd1\x82 0 \xd0\xb4\xd0\xbe 1
+                damager_position - \xd0\xba\xd0\xbe\xd0\xbe\xd1\x80\xd0\xb4\xd0\xb8\xd0\xbd\xd0\xb0\xd1\x82\xd1\x8b \xd0\xb4\xd0\xb0\xd0\xbc\xd0\xb0\xd0\xb3\xd0\xb5\xd1\x80\xd0\xb0, \xd0\xbc\xd0\xbe\xd0\xb6\xd0\xb5\xd1\x82 \xd0\xb1\xd1\x8b\xd1\x82\xd1\x8c None
+        """
+        if damager_position:
+            angle = BloodGUI.damager_position_to_angle(damager_position) + math.pi / 8
+            index = int((angle + math.pi) / (2 * math.pi) * len(self.panels))
+            if Panel.ONE_STRIPE:
+                if index >= len(self.panels):
+                    index -= len(self.panels)
+                self.panels[index].start(damage_level)
+            else:
+                for i in xrange(index - 1, index + 2):
+                    if i >= len(self.panels):
+                        i -= len(self.panels)
+                    self.panels[i].start(damage_level)
+
+    def draw_fall_damage(self, damage_level):
+        self.panels[0].start(damage_level)
+        self.panels[1].start(damage_level * 0.01)
+        self.panels[-1].start(damage_level * 0.01)
+
+    def draw_colored_damage(self, colour):
+        for panel in self.panels:
+            panel.start(0.1, colour)
+
+    def doReposition(self):
+        child_names = [ child[0] for child in self.component.children ]
+        map(self.component.delChild, child_names)
+        self.setup_content()

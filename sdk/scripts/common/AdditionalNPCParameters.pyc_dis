@@ -1,0 +1,162 @@
+# Embedded file name: ./common/AdditionalNPCParameters.py
+import BigWorld
+import json
+import ResMgr
+import os
+from collections import defaultdict
+_npcsnames_by_space = None
+if BigWorld.component == 'base':
+    from auto_load_spaces import ALL_SPACES
+    names_collisions = set()
+    npcs_notes_data = {}
+    _npcsnames_by_space = defaultdict(list)
+    donot_parse_maps = set(['spaces/testers', 'spaces/zoo'])
+    for space_name in ALL_SPACES:
+        if space_name in donot_parse_maps:
+            continue
+        path = os.path.join(space_name, 'notes.json')
+        ds = ResMgr.openSection(path)
+        if ds is None:
+            print 'WARNING AdditionalNPCParameters.py: not found file', path
+            continue
+        npc_space_data = json.loads(ds.asBinary)
+        for chunk_npc_data in npc_space_data.get('npcs', {}).values():
+            for npc_data in chunk_npc_data:
+                npc_data['space_name'] = space_name
+                npc_name = npc_data['name']
+                _npcsnames_by_space[space_name].append(npc_name)
+                if npc_name in npcs_notes_data:
+                    names_collisions.add(npc_name)
+                npcs_notes_data[npc_name] = npc_data
+
+    for npc_name in names_collisions:
+        del npcs_notes_data[npc_name]
+
+    del names_collisions
+PARAMETERS_DATA_PATH = 'scripts/common/data/AdditionalNPCParametersData.json'
+KNOWN_KEYS = set()
+npc_data = ResMgr.openSection(PARAMETERS_DATA_PATH)
+npc_data = json.loads(npc_data.asBinary)
+_npc_id_to_name = {}
+_group_id_no_npcs = defaultdict(list)
+for name, data in npc_data.items():
+    if data['npcID'] in _npc_id_to_name:
+        raise RuntimeError('AdditionalNPCParameters (ERROR): npc_id duplicate', data['npcID'])
+    _npc_id_to_name[data['npcID']] = name
+    KNOWN_KEYS.update(data.keys())
+    if name != '!!default':
+        for group_id in data.get('groups', []):
+            _group_id_no_npcs[group_id].append(data['npcID'])
+
+        attr = dict(npc_data.get('!!default', {}))
+        attr.update(data)
+        npc_data[name] = attr
+
+_npc_id_to_bin_index = {}
+sorted_npc_ids = sorted([ data['npcID'] for data in npc_data.values() ])
+for i, npc_id in enumerate(sorted_npc_ids):
+    _npc_id_to_bin_index[npc_id] = i
+
+PARAM_DEFAULT = npc_data['!!default']
+if PARAM_DEFAULT.get('head_preset_name'):
+    raise RuntimeError
+
+def get_npcs_from_group(group_id):
+    return _group_id_no_npcs.get(group_id, [])
+
+
+def has_key(attr_name):
+    return attr_name in KNOWN_KEYS
+
+
+def get(npc_name, attr_name, def_value = None):
+    params = npc_data.get(npc_name, PARAM_DEFAULT)
+    return params.get(attr_name, def_value)
+
+
+def applyAllAttr(entity):
+    entity.head_preset_name = None
+    for key, value in npc_data.get(entity.npcName, PARAM_DEFAULT).items():
+        setattr(entity, key, value)
+
+    return
+
+
+_python_hash_set = set
+
+def set(npc_name, attr_name, value):
+    if npc_name not in npc_data:
+        npc_data[npc_name] = {}
+    npc_data[npc_name][attr_name] = value
+
+
+def get_npc_name_by_id(npc_id):
+    return _npc_id_to_name.get(npc_id)
+
+
+def get_npc_id_by_name(npc_name):
+    return npc_data.get(npc_name, {}).get('npcID')
+
+
+_npcids_by_space = {}
+if _npcsnames_by_space:
+    for space_name, npc_names in _npcsnames_by_space.items():
+        for npc_name in npc_names:
+            npc_id = get_npc_id_by_name(npc_name)
+            if npc_id:
+                if space_name not in _npcids_by_space:
+                    _npcids_by_space[space_name] = _python_hash_set()
+                _npcids_by_space[space_name].add(npc_id)
+
+    for space_name in _npcids_by_space:
+        _npcids_by_space[space_name] = list(_npcids_by_space[space_name])
+
+    _npcsnames_by_space = None
+
+def get_npc_profession_by_name(npc_name):
+    return get(npc_name, 'prof_name')
+
+
+def get_npc_tradegroup(npc_name):
+    groups = npc_data.get(npc_name, {}).get('groups')
+    return groups and groups[0] or None
+
+
+def get_npc_load_price(npc_name):
+    return int(get(npc_name, 'ammo_load_cost', 0))
+
+
+def get_npc_acquaint_by_name(npc_name):
+    return get(npc_name, 'can_acquaint')
+
+
+def get_npc_unique_amount():
+    return len(npc_data)
+
+
+def get_npc_bin_index_by_id(npc_id):
+    return _npc_id_to_bin_index[npc_id]
+
+
+def get_npc_id_by_bin_index(npc_index):
+    return sorted_npc_ids[npc_index]
+
+
+def get_npc_space_from_data(npc_id):
+    return get(get_npc_name_by_id(npc_id), 'space')
+
+
+def get_all_npcs_from_space(space_name):
+    return _npcids_by_space.get(space_name, [])
+
+
+def get_npc_space_by_name(npc_name):
+    return npcs_notes_data.get(npc_name, {}).get('space_name')
+
+
+def get_npc_space_by_id(npc_id):
+    npc_name = get_npc_name_by_id(npc_id)
+    if not npc_name:
+        return None
+    else:
+        return get_npc_space_by_name(npc_name)

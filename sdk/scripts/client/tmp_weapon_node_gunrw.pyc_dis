@@ -1,0 +1,202 @@
+# Embedded file name: ./client/tmp_weapon_node_gunrw.py
+import BigWorld
+import BWPersonality
+import traceback
+import math, Math
+from Math import Matrix, Vector3, Quaternion
+from Math import Vector4
+import random
+import draw_utils_extend
+import Constants
+import recoil_and_spread_table
+import blend_vectors_inertion
+from blend_vectors_inertion import IntertionBlendVec3_v2
+from blend_vectors_inertion import IntertionBlendVec3, LinearBlendVec3, PercentBlendVec3
+import tmp_blends
+import math_bw
+import tmp_weapon_node_info_and_gunrw
+from math_bw import clamp
+eps = 1e-09
+
+class WeaponGunRWmover:
+
+    def __init__(self, player, tickFromPython = False):
+        self._need_launcher_pitch = 0
+        self._launcher_add_pitch = tmp_blends.AcceleratedBlendCls()
+        self._launcher_view = tmp_blends.AcceleratedBlendCls()
+        self._switch_shoot_mode_view = tmp_blends.AcceleratedBlendCls()
+        self.switch_shoot_mode_matrix = None
+        self.launcher_view_matrix = None
+        self.player = player
+        self._weapon_status = -1
+        self.inertion_val = Vector3(0, 0, 0)
+        self.test_nodeInfo_gunrw = player.test_nodeInfo_gunrw
+        self.tickFromPython = tickFromPython
+        self._param_spread_ypr_gun_speed_rw = PercentBlendVec3(0.1)
+        self._param_spread_ypr_gun_rw = PercentBlendVec3(0.1)
+        self._spread_YPR_counter_rw = Vector3(0, 0, 0)
+        self._sight_assembly_pos_ot_gunrw_ = None
+        self._spread_fire_time = 0
+        self._sft_id = 0
+        if tickFromPython:
+            self._recoil_rotate = LinearBlendVec3()
+        self.updateSpread()
+        return
+
+    def destroy(self):
+        if self.test_nodeInfo_gunrw:
+            self.test_nodeInfo_gunrw.pDebugTick = None
+            self.test_nodeInfo_gunrw.pDebugLookAt = None
+        self.player = None
+        self.gunnodeInfo = None
+        self._cache = None
+        self.player = None
+        self.test_nodeInfo_gunrw = None
+        self._cache = None
+        if self._sft_id:
+            BigWorld.cancelCallback(self._sft_id)
+        return
+
+    def launcherRotateViewMode(self, enable = True):
+        self._launcher_view.setValueTo(1.0 if enable else 0.0)
+
+    def switchShootRotatVeiewMode(self, enable = True):
+        self._switch_shoot_mode_view.setValueTo(1.0 if enable else 0.0)
+
+    def setLauncherSightAssemblyPos(self, pos):
+        self._sight_assembly_pos_ot_gunrw_ = pos
+        self.test_nodeInfo_gunrw.sight_assembly_dist = pos[2]
+
+    def setLauncherPitch(self, pitch = 0):
+        self._need_launcher_pitch = pitch
+        if self.player._is_weapon_collide or self._weapon_status == Constants.WEAPON_BORED:
+            pitch = 0
+        self._launcher_add_pitch.setValueTo(pitch)
+        self.test_nodeInfo_gunrw.launcherPitch = pitch
+
+    def onUpdatedWeaponStatus(self, new_status):
+        self._weapon_status = new_status
+        if self.player._is_weapon_collide or self._weapon_status == Constants.WEAPON_BORED:
+            self._launcher_add_pitch.setValueTo(0)
+        else:
+            self._launcher_add_pitch.setValueTo(self._need_launcher_pitch)
+
+    def updateSpread(self):
+        tr_param, tr_param_override = self.player.getRecoilAndSpreadParam()
+        spread_mul = recoil_and_spread_table.getSpreadGunRWCoef(self.player)
+        if BigWorld.time() - self._spread_fire_time < tmp_weapon_node_info_and_gunrw.SPREAD_SLEEP_AFTER_FIRE:
+            spread_mul = 0.0
+        self._param_spread_ypr_gun_speed_rw.setValueTo(spread_mul * Vector3(tr_param.get('spread_ypr_gun_speed_rw', (1, 1, 1))))
+        self._param_spread_ypr_gun_rw.setValueTo(spread_mul * Vector3(tr_param.get('spread_ypr_gun_rw', (0, 0, 0))) * 0.001)
+
+    def endBurstWeapon(self):
+        tr_param, tr_param_override = self.player.getRecoilAndSpreadParam()
+        if self.tickFromPython:
+            self._recoil_rotate.accelerationStep_ = tr_param['recoil_rotate_gunRW_speed'] * 1.5
+        else:
+            self.test_nodeInfo_gunrw.recoilRotateAccelerationStep = tr_param['recoil_rotate_gunRW_speed'] * 1.5
+
+    def onFire(self, isBrust = False, launcher = None, shot_number = 1, time_per_shot = 0):
+        tr_param, tr_param_override = self.player.getRecoilAndSpreadParam()
+        if launcher and tr_param_override:
+            tr_param = tr_param_override
+        recoil_pos_mul, recoil_rot_mul, recoil_speed_mul = recoil_and_spread_table.getRecoilGunRWCoef(self.player)
+        if self.tickFromPython:
+            new_rot = self._recoil_rotate.getCurrentValue()
+        else:
+            new_rot = self.test_nodeInfo_gunrw.recoilRotateCurentValue
+        new_rot.x = recoil_rot_mul * tmp_weapon_node_info_and_gunrw.calc_recoil(new_rot.x, *tr_param['recoil_rotate_gunRW_yaw_lim'])
+        new_rot.y = recoil_rot_mul * tmp_weapon_node_info_and_gunrw.calc_recoil(new_rot.y, *tr_param['recoil_rotate_gunRW_pitch_lim'])
+        new_rot.z = recoil_rot_mul * tmp_weapon_node_info_and_gunrw.calc_recoil(new_rot.z, *tr_param['recoil_rotate_gunRW_roll_lim'])
+        if self.tickFromPython:
+            self._recoil_rotate.setCurrentValue(new_rot)
+            self._recoil_rotate.accelerationStep_ = tr_param['recoil_rotate_gunRW_speed'] * recoil_speed_mul
+        else:
+            self.test_nodeInfo_gunrw.recoilRotateCurentValue = new_rot
+            self.test_nodeInfo_gunrw.recoilRotateAccelerationStep = tr_param['recoil_rotate_gunRW_speed'] * recoil_speed_mul
+        self._spread_fire_time = BigWorld.time()
+        if self._sft_id:
+            BigWorld.cancelCallback(self._sft_id)
+        self._sft_id = BigWorld.callback(tmp_weapon_node_info_and_gunrw.SPREAD_SLEEP_AFTER_FIRE + 0.01, self.updateSpread)
+        self.updateSpread()
+
+    def tick(self, dtime):
+        dtime = clamp(dtime, 0.0001, 0.9999)
+        self._recoil_rotate.updateBlend(dtime)
+        self._param_spread_ypr_gun_rw.updateBlend(dtime)
+        self._param_spread_ypr_gun_speed_rw.updateBlend(dtime)
+        self._launcher_add_pitch.updateBlend(dtime)
+        self._launcher_view.updateBlend(dtime)
+        self._switch_shoot_mode_view.updateBlend(dtime)
+        spread_speed = self._param_spread_ypr_gun_speed_rw.getCurrentValue()
+        self._spread_YPR_counter_rw[0] += dtime * 2.9 * random.uniform(0.9, 1.1) * spread_speed[0]
+        self._spread_YPR_counter_rw[1] += dtime * 1.9 * random.uniform(0.9, 1.1) * spread_speed[1]
+        self._spread_YPR_counter_rw[2] += dtime * 0.9 * random.uniform(0.9, 1.1) * spread_speed[2]
+        if self._spread_YPR_counter_rw[0] > 2 * math.pi:
+            self._spread_YPR_counter_rw[0] -= 2 * math.pi
+        if self._spread_YPR_counter_rw[1] > 2 * math.pi:
+            self._spread_YPR_counter_rw[1] -= 2 * math.pi
+        if self._spread_YPR_counter_rw[2] > 2 * math.pi:
+            self._spread_YPR_counter_rw[2] -= 2 * math.pi
+        if self.player._is_weapon_collide:
+            self._launcher_add_pitch.setValueTo(0)
+
+    def getCurrentRecoilYPR(self):
+        if self.tickFromPython:
+            return self._recoil_rotate.getCurrentValue()
+        else:
+            return self.test_nodeInfo_gunrw.recoilRotateCurentValue
+
+    _cache = None
+
+    def lookAt(self, p_localNode, p_worldlNode, addPos, weaponRoll):
+        new_local = Matrix(p_localNode)
+        moveMatr = Matrix()
+        rotateMatr = Matrix()
+        inertMatr = Matrix()
+        inertMatrPos = Matrix()
+        rotateRollMatr = Matrix()
+        rotateRollMatr.setRotateYPR((0, 0, weaponRoll))
+        rotateMatr.setRotateYPR(self.getCurrentRecoilYPR())
+        moveMatr.setTranslate(addPos)
+        if self._sight_assembly_pos_ot_gunrw_ and abs(self._launcher_add_pitch.getCurrentValue()) > 0.0001:
+            pitch = self._launcher_add_pitch.getCurrentValue()
+            dist = self._sight_assembly_pos_ot_gunrw_[2]
+            add_y = math.sin(pitch) * dist
+            moveMatr.setTranslate(addPos + (0, add_y, 0))
+        inertMatr.setRotateYPR(self.inertion_val)
+        v = Vector3()
+        x, y = self.inertion_val.x, self.inertion_val.y
+        v.x = abs(x) * 0.1 + abs(y) * 0.1
+        v.y = -(abs(x) * 0.2 + abs(y) * 0.2)
+        v.z = -(abs(x) * 0.1 + abs(y) * 0.1)
+        move_lim = 0.01
+        if v.length < move_lim:
+            v = Vector3()
+        else:
+            l = v.length
+            v.normalise()
+            v = v * (l - move_lim)
+        inertMatrPos.setTranslate(v * 0.5)
+        add_spread = Matrix()
+        spread_power = self._param_spread_ypr_gun_rw.getCurrentValue()
+        spr_y = math.sin(self._spread_YPR_counter_rw[0]) * spread_power[0]
+        spr_p = math.sin(self._spread_YPR_counter_rw[1]) * spread_power[1]
+        spr_r = math.sin(self._spread_YPR_counter_rw[2]) * spread_power[2]
+        add_spread.setRotateYPR((spr_y, spr_p + self._launcher_add_pitch.getCurrentValue(), spr_r))
+        moveMatr.preMultiply(add_spread)
+        moveMatr.postMultiply(rotateMatr)
+        moveMatr.postMultiply(rotateRollMatr)
+        moveMatr.postMultiply(inertMatr)
+        new_local.preMultiply(moveMatr)
+        new_local.preMultiply(inertMatrPos)
+        if self._launcher_view.getCurrentValue() > 0.0001 and self.launcher_view_matrix:
+            to_si = Matrix(p_localNode)
+            to_si.preMultiply(self.launcher_view_matrix)
+            new_local.blendMatrix(self._launcher_view.getCurrentValue(), to_si)
+        if self._switch_shoot_mode_view.getCurrentValue() > 0.0001 and self.switch_shoot_mode_matrix:
+            to_si = Matrix(new_local)
+            to_si.preMultiply(self.switch_shoot_mode_matrix)
+            new_local.blendMatrix(self._switch_shoot_mode_view.getCurrentValue(), to_si)
+        self._cache = new_local
+        return self._cache

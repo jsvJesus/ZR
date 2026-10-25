@@ -1,0 +1,103 @@
+# Embedded file name: ./client/Cabuser.py
+import BigWorld
+import Constants
+from Math import Matrix
+
+class Cabuser:
+
+    def __init__(self):
+        self._cabcarsitdata = {}
+
+    def onTeleportCalled(self):
+        if self.is_sitting_in_car() and BigWorld.player() is not self:
+            self.model.visible = False
+
+    def onTeleportCompleted(self):
+        if self.is_sitting_in_car():
+            self._cabcarsitdata['exit_place'] = None
+            self.on_cab_ended()
+            self.on_cabcar_leaved(None)
+            self.model.visible = True
+        return
+
+    def is_sitting_in_car(self):
+        return bool(self._cabcarsitdata)
+
+    def leave_cabcar(self):
+        cabcar = self._cabcarsitdata['cabcar']
+        if not cabcar.isDestroyed:
+            cabcar.on_leave(self)
+
+    def on_cabcar_leaved(self, cabcar):
+        if not self.is_sitting_in_car():
+            return
+        self.setControlLock(Constants.ControlLockTypes.TRANSPORT, False, lock_id=Constants.TRANSPORT_MILD_LOCK_ID)
+        self.onUseAnyHandActionEnd()
+        self.torso_nodeinfo.disableAddHipsEffect = False
+        self.popTrackerLock('Cabcar')
+        getattr(self.model, self._cabcarsitdata['animation']).stop()
+        exit_place = self._cabcarsitdata['exit_place']
+        if exit_place:
+            self.filter.matrixProvider = exit_place
+            self.model.yaw = Matrix(exit_place).yaw
+        if self is BigWorld.player():
+            self.filter = BigWorld.PlayerAvatarFilter()
+        else:
+
+            def change_filter():
+                self.filter = BigWorld.AvatarFilter()
+
+            BigWorld.callback(1.0, change_filter)
+        self._cabcarsitdata.clear()
+        self.rememberlastFootTwist(True, channel='Cabman')
+        self.UpdateAvatarModel()
+
+    def prepare_to_sit_cabcar(self, sit_animation, sit_transform, exit_place, cabcar, cabman_id):
+        self.filter = BigWorld.TransformFilter()
+        self.filter.matrixProvider = sit_transform
+        sit_matrix = Matrix(sit_transform)
+        yaw = sit_matrix.yaw
+        self.model.yaw = yaw
+        self.pushTrackerLockByName('Cabcar', 'Belly-or-Right', lock_track_torso=True, lock_track_head=True, lock_track_foot=True)
+        self.setControlLock(Constants.ControlLockTypes.TRANSPORT, True, lock_id=Constants.TRANSPORT_MILD_LOCK_ID)
+        self.rememberlastFootTwist(False, channel='Cabman')
+        self.model.motors[0].resetFootTwist()
+        self.torso_nodeinfo.disableAddHipsEffect = True
+        getattr(self.model, sit_animation)()
+        self._cabcarsitdata = {'animation': sit_animation,
+         'exit_place': exit_place,
+         'cabcar': cabcar}
+        self.UpdateAvatarModel()
+        if self is BigWorld.player():
+            self.cell.on_cabuser_cab_stick(sit_matrix.translation, cabman_id)
+
+    def cabman_registered(self, registered, cabman_id):
+        if registered:
+            self.on_cab_started()
+        else:
+            self.on_cab_ended()
+        cabman = BigWorld.entities.get(cabman_id)
+        if cabman:
+            cabman.player_registered(registered)
+
+    def is_cabman_registered(self):
+        return getattr(self, '_cabman_registration', None)
+
+    def on_cab_started(self):
+        self._cabman_registration = BigWorld.time()
+
+    def on_cab_ended(self):
+        if hasattr(self, '_cabman_registration'):
+            del self._cabman_registration
+
+    def got_cablist(self, names, destination, entity_id):
+        raise NotImplementedError
+
+    def got_cabdestdata(self, data):
+        raise NotImplementedError
+
+    def got_caballdests(self, dests, entity_id):
+        raise NotImplementedError
+
+    def notify_cabman_event2(self, event):
+        raise NotImplementedError

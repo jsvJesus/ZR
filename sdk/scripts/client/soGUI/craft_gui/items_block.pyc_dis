@@ -1,0 +1,183 @@
+# Embedded file name: ./client/soGUI/craft_gui/items_block.py
+import BigWorld
+import GUI
+from Localization import lc
+import colorCodes as CC
+from soGUI.soItemView import soItemView
+from gui_const import ITSLOT
+import ItemsUtils
+import BWPersonality
+import soGUI
+from Helpers.PyGUI import PyGUIBase
+from items_block_slot import ItemsBlockSlot
+from Items import ItemsCatalog
+import ItemCategories as IC
+
+class ItemsBlock(PyGUIBase):
+    factoryString = 'soGUI.craft_gui.items_block.ItemsBlock'
+
+    def __init__(self, parent_component):
+        comp = GUI.Window()
+        comp.isClip = False
+        PyGUIBase.__init__(self, comp)
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('RIGHT', 'TOP')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.position = (parent_component.width - 8, 218, 0.5)
+        comp.width, comp.height = (280, 244)
+        parent_component.addChild(comp, 'itemsblock')
+        comp.script = self
+        comp = GUI.Text(lc('CraftWin.ui.itemscaption'))
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.font = 'RobotoCondensedRegular_16.font'
+        comp.position = (0, 0, 0.8)
+        comp.colour = CC.inactive_rgba
+        self.component.addChild(comp, 'resultcaption')
+        cols, rows = (4, 3)
+        self._item_view = soItemView(GUI.Window(), ItemsBlockSlot, slot_eventsHandler=self._slot_handler, rowWidth=cols, rows=rows, cols=cols, hScroll=False, vScroll=False)
+        comp = self._item_view.component
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.width, comp.height = (300, 200)
+        comp.position = (10, 36, 0.5)
+        self.component.addChild(comp, 'item_view')
+        self._item_view.onBound()
+        self._item_view.setRestrictingComponent(None)
+        comp = GUI.Frame2('soGUI/frame/craft/craft_frame2.dds')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = (280, 216)
+        comp.position = (-1, 26, 0)
+        self.component.addChild(comp, 'frame')
+        self.all_slots_filled = False
+        self.any_slots_filled = False
+        self.on_slots_fill_changed_callback = lambda : None
+        self._slots = []
+        for i in xrange(cols * rows):
+            slot = getattr(self._item_view.component, 'slot' + str(i)).script
+            slot.stored_items_changed_callback = self._on_slot_items_changed
+            self._slots.append(slot)
+
+        return
+
+    def _on_slot_items_changed(self, slot, added_items, removed_items):
+        for item_id in added_items:
+            self._craft_user.capture_craft_item(item_id)
+
+        if removed_items:
+            self._craft_user.release_craft_items(removed_items)
+        usable_slots = filter(lambda s: s.usable, self._slots)
+        self.any_slots_filled = False
+        self.all_slots_filled = bool(usable_slots)
+        for slot in usable_slots:
+            if slot.filled:
+                self.any_slots_filled = True
+            else:
+                self.all_slots_filled = False
+
+        self.on_slots_fill_changed_callback()
+
+    def _slot_handler(self, event, data):
+        if event in (ITSLOT.SLOTEVENT_DRAGSTART, ITSLOT.SLOTEVENT_DRAGSTOP):
+            return False
+        if event == ITSLOT.SLOTEVENT_DROP:
+            item_slot, inventory_slot = data
+            if inventory_slot.factoryString != 'soGUI.soInventorySlot2':
+                return True
+            if not item_slot.available:
+                return True
+            compelex_item = inventory_slot.itemData
+            if not self._craft_user.validate_craft_item(compelex_item, self._craft_recipe):
+                return True
+            accept_result = item_slot.can_accept_item(compelex_item)
+            if accept_result == ItemsBlockSlot.ACCEPT_OK:
+                item_slot.append_item_id(compelex_item['complexItemID'])
+                return True
+        elif event == ITSLOT.SLOTEVENT_RCLICK:
+            item_slot = data
+            p = BigWorld.player()
+            if not item_slot.usable or p.isDestroyed or p.dead:
+                return True
+            item_type = item_slot.itemData.get('item_type')
+            if item_type:
+                actions = {'item_info:{0}'.format(item_type): lc('Inventory.INFO')}
+                BWPersonality.GUICore.showContextMenu(ItemsBlock.factoryString, actions)
+                BWPersonality.GUICore.addListener('contextMenuEvent', self._on_context_event)
+        return True
+
+    def _on_context_event(self, interface_id, action_id, caption, event, data):
+        if interface_id == ItemsBlock.factoryString:
+            if event == soGUI.soContextMenuComponent.EVENT_SELECT:
+                if action_id.startswith('item_info'):
+                    type_id = int(action_id.split(':')[1])
+                    item = ItemsUtils.CreateFakeItem(type_id)
+                    BWPersonality.GUICore.showItemInfo(item)
+        BWPersonality.GUICore.removeListener('contextMenuEvent', self._on_context_event)
+
+    def _clear_slots(self):
+        for slot in self._slots:
+            slot.set_item_data(None)
+            slot.disabled = False
+
+        return
+
+    def clear_items(self):
+        for slot in self._slots:
+            if slot.filled:
+                slot.clear_item_ids()
+
+    def on_items_changed(self):
+        """ \xd1\x83 \xd0\xb8\xd0\xb3\xd1\x80\xd0\xbe\xd0\xba\xd0\xb0 \xd0\xbe\xd0\xb1\xd0\xbd\xd0\xbe\xd0\xb2\xd0\xb8\xd0\xbb\xd0\xb8\xd1\x81\xd1\x8c \xd0\xbf\xd1\x80\xd0\xb5\xd0\xb4\xd0\xbc\xd0\xb5\xd1\x82\xd1\x8b """
+        for slot in self._slots:
+            slot.validate_items(self._craft_recipe)
+
+    def _perform_autofill(self):
+        self.clear_items()
+        for slot in self._slots:
+            if not slot.itemData:
+                continue
+            item_type = slot.itemData['item_type']
+            count = slot.itemData['max_count']
+            item_ids = self._craft_user.provide_with_craft_item(item_type, count, self._craft_recipe)
+            slot.set_item_ids(item_ids)
+
+    def set_craft_recipe(self, craft_recipe):
+        self._craft_recipe = craft_recipe
+        self._clear_slots()
+        if craft_recipe is None:
+            return
+        else:
+            raise len(craft_recipe['CraftResult']) == 1 or AssertionError
+            result_type = craft_recipe['CraftResult'].keys()[0]
+            if ItemsCatalog.GetItemCategory(result_type) == IC.AMULET:
+                for i in xrange(len(self._slots)):
+                    if i >= 4:
+                        self._slots[i].disabled = True
+                    else:
+                        self._slots[i].set_item_data({'item_ids': []})
+
+            else:
+                for i, (item_type, count) in enumerate(craft_recipe['NeededResourcess'].items()):
+                    self._slots[i].set_item_data({'item_type': item_type,
+                     'max_count': count,
+                     'item_ids': []})
+
+            self._perform_autofill()
+            return
+
+    def compile_item_ids(self):
+        item_ids = []
+        for slot in self._slots:
+            item_ids.extend(slot.compile_sufficient_item_ids())
+
+        return item_ids
+
+    def on_hide(self):
+        BWPersonality.GUICore.removeListener('contextMenuEvent', self._on_context_event)
+
+    @property
+    def _craft_user(self):
+        return BigWorld.player()

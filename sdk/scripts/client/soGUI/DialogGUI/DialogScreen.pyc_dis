@@ -1,0 +1,202 @@
+# Embedded file name: ./client/soGUI/DialogGUI/DialogScreen.py
+import Constants
+import BWPersonality
+import GUI
+from Dialog import DialogAdditionalData as DAD
+from Helpers.PyGUI.PyGUIBase import PyGUIBase, DragWin
+from ButtonsBlock import ButtonsBlock
+from HistoryLog import HistoryLog
+from soGUI.soButton import soButton
+from Helpers.BWCoroutine import BWMemberCoroutine, BWWaitForCoroutine
+import BigWorld
+import AdditionalNPCParameters as AP
+import autoquest_parser
+import DialogsLocalization
+import gui_jokes
+from Localization import lc
+
+class DialogScreen(DragWin):
+
+    def __init__(self):
+        self.is_empty = True
+        self._bottom_margin = 38
+        self._top_margin = 30
+        self._history_height = 400
+        comp = GUI.Window()
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.width, comp.height = (2, 2)
+        comp.position = (0, 0, 0.1)
+        comp.visible = False
+        PyGUIBase.__init__(self, comp)
+        self.component.script = self
+        BWPersonality.GUICore.worldLayer.addChild(comp, 'dialogGUI')
+        self._setup_content()
+
+    def _setup_content(self):
+        comp = GUI.Window()
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'TOP')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = 750, self._history_height + self._top_margin + self._bottom_margin
+        comp.position = (-0.1, 0.7, 0.0)
+        self.component.addChild(comp, 'main_win')
+        DragWin(comp)
+        comp = GUI.Frame2('soGUI/frame/basic_frame_1.dds')
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.width, comp.height = (2, 2)
+        comp.position = (0, 0, 0.9)
+        comp.materialFX = 'BLEND'
+        self.component.main_win.addChild(comp, 'frame')
+        comp = GUI.Window()
+        comp.widthMode, comp.heightMode = ('CLIP', 'PIXEL')
+        comp.width, comp.height = (2, 0)
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'TOP')
+        comp.position = (0, self._history_height + self._top_margin, 0.8)
+        self._buttons_block = ButtonsBlock(comp)
+        self._buttons_block.on_line_click = self._on_line_click
+        self._buttons_block.on_size_changed = self._on_buttonblock_size_changed
+        self.component.main_win.addChild(comp, 'buttons_block')
+        comp = GUI.Window()
+        comp.widthMode, comp.heightMode = ('CLIP', 'PIXEL')
+        comp.width, comp.height = 2, self._history_height
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'TOP')
+        comp.position = (0, self._top_margin, 0.9)
+        self.component.main_win.addChild(comp, 'history_log')
+        self._history_log = HistoryLog(comp)
+        comp = GUI.Text('')
+        comp.font = 'RobotoCondensedRegular_20.font'
+        comp.colour = (255, 255, 255, 255)
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'TOP')
+        comp.position = (0, 8, 0.5)
+        self.component.main_win.addChild(comp, 'title')
+        comp = GUI.Window()
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('RIGHT', 'TOP')
+        comp.width, comp.height = (18, 18)
+        comp.position = (1, 1, 0.3)
+        btn = soButton(comp)
+        btn.initVSC('soGUI/elements/closeBox.xml')
+        btn.setVisualState('normal')
+        btn.onBound()
+        btn.onClick = self.hide
+        self.component.main_win.addChild(btn.component, 'close_box')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.position += (-6, 6, 0)
+
+    def hide(self):
+        self._npc_name = None
+        self.is_empty = True
+        if not self.visible:
+            return
+        else:
+            BWPersonality.GUICore.menuLayer.visible = False
+            BWPersonality.GUICore.remove_hiddensGUI(BWPersonality.GUICore.menuLayer)
+            self.component.visible = False
+            self.delegate.on_screen_close()
+            BWPersonality.GUICore.setBestCursor()
+            self._buttons_block.on_hide()
+            self._history_log.on_hide()
+            return
+
+    def restart_current_dialog_node(self):
+        self._buttons_block.release_buttons()
+
+    def show(self, npc_name):
+        if self.visible:
+            if self.component.main_win.title.text == npc_name:
+                return
+            self.hide()
+        self._npc_name = npc_name
+        BWPersonality.GUICore.menuLayer.visible = True
+        self.component.visible = True
+        self._buttons_block.on_show()
+        self._history_log.on_show()
+        self._replica_cache = {}
+        self.component.main_win.title.text = npc_name
+        BWPersonality.GUICore.setBestCursor()
+
+    def _on_line_click(self, dialog_id):
+        dialog_ids, cur_dialog_id, dialog_additional_data = self._last_set_data
+        if DAD.CabCheckIn in dialog_additional_data:
+            check_dialog_id = dialog_ids[dialog_additional_data[DAD.CabCheckIn]]
+            if check_dialog_id == dialog_id:
+                if BigWorld.player().is_registered_PVP():
+
+                    def callback(event):
+                        if event == gui_jokes.askUserYesNo.YES:
+                            BigWorld.player().base.unregisterPVP()
+                            self.delegate.on_line_click(dialog_id)
+                        else:
+                            self.restart_current_dialog_node()
+
+                    title = lc('Dialogs.Interface.PVPRegistrationTitle')
+                    text = lc('Dialogs.Interface.PVPRegistration')
+                    gui_jokes.askUserYesNo(title, text, callback)
+                    return
+        self.delegate.on_line_click(dialog_id)
+
+    def _on_buttonblock_size_changed(self, size):
+        self.component.main_win.height = self._history_height + self._bottom_margin + self._top_margin + size
+        self.component.main_win.buttons_block.height = size
+
+    def set_lines(self, dialog_ids, cur_dialog_id, dialog_additional_data):
+        self._last_set_data = (dialog_ids, cur_dialog_id, dialog_additional_data)
+        self._set_lines_coroutine(dialog_ids, cur_dialog_id, dialog_additional_data).run()
+
+    def set_preliminary_data(self, ints, strs):
+        self._last_preliminary_data = list(ints) + list(strs)
+
+    @BWMemberCoroutine
+    def _set_lines_coroutine(self, dialog_ids, cur_dialog_id, dialog_additional_data):
+        self.is_empty = False
+        controller_id = dialog_additional_data.get(DAD.ControllerPath)
+        if controller_id:
+            yield BWWaitForCoroutine(self._history_log.append_line(controller_id, self._random_dialogs_requester))
+        yield BWWaitForCoroutine(self._history_log.append_line(cur_dialog_id, self._random_dialogs_requester))
+        yield BWWaitForCoroutine(self._buttons_block.set_lines(reversed(dialog_ids), self._random_dialogs_provider, self._preliminary_dialogs_provider))
+        self.onBound()
+
+    def _random_dialogs_requester(self, dialog_id):
+        replica_id = self._replica_cache.pop(dialog_id)
+        return DialogsLocalization.get_auto_title(replica_id)
+
+    def _preliminary_dialogs_provider(self, dialog_id):
+        index = dialog_id - Constants.DYNAMIC_CONSTANTS_RANGE[0]
+        return self._last_preliminary_data[index]
+
+    def _random_dialogs_provider(self, dialog_id):
+        if dialog_id == Constants.SUGEST_WORK_DIALOG_ID:
+            replica_id = autoquest_parser.get_random_player_replica_id('work')
+        elif dialog_id == Constants.AGREE_WORK_DIALOG_ID:
+            replica_id = autoquest_parser.get_random_player_replica_id('yes')
+        elif dialog_id == Constants.DISAGREE_WORK_DIALOG_ID:
+            replica_id = autoquest_parser.get_random_player_replica_id('no')
+        elif dialog_id == Constants.OPEN_WORK_DIALOG_ID:
+            npc_nature = AP.get(self._npc_name, 'nature')
+            replica_id = autoquest_parser.get_random_nature_replica_id(npc_nature, 'dialogs_opened', 'titles')
+        elif dialog_id == Constants.TEST_WORK_DIALOG_ID:
+            npc_nature = AP.get(self._npc_name, 'nature')
+            replica_id = autoquest_parser.get_random_nature_replica_id(npc_nature, 'dialogs_ontest', 'titles')
+        elif dialog_id == Constants.CLOSED_WORK_DIALOG_ID:
+            npc_nature = AP.get(self._npc_name, 'nature')
+            replica_id = autoquest_parser.get_random_nature_replica_id(npc_nature, 'dialogs_closed', 'titles')
+        self._replica_cache[dialog_id] = replica_id
+        return DialogsLocalization.get_auto_title(replica_id)
+
+    @property
+    def visible(self):
+        return self.component.visible
+
+    @property
+    def pending(self):
+        """ \xd0\xb6\xd0\xb4\xd1\x91\xd1\x82 \xd0\xbe\xd1\x82\xd0\xb2\xd0\xb5\xd1\x82\xd0\xb0 \xd0\xbe\xd1\x82 \xd1\x81\xd0\xb5\xd1\x80\xd0\xb2\xd0\xb5\xd1\x80\xd0\xb0 """
+        return self._buttons_block.pending
+
+    @property
+    def delegate(self):
+        return BigWorld.player()

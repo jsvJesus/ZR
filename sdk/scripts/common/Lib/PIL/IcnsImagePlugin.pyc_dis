@@ -1,0 +1,287 @@
+# Embedded file name: ./common/Lib/PIL/IcnsImagePlugin.py
+from PIL import Image, ImageFile, PngImagePlugin, _binary
+import io
+import os
+import shutil
+import struct
+import sys
+import tempfile
+enable_jpeg2k = hasattr(Image.core, 'jp2klib_version')
+if enable_jpeg2k:
+    from PIL import Jpeg2KImagePlugin
+i8 = _binary.i8
+HEADERSIZE = 8
+
+def nextheader(fobj):
+    return struct.unpack('>4sI', fobj.read(HEADERSIZE))
+
+
+def read_32t(fobj, start_length, size):
+    start, length = start_length
+    fobj.seek(start)
+    sig = fobj.read(4)
+    if sig != '\x00\x00\x00\x00':
+        raise SyntaxError('Unknown signature, expecting 0x00000000')
+    return read_32(fobj, (start + 4, length - 4), size)
+
+
+def read_32(fobj, start_length, size):
+    """
+    Read a 32bit RGB icon resource.  Seems to be either uncompressed or
+    an RLE packbits-like scheme.
+    """
+    start, length = start_length
+    fobj.seek(start)
+    pixel_size = (size[0] * size[2], size[1] * size[2])
+    sizesq = pixel_size[0] * pixel_size[1]
+    if length == sizesq * 3:
+        indata = fobj.read(length)
+        im = Image.frombuffer('RGB', pixel_size, indata, 'raw', 'RGB', 0, 1)
+    else:
+        im = Image.new('RGB', pixel_size, None)
+        for band_ix in range(3):
+            data = []
+            bytesleft = sizesq
+            while bytesleft > 0:
+                byte = fobj.read(1)
+                if not byte:
+                    break
+                byte = i8(byte)
+                if byte & 128:
+                    blocksize = byte - 125
+                    byte = fobj.read(1)
+                    for i in range(blocksize):
+                        data.append(byte)
+
+                else:
+                    blocksize = byte + 1
+                    data.append(fobj.read(blocksize))
+                bytesleft -= blocksize
+                if bytesleft <= 0:
+                    break
+
+            if bytesleft != 0:
+                raise SyntaxError('Error reading channel [%r left]' % bytesleft)
+            band = Image.frombuffer('L', pixel_size, ''.join(data), 'raw', 'L', 0, 1)
+            im.im.putband(band.im, band_ix)
+
+    return {'RGB': im}
+
+
+def read_mk(fobj, start_length, size):
+    start = start_length[0]
+    fobj.seek(start)
+    pixel_size = (size[0] * size[2], size[1] * size[2])
+    sizesq = pixel_size[0] * pixel_size[1]
+    band = Image.frombuffer('L', pixel_size, fobj.read(sizesq), 'raw', 'L', 0, 1)
+    return {'A': band}
+
+
+def read_png_or_jpeg2000(fobj, start_length, size):
+    start, length = start_length
+    fobj.seek(start)
+    sig = fobj.read(12)
+    if sig[:8] == '\x89PNG\r\n\x1a\n':
+        fobj.seek(start)
+        im = PngImagePlugin.PngImageFile(fobj)
+        return {'RGBA': im}
+    if sig[:4] == '\xffO\xffQ' or sig[:4] == '\r\n\x87\n' or sig == '\x00\x00\x00\x0cjP  \r\n\x87\n':
+        if not enable_jpeg2k:
+            raise ValueError('Unsupported icon subimage format (rebuild PIL with JPEG 2000 support to fix this)')
+        fobj.seek(start)
+        jp2kstream = fobj.read(length)
+        f = io.BytesIO(jp2kstream)
+        im = Jpeg2KImagePlugin.Jpeg2KImageFile(f)
+        if im.mode != 'RGBA':
+            im = im.convert('RGBA')
+        return {'RGBA': im}
+    raise ValueError('Unsupported icon subimage format')
+
+
+class IcnsFile(object):
+    SIZES = {(512, 512, 2): [('ic10', read_png_or_jpeg2000)],
+     (512, 512, 1): [('ic09', read_png_or_jpeg2000)],
+     (256, 256, 2): [('ic14', read_png_or_jpeg2000)],
+     (256, 256, 1): [('ic08', read_png_or_jpeg2000)],
+     (128, 128, 2): [('ic13', read_png_or_jpeg2000)],
+     (128, 128, 1): [('ic07', read_png_or_jpeg2000), ('it32', read_32t), ('t8mk', read_mk)],
+     (64, 64, 1): [('icp6', read_png_or_jpeg2000)],
+     (32, 32, 2): [('ic12', read_png_or_jpeg2000)],
+     (48, 48, 1): [('ih32', read_32), ('h8mk', read_mk)],
+     (32, 32, 1): [('icp5', read_png_or_jpeg2000), ('il32', read_32), ('l8mk', read_mk)],
+     (16, 16, 2): [('ic11', read_png_or_jpeg2000)],
+     (16, 16, 1): [('icp4', read_png_or_jpeg2000), ('is32', read_32), ('s8mk', read_mk)]}
+
+    def __init__(self, fobj):
+        """
+        fobj is a file-like object as an icns resource
+        """
+        self.dct = dct = {}
+        self.fobj = fobj
+        sig, filesize = nextheader(fobj)
+        if sig != 'icns':
+            raise SyntaxError('not an icns file')
+        i = HEADERSIZE
+        while i < filesize:
+            sig, blocksize = nextheader(fobj)
+            if blocksize <= 0:
+                raise SyntaxError('invalid block header')
+            i += HEADERSIZE
+            blocksize -= HEADERSIZE
+            dct[sig] = (i, blocksize)
+            fobj.seek(blocksize, 1)
+            i += blocksize
+
+    def itersizes(self):
+        sizes = []
+        for size, fmts in self.SIZES.items():
+            for fmt, reader in fmts:
+                if fmt in self.dct:
+                    sizes.append(size)
+                    break
+
+        return sizes
+
+    def bestsize(self):
+        sizes = self.itersizes()
+        if not sizes:
+            raise SyntaxError('No 32bit icon resources found')
+        return max(sizes)
+
+    def dataforsize(self, size):
+        """
+        Get an icon resource as {channel: array}.  Note that
+        the arrays are bottom-up like windows bitmaps and will likely
+        need to be flipped or transposed in some way.
+        """
+        dct = {}
+        for code, reader in self.SIZES[size]:
+            desc = self.dct.get(code)
+            if desc is not None:
+                dct.update(reader(self.fobj, desc, size))
+
+        return dct
+
+    def getimage(self, size = None):
+        if size is None:
+            size = self.bestsize()
+        if len(size) == 2:
+            size = (size[0], size[1], 1)
+        channels = self.dataforsize(size)
+        im = channels.get('RGBA', None)
+        if im:
+            return im
+        else:
+            im = channels.get('RGB').copy()
+            try:
+                im.putalpha(channels['A'])
+            except KeyError:
+                pass
+
+            return im
+
+
+class IcnsImageFile(ImageFile.ImageFile):
+    """
+    PIL image support for Mac OS .icns files.
+    Chooses the best resolution, but will possibly load
+    a different size image if you mutate the size attribute
+    before calling 'load'.
+    
+    The info dictionary has a key 'sizes' that is a list
+    of sizes that the icns file has.
+    """
+    format = 'ICNS'
+    format_description = 'Mac OS icns resource'
+
+    def _open(self):
+        self.icns = IcnsFile(self.fp)
+        self.mode = 'RGBA'
+        self.best_size = self.icns.bestsize()
+        self.size = (self.best_size[0] * self.best_size[2], self.best_size[1] * self.best_size[2])
+        self.info['sizes'] = self.icns.itersizes()
+        self.tile = ('',)
+
+    def load(self):
+        if len(self.size) == 3:
+            self.best_size = self.size
+            self.size = (self.best_size[0] * self.best_size[2], self.best_size[1] * self.best_size[2])
+        Image.Image.load(self)
+        if not self.tile:
+            return
+        else:
+            self.load_prepare()
+            im = self.icns.getimage(self.best_size)
+            im.load()
+            self.im = im.im
+            self.mode = im.mode
+            self.size = im.size
+            self.fp = None
+            self.icns = None
+            self.tile = ()
+            self.load_end()
+            return
+
+
+def _save(im, fp, filename):
+    """
+    Saves the image as a series of PNG files,
+    that are then converted to a .icns file
+    using the macOS command line utility 'iconutil'.
+    
+    macOS only.
+    """
+    if hasattr(fp, 'flush'):
+        fp.flush()
+    iconset = tempfile.mkdtemp('.iconset')
+    last_w = None
+    last_im = None
+    for w in [16,
+     32,
+     128,
+     256,
+     512]:
+        prefix = 'icon_{}x{}'.format(w, w)
+        if last_w == w:
+            im_scaled = last_im
+        else:
+            im_scaled = im.resize((w, w), Image.LANCZOS)
+        im_scaled.save(os.path.join(iconset, prefix + '.png'))
+        im_scaled = im.resize((w * 2, w * 2), Image.LANCZOS)
+        im_scaled.save(os.path.join(iconset, prefix + '@2x.png'))
+        last_im = im_scaled
+
+    from subprocess import Popen, PIPE, CalledProcessError
+    convert_cmd = ['iconutil',
+     '-c',
+     'icns',
+     '-o',
+     filename,
+     iconset]
+    stderr = tempfile.TemporaryFile()
+    convert_proc = Popen(convert_cmd, stdout=PIPE, stderr=stderr)
+    convert_proc.stdout.close()
+    retcode = convert_proc.wait()
+    shutil.rmtree(iconset)
+    if retcode:
+        raise CalledProcessError(retcode, convert_cmd)
+    return
+
+
+Image.register_open(IcnsImageFile.format, IcnsImageFile, lambda x: x[:4] == 'icns')
+Image.register_extension(IcnsImageFile.format, '.icns')
+if sys.platform == 'darwin':
+    Image.register_save(IcnsImageFile.format, _save)
+    Image.register_mime(IcnsImageFile.format, 'image/icns')
+if __name__ == '__main__':
+    imf = IcnsImageFile(open(sys.argv[1], 'rb'))
+    for size in imf.info['sizes']:
+        imf.size = size
+        imf.load()
+        im = imf.im
+        im.save('out-%s-%s-%s.png' % size)
+
+    im = Image.open(open(sys.argv[1], 'rb'))
+    im.save('out.png')
+    if sys.platform == 'windows':
+        os.startfile('out.png')

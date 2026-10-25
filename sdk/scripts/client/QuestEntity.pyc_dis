@@ -1,0 +1,416 @@
+# Embedded file name: ./client/QuestEntity.py
+import ItemsUtils
+import BigWorld
+from Helpers.Caps import CAP_INTERACT
+import Constants
+from soGUI.soInworldMarkers import soInworldMarker
+from Localization import lc
+from Quest import QuestCheckState
+import Quest
+import StalkerModel
+import ResourceLoader
+from sounds_manager import playSound, getSound
+from collections import defaultdict
+import zlib
+from CellListenerUtils import VisibleObjectType as VOT
+import CellListenerUtils
+from particle_spawner import ParticleSpawner
+from functools import partial
+from quest_entity_npc_imitator import NpcImitator, EventType as ImitatorET
+from client_utils import readable_space_pos
+DEFAULT_MODEL = 'models/bolvan/box_trigger_05x05x05.model'
+DEAD_STALKER_MODEL = 'models/props/corpse/dead_stalker_1_anim1.model'
+
+class QuestEntity(BigWorld.Entity):
+
+    def __init__(self):
+        BigWorld.Entity.__init__(self)
+        self.filter = BigWorld.NoneFilter()
+        self._cur_model = None
+        self._has_target = False
+        self._target_name = None
+        self._particle = None
+        self._bulbparticle = None
+        self._loop_sound = None
+        self._state_sound = None
+        self._particles_cache = {}
+        self._particle_name = None
+        self._weather_name = None
+        self._npc_imitator = NpcImitator(self.position, (self.yaw, self.pitch, self.roll), self.NPCEquippedArmor, self.npc_animation, self.NPCEquipModes, self.headTrackerEnable)
+        self._npc_imitator.add_listener(self._on_npc_imitator_event)
+        self._quest_states = defaultdict(lambda : Quest.STATE_ABSENT)
+        self._mark_state = False
+        self._async_counter = 0
+        self._particle_spawner = ParticleSpawner()
+        return
+
+    def __repr__(self):
+        if self.isDestroyed:
+            return 'QuestEntity[%s]Destroyed' % self.id
+        return 'QuestEntity[%s] at %s' % (self.id, readable_space_pos(self))
+
+    def onEnterWorld(self, prereqs):
+        if not self.always_active:
+            if self.mark['id']:
+                BigWorld.player().register_mark_listener(self, self.mark['id'])
+            if self.conditions:
+                ids = [ c['quest_id'] for c in self.conditions ]
+                BigWorld.player().register_quest_listener(self, ids)
+        if not self.conditions or self.always_active:
+            self._update_content()
+
+    def on_quest_state_changed(self, quest_id, state):
+        self._quest_states[quest_id] = state
+        self._update_content()
+
+    def _update_content(self, delay = 60):
+        if self.isDestroyed:
+            return
+        else:
+            if delay < 0:
+                print 'QuestEntity: (Async operation failed)', self._async_counter
+                self._async_counter = 0
+            if self._async_counter != 0:
+                BigWorld.callback(0, partial(self._update_content, delay=delay - BigWorld.getTimeDelta()))
+                return
+
+            def check_cond(cond):
+                if self.always_active:
+                    return True
+                state = self._quest_states[cond['quest_id']]
+                showif = cond['showif']
+                if showif == QuestCheckState.NO_QUEST:
+                    return state == Quest.STATE_ABSENT
+                if showif == QuestCheckState.HAS_QUEST:
+                    return state != Quest.STATE_ABSENT
+                if showif == QuestCheckState.OPENED:
+                    return state == Quest.STATE_OPENED
+                if showif == QuestCheckState.CLOSED:
+                    return state == Quest.STATE_CLOSED
+                if showif == QuestCheckState.FAILED:
+                    return state == Quest.STATE_FAILED
+                if showif == QuestCheckState.ON_TEST:
+                    return state == Quest.STATE_ONTEST
+                return False
+
+            model_path = None
+            target_name = None
+            particle = None
+            weather_name = None
+            imitate_npc_model = None
+            audio = None
+            for cond in self.conditions:
+                if check_cond(cond):
+                    if not model_path:
+                        model_path = cond['model']
+                    if not target_name:
+                        target_name = cond['name']
+                    if not particle:
+                        particle = cond['particle']
+                    if not weather_name:
+                        weather_name = cond['weather_name']
+                    if cond['model_from_imitate_npc']:
+                        imitate_npc_model = True
+                    if cond['audio']:
+                        audio = cond['audio']
+                if model_path and target_name:
+                    break
+
+            if self._mark_state or self.always_active:
+                if not model_path:
+                    model_path = self._mark_model_path
+                    if model_path and not model_path.endswith('.model'):
+                        model_path = model_path + '.model'
+                if not target_name:
+                    target_name = self.mark['name']
+
+            def on_model_loaded():
+                self._async_counter -= 1
+                if self.isDestroyed:
+                    return
+                self.model.isObstacle = self.obstacle
+                try:
+                    self.model.no_draw = 'no_draw'
+                except:
+                    pass
+
+                if self.light_effect:
+
+                    def callback(prereqs):
+                        self._async_counter -= 1
+                        if not self.isDestroyed:
+                            self._bulbparticle = prereqs.produce(0)
+                            self._bulbparticle.force()
+                            self.model.root.attach(self._bulbparticle)
+
+                    self._async_counter += 1
+                    ResourceLoader.asyncLoad([(ResourceLoader.PARTICLE, 'particles/item_brightlight.xml')], callback)
+                if self.loop_sound and self._mark_state:
+                    self._loop_sound = playSound(self.loop_sound, model=self.model)
+
+            if model_path != self._cur_model:
+                self._cur_model = model_path
+                if self._bulbparticle:
+                    self.model.root.detach(self._bulbparticle)
+                    self._bulbparticle = None
+                if self._loop_sound:
+                    self._loop_sound.stop()
+                    self._loop_sound = None
+                if model_path:
+                    self._async_counter += 1
+                    if model_path == DEAD_STALKER_MODEL:
+                        self._compile_dead_stalker_model(on_model_loaded)
+                    else:
+
+                        def callback(prereqs):
+                            if self.isDestroyed:
+                                return
+                            try:
+                                self.model = prereqs.produce(0)
+                                on_model_loaded()
+                            except Exception as err:
+                                print 'ERROR FOR:', self, self.position, repr(model_path)
+                                raise err
+
+                        ResourceLoader.asyncLoad([(ResourceLoader.MODEL, model_path)], callback)
+                else:
+                    self.model = None
+            if not self._cur_model and imitate_npc_model and self.imitate_npc:
+                self._npc_imitator.imitate(self.imitate_npc)
+            else:
+                self._npc_imitator.imitate(None)
+            self._has_target = bool(target_name)
+            if self._has_target:
+                if not self.mark.id:
+                    can_interact = self.imitate_npc
+                    if can_interact and CAP_INTERACT not in self.targetCaps:
+                        self.targetCaps += [CAP_INTERACT]
+                    elif not can_interact and CAP_INTERACT in self.targetCaps:
+                        caps = list(self.targetCaps)
+                        caps.remove(CAP_INTERACT)
+                        self.targetCaps = caps
+
+                    def on_particle_loaded(particle_name, radius, res_ref):
+                        self._async_counter -= 1
+                        particle_system = res_ref.produce(0)
+                        self._particles_cache[particle_name] = particle_system
+                        self._particle_spawner.start_spawn(particle_system, self.position, radius)
+
+                    self._target_name = target_name
+                    if particle == self._particle_name:
+                        pass
+                    elif particle:
+                        if not cond['particle_radius']:
+                            radius = None
+                            particle in self._particles_cache and self._particle_spawner.start_spawn(self._particles_cache[particle], self.position, radius)
+                        else:
+                            callback = partial(on_particle_loaded, particle, radius)
+                            self._async_counter += 1
+                            ResourceLoader.asyncLoad([(ResourceLoader.PARTICLE, particle)], callback)
+                    else:
+                        self._particle_spawner.stop_spawn()
+                    self._particle_name = particle
+                    self.state_sound_name = audio
+                    if weather_name != self._weather_name:
+                        self._weather_name = weather_name
+                        player = weather_name and BigWorld.player()
+                        player and player.onWeatherChanged(weather_name)
+            return
+
+    def on_mark_changed(self, exist):
+        self._mark_state = exist
+        self._update_content()
+
+    def interact(self, interactor):
+        if self.avatar_use_action and self.avatar_use_action != 'none' and self.avatar_use_duration:
+            interactor.play_interact_action(self.id, self.position, self.avatar_use_action, self.avatar_use_duration)
+            return
+        self.force_interact(interactor)
+
+    @property
+    def state_sound_name(self):
+        return self._state_sound and self._state_sound._params['sound_name']
+
+    @state_sound_name.setter
+    def state_sound_name(self, value):
+        if self.state_sound_name == value:
+            return
+        else:
+            if self._state_sound:
+                self._state_sound.stop()
+            if value:
+                self._state_sound = getSound(value)
+                if self._state_sound:
+                    self._state_sound._params['model_matrix'] = self.matrix
+                    self._state_sound.play()
+            else:
+                self._state_sound = None
+            return
+
+    def get_guid_hash(self):
+        return zlib.crc32(self.guid) & 65535
+
+    def force_interact(self, interactor):
+        if self.mark.id:
+            interactor.cell.triggerQuestCheck(self.mark['id'], 0, self.get_guid_hash())
+        if self.imitate_npc:
+            interactor.request_quest_entity_talk(self.id, self.imitate_npc, self.get_guid_hash())
+
+    def get_target_mark(self, distance):
+        if CAP_INTERACT not in self.targetCaps:
+            return None
+        elif not self._has_target or distance > Constants.INTERACTION_DISTANCE:
+            return None
+        else:
+            return soInworldMarker.MARKER_USE
+
+    def get_hightlight(self, distance):
+        if CAP_INTERACT not in self.targetCaps:
+            return None
+        elif distance > Constants.HILITE_MARKS_DISTANCE:
+            return None
+        elif not self._has_target:
+            return None
+        elif not self.highlight:
+            return None
+        else:
+            return True
+
+    def get_hightlight_model(self):
+        return self.model
+
+    def get_mark_name(self):
+        return self._target_name and lc(self._target_name)
+
+    def get_mark_height(self):
+        return 0.6
+
+    def get_mark_distance(self):
+        return Constants.HILITE_MARKS_DISTANCE
+
+    def _on_npc_imitator_event(self, event_type, data):
+        if event_type == ImitatorET.OnJustInited:
+            npc = data['npc']
+            npc.interact = self.interact
+
+    @property
+    def _mark_model_path(self):
+        return self.mark['model'] or DEFAULT_MODEL
+
+    def onLeaveWorld(self):
+        self._particle_spawner.release()
+        if self._bulbparticle:
+            self._bulbparticle.clear()
+            self.model.root.detach(self._bulbparticle)
+            self._bulbparticle = None
+        if self.state_sound_name:
+            self.state_sound_name = None
+        self.model = None
+        if self._loop_sound:
+            self._loop_sound.stop()
+            self._loop_sound = None
+        if not BigWorld.player():
+            return
+        else:
+            if self.mark['id']:
+                BigWorld.player().unregister_mark_listener(self)
+            if self.conditions:
+                BigWorld.player().unregister_quest_listener(self)
+            self._npc_imitator.release()
+            return
+
+    def _compile_dead_stalker_model(self, on_model_loaded_callback):
+
+        def on_ref_loaded(prereqs):
+            self.model = prereqs.produce(0)
+            self.model.dead_stalker()
+            tuck_animation = ItemsUtils.get_tuck_animation(Corpse())
+            if tuck_animation:
+                action = getattr(self.model, tuck_animation, None)
+                if action:
+                    action()
+            on_model_loaded_callback()
+            return
+
+        class Corpse(object):
+
+            @property
+            def EquippedArmor(self):
+                return {'vestmed': {'itemID': 0L,
+                             'itemType': 0},
+                 'shoes': {'itemID': 7385548L,
+                           'itemType': 54010},
+                 'cgloves': {'itemID': 0L,
+                             'itemType': 0},
+                 'cbody': {'itemID': 0L,
+                           'itemType': 0},
+                 'helmet': {'itemID': 2345518L,
+                            'itemType': 14020},
+                 'uwfoot': {'itemID': 0L,
+                            'itemType': 0},
+                 'cshoes': {'itemID': 0L,
+                            'itemType': 0},
+                 'armor': {'itemID': 0L,
+                           'itemType': 0},
+                 'uwbody': {'itemID': 0L,
+                            'itemType': 0},
+                 'uwlegs': {'itemID': 0L,
+                            'itemType': 0},
+                 'hat': {'itemID': 0L,
+                         'itemType': 0},
+                 'pants': {'itemID': 7385546L,
+                           'itemType': 36025},
+                 'eyes': {'itemID': 0L,
+                          'itemType': 0},
+                 'hairs': {'itemID': 7365256L,
+                           'itemType': 10602},
+                 'mouth': {'itemID': 0L,
+                           'itemType': 0},
+                 'chat': {'itemID': 0L,
+                          'itemType': 0},
+                 'backpackmed': {'itemID': 7385544L,
+                                 'itemType': 46040},
+                 'upants': {'itemID': 7229107L,
+                            'itemType': 24035},
+                 'ushirt': {'itemID': 7229106L,
+                            'itemType': 24030},
+                 'jacket': {'itemID': 7385545L,
+                            'itemType': 31010},
+                 'gloves': {'itemID': 7385547L,
+                            'itemType': 51020},
+                 'mshirt': {'itemID': 7385543L,
+                            'itemType': 26020},
+                 'cpants': {'itemID': 0L,
+                            'itemType': 0},
+                 'beard': {'itemID': 0L,
+                           'itemType': 0},
+                 'moustache': {'itemID': 0L,
+                               'itemType': 0},
+                 'ears': {'itemID': 0L,
+                          'itemType': 0},
+                 'head': {'itemID': 0L,
+                          'itemType': 0},
+                 'hands': {'itemID': 0L,
+                           'itemType': 0}}
+
+            @property
+            def VisualArmor(self):
+                return self.EquippedArmor
+
+            @property
+            def VisualColorDelegates(self):
+                return []
+
+        result = StalkerModel.compose_player_model_list(Corpse())['models']
+        result.remove(StalkerModel.STALKER_MODEL.BASE_NP_LOD)
+        result = tuple(result)
+        ResourceLoader.asyncLoad([(ResourceLoader.MULTI_MODEL, result)], on_ref_loaded)
+
+    def start_destroy(self):
+        BigWorld.callback(0, lambda : BigWorld.destroyEntity(self.id))
+
+    def get_observe_visible_quest_object_type(self):
+        return VOT.QuestEntity
+
+    def get_observe_visible_quest_object_hash(self):
+        return CellListenerUtils.calc_visibleobject_hash(VOT.QuestEntity, self._cur_model)

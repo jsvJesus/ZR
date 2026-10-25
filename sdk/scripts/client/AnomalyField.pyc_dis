@@ -1,0 +1,202 @@
+# Embedded file name: ./client/AnomalyField.py
+from functools import partial
+import utils_bw
+import BigWorld
+from Math import Vector3
+import ResourceLoader
+import client_utils
+from utils import hierarchy_get
+from AnomalyFieldCommon import AnomalyFieldCommon
+from Config import AnomalyFields as Cfg
+import SpatialFieldUtils
+from FX_extension import SFXGroup, DisposedPersistentSFX
+from FX.persistent_ext_bg import loadPersistentExtAsync
+GROUP_STOP, GROUP_PLAY, GROUP_PLAY_ONCE = xrange(3)
+
+class AnomalyField(BigWorld.Entity, AnomalyFieldCommon):
+    GROUND_SEARCH_VECTOR = Vector3(0.0, 1000.0, 0.0)
+
+    def __init__(self):
+        BigWorld.Entity.__init__(self)
+        self.hasEnteredWorld = False
+        self.chunkX, self.chunkZ = SpatialFieldUtils.getChunk(self.position)
+        self.cellsSFXes = dict()
+        self.cellsPositions = []
+        self.revealedCells = set()
+
+    def calculateCellPos(self, cellX, cellZ):
+        pos = SpatialFieldUtils.getCellPosition(self.chunkX, self.chunkZ, cellX, cellZ)
+        collision = utils_bw.collide(self.spaceID, pos - self.GROUND_SEARCH_VECTOR, pos + self.GROUND_SEARCH_VECTOR)
+        if collision:
+            return collision[0]
+        else:
+            return None
+
+    def initCellsPositions(self):
+        """
+        \xd0\xb5\xd1\x81\xd0\xbb\xd0\xb8 \xd0\xba\xd0\xbe\xd0\xbb\xd0\xbb\xd0\xb0\xd0\xb9\xd0\xb4\xd1\x8b \xd1\x83\xd1\x81\xd0\xbf\xd0\xb5\xd1\x88\xd0\xbd\xd1\x8b - True
+        \xd0\xb8\xd0\xbd\xd0\xb0\xd1\x87\xd0\xb5 - False
+        """
+        self.cellsPositions = []
+        for x in xrange(Cfg.getCellsXNum(self.pattern_id)):
+            pos_list = []
+            for z in xrange(Cfg.getCellsZNum(self.pattern_id)):
+                pos = self.calculateCellPos(x, z)
+                if pos is None:
+                    return False
+                pos_list.append(pos)
+
+            self.cellsPositions.append(pos_list)
+
+        return True
+
+    def getCellPos(self, cellX, cellZ):
+        return self.cellsPositions[cellX][cellZ]
+
+    def getCellSFXData(self, cellX, cellZ, sfxType):
+        return self.get_anomaly_config(cellX, cellZ, Cfg.ANOM_SFXES)[sfxType]
+
+    def initSFXGroup(self, cellX, cellZ, sfxType, action_index):
+        """
+        \xd0\xb0\xd1\x81\xd1\x81\xd0\xb8\xd0\xbd\xd1\x85\xd1\x80\xd0\xbe\xd0\xbd\xd0\xbd\xd0\xbe\xd0\xb5 \xd1\x81\xd0\xbe\xd0\xb7\xd0\xb4\xd0\xb0\xd0\xbd\xd0\xb8\xd0\xb5 \xd0\xbd\xd0\xbe\xd0\xb2\xd0\xbe\xd0\xb9 \xd0\xb3\xd1\x80\xd1\x83\xd0\xbf\xd0\xbf\xd1\x8b
+        """
+        if not self.cellsPositions:
+            return None
+        else:
+            sfx_paths = self.get_anomaly_config(cellX, cellZ, Cfg.ANOM_SFXES)[sfxType]
+            if not sfx_paths:
+                return None
+
+            def createSFXGroup(cellX, cellZ, groupName):
+                if (cellX, cellZ) not in self.cellsSFXes:
+                    groups = self.cellsSFXes[cellX, cellZ] = dict()
+                else:
+                    groups = self.cellsSFXes[cellX, cellZ]
+                if groupName in groups:
+                    groups[groupName].destroy()
+                groups[groupName] = SFXGroup()
+                return groups[groupName]
+
+            group = createSFXGroup(cellX, cellZ, sfxType)
+            group.loading = True
+            group.do_action_index = action_index
+
+            def on_load_models(prereqs):
+                if self.isDestroyed:
+                    return
+                preloaded_models = [ prereqs.produce(0) for _ in xrange(len(sfx_paths)) ]
+
+                def on_load_sfxs(prereqs):
+                    if self.isDestroyed:
+                        return
+                    for sfx_path, preloaded_model in zip(sfx_paths, preloaded_models):
+                        pos = self.getCellPos(cellX, cellZ)
+                        if pos:
+                            align_x_axis_to = Vector3(1, 0, 0)
+                            group.addSFX(DisposedPersistentSFX(sfx_path, prereqs, self, preloaded_model, pos, align_x_axis_to))
+
+                    group.loading = False
+                    self._do_action(group, group.do_action_index)
+
+                loadPersistentExtAsync(sfx_paths, on_load_sfxs)
+
+            ResourceLoader.asyncLoad([(ResourceLoader.MODEL, client_utils.PARTICLES_HELPER_MODEL, len(sfx_paths))], on_load_models)
+            return None
+
+    def _do_action(self, group, action_index):
+        if getattr(group, 'loading', None):
+            group.do_action_index = action_index
+            return
+        else:
+            if action_index == GROUP_PLAY:
+                group.play()
+            elif action_index == GROUP_PLAY_ONCE:
+                group.playOnce()
+            else:
+                group.stop()
+            return
+
+    def doActionSFXGroup(self, cellX, cellZ, groupName, action_index):
+        group = hierarchy_get(self.cellsSFXes, [(cellX, cellZ), groupName])
+        if group:
+            self._do_action(group, action_index)
+        else:
+            self.initSFXGroup(cellX, cellZ, groupName, action_index)
+
+    def playSFX(self, cellX, cellZ, groupName):
+        self.doActionSFXGroup(cellX, cellZ, groupName, GROUP_PLAY)
+
+    def playOnceSFX(self, cellX, cellZ, groupName):
+        self.doActionSFXGroup(cellX, cellZ, groupName, GROUP_PLAY_ONCE)
+
+    def stopSFX(self, cellX, cellZ, groupName):
+        self.doActionSFXGroup(cellX, cellZ, groupName, GROUP_STOP)
+
+    def onEnterWorld(self, prereqs):
+        if self.hasEnteredWorld:
+            print '\tAnomalyField.onEnterWorld: has already entered world'
+        if self.pattern_id == '':
+            self.pattern_id = 'mushroom1'
+        if self.group_id == '':
+            self.group_id = 'group1'
+        self.hasEnteredWorld = True
+        self.try_init_pos(partial(self.set_configuration, self.pattern_id, self.group_id))
+
+    def try_init_pos(self, on_init_pos):
+        self._init_cb_cnt = 0
+
+        def _try_init_pos():
+            if self.isDestroyed:
+                return
+            if self.initCellsPositions():
+                on_init_pos()
+                return
+            if self._init_cb_cnt > 10:
+                print '[ERROR] AnomalyField. limit of _try_init_pos'
+                return
+            self._init_cb_cnt += 1
+            BigWorld.callback(1, _try_init_pos)
+
+        _try_init_pos()
+
+    def set_configuration(self, pattern_id, group_id):
+        if not self.cellsPositions:
+            self.try_init_pos(partial(self.set_configuration, pattern_id, group_id))
+            return
+        self.stop_all_sfxes()
+        self.cellsSFXes = dict()
+        self.pattern_id = pattern_id
+        self.group_id = group_id
+        self.start_all_sfxes()
+
+    def start_all_sfxes(self):
+        for x, z in self.each_cell():
+            self.playSFX(x, z, 'persistent')
+            if (x, z) in self.revealedCells:
+                self.playSFX(x, z, 'revealed')
+
+    def stop_all_sfxes(self):
+        for x, z in self.each_cell():
+            self.stopSFX(x, z, 'persistent')
+            self.stopSFX(x, z, 'warning')
+            if (x, z) in self.revealedCells:
+                self.stopSFX(x, z, 'revealed')
+
+    def revealCell(self, cellX, cellZ):
+        self.playSFX(cellX, cellZ, 'revealed')
+        self.revealedCells.add((cellX, cellZ))
+
+    def hideCell(self, cellX, cellZ):
+        self.stopSFX(cellX, cellZ, 'revealed')
+        self.playOnceSFX(cellX, cellZ, 'hide')
+        cell = (cellX, cellZ)
+        if cell in self.revealedCells:
+            self.revealedCells.remove(cell)
+
+    def start_warning(self):
+        for x, z in self.each_cell():
+            self.playSFX(x, z, 'warning')
+            self.stopSFX(x, z, 'persistent')
+
+    def __str__(self):
+        return 'AnomalyField({0}) at {1}{2}'.format(self.id, self.spaceID, self.position)

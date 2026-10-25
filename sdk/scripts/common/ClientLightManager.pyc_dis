@@ -1,0 +1,131 @@
+# Embedded file name: ./common/ClientLightManager.py
+import BigWorld
+from client_lights.light import STATE_UND, STATE_OFF, STATE_ON
+import TriggerLogic
+import LightOmni
+import LightSpot
+import EditorHelpText
+import ScriptScene
+from client_lights import omni
+from client_lights import spot
+from client_lights import helpText
+from client_lights import logic
+from client_lights import script_scene
+
+class LightManager(object):
+    __instance = None
+
+    def __new__(cls):
+        if LightManager.__instance is None:
+            LightManager.__instance = object.__new__(cls)
+        return LightManager.__instance
+
+    __lights = {}
+    data = {}
+
+    def __init__(self):
+        self.spaceID = 0
+
+    def checkUDO(self, udos, depth = 150, parent_udo = None, count_check = 0):
+        if not udos:
+            return True
+        else:
+            if depth < 0:
+                print 'depth', depth
+                print 'parent_udo', parent_udo
+                print 'udos', udos
+                print 'count_check', count_check
+                raise OverflowError('parent_udo=%s' % parent_udo)
+            for udo in udos:
+                _tmp = None
+                try:
+                    _tmp = udo.position
+                    if isinstance(udo, EditorHelpText.EditorHelpText):
+                        sub_udos = []
+                        _tmp = udo.text_help
+                    else:
+                        sub_udos = udo.targetNodes
+                except BigWorld.UnresolvedUDORefException:
+                    if count_check > 5 and not count_check % 5:
+                        parent_pos = parent_udo.position if parent_udo else 'NONE POS'
+                        print 'checkUDO:not load ', [udo,
+                         udo.guid,
+                         depth,
+                         parent_udo,
+                         parent_pos,
+                         count_check,
+                         _tmp]
+                    return False
+
+                if not self.checkUDO(sub_udos, depth=depth - 1, parent_udo=parent_udo, count_check=count_check):
+                    return False
+
+            return True
+
+    def createLights(self, udos, parent, state, callback = None, count_check = 0):
+        if parent.isDestroyed:
+            print 'AHTUN parent.isDestroyed', parent, parent.id
+            return
+        if count_check > 100:
+            print 'parent', parent, parent.id, parent.position
+            import BWPersonality
+            print 'parent spaceID', parent.spaceID, BWPersonality.spaceName(self.spaceID)
+            c = BigWorld.camera()
+            print 'camera', c, c.position, c.spaceID
+            print 'state', state
+            print 'count_check', count_check
+            raise ValueError, 'count_check > 100'
+        if not self.checkUDO(udos, count_check=count_check):
+            BigWorld.callback(1.0, lambda : self.createLights(udos, parent, state, callback, count_check + 1))
+            return
+        self._createRecursive(udos, parent, parent, state)
+        if callback:
+            BigWorld.callback(0, callback)
+
+    def _createRecursive(self, udos, parent_entity, parent_obj, state):
+        for udo in udos:
+            if isinstance(udo, EditorHelpText.EditorHelpText):
+                obj_class = helpText.HelpText
+            elif isinstance(udo, LightOmni.LightOmni):
+                obj_class = omni.OmniLight
+            elif isinstance(udo, LightSpot.LightSpot):
+                obj_class = spot.SpotLight
+            elif isinstance(udo, TriggerLogic.TriggerLogic):
+                obj_class = logic.Logic
+            elif isinstance(udo, ScriptScene.ScriptScene):
+                obj_class = script_scene.ScriptSceneObj
+            else:
+                print "can't attach to trigger UDO %s" % udo
+                raise ValueError("can't attach to trigger UDO %s" % udo)
+            guid = udo.guid
+            if guid in self.data:
+                self.data[guid].addInputChannel(parent_obj.id, state)
+                continue
+            obj = obj_class(guid, udo, parent_entity, state=state)
+            obj.addInputChannel(parent_obj.id, state)
+            self.data[guid] = obj
+            self._createRecursive(obj.getChildUDO(), parent_entity, obj, state)
+
+    def destroyLights(self, udosid):
+        for guid in udosid:
+            light = self.data.get(guid)
+            if light:
+                sub_udos = light.getChildGuid()
+                self.destroyLights(sub_udos)
+                light.destroy()
+                del self.data[guid]
+
+    def destroyAll(self):
+        for obj in self.data.values():
+            obj.destroy()
+
+        self.data = {}
+
+    def setState(self, udos, state, parent_id, callback = None):
+        for udo in udos:
+            light = self.data.get(udo.guid)
+            if light:
+                light.setState(state, parent_id)
+
+
+lmanager = LightManager()

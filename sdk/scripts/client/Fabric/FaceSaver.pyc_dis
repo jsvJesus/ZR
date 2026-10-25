@@ -1,0 +1,218 @@
+# Embedded file name: ./client/Fabric/FaceSaver.py
+from Math import Matrix
+import math_bw
+import FaceSettings
+from FaceSettings import LimitsConfigurator as LC
+from random import uniform
+PRESET_PATH = '../res/scripts/client/Fabric/FacePresets'
+BITS_PER_FLOAT = 8
+RANDOM_CHARISMA = 0.6
+
+def generate_random_face(limits_type):
+    matrices = []
+    for config in LC.bones_config(limits_type):
+        limits = config.get('limits', {})
+        x = y = z = 0.0
+        scale_x = scale_y = scale_z = 1.0
+
+        def multiply_face_factor(limits):
+            middle = (limits[0] + limits[1]) * 0.5
+            disp_0 = (middle - limits[0]) * FaceSettings.random_face_factor
+            disp_1 = (limits[1] - middle) * FaceSettings.random_face_factor
+            return (middle - disp_0, middle + disp_1)
+
+        def binomimal_random(limit0, limit1):
+            center = (limit1 + limit0) * 0.5
+            half = (limit1 - limit0) * 0.5 * RANDOM_CHARISMA
+            l0 = center - half
+            l1 = center + half
+            return (uniform(l0, l1) + uniform(l0, l1)) * 0.5
+
+        x_limit = multiply_face_factor(limits.get('MoveX', FaceSettings.default_limit))
+        y_limit = multiply_face_factor(limits.get('MoveY', FaceSettings.default_limit))
+        z_limit = multiply_face_factor(limits.get('MoveY', FaceSettings.default_limit))
+        x_scale_limit = multiply_face_factor(limits.get('ScaleX', FaceSettings.default_scale_limit))
+        y_scale_limit = multiply_face_factor(limits.get('ScaleY', FaceSettings.default_scale_limit))
+        z_scale_limit = multiply_face_factor(limits.get('ScaleZ', FaceSettings.default_scale_limit))
+        if 'MoveX' in config['gizmos']:
+            x = binomimal_random(x_limit[0], x_limit[1])
+        if 'MoveY' in config['gizmos']:
+            y = binomimal_random(y_limit[0], y_limit[1])
+        if 'MoveZ' in config['gizmos']:
+            z = binomimal_random(z_limit[0], z_limit[1])
+        if 'ScalePosX' in config['gizmos'] or 'ScaleNegX' in config['gizmos']:
+            scale_x = binomimal_random(x_scale_limit[0], x_scale_limit[1])
+        if 'ScalePosY' in config['gizmos'] or 'ScaleNegY' in config['gizmos']:
+            scale_y = binomimal_random(y_scale_limit[0], y_scale_limit[1])
+        if 'ScalePosZ' in config['gizmos'] or 'ScaleNegZ' in config['gizmos']:
+            scale_z = binomimal_random(z_scale_limit[0], z_scale_limit[1])
+        translate_matrix = Matrix()
+        scale_matrix = Matrix()
+        translate_matrix.setTranslate((x, y, z))
+        scale_matrix.setScale((scale_x, scale_y, scale_z))
+        translate_matrix.preMultiply(scale_matrix)
+        matrices.append(translate_matrix)
+
+    return face_data_to_int64_array(matrices, limits_type)
+
+
+def face_data_to_int64_array(face_data, limits_type):
+    """ \xd0\xbf\xd1\x80\xd0\xb5\xd0\xbe\xd0\xb1\xd1\x80\xd0\xb0\xd0\xb7\xd1\x83\xd0\xb5\xd1\x82 \xd0\xb4\xd0\xb0\xd0\xbd\xd0\xbd\xd1\x8b\xd0\xb5 \xd0\xbe \xd1\x80\xd0\xbe\xd0\xb6\xd0\xb5 \xd0\xb2 \xd0\xbc\xd0\xb0\xd1\x81\xd1\x81\xd0\xb8\xd0\xb2 int64 """
+    face_number = _face_data_to_int(face_data, limits_type)
+    mask = 18446744073709551615L
+    result = []
+    while face_number:
+        result.append(face_number & mask)
+        face_number = face_number >> 64
+
+    return result
+
+
+def int64_array_to_face_data(int64_array, limits_type):
+    """ \xd0\xbf\xd1\x80\xd0\xb5\xd0\xbe\xd0\xb1\xd1\x80\xd0\xb0\xd0\xb7\xd1\x83\xd0\xb5\xd1\x82 \xd0\xbc\xd0\xb0\xd1\x81\xd1\x81\xd0\xb8\xd0\xb2 int64 \xd0\xb2 \xd0\xb4\xd0\xb0\xd0\xbd\xd0\xbd\xd1\x8b\xd0\xb5 \xd0\xbe \xd1\x80\xd0\xbe\xd0\xb6\xd0\xb5 """
+    face_number = 0
+    for i, r in enumerate(int64_array):
+        face_number += r << 64 * i
+
+    try:
+        face_data = _int_to_face_data(face_number, limits_type)
+    except:
+        print 'FaceSaver (ERROR): bad face format'
+        face_data = None
+
+    return face_data
+
+
+def _int_to_face_data(long_int, limits_type):
+    """ \xd0\xbf\xd1\x80\xd0\xb5\xd0\xbe\xd0\xb1\xd1\x80\xd0\xb0\xd0\xb7\xd1\x83\xd0\xb5\xd1\x82 \xd1\x87\xd0\xb8\xd1\x81\xd0\xbb\xd0\xbe \xd0\xb2 \xd0\xb4\xd0\xb0\xd0\xbd\xd0\xbd\xd1\x8b\xd0\xb5 \xd0\xbe \xd1\x80\xd0\xbe\xd0\xb6\xd0\xb5 """
+    data = [long_int]
+    bits = []
+    while data[0] > 1:
+        bits.append(_pop_bits(data))
+
+    bits.reverse()
+
+    def bits_generator():
+        index = -1
+        while True:
+            index += 1
+            yield bits[index]
+
+    bt = bits_generator()
+    values = []
+    for i, config in enumerate(LC.bones_config(limits_type)):
+        gizmos = config.get('gizmos', [])
+        limits = config.get('limits', {})
+        for move in ('MoveX', 'MoveY', 'MoveZ'):
+            if move in gizmos:
+                values.append(_convert_bits_to_float(bt.next(), limits.get(move, FaceSettings.default_limit)))
+            else:
+                values.append(0.0)
+
+        if 'RotateX' in gizmos or 'RotateY' in gizmos or 'RotateZ' in gizmos:
+            r_limits = [-1.4, 1.4]
+            values.append(_convert_bits_to_float(bt.next(), r_limits))
+            values.append(_convert_bits_to_float(bt.next(), r_limits))
+            values.append(_convert_bits_to_float(bt.next(), r_limits))
+        else:
+            values.extend((0.0, 0.0, 0.0))
+        if 'ScalePosX' in gizmos or 'ScaleNegX' in gizmos:
+            values.append(_convert_bits_to_float(bt.next(), limits.get('ScaleX', FaceSettings.default_limit)))
+        else:
+            values.append(1.0)
+        if 'ScalePosY' in gizmos or 'ScaleNegY' in gizmos:
+            values.append(_convert_bits_to_float(bt.next(), limits.get('ScaleY', FaceSettings.default_limit)))
+        else:
+            values.append(1.0)
+        if 'ScalePosZ' in gizmos or 'ScaleNegZ' in gizmos:
+            values.append(_convert_bits_to_float(bt.next(), limits.get('ScaleZ', FaceSettings.default_limit)))
+        else:
+            values.append(1.0)
+
+    matrices = []
+    while values:
+        matrices.append(_create_matrix_from_floats(values[:9]))
+        values = values[9:]
+
+    return matrices
+
+
+def _face_data_to_int(face_data, limits_type):
+    """ \xd0\xbf\xd1\x80\xd0\xb5\xd0\xbe\xd0\xb1\xd1\x80\xd0\xb0\xd0\xb7\xd1\x83\xd0\xb5\xd1\x82 \xd0\xb4\xd0\xb0\xd0\xbd\xd0\xbd\xd1\x8b\xd0\xb5 \xd0\xbe \xd1\x80\xd0\xbe\xd0\xb6\xd0\xb5 \xd0\xb2 \xd1\x87\xd0\xb8\xd1\x81\xd0\xbb\xd0\xbe """
+    result = [1]
+    for i, handle_data in enumerate(face_data):
+        matrix = handle_data
+        gizmos = LC.bones_config(limits_type)[i].get('gizmos', [])
+        limits = LC.bones_config(limits_type)[i].get('limits', {})
+        bits_data = _convert_matrix_to_bits(matrix, gizmos, limits)
+        for bits in bits_data:
+            _append_bits_to_result(bits, result)
+
+    return result[0]
+
+
+def _create_matrix_from_floats(data):
+    translation_matrix = Matrix()
+    translation_matrix.setTranslate((data[0], data[1], data[2]))
+    rotation_matrix = Matrix()
+    rotation_matrix.setRotateYPR((data[3], data[4], data[5]))
+    scale_matrix = Matrix()
+    scale_matrix.setScale((data[6], data[7], data[8]))
+    m = Matrix()
+    m.preMultiply(translation_matrix)
+    m.preMultiply(rotation_matrix)
+    m.preMultiply(scale_matrix)
+    return m
+
+
+def _convert_matrix_to_bits(matrix, gizmos, limits):
+    translation = matrix.translation
+    scale = math_bw.getScaleMatrix(matrix)
+    result = []
+    for i, move in enumerate(('MoveX', 'MoveY', 'MoveZ')):
+        if move in gizmos:
+            result.append(_convert_float_to_bits(translation[i], limits.get(move, FaceSettings.default_limit)))
+
+    if 'RotateX' in gizmos or 'RotateY' in gizmos or 'RoateZ' in gizmos:
+        r_limits = (-1.4, 1.4)
+        result.append(_convert_float_to_bits(matrix.yaw, r_limits))
+        result.append(_convert_float_to_bits(matrix.pitch, r_limits))
+        result.append(_convert_float_to_bits(matrix.roll, r_limits))
+    if 'ScalePosX' in gizmos or 'ScaleNegX' in gizmos:
+        result.append(_convert_float_to_bits(scale[0], limits.get('ScaleX', FaceSettings.default_limit)))
+    if 'ScalePosY' in gizmos or 'ScaleNegY' in gizmos:
+        result.append(_convert_float_to_bits(scale[1], limits.get('ScaleY', FaceSettings.default_limit)))
+    if 'ScalePosZ' in gizmos or 'ScaleNegZ' in gizmos:
+        result.append(_convert_float_to_bits(scale[2], limits.get('ScaleZ', FaceSettings.default_limit)))
+    return result
+
+
+def _convert_float_to_bits(value, limits):
+    min_limit, max_limit = limits[0], limits[1]
+    value = math_bw.clamp(value, min_limit, max_limit)
+    value = (value - min_limit) / (-min_limit + max_limit)
+    value = int(value * (2 ** BITS_PER_FLOAT - 1))
+    return value
+
+
+def _convert_bits_to_float(value, limits):
+    if _convert_float_to_bits(0.0, limits) == value and value not in [0, 2 ** BITS_PER_FLOAT - 1]:
+        return 0.0
+    if _convert_float_to_bits(1.0, limits) == value and value not in [0, 2 ** BITS_PER_FLOAT - 1]:
+        return 1.0
+    min_limit, max_limit = limits[0], limits[1]
+    value /= float(2 ** BITS_PER_FLOAT - 1)
+    value = value * (-min_limit + max_limit) + min_limit
+    return value
+
+
+def _pop_bits(data):
+    mask = 2 ** BITS_PER_FLOAT - 1
+    result = data[0] & mask
+    data[0] = data[0] >> BITS_PER_FLOAT
+    return result
+
+
+def _append_bits_to_result(bits, result):
+    result[0] = result[0] << BITS_PER_FLOAT
+    result[0] |= bits

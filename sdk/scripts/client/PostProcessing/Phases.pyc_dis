@@ -1,0 +1,347 @@
+# Embedded file name: ./client/PostProcessing/Phases.py
+from _PostProcessing import CopyBackBuffer
+from _PostProcessing import FilterQuad
+from _PostProcessing import TransferQuad
+from _PostProcessing import Phase
+from _PostProcessing import FilterQuadWater
+from _PostProcessing import VisualTransferMesh
+from FilterKernels import *
+from BigWorld import Material
+from D3DEnums import *
+from functools import partial
+s_phaseFactories = {}
+
+class implementPhaseFactory:
+
+    def __init__(self, name, desc, *defaultArgs):
+        self.name = name
+        self.desc = desc
+        self.defaultArgs = defaultArgs
+
+    def __call__(self, f):
+
+        def callFn(*args):
+            if len(args) > 0:
+                return f(*args)
+            else:
+                return f(*self.defaultArgs)
+
+        fn = callFn
+        s_phaseFactories[self.name] = [self.desc, fn]
+        return fn
+
+
+def getPhaseNames():
+    """
+            This method returns a list of phase (names,descriptions) used by the
+            World Editor.
+            Note that editor created phases take no arguments, therefore you
+            must provide the default arguments to the underlying build fn in
+            the decorator.
+    """
+    ret = []
+    for key in sorted(s_phaseFactories.iterkeys()):
+        desc = s_phaseFactories[key][0]
+        ret.append((key, desc))
+
+    return ret
+
+
+def phaseFactory(name):
+    """
+            This method builds a phase, given the corresponding factory name.
+    """
+    return s_phaseFactories[name][1]()
+
+
+backBufferCopyCache = {}
+
+@implementPhaseFactory('<new empty phase>', 'Create a new, empty phase.')
+def buildEmptyPhase():
+    p = buildTransferPhase(None)
+    p.name = 'unnamed phase'
+    return p
+
+
+@implementPhaseFactory('Back buffer copy', 'Resolve the backbuffer into a texture that is usable as an input to other phases.', None)
+def buildBackBufferCopyPhase(renderTarget):
+    global backBufferCopyCache
+    if renderTarget == None:
+        from RenderTargets import rt
+        renderTarget = rt('backBufferCopy')
+    if backBufferCopyCache.has_key(renderTarget):
+        return backBufferCopyCache[renderTarget]
+    else:
+        c = CopyBackBuffer()
+        c.renderTarget = renderTarget
+        backBufferCopyCache[renderTarget] = c
+        return c
+
+
+def buildBasePhase(output, fxFile, srcBlend = BW_BLEND_ONE, destBlend = BW_BLEND_ZERO):
+    p = Phase()
+    p.material = Material(fxFile)
+    p.material.srcBlend = srcBlend
+    p.material.destBlend = destBlend
+    p.renderTarget = output
+    p.clearRenderTarget = False
+    return p
+
+
+def buildPhase(input, output, fxFile, sampleProvider = straightTransfer4Tap, srcBlend = BW_BLEND_ONE, destBlend = BW_BLEND_ZERO):
+    if input == None:
+        from RenderTargets import rt
+        input = rt('backBufferCopy').texture
+    if sampleProvider == straightTransfer4Tap:
+        f = TransferQuad()
+    else:
+        f = FilterQuad()
+        f.samples = sampleProvider()
+    p = buildBasePhase(output, fxFile, srcBlend, destBlend)
+    p.material.inputTexture = input
+    p.filterQuad = f
+    return p
+
+
+@implementPhaseFactory('Transfer', 'Transfer a texture to the screen or an intermediate texture.', None)
+def buildTransferPhase(input, srcBlend = BW_BLEND_ONE, destBlend = BW_BLEND_ZERO):
+    p = buildPhase(input, None, 'shaders/post_processing/transfer.fx', straightTransfer4Tap, srcBlend, destBlend)
+    p.name = 'transfer'
+    return p
+
+
+@implementPhaseFactory('Greyscale', 'Apply a greyscale pixel shader.', None, None)
+def buildGreyscalePhase(input, output, srcBlend = BW_BLEND_ONE, destBlend = BW_BLEND_ZERO):
+    p = buildPhase(input, output, 'shaders/post_processing/greyscale.fx', straightTransfer4Tap, srcBlend, destBlend)
+    p.name = 'greyscale'
+    return p
+
+
+@implementPhaseFactory('Down sample', 'Apply a 4-tap downsample filter.', None, None)
+def buildDownSamplePhase(input, output):
+    p = buildPhase(input, output, 'shaders/post_processing/four-tap_filter.fx', mean9Tap, BW_BLEND_ONE, BW_BLEND_ONE)
+    p.name = 'down sample'
+    p.clearRenderTarget = True
+    return p
+
+
+@implementPhaseFactory('Bloom', 'Bloom', None, None)
+def buildBloomPhase(input, output, srcBlend = BW_BLEND_ONE, destBlend = BW_BLEND_ONE):
+    p = buildPhase(input, output, 'shaders/post_processing/bloom.fx', straightTransfer4Tap, srcBlend, destBlend)
+    p.name = 'Bloom'
+    p.clearRenderTarget = True
+    return p
+
+
+@implementPhaseFactory('Highlight item selection', 'Highlight item selection', None, None)
+def buildSelectionItemPhase(input, output, srcBlend = BW_BLEND_ONE, destBlend = BW_BLEND_ONE):
+    p = buildPhase(input, output, 'shaders/post_processing/selected_items.fx', straightTransfer4Tap, srcBlend, destBlend)
+    p.name = 'Highlight item selection'
+    p.clearRenderTarget = True
+    return p
+
+
+@implementPhaseFactory('Sum', 'Sum', None, None)
+def buildSumPhase(input, output, srcBlend = BW_BLEND_ONE, destBlend = BW_BLEND_ONE):
+    p = buildPhase(input, output, 'shaders/post_processing/sum.fx', straightTransfer4Tap, srcBlend, destBlend)
+    p.name = 'Sum'
+    p.clearRenderTarget = True
+    return p
+
+
+@implementPhaseFactory('Colour scale', 'Apply a colour scaling shader, detecting highlights in the scene.', None, None)
+def buildColourScalePhase(input, output, srcBlend = BW_BLEND_ONE, destBlend = BW_BLEND_ZERO):
+    p = buildPhase(input, output, 'shaders/post_processing/colour_scale.fx', straightTransfer4Tap, srcBlend, destBlend)
+    p.name = 'colour scale'
+    return p
+
+
+def buildBlurPhase(input, output, horiz, filterMode = 0, width = 1.0):
+    if filterMode == 0:
+        sampleProv = partial(gaussianBlur4Tap, horiz, width)
+    else:
+        sampleProv = partial(gaussianBlur24Tap, horiz, width)
+    p = buildPhase(input, output, 'shaders/post_processing/gaussian_blur.fx', sampleProv, BW_BLEND_ONE, BW_BLEND_ONE)
+    prefix = ['vertical ', 'horizontal '][horiz]
+    if filterMode == 0:
+        p.name = prefix + '4-tap blur'
+    else:
+        p.name = prefix + '24-tap blur'
+    p.clearRenderTarget = True
+    return p
+
+
+def buildBlurPhaseDOF(input, output, horiz, filterMode = 0, width = 1.0):
+    if filterMode == 0:
+        sampleProv = partial(gaussianBlur4Tap, horiz, width)
+    else:
+        sampleProv = partial(gaussianBlur24Tap, horiz, width)
+    p = buildPhase(input, output, 'shaders/post_processing/gaussian_blur_for_dof.fx', sampleProv, BW_BLEND_ONE, BW_BLEND_ONE)
+    prefix = ['vertical ', 'horizontal '][horiz]
+    if filterMode == 0:
+        p.name = prefix + '4-tap blur'
+    else:
+        p.name = prefix + '24-tap blur'
+    p.clearRenderTarget = True
+    return p
+
+
+@implementPhaseFactory('Horizontal blur', 'Horiztonally blur the scene.')
+def buildHorizontalBlurPhase():
+    return buildBlurPhase(None, None, 1)
+
+
+@implementPhaseFactory('Vertical blur', 'Vertically blur the scene.')
+def buildVerticalBlurPhase():
+    return buildBlurPhase(None, None, 0)
+
+
+@implementPhaseFactory('Colour correction', 'Apply tone mapping using a lookup texture', None, 'system/maps/post_processing/colour_correct.dds', None)
+def buildColourCorrectionPhase(input, lookupTexture, output, srcBlend = BW_BLEND_SRCALPHA, destBlend = BW_BLEND_INVSRCALPHA):
+    p = buildPhase(input, output, 'shaders/post_processing/colour_correct.fx', straightTransfer4Tap, srcBlend, destBlend)
+    p.material.lookupTexture = lookupTexture
+    p.name = 'colour correct'
+    return p
+
+
+@implementPhaseFactory('HSV colour correction', 'Adjust the hue, saturation or value (brightness) of the scene.', None, None)
+def buildHSVColourCorrectionPhase(input, output, srcBlend = BW_BLEND_SRCALPHA, destBlend = BW_BLEND_INVSRCALPHA):
+    p = buildPhase(input, output, 'shaders/post_processing/colour_correct_hsv.fx', straightTransfer4Tap, srcBlend, destBlend)
+    p.name = 'HSV colour correct'
+    return p
+
+
+@implementPhaseFactory('N-tap filter', 'Apply an arbitrary n-tap filter kernel.', None, None, mean9Tap)
+def buildNTapFilterPhase(input, output, filter, srcBlend = BW_BLEND_ONE, destBlend = BW_BLEND_ZERO):
+    p = buildPhase(input, output, 'shaders/post_processing/n-tap_filter.fx', straightTransfer4Tap, srcBlend, destBlend)
+    p.name = 'n-tap filter'
+    taps = filter()
+    idx = 0
+    for u, v, weight in taps:
+        setattr(p.material, 'tap%d' % (idx,), (u,
+         v,
+         weight,
+         0))
+        idx += 1
+
+    return p
+
+
+@implementPhaseFactory('Colour correction depth', 'Apply tone mapping using a lookup texture by depth', None, 'system/maps/post_processing/colour_correct.dds', None)
+def buildColourCorrectionDepthPhase(input, lookupTexture, output, srcBlend = BW_BLEND_SRCALPHA, destBlend = BW_BLEND_INVSRCALPHA):
+    p = buildPhase(input, output, 'shaders/post_processing/colour_correct_by_depth_mask.fx', straightTransfer4Tap, srcBlend, destBlend)
+    p.material.lookupTexture = lookupTexture
+    p.name = 'colour correct depth'
+    return p
+
+
+@implementPhaseFactory('Colour correction double depth', 'Apply tone mapping using a lookup texture', None, 'system/maps/post_processing/colour_correct.dds', None)
+def buildColourCorrectionDoubleDepthPhase(input, lookupTexture, output, srcBlend = BW_BLEND_SRCALPHA, destBlend = BW_BLEND_INVSRCALPHA):
+    p = buildPhase(input, output, 'shaders/post_processing/colour_correct_double_depth_mask.fx', straightTransfer4Tap, srcBlend, destBlend)
+    p.material.lookupTexture = lookupTexture
+    p.name = 'colour correct double depth'
+    return p
+
+
+@implementPhaseFactory('HSV colour correction depth', 'Adjust the hue, saturation or value (brightness) of the scene by depth.', None, None)
+def buildHSVColourCorrectionDepthPhase(input, output, srcBlend = BW_BLEND_SRCALPHA, destBlend = BW_BLEND_INVSRCALPHA):
+    p = buildPhase(input, output, 'shaders/post_processing/colour_correct_hsv_by_depth_mask.fx', straightTransfer4Tap, srcBlend, destBlend)
+    p.name = 'HSV colour correct depth'
+    return p
+
+
+@implementPhaseFactory('9-tap filter', 'Apply a 9-tap filter kernel.', None, None, mean9Tap)
+def build9TapFilterPhase(input, output, filter, srcBlend = BW_BLEND_SRCALPHA, destBlend = BW_BLEND_INVSRCALPHA):
+    p = buildPhase(input, output, 'shaders/post_processing/nine-tap_filter.fx', straightTransfer4Tap, srcBlend, destBlend)
+    p.name = '9-tap filter'
+    fillTaps9(p.material, filter)
+    return p
+
+
+@implementPhaseFactory('9-tap filter depth', 'Apply a 9-tap filter kernel with using depth.', None, None, mean9Tap)
+def build9TapFilterDepthPhase(input, output, filter, srcBlend = BW_BLEND_SRCALPHA, destBlend = BW_BLEND_INVSRCALPHA):
+    p = buildPhase(input, output, 'shaders/post_processing/nine-tap_filter_with_depth.fx', straightTransfer4Tap, srcBlend, destBlend)
+    p.name = '9-tap filter depth'
+    fillTaps9(p.material, filter)
+    return p
+
+
+@implementPhaseFactory('Edge dilation', 'Apply a dilation filter to the scene.', None, None)
+def buildEdgeDilationPhase(input, output, srcBlend = BW_BLEND_ONE, destBlend = BW_BLEND_ZERO):
+    p = buildPhase(input, output, 'shaders/post_processing/dilate.fx', straightTransfer4Tap, srcBlend, destBlend)
+    p.name = 'dilation'
+    p.material.tap1 = (-1, 0, 1, 0)
+    p.material.tap2 = (1, 0, 1, 0)
+    p.material.tap3 = (0, 1, 1, 0)
+    p.material.tap4 = (0, -1, 1, 0)
+    p.material.tap5 = (0, 0, 1, 0)
+    return p
+
+
+@implementPhaseFactory('Vignette', 'Overlay a vignette texture on the screen.', 'system/maps/post_processing/film_grain/vignette_hd.dds')
+def buildVignettePhase(input):
+    p = buildPhase(input, None, 'shaders/post_processing/vignette.fx', straightTransfer4Tap, BW_BLEND_SRCALPHA, BW_BLEND_INVSRCALPHA)
+    p.material.vignetteColour = (0,
+     0,
+     0,
+     200.0 / 255.0)
+    p.name = 'vignette'
+    return p
+
+
+@implementPhaseFactory('Vignette Model', 'Overlay a vignette texture on the screen.', None)
+def buildVignetteModelPhase(input):
+    transferMesh = VisualTransferMesh()
+    transferMesh.resourceID = 'models/bolvan/helpers/vignette.visual'
+    p = buildBasePhase(None, 'shaders/post_processing/vignette_model.fx', BW_BLEND_SRCALPHA, BW_BLEND_INVSRCALPHA)
+    p.name = 'vignette model'
+    p.filterQuad = transferMesh
+    p.material.vignetteColour = (0, 0, 0, 0)
+    p.material.vingetteIntensity = 0.55
+    return p
+
+
+def fillTaps9(mat, filter):
+    taps = filter()
+    mat.tap1 = (taps[0][0],
+     taps[0][1],
+     taps[0][2],
+     0)
+    mat.tap2 = (taps[1][0],
+     taps[1][1],
+     taps[1][2],
+     0)
+    mat.tap3 = (taps[2][0],
+     taps[2][1],
+     taps[2][2],
+     0)
+    mat.tap4 = (taps[3][0],
+     taps[3][1],
+     taps[3][2],
+     0)
+    mat.tap5 = (taps[4][0],
+     taps[4][1],
+     taps[4][2],
+     0)
+    mat.tap6 = (taps[5][0],
+     taps[5][1],
+     taps[5][2],
+     0)
+    mat.tap7 = (taps[6][0],
+     taps[6][1],
+     taps[6][2],
+     0)
+    mat.tap8 = (taps[7][0],
+     taps[7][1],
+     taps[7][2],
+     0)
+    mat.tap9 = (taps[8][0],
+     taps[8][1],
+     taps[8][2],
+     0)
+
+
+def finiPhases():
+    global backBufferCopyCache
+    print 'PostProcessing.Phases.fini()'
+    backBufferCopyCache = {}

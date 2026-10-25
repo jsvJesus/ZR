@@ -1,0 +1,146 @@
+# Embedded file name: ./client/snow_cloth_models.py
+"""
+ \xd0\x92 \xd0\xb7\xd0\xb0\xd0\xb2\xd0\xb8\xd1\x81\xd0\xb8\xd0\xbc\xd0\xbe\xd1\x81\xd1\x82\xd0\xb8 \xd0\xbe\xd1\x82 \xd0\xba\xd0\xb0\xd1\x80\xd1\x82\xd1\x8b (SNOW_SPACES) \xd0\xbf\xd0\xbe\xd0\xba\xd1\x80\xd0\xb0\xd1\x81\xd0\xb8\xd1\x82\xd1\x8c \xd0\xbc\xd0\xbe\xd0\xb4\xd0\xb5\xd0\xbb\xd1\x8c\xd0\xba\xd0\xb8 \xd1\x81\xd1\x83\xd1\x89\xd0\xbd\xd0\xbe\xd1\x81\xd1\x82\xd0\xb8 \xd0\xb2 \xd1\x81\xd0\xbd\xd0\xb5\xd0\xb6\xd0\xbd\xd1\x83\xd1\x8e \xd1\x82\xd0\xb5\xd0\xba\xd1\x81\xd1\x82\xd1\x83\xd1\x80\xd1\x83
+
+ http://hz-dev.stalker.so:8090/issues/18779
+
+
+\xd0\xb3\xd0\xb5\xd0\xbd\xd0\xb5\xd1\x80\xd0\xb0\xd1\x86\xd0\xb8\xd1\x8f \xd0\xbd\xd0\xb0\xd1\x81\xd1\x82\xd1\x80\xd0\xbe\xd0\xb5\xd0\xba \xd0\xb2 sys/res/scripts/common/generate_snow_cloth.py
+\xd0\xb8\xd0\xbb\xd0\xb8 \xd1\x87\xd0\xb5\xd1\x80\xd0\xb5\xd0\xb7 \xd1\x87\xd0\xb0\xd1\x82 /generate_snow_cloth
+
+
+"""
+import BigWorld
+import ResMgr
+import ResourceLoader
+import json
+import traceback
+from functools import partial
+DATA = {}
+
+def loadConfig():
+    global DATA
+    py_data_section = ResMgr.openSection('scripts/client/data/snow_cloth_textures.json')
+    if py_data_section is not None:
+        DATA = json.loads(py_data_section.asBinary)
+    return
+
+
+loadConfig()
+SNOW_SPACES = ['spaces/novaya_south',
+ 'spaces/novaya_north',
+ 'spaces/event_new_year_main_2024',
+ 'spaces/inst_polary_expedition',
+ 'spaces/event_new_year_delivery',
+ 'spaces/test_physics',
+ 'spaces/testers']
+
+class SnowClothModels:
+
+    def _getSpaceName(self):
+        name = self.getSpaceName()
+        if name:
+            return name
+        player = BigWorld.player()
+        if player:
+            return player.getSpaceName()
+
+    def canShowSnowTextures(self):
+        if self.__class__.__name__ == 'NPC':
+            return BigWorld.isOtside(self.spaceID, self.position)
+        return True
+
+    def updateSnowTexture(self):
+        if not self.model:
+            return
+        elif not self.canShowSnowTextures():
+            return
+        else:
+            key = 'snow' if self._getSpaceName() in SNOW_SPACES else 'def'
+            if not hasattr(self, '_waitSnowTexture'):
+                self._waitSnowTexture = {}
+            for model_name in self.model.sources:
+                if model_name not in DATA:
+                    continue
+                for mater in DATA[model_name]:
+                    cur_tint = None
+                    try:
+                        dye = getattr(self.model, mater['dye'])
+                        cur_tint = dye.tint
+                        need_texture = mater[key]
+                        cached_texture = _snow_cache.get_texture(need_texture)
+                        if cached_texture:
+                            dye.MaskForDiffuse = cached_texture
+                            self._waitSnowTexture.pop(model_name, None)
+                            continue
+                        if dye.MaskForDiffuse.name == need_texture:
+                            self._waitSnowTexture.pop(model_name, None)
+                            continue
+                        if self._waitSnowTexture.get(model_name, None) == need_texture:
+                            continue
+                        self._waitSnowTexture[model_name] = need_texture
+                        ResourceLoader.asyncLoad([(ResourceLoader.TEXTURE, need_texture)], partial(self._onSnowTextureLoaded, model_name, need_texture, mater['dye']))
+                    except:
+                        print 'ERROR FOR:', self, model_name, mater['dye'], 'cur_tint=', cur_tint
+                        traceback.print_stack()
+                        traceback.print_exc()
+
+            for model_name in self._waitSnowTexture.keys():
+                if model_name not in self.model.sources:
+                    del self._waitSnowTexture[model_name]
+
+            return
+
+    def _onSnowTextureLoaded(self, model_name, need_texture, dye_name, res):
+        if self.isDestroyed:
+            return
+        if model_name not in self._waitSnowTexture:
+            return
+        if self._waitSnowTexture[model_name] != need_texture:
+            return
+        if not self.model:
+            return
+        del self._waitSnowTexture[model_name]
+        dye = getattr(self.model, dye_name)
+        dye.MaskForDiffuse = res[need_texture]
+        _snow_cache.put_texture(res[need_texture])
+
+
+class SnowCache:
+    TEXTURE_LIFE_TIME = 300
+
+    def __init__(self):
+        self._cache = {}
+        self._callback_handler = None
+        return
+
+    def put_texture(self, texture):
+        self._cache[texture.name] = [texture, BigWorld.time() + SnowCache.TEXTURE_LIFE_TIME]
+        self._update_timer()
+
+    def get_texture(self, texture_name):
+        cache_data = self._cache.get(texture_name)
+        if cache_data:
+            cache_data[1] = BigWorld.time() + SnowCache.TEXTURE_LIFE_TIME
+            self._update_timer()
+            return cache_data[0]
+
+    def _update_timer(self):
+        if self._callback_handler:
+            BigWorld.cancelCallback(self._callback_handler)
+            self._callback_handler = None
+        min_time = None
+        cur_time = BigWorld.time()
+        for key, (_, cache_time) in self._cache.items():
+            if cache_time <= cur_time:
+                del self._cache[key]
+                continue
+            min_time = cache_time if min_time is None else min(min_time, cache_time)
+
+        if min_time:
+            delay = min_time + 1.0 - cur_time
+            self._callback_handler = BigWorld.callback(delay, self._update_timer)
+        return
+
+
+_snow_cache = SnowCache()

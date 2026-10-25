@@ -1,0 +1,181 @@
+# Embedded file name: ./client/soGUI/equip_paint/paint_block/templates/templates_view.py
+import DyeConstant
+import colorCodes as cc
+from Localization import lc
+import GUI
+from soGUI.equip_paint.tabview.tabview import View
+from soGUI.equip_paint.equip_block.equip_tablegrid import ItemDataET as EquipItemET
+from templates_tablegrid import TemplatesTableGrid, TemplatesTableModel, TableGridET, ModelET as TemplatesModelET
+from ..color_picker import ColorPicker, PickerET
+from .. import templates_loader
+from ui.text import calc_needed_font
+from soGUI.donat_shop.window.auxwins.auxwins import Auxwins
+
+class TemplatesViewET:
+    OnTemplateDeleteRequested, OnRewriteClick, OnNewClick = ((r, 'equiptemplatesview') for r in range(3))
+
+
+class TemplatesView(View):
+
+    def __init__(self, component):
+        View.__init__(self, component)
+        self._item = None
+        self._tm = TemplatesTableModel()
+        templates = templates_loader.load_all_templates()
+        self._tm.set_items([None] * 2 + templates)
+        self._tm.add_listener(self._on_tm_event)
+        comp = GUI.Window()
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('LEFT', 'TOP')
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.visible = False
+        self._table_grid = TemplatesTableGrid(comp, self._tm)
+        self._table_grid.add_listener(self._on_tablegrid_event)
+        self.component.addChild(comp)
+        comp = GUI.Window()
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('LEFT', 'TOP')
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.visible = False
+        self._color_picker = ColorPicker(comp)
+        self._color_picker.add_listener(self._on_picker_event)
+        self.component.addChild(comp)
+        comp = GUI.Window('soGUI/frame/paint/slot.dds')
+        comp.materialFX = 'BLEND'
+        comp.colour = (255,
+         255,
+         255,
+         76.5)
+        comp.tiled = True
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('LEFT', 'TOP')
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.position = (0, 0, 0.4)
+        self.component.addChild(comp, 'unavailable')
+        comp = GUI.Text(lc('PaintScreen.emblems.LOCKED'))
+        comp.colour = cc.active_rgba
+        self.component.unavailable.addChild(comp, 'text')
+        return
+
+    def _on_tm_event(self, event_type, data):
+        if event_type == TemplatesModelET.OnSelectedChanged:
+            self._color_picker.component.visible = len(data['items']) == 1
+            self._update_height()
+
+    def _on_picker_event(self, event_type, data):
+        if event_type == PickerET.OnColorRequested:
+            self._tm.edit_current_template(data['channel'], data['color'])
+            self._item.apply_color(data['channel'], data['color'])
+        elif event_type == PickerET.OnHeightChanged:
+            self._update_height()
+        elif event_type == PickerET.OnSaveClick:
+            selected = self._tm.get_current_single_selected()
+            if not selected or not selected.file_name:
+                return
+
+            def callback():
+                data['name'] = selected.file_name
+                data['camo_id'] = selected.camo_id
+
+                def on_rewrite():
+                    self.notify_listeners(TemplatesViewET.OnRewriteClick, data)
+
+                def on_new():
+                    self.notify_listeners(TemplatesViewET.OnNewClick, data)
+
+                btns_data = [{'text': lc('EquipPaint.painttab.btntemplates.saverewrite'),
+                  'callback': on_rewrite}, {'text': lc('EquipPaint.painttab.btntemplates.savenew'),
+                  'callback': on_new}]
+                Auxwins.show_custom(lc('EquipPaint.painttab.btntemplates.savemessage'), btns_data)
+
+            Auxwins.show_ok_message(lc('EquipPaint.painttab.btntemplates.notify'), callback=callback)
+
+    def _update_height(self):
+        cpheight = self._color_picker.component.height
+        if cpheight and self._color_picker.component.visible:
+            self.height = self._color_picker.component.position[1] + self._color_picker.component.height
+        else:
+            self.height = self._table_grid.component.height
+
+    def _on_equipitem_event(self, event_type, data):
+        if event_type in (EquipItemET.OnCamoColorsChanged, EquipItemET.OnColorChanged):
+            self._tm.select_items(self._item.camo_id, self._item.colors4rgba)
+
+    def set_item(self, item):
+        if self._item:
+            self._item.remove_listener(self._on_equipitem_event)
+        camo_ids = []
+        if item:
+            camo_ids = DyeConstant.get_item_camos(item.item_type)
+        if camo_ids:
+            self._item = item
+            self._item.add_listener(self._on_equipitem_event)
+            self._tm.select_items(self._item.camo_id, self._item.colors4rgba)
+            self._color_picker.set_item(item)
+            self._table_grid.component.visible = True
+            self.component.unavailable.visible = False
+        else:
+            self._color_picker.set_item(None)
+            self._table_grid.component.visible = False
+            self.component.unavailable.visible = True
+        return
+
+    def _is_camo_valid(self, camo_id, colors):
+        if camo_id:
+            camo_ids = DyeConstant.get_item_camos(self._item.item_type)
+            if camo_id in camo_ids:
+                cammo_colors = DyeConstant.get_camo_colors(self._item.item_type, camo_id)
+                for channel, color in zip(('R', 'G', 'B', 'A'), colors):
+                    if color and color[:3] not in cammo_colors.get(channel, []):
+                        return False
+
+            else:
+                return False
+            return True
+        return False
+
+    def _on_tablegrid_event(self, event_type, data):
+        if event_type == TableGridET.IsCammoValid:
+            return self._is_camo_valid(data['camo_id'], data['colors'])
+        if event_type == TableGridET.OnTemplateChangeRequest:
+            camo_id, colors = data['camo_id'], data['colors']
+            if not camo_id or self._is_camo_valid(camo_id, colors):
+                self._item.apply_template(data['camo_id'], data['colors'])
+        elif event_type == TableGridET.OnTemplateDeleteRequested:
+            self.notify_listeners(TemplatesViewET.OnTemplateDeleteRequested, data)
+
+    def on_template_created(self, template):
+        self._tm.add_template(template)
+
+    def on_template_rewritten(self, file_name):
+        self._tm.mark_original(file_name)
+
+    def on_templates_deleted(self, file_names):
+        self._tm.delete_templates(file_names)
+
+    def restore_original(self, name = None):
+        self._tm.restore_original(name)
+        self._tm.select_items(self._item.camo_id, self._item.colors4rgba)
+
+    def do_reposition(self, reposition_data):
+        View.do_reposition(self, reposition_data)
+        cols, rows = reposition_data['paint_cols'], reposition_data['paint_rows']
+        cell_size = reposition_data['cell_size']
+        scroll_width = reposition_data['scroll_width']
+        templates_table_height = cell_size * rows
+        templates_table_width = cell_size * cols + scroll_width
+        comp = self._table_grid.component
+        comp.width, comp.height = templates_table_width, templates_table_height
+        comp.position = (0, 0, 0.5)
+        self._table_grid.do_reposition(cols, rows, cell_size, cell_size, scroll_width)
+        pos_y = self._table_grid.component.height + cell_size * 0.25
+        comp = self._color_picker.component
+        comp.width, comp.height = self.component.width - scroll_width, self.component.height - pos_y
+        comp.position = (0, pos_y, 0.5)
+        self._color_picker.do_reposition()
+        comp = self.component.unavailable
+        comp.width, comp.height = templates_table_width - scroll_width, templates_table_height
+        comp.tileWidth, comp.tileHeight = cell_size, cell_size
+        comp = comp.text
+        comp.font = calc_needed_font(32)
+        self._update_height()

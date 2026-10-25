@@ -1,0 +1,322 @@
+# Embedded file name: ./common/Lib/pyson/pyson_py.py
+"""
+ \xd0\x9c\xd0\xb5\xd0\xb4\xd0\xbb\xd0\xb5\xd0\xbd\xd0\xbd\xd0\xb0\xd1\x8f \xd1\x80\xd0\xb5\xd0\xb0\xd0\xbb\xd0\xb8\xd0\xb7\xd0\xb0\xd1\x86\xd0\xb8\xd1\x8f pyson.
+ \xd0\x98\xd1\x81\xd0\xbf\xd0\xbe\xd0\xbb\xd1\x8c\xd0\xb7\xd0\xbe\xd0\xb2\xd0\xb0\xd1\x82\xd1\x8c \xd1\x82\xd0\xbe\xd0\xbb\xd1\x8c\xd0\xba\xd0\xbe \xd0\xb5\xd1\x81\xd0\xbb\xd0\xb8 \xd0\xbd\xd0\xb5\xd1\x82 \xd0\xb2\xd0\xbe\xd0\xb7\xd0\xbc\xd0\xbe\xd0\xb6\xd0\xbd\xd0\xbe\xd1\x81\xd1\x82\xd0\xb8 \xd0\xbf\xd0\xbe\xd0\xb4\xd0\xba\xd0\xbb\xd1\x8e\xd1\x87\xd0\xb8\xd1\x82\xd1\x8c \xd1\x81\xd0\xb8\xd1\x88\xd0\xbd\xd1\x8b\xd0\xb9 _pyson
+"""
+import sys
+if sys.version_info.major >= 3:
+    long = int
+    unicode = str
+
+class _Elem:
+
+    def __init__(self, val = ''):
+        self._buf = []
+        self._buf.append(val)
+
+
+class _BoolAndNone(_Elem):
+
+    def addSymb(self, symb):
+        if symb in 'TrueFalseNone':
+            self._buf.append(symb)
+            return True
+        return False
+
+    def value(self):
+        val = ''.join(self._buf)
+        if val == 'True':
+            return True
+        elif val == 'False':
+            return False
+        elif val == 'None':
+            return None
+        else:
+            raise ValueError('error parse [%s]' % self._buf)
+            return None
+
+
+class _Number(_Elem):
+    isflaot = False
+
+    def addSymb(self, symb):
+        if symb == '.':
+            self.isflaot = True
+        if symb.isdigit() or symb == '.':
+            self._buf.append(symb)
+            return True
+        return False
+
+    def value(self):
+        val = ''.join(self._buf)
+        if self.isflaot:
+            return float(val)
+        return int(val)
+
+
+class _Text(_Elem):
+    prev_symb_esc = None
+
+    def addSymb(self, symb):
+        if self.prev_symb_esc:
+            if symb == 'n':
+                symb = '\n'
+            elif symb == '\\':
+                symb = '\\'
+            elif symb == '"':
+                symb = '"'
+            self.prev_symb_esc = False
+            self._buf.append(symb)
+            return True
+        if symb == '"':
+            return False
+        if symb == '\\':
+            self.prev_symb_esc = True
+            return True
+        self._buf.append(symb)
+        return True
+
+    def value(self):
+        return ''.join(self._buf)
+
+
+class _ContList:
+
+    def __init__(self):
+        self._data = []
+
+    def add(self, obj):
+        self._data.append(obj)
+
+    def markEndKey(self):
+        raise ValueError
+
+
+class _ContSet:
+
+    def __init__(self):
+        self._data = set()
+
+    def add(self, obj):
+        self._data.add(obj)
+
+    def markEndKey(self):
+        raise ValueError
+
+
+class _ContDict:
+
+    def __init__(self):
+        self._key_end = False
+        self._key = None
+        self._val = None
+        self._data = {}
+        return
+
+    def markEndKey(self):
+        self._key_end = True
+
+    def add(self, obj):
+        if self._key_end:
+            self._key_end = False
+            self._data[self._key] = obj
+        else:
+            self._key = obj
+
+
+def loads(text):
+    _root = None
+    _cont = []
+    _last_elem = None
+    number_line = 0
+    number_symb = 0
+    _ignore = 0
+    for number, symb in enumerate(text):
+        if _ignore:
+            _ignore -= 1
+            continue
+        try:
+            end_line = False
+            number_symb += 1
+            if symb == '\n':
+                number_line += 1
+                number_symb = 0
+                end_line = True
+            if _last_elem:
+                need_break = end_line
+                if not _last_elem.addSymb(symb):
+                    need_break = True
+                if need_break:
+                    _cont[-1].add(_last_elem.value())
+                    _last_elem = None
+                    if end_line:
+                        continue
+                if _last_elem:
+                    continue
+                if symb not in ':':
+                    continue
+            if symb == ':':
+                _cont[-1].markEndKey()
+            elif symb in '([':
+                c = _ContList()
+                if _cont:
+                    _cont[-1].add(c._data)
+                _cont.append(c)
+            elif not (symb == 's' and text[number:number + 4] == 'set{'):
+                raise AssertionError
+                _ignore += 3
+                c = _ContSet()
+                if _cont:
+                    _cont[-1].add(c._data)
+                _cont.append(c)
+            elif symb in '])':
+                _cont.pop(-1)
+            elif symb == '{':
+                c = _ContDict()
+                if _cont:
+                    _cont[-1].add(c._data)
+                _cont.append(c)
+            elif symb == '}':
+                _cont.pop(-1)
+            elif symb == '"':
+                _last_elem = _Text()
+            elif symb in 'TFN':
+                _last_elem = _BoolAndNone(symb)
+            elif symb.isdigit() or symb == '-':
+                _last_elem = _Number(symb)
+            if not _root and _cont:
+                _root = _cont[-1]._data
+        except:
+            print '\nline: %s.%s' % (number_line, number_symb)
+            raise
+
+    return _root
+
+
+indent = '\t'
+
+def _foramt_str(str_value):
+    if sys.version_info.major >= 3:
+        if type(str_value) == bytes:
+            str_value = str_value.decode('utf-8')
+    elif type(str_value) == unicode:
+        str_value = str_value.encode('utf-8')
+    str_value = str_value.replace('\\', '\\\\')
+    str_value = str_value.replace('\n', '\\n')
+    str_value = str_value.replace('"', '\\"')
+    return '"%s"' % str_value
+
+
+def _format_float(value):
+    return '%s' % value
+
+
+def _dumps(obj, level = 0, ignor_ind_simple = False):
+    res = ''
+    type_ = type(obj)
+    if type_ == dict:
+        res += '\n' + indent * level + '{' + '\n'
+        for key, value in obj.items():
+            if type(key) in (int, long, bool):
+                res += indent * (level + 1) + str(int(key)) + ': '
+            elif type(key) in (float,):
+                res += indent * (level + 1) + _format_float(key) + ': '
+            elif type(key) in (str, unicode):
+                res += indent * (level + 1) + _foramt_str(key) + ': '
+            else:
+                raise TypeError('not support type for key %s' % type(key))
+            res += _dumps(value, level + 1, ignor_ind_simple=True) + '\n'
+
+        res += indent * level + '}'
+    elif type_ == tuple:
+        res += '\n' + indent * level + '(' + '\n'
+        for sub_obj in obj:
+            res += _dumps(sub_obj, level + 1) + ',' + '\n'
+
+        res += indent * level + ')'
+    elif type_ == list:
+        res += '\n' + indent * level + '[' + '\n'
+        for sub_obj in obj:
+            res += _dumps(sub_obj, level + 1) + ',' + '\n'
+
+        res += indent * level + ']'
+    elif type_ in (set,):
+        res += '\n' + indent * level + 'set{' + '\n'
+        for sub_obj in obj:
+            res += _dumps(sub_obj, level + 1) + ',' + '\n'
+
+        res += indent * level + '}'
+    elif type_ in (int, long, bool):
+        if ignor_ind_simple:
+            res += str(int(obj))
+        else:
+            res += indent * level + str(obj)
+    elif type_ in (float,):
+        if ignor_ind_simple:
+            res += _format_float(obj)
+        else:
+            res += indent * level + _format_float(obj)
+    elif obj is None:
+        if ignor_ind_simple:
+            res += 'None'
+        else:
+            res += indent * level + 'None'
+    elif type_ in (str, unicode):
+        if ignor_ind_simple:
+            res += _foramt_str(obj)
+        else:
+            res += indent * level + _foramt_str(obj)
+    else:
+        raise TypeError('not support type %s' % type_)
+    return res
+
+
+def dumps(obj):
+    text = _dumps(obj)
+    return text
+
+
+def _test2():
+    orig = (-1,
+     2,
+     [222, 222],
+     (33, 44, 55))
+    res = dumps(orig)
+    print 'pyson:'
+    print res
+    decode = loads(res)
+    print 'decode:'
+    print decode
+
+
+def _test():
+    import pprint
+    t = {1: 'text',
+     'txt': 2.0,
+     3: [10000000000000000023L, '\xd1\x80\xd1\x83\xd1\x81 \xd1\x82\xd0\xb5\xd0\xba\xd1\x81\xd1\x82', -3.0]}
+    t[88] = 'esc" mee'
+    t['esc \\'] = 'esc \\ mee'
+    t['DropPercent'] = 'esc \n mee'
+    t[55] = {22: 'adasdasd',
+     55: 'asdasdasdas111'}
+    t['SETHERE'] = set([1, 2])
+    test_data = t
+    res = dumps(test_data)
+    print res
+    with open('test.pyson', 'w') as f:
+        f.write(res)
+    decode = loads(res)
+    valid = decode == test_data
+    print ('valid:', valid)
+    if not valid:
+        with open('test_test_data.txt', 'w') as f:
+            pprint.pprint(test_data, f)
+        with open('test_decode.txt', 'w') as f:
+            pprint.pprint(decode, f)
+        print 'write debug to test_test_data.txt'
+        print 'write debug to test_decode.txt'
+        raise ValueError
+
+
+if __name__ == '__main__':
+    _test2()

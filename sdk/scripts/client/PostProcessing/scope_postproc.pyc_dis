@@ -1,0 +1,525 @@
+# Embedded file name: ./client/PostProcessing/scope_postproc.py
+import BWPersonality
+import sys, os
+import BigWorld
+import traceback
+import Math
+import math
+import Keys
+import GUI
+from Math import Matrix, Vector3, Vector2
+from random import uniform
+from math_bw import clamp
+import PostProcessing
+from PostProcessing.RenderTargets import rt
+from PostProcessing import Effect
+from PostProcessing import BW_BLEND_ONE, BW_BLEND_ZERO
+from PostProcessing import BW_BLEND_SRCALPHA, BW_BLEND_INVSRCALPHA
+from PostProcessing.FilterKernels import straightTransfer4Tap
+from PostProcessing.Phases import buildPhase, Phase, TransferQuad, Material
+from PostProcessing.Phases import buildColourScalePhase
+from PostProcessing.Phases import buildBackBufferCopyPhase, buildDownSamplePhase, buildBlurPhaseDOF
+from PostProcessing.Phases import buildVignettePhase
+from PostProcessing.Phases import buildTransferPhase
+from PostProcessing.Phases import buildBlurPhase
+from _PostProcessing import PlayerFader
+from tmp_blends import LinearBlend
+import blend_vectors_inertion
+invisible_cam = Matrix()
+invisible_cam.setTranslate((-900, -900, -900))
+_cache_ = {}
+
+def onLoadResource(resurce):
+    for key in resurce.keys():
+        _cache_[key] = resurce.pop(key)
+
+
+import binoculars_settings
+BigWorld.loadResourceListBG(binoculars_settings.get_preresq(), onLoadResource)
+
+def getTextue(key):
+    return _cache_.get(key) or key
+
+
+def draw3dLine(src, dst = None, colour = (1,
+ 0,
+ 0,
+ 1)):
+    if dst is None:
+        dst = src + Vector3(0, 1.5, 0)
+    BigWorld.getGeometricInstance().addLine(src, dst, colour, 0)
+    return
+
+
+def buildScopeScalePhase(input_texture, output, srcBlend = BW_BLEND_SRCALPHA, destBlend = BW_BLEND_INVSRCALPHA):
+    p = buildPhase(input_texture, output, 'shaders/post_processing/scope_scale.fx', straightTransfer4Tap, srcBlend, destBlend)
+    p.name = 'ScopeScalePhase'
+    return p
+
+
+def buildScopeScaleMaskPhase(input_texture, output, srcBlend = BW_BLEND_SRCALPHA, destBlend = BW_BLEND_INVSRCALPHA):
+    p = buildPhase(input_texture, output, 'shaders/post_processing/scope_scale_mask.fx', straightTransfer4Tap, srcBlend, destBlend)
+    p.name = 'ScopeScalePhaseMask'
+    return p
+
+
+def buildBinocularsPhase(input_texture, output, srcBlend = BW_BLEND_SRCALPHA, destBlend = BW_BLEND_INVSRCALPHA):
+    p = buildPhase(input_texture, output, 'shaders/post_processing/binoculars.fx', straightTransfer4Tap, srcBlend, destBlend)
+    p.name = 'BinocularsPhase'
+    return p
+
+
+class _BlurBlend(object):
+
+    def __init__(self):
+        self._to = 1.0
+        self._val = 1.0
+
+    def setValueTo(self, value):
+        self._to = value
+        if value > self._val:
+            self._val = value
+
+    def updateBlend(self, dtime):
+        diff = self._to - self._val
+        self._val = self._val + diff * 0.15
+
+    def value(self):
+        return self._val
+
+    def valueV4(self):
+        return (self._val,
+         self._val,
+         self._val,
+         1.0)
+
+
+class MyScopeEff(object):
+    """
+    \xd0\x9f\xd0\xbe\xd1\x81\xd1\x82\xd1\x80\xd0\xbe\xd1\x86\xd0\xb5\xd1\x81\xd1\x81 \xd1\x80\xd0\xb5\xd0\xbd\xd0\xb4\xd0\xb5\xd1\x80\xd0\xb0 \xd0\xbe\xd1\x82 \xd0\xbf\xd0\xb5\xd1\x80\xd0\xb2\xd0\xbe\xd0\xb3\xd0\xbe \xd0\xbb\xd0\xb8\xd1\x86\xd0\xb0 \xd0\xb8 \xd0\xbb\xd0\xb8\xd0\xbd\xd0\xb7\xd1\x8b \xd0\xbe\xd0\xbf\xd1\x82\xd0\xb8\xd1\x87\xd0\xb5\xd1\x81\xd0\xba\xd0\xbe\xd0\xb3\xd0\xbe \xd0\xbf\xd1\x80\xd0\xb8\xd1\x86\xd0\xb5\xd0\xbb\xd0\xb0
+    """
+    instance = None
+
+    def __new__(cls, *w, **kw):
+        if cls.instance is None:
+            cls.instance = object.__new__(cls, *w, **kw)
+        return cls.instance
+
+    def __init__(self):
+        self.blackCoeff = 1.9
+        self._fov_to = -1
+        self.blur_enable = False
+        self.pp_effect_id = None
+        self._show_dof = True
+        self.paused = False
+        self._is_collimator = False
+        self._last_tst_centre_camera = None
+        self._is_binocular_mode = False
+        self._scope_eff_enable = False
+        self._binoc_black_time = 0.0
+        self._binoc_black_time_init = 0.0
+        self._blur_brightness = _BlurBlend()
+        self._weapon_attenuation = _BlurBlend()
+        self.tmpShader = GUI.MatrixShader()
+        self.black_edge_speed = 10.0
+        self._mr = None
+        self._scope_world_model = None
+        self._scope_mask_model = None
+        self._scope_attach = None
+        self._createPostEffect()
+        self.recreateMaskRenderer()
+        return
+
+    def recreateMaskRenderer(self):
+        self._clear_mr()
+        self._mr = None
+        w, h = BigWorld.screenSize()
+        if w < 3 or h < 3:
+            return
+        else:
+            self._mr = BigWorld.PyModelRenderer(int(w), int(h))
+            self._mr.dynamic = False
+            self._mr.addAmbientColor((1, 1, 1, 1))
+            self._mr.farPlane = 3.5
+            self._mr.nearPlane = 0.02
+            self._ph_scope_mask.material.maskTexture = self._mr.texture
+            return
+
+    def fini(self):
+        self.disable()
+
+    def blur_brightness(self, value):
+        self._blur_brightness.setValueTo(value)
+
+    def weapon_attenuation(self, value):
+        self._weapon_attenuation.setValueTo(value)
+
+    def _updateBrightness(self, dtime):
+        self._blur_brightness.updateBlend(dtime)
+        self._weapon_attenuation.updateBlend(dtime)
+        self.blur2.material.brightness = self._blur_brightness.value()
+        self.phase_show.material.colourise = self._weapon_attenuation.valueV4()
+
+    def rampFovWeapon(self, value, time_):
+        self._fov_to = value
+
+    def _updateFovWeapon(self, dtime):
+        fov_to = self._fov_to
+        if fov_to <= 0:
+            fov_to = BigWorld.projection().fov
+        cur_fov = self.prender.fov
+        if cur_fov < 0:
+            cur_fov = BigWorld.projection().fov
+        self.prender.fov = cur_fov + (fov_to - cur_fov) * 0.1
+
+    def _createPostEffect(self):
+        self.pp_effect_0 = Effect()
+        self.pp_effect_0.name = 'MyScopeEff0'
+        self.pp_effect = Effect()
+        self.pp_effect.name = 'MyScopeEff'
+        weaponscope_1 = rt('weaponscope_1')
+        weaponscope_2 = rt('weaponscope_2')
+        weaponscope_2.depthMap = rt('weaponscope_2_depth')
+        backBufferCopy = rt('backBufferCopy')
+        self._weaponscope_1 = weaponscope_1
+        self._backBufferCopy = backBufferCopy
+        self.ph_copy = buildBackBufferCopyPhase(weaponscope_1)
+        self.prender = PlayerFader()
+        self.prender.renderTarget = weaponscope_2
+        self.prender.clearRenderTarget = True
+        self.prender.name = 'PlayerRenderTT'
+        self.prender.nearPlane = 0.02
+        self.prender.farPlane = 3.5
+        self.phase_show = buildTransferPhase(weaponscope_2.texture, BW_BLEND_SRCALPHA, BW_BLEND_INVSRCALPHA)
+        self.phase_show.material.alphaOverdrive = 100.0
+        self.phase_show.material.alpha = 1.0
+        self.phase_show.material.alphaTestEnable = False
+        self.phase_show.material.alphaReference = 0
+        self.ph_copy_all_world_and_player = buildBackBufferCopyPhase(backBufferCopy)
+        self._ph_dof_copy = buildBackBufferCopyPhase(rt('backBufferCopy'))
+        self._ph_dof_down1 = buildDownSamplePhase(rt('backBufferCopy').texture, rt('downSampleBlur1'))
+        self._ph_dof_down2 = buildDownSamplePhase(rt('downSampleBlur1').texture, rt('downSampleBlur2'))
+        self._ph_dof_down3 = buildDownSamplePhase(rt('downSampleBlur2').texture, rt('downSampleBlur3'))
+        self._ph_dof_explicit_depth = buildPhase(rt('backBufferCopy').texture, rt('fpComputeBuffer1'), 'shaders/post_processing/depth_blur_write2_end_depth_custom_depth.fx')
+        self._ph_blure_depth = buildBlurPhaseDOF(rt('fpComputeBuffer1').texture, rt('fpComputeBuffer2'), 1, filterMode=0, width=4.3)
+        self._ph_dof = buildPhase(rt('backBufferCopy').texture, None, 'shaders/post_processing/depth_of_field3.fx', srcBlend=BW_BLEND_SRCALPHA, destBlend=BW_BLEND_INVSRCALPHA)
+        self._ph_dof.material.blurTexture1 = rt('downSampleBlur1').texture
+        self._ph_dof.material.blurTexture2 = rt('downSampleBlur2').texture
+        self._ph_dof.material.blurTexture3 = rt('downSampleBlur3').texture
+        self._ph_dof.material.depthBlurTexture = rt('fpComputeBuffer2').texture
+        self._ph_dof_down1.clearRenderTarget = True
+        self._ph_dof_down2.clearRenderTarget = True
+        self._ph_dof_down3.clearRenderTarget = True
+        self._ph_dof_explicit_depth.clearRenderTarget = True
+        self._ph_dof_explicit_depth.material.inputTextureDepth = rt('weaponscope_2_depth').texture
+        dof_phases = [self._ph_dof_copy]
+        dof_phases.append(self._ph_dof_down1)
+        dof_phases.append(self._ph_dof_down2)
+        dof_phases.append(self._ph_dof_down3)
+        dof_phases.append(self._ph_dof_explicit_depth)
+        dof_phases.append(self._ph_blure_depth)
+        dof_phases.append(self._ph_dof)
+        self.dof_phases = dof_phases
+        self.dof_disabled_phases = [self._ph_dof_copy]
+        self._ph_scope = buildScopeScalePhase(weaponscope_1.texture, None, BW_BLEND_SRCALPHA, BW_BLEND_INVSRCALPHA)
+        self._ph_scope_mask = buildScopeScaleMaskPhase(weaponscope_1.texture, None, BW_BLEND_SRCALPHA, BW_BLEND_INVSRCALPHA)
+        self.blur = buildBlurPhase(backBufferCopy.texture, rt('downSample1'), 1, filterMode=0, width=1.9)
+        self.blur2 = buildBlurPhase(rt('downSample1').texture, None, 0, filterMode=0, width=1.9)
+        self.pp_effect_0.preTickDebug = self.preTickDebug0_
+        self.pp_effect_0.preDrawDebug = self._preDrawDebug0
+        self.pp_effect.preDrawDebug = self._preDrawEffect
+        self.ph_binocular = buildBinocularsPhase(backBufferCopy.texture, None)
+        self.turnScopeEff(False)
+        return
+
+    prev_cam_dir = None
+    prev_cam_pos = None
+    binocul_ff = LinearBlend(0.5)
+    binok_last_yaw = None
+    binok_last_pitch = None
+    binocular_param = None
+    binoc_body_pos = blend_vectors_inertion.PercentBlendVec3()
+
+    def preTickDebug0_(self, dtime):
+        self._updateFovWeapon(dtime)
+        self._updateBrightness(dtime)
+        if self._is_binocular_mode and self.binocular_param:
+            cam_dir = BigWorld.camera().direction
+            cam_pos = BigWorld.camera().position
+            cam_yaw = cam_dir.yaw
+            cam_pitch = cam_dir.pitch
+            if not self.prev_cam_pos:
+                self.prev_cam_pos = cam_pos
+            if not self.prev_cam_dir:
+                self.prev_cam_dir = cam_pos
+            if not self.binok_last_yaw:
+                self.binok_last_yaw = cam_yaw
+            if not self.binok_last_pitch:
+                self.binok_last_pitch = cam_pitch
+            dyaw = self.binok_last_yaw - cam_yaw
+            dpitch = self.binok_last_pitch - cam_pitch
+            if dyaw > math.pi:
+                dyaw -= math.pi * 2
+            elif dyaw < -math.pi:
+                dyaw += math.pi * 2
+            self.binoc_body_pos.setValueTo(Vector3(dyaw * 10, 0, dpitch * 20))
+            self.binoc_body_pos.updateBlend(dtime)
+            dyaw, z, dpitch = map(lambda v: clamp(v, -1, 1) * self.binocular_param['speed_lens'], self.binoc_body_pos.getCurrentValue())
+            angle = abs(dyaw) * self.binocular_param['shadow_strength'] + abs(dpitch) * self.binocular_param['shadow_strength']
+            angle += self.prev_cam_pos.distTo(cam_pos) * 30.5
+            angle = min(angle, 1.0)
+            self.binocul_ff.setValueTo(angle)
+            if self.binocul_ff.getCurrentValue() < angle:
+                self.binocul_ff.setCurrentValue(angle)
+            self.prev_cam_dir = cam_dir
+            self.prev_cam_pos = cam_pos
+            self.binok_last_yaw = cam_yaw
+            self.binok_last_pitch = cam_pitch
+            self.binocul_ff.updateBlend(dtime)
+            angle = self.binocul_ff.getCurrentValue()
+            shadow_factor = self.binocular_param['shadow_factor_pos']
+            self.ph_binocular.material.shadowAddPos = (shadow_factor * dyaw,
+             shadow_factor * dpitch,
+             0,
+             0)
+            body_factor = self.binocular_param['body_factor_pos']
+            self.ph_binocular.material.bodyAddPos = (body_factor * dyaw,
+             body_factor * dpitch,
+             0,
+             0)
+            lens_left_factor_pos = self.binocular_param['lens_left_factor_pos']
+            self.ph_binocular.material.lensLeftAddPos = (shadow_factor * dyaw + lens_left_factor_pos[0] * abs(dyaw),
+             lens_left_factor_pos[1] * dpitch,
+             0,
+             0)
+            lens_right_factor_pos = self.binocular_param['lens_right_factor_pos']
+            self.ph_binocular.material.lensRightAddPos = (shadow_factor * dyaw + lens_right_factor_pos[0] * abs(dyaw),
+             lens_right_factor_pos[1] * dpitch,
+             0,
+             0)
+            self.ph_binocular.material.lensFactor = min(angle, 1.0)
+            if self._binoc_black_time > 0:
+                self._binoc_black_time -= dtime
+                alp = 1.0
+                if self._binoc_black_time_init > 0:
+                    alp = self._binoc_black_time / self._binoc_black_time_init
+                self.ph_binocular.material.blackScreenAlpha = alp
+                self.binocul_ff.setCurrentValue(1.0)
+            else:
+                self.ph_binocular.material.blackScreenAlpha = 0.0
+
+    def _preDrawDebug0(self):
+        if self._mr and self._scope_attach:
+            self._mr.fov = self.prender.fov
+            m = self._scope_world_model.root.lastRenderTransform
+            self._scope_mask_model.setWorldTransform(m)
+            if self._scope_world_model.visible != self._scope_mask_model.visible:
+                self._scope_mask_model.visible = self._scope_world_model.visible
+            render_matr = Matrix(BigWorld.camera().matrix)
+            render_matr.translation = (0, 0, 0)
+            self._mr.viewMatrix = render_matr
+            self._mr.render()
+        player = BigWorld.player()
+        if player and player.model:
+            fps_state = player.AvatarCam.weaponModeFactor <= 0.799
+            player.setDrawModelTypes(head=False, torso=not fps_state, foot=False)
+            player.setDisableFlagParticle(True)
+
+    def _preDrawEffect(self):
+        """
+        \xd0\xbf\xd0\xb5\xd1\x80\xd0\xb5\xd0\xb4\xd0\xb0\xd1\x87\xd0\xb0 \xd0\xbf\xd0\xb0\xd1\x80\xd0\xb0\xd0\xbc\xd0\xb5\xd1\x82\xd1\x80\xd0\xbe\xd0\xb2 \xd0\xb2 \xd1\x88\xd0\xb5\xd0\xb9\xd0\xb4\xd0\xb5\xd1\x80. \xd0\xb2\xd1\x81\xd0\xb5 \xd0\xba\xd0\xbe\xd1\x81\xd1\x82\xd0\xb8 \xd1\x80\xd0\xb0\xd1\x81\xd1\x87\xd0\xb8\xd1\x82\xd1\x8b\xd0\xb2\xd0\xb0\xd1\x8e\xd1\x82\xd1\x81\xd1\x8f \xd0\xb2 \xd1\x81\xd0\xb8\xd1\x81\xd1\x82\xd0\xb5\xd0\xbc\xd0\xb5 \xd0\xba\xd0\xbe\xd0\xbe\xd1\x80\xd0\xb4\xd0\xb8\xd0\xbd\xd0\xb0\xd1\x82 \xd0\xba\xd0\xb0\xd0\xbc\xd0\xb5\xd1\x80\xd1\x8b
+        
+        """
+        w, h = BigWorld.screenSize()
+        ph = self.ph_scope
+        ph.material.screenWH = (w,
+         h,
+         0,
+         0)
+        player = BigWorld.player()
+        camera = player.AvatarCam
+        if not player._lensback_node:
+            return
+        if self.paused or not player._last_weapon_model:
+            ph.material.backPos = (-100, 0, 0, 0)
+            ph.material.frontPos = (-100, 0, 0, 0)
+            ph.material.camMatrix = invisible_cam
+            return
+        if not player.active_weapon:
+            return
+        cam_rot = Math.Matrix(camera.matrix)
+        cam_rot.translation = (0, 0, 0)
+
+        def camSpace(render_matr):
+            render_matr = Matrix(render_matr)
+            render_matr.postMultiply(cam_rot)
+            return render_matr
+
+        back_matrix = camSpace(player._lensback_node.lastRenderTransform)
+        front_matrix = camSpace(player._lensfront_node.lastRenderTransform)
+        back_pos = back_matrix.translation
+        front_pos = front_matrix.translation
+        if back_pos.z <= 0 or front_pos.z <= 0:
+            ph.material.backPos = (-100, 0, 0, 0)
+            ph.material.frontPos = (-100, 0, 0, 0)
+            ph.material.camMatrix = invisible_cam
+            return
+        pos2d = self.tmpShader.calcWorldToScreen(back_pos, True)
+        ph.material.backPos = ((pos2d.x + 1) * 0.5,
+         (1 - pos2d.y) * 0.5,
+         0,
+         0)
+        front_pos2d = self.tmpShader.calcWorldToScreen(front_matrix.translation, True)
+        ph.material.frontPos = ((1 - self.blackCoeff * pos2d.x + (pos2d.x - front_pos2d.x) * self.black_edge_speed) * 0.5,
+         (1 + self.blackCoeff * pos2d.y + (pos2d.y - front_pos2d.y) * self.black_edge_speed) * 0.5,
+         0,
+         0)
+        self._node_aimsys = player._last_weapon_model.node('HP_AIMSYS')
+        self._node_barrel = player._last_weapon_model.node('HP_barrel')
+        msys = camSpace(self._node_aimsys.lastRenderTransform)
+        mbarrel = camSpace(self._node_barrel.lastRenderTransform)
+        src = mbarrel.translation
+        orig_dst = src + msys.applyToAxis(2) * 80
+        pos2d = self.tmpShader.calcWorldToScreen(orig_dst, True)
+        ph.material.gridPos = (pos2d.x,
+         1 - pos2d.y,
+         0,
+         0)
+        ph.material.camMatrix = Matrix()
+
+        def vec3ToShaderFormat(vec):
+            return (vec.x,
+             vec.y,
+             vec.z,
+             1)
+
+        ph.material.lensBack3D = vec3ToShaderFormat(back_matrix.translation)
+        ph.material.lensBack3DNormal = vec3ToShaderFormat(-back_matrix.applyToAxis(2))
+        fov = self.prender.fov
+        if fov <= 0:
+            fov = BigWorld.projection().fov
+        ph.material.fovCamera = fov
+        gridMatrix = Matrix()
+        gridMatrix.setRotateYPR((0, 0, back_matrix.roll))
+        ph.material.gridMatrix = gridMatrix
+
+    def setBinocularsBlackScreen(self, time_):
+        self._binoc_black_time = time_
+        self._binoc_black_time_init = time_
+
+    def setBinocularsMode(self, val):
+        self._is_binocular_mode = val
+        self.updatePhases()
+        if val and self.binocular_param:
+            myscope.ph_binocular.material.binocularusBodyTexture = getTextue(self.binocular_param['texture_body'])
+            myscope.ph_binocular.material.binocularusShadLensTexture = getTextue(self.binocular_param['texture_shad_lens'])
+            myscope.ph_binocular.material.scopeLensFactor = self.binocular_param['lens_coef_a']
+            myscope.ph_binocular.material.scopeLensFactorOffset = self.binocular_param['lens_coef_b']
+
+    @property
+    def ph_scope(self):
+        if self._scope_attach:
+            return self._ph_scope_mask
+        return self._ph_scope
+
+    def turnScopeEff(self, val, scope_attach = None, use_mask_tints = None):
+        self._scope_eff_enable = val
+        if not use_mask_tints:
+            scope_attach = None
+        if scope_attach is not self._scope_attach:
+            self._clear_mr()
+            self._scope_attach = scope_attach
+            if scope_attach:
+                self._scope_world_model = scope_attach.getModel()
+                self._scope_mask_model = scope_attach.getScopeMaskModel(use_mask_tints)
+                self._mr.models = [self._scope_mask_model]
+        self.updatePhases()
+        return
+
+    def _clear_mr(self):
+        self._scope_attach = None
+        self._scope_world_model = None
+        self._scope_mask_model = None
+        if self._mr:
+            self._mr.models = []
+        return
+
+    def setDof(self, value):
+        self._show_dof = value
+        self.updatePhases()
+
+    def updateDofSettings(self, param):
+        self._ph_dof_explicit_depth.material.zEnd = param.zEnd
+        self._ph_dof_explicit_depth.material.zFar = param.zFar
+        self._ph_dof_explicit_depth.material.zNear = param.zNear
+        self._ph_dof_explicit_depth.material.nearFalloff = param.nearFalloff
+        self._ph_dof_explicit_depth.material.falloff = param.falloff
+
+    def SetCollimatorMode(self, is_collimator):
+        if self._is_collimator == is_collimator:
+            return
+        self._is_collimator = is_collimator
+        if self._is_collimator:
+            self.ph_scope.material.inputTexture = self._backBufferCopy.texture
+        else:
+            self.ph_scope.material.inputTexture = self._weaponscope_1.texture
+
+    def updatePhases(self):
+        if self._is_binocular_mode:
+            self.pp_effect_0.phases = [self.prender]
+            self.pp_effect.phases = [self.ph_binocular]
+            return
+        if self._scope_eff_enable:
+            self.pp_effect_0.phases = [self.ph_copy, self.prender]
+            ph = []
+            if self.blur_enable:
+                ph.extend([self.ph_copy_all_world_and_player])
+                ph.extend([self.blur, self.blur2])
+            ph.extend([self.phase_show])
+            if self._show_dof:
+                ph.extend(self.dof_phases)
+            else:
+                ph.extend(self.dof_disabled_phases)
+            ph.extend([self.ph_scope])
+            self.pp_effect.phases = ph
+        else:
+            self.pp_effect_0.phases = [self.prender]
+            ph = []
+            ph.extend([self.phase_show])
+            if self._show_dof:
+                ph.extend(self.dof_phases)
+            self.pp_effect.phases = ph
+
+    def enable(self):
+        w, h = BigWorld.screenSize()
+        self._ph_scope.material.screenWH = (w,
+         h,
+         0,
+         0)
+        self._ph_scope_mask.material.screenWH = (w,
+         h,
+         0,
+         0)
+        self.recreateMaskRenderer()
+        self.prender.enableDrawPlayerPostProc = True
+        player = BigWorld.player()
+        if player and player.model:
+            player.model.visible = False
+        if not self.pp_effect_id:
+            self.pp_effect_id = PostProcessing.addPPChainEffects([self.pp_effect_0, self.pp_effect], 998)
+
+    def disable(self):
+        if self.pp_effect_id:
+            PostProcessing.removePPChain(self.pp_effect_id)
+        self.pp_effect_id = None
+        self.prender.enableDrawPlayerPostProc = False
+        self._node_aimsys = None
+        self._node_barrel = None
+        self._clear_mr()
+        player = BigWorld.player()
+        if player and player.model:
+            player.model.visible = True
+        return
+
+
+myscope = MyScopeEff()

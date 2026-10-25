@@ -1,0 +1,258 @@
+# Embedded file name: ./client/Headlight.py
+import ItemsUtils
+import BigWorld
+import ResourceLoader
+import traceback
+from GadgetDevice import GadgetDevice
+from EquipSlotsConfigs import EquipSlotTypes as EST
+import sounds_manager as sounds
+import FX
+from Math import Matrix, MatrixProduct
+from Helpers.BWCoroutine import BWCoroutine, BWWaitForPeriod
+ASYNC_LOAD_COUNTER_LIMIT = 50
+ASYNC_LOAD_CALLBACK_DELAY = 0.1
+
+class Headlight(GadgetDevice):
+
+    def __init__(self, parent):
+        GadgetDevice.__init__(self, parent)
+        self._particles = None
+        self._light = None
+        self._item_id = None
+        self.enabled = False
+        self._async_load_callback = 0
+        self._async_load_conter = 0
+        self._parent_matrix = BigWorld.EntityRawMatrixProvider(self._parent)
+        self.node_head = None
+        self._m_conv_root = None
+        self._check_headlight_coroutine = None
+        self._blend_matrix_coroutine = None
+        self._is_default_source = False
+        return
+
+    def onLeaveWorld(self):
+        self._stop_light(update_inventory=True)
+        self._particles = None
+        self._light = None
+        self._parent = None
+        self._parent_matrix = None
+        self.node_head = None
+        self._m_conv_root = None
+        return
+
+    def onPreModelChange(self):
+        self._stop_light()
+
+    def onPostModelChange(self):
+        if EST.is_mode_on(self._parent, EST.MODE_HEADLIGHT, visual=True):
+            self._run_light()
+
+    def updateVisible(self):
+        if self.enabled and self._light:
+            if self._parent and self._parent.model:
+                self._light.visible = self._parent.model.visible
+
+    def onCahngeFPSMode(self, isfps):
+        self._update_particle()
+
+    def playSfxLampBroke(self):
+        if not self.on:
+            return
+        self._stop_light()
+        if self._parent.model:
+            FX.bufferedOneShotEffect('sfx/events/electro_lamp_broke.xml', self._parent.model)
+
+    def switch_light(self, switch):
+        if self._parent is BigWorld.player():
+            sounds.playSound('items/flashlight')
+        self._item_id = switch and ItemsUtils.find_equipped_headlight(self._parent)
+        if not self._item_id:
+            raise AssertionError
+            self._run_light()
+        else:
+            self._stop_light()
+
+    def _create_light(self):
+
+        def on_load(prereqs):
+            self._particles = prereqs.produce(0)
+            self._light = BigWorld.PyChunkSpotLight()
+            self._light.priority = -2 if self._parent is BigWorld.player() else -50
+            self._light.specular = True
+            self._light.cosConeAngle = 0.8
+            self._light.innerRadius = 9
+            self._light.outerRadius = 21
+            self._light.visible = False
+            self._async_load_conter = 0
+            self._run_light()
+
+        ResourceLoader.asyncLoad([(ResourceLoader.PARTICLE, 'particles/weapons/flashlight.xml')], on_load)
+
+    def set_default_source(self):
+        if self._is_default_source:
+            return
+        self._is_default_source = True
+        self._run_blend_matrix(self.node_head)
+
+    def set_conv_source(self):
+
+        def get_conv_head_matrix():
+            m_o = Matrix(self._parent.model.matrix)
+            m_o.preMultiply(self._m_conv_root)
+            m_o.invert()
+            m_conv_head = Matrix(self.node_head)
+            m_conv_head.postMultiply(m_o)
+            return m_conv_head
+
+        if not self._is_default_source:
+            return
+        self._is_default_source = False
+        m_prod = MatrixProduct()
+        m_prod.a = get_conv_head_matrix()
+        m_prod.b = self._parent_matrix
+        self._run_blend_matrix(m_prod)
+
+    def _run_blend_matrix(self, m_prov_f):
+        if self._blend_matrix_coroutine:
+            self._blend_matrix_coroutine.stop()
+        self._blend_matrix_coroutine = self.blend_matrix(self, m_prov_f)
+        self._blend_matrix_coroutine.run()
+
+    @BWCoroutine
+    def blend_matrix(self, m_prov_f):
+        if self._light and self._light.source:
+            m_o = Matrix(self._light.source)
+            cur_time = BigWorld.time()
+            weight = 0
+            while weight < 0.9:
+                yield BWWaitForPeriod(0)
+                if not self._light:
+                    break
+                delta_time = BigWorld.time() - cur_time
+                cur_time = BigWorld.time()
+                weight = min(1, weight + delta_time * 2)
+                m_res = Matrix(m_o)
+                m_res.blendMatrix(weight, m_prov_f)
+                self._light.source = m_res
+
+        if self._light:
+            self._light.source = m_prov_f
+        self._blend_matrix_coroutine = None
+        return
+
+    def _run_light(self):
+        if not self._parent:
+            return
+        if self.on:
+            return
+        if self._async_load_callback:
+            BigWorld.cancelCallback(self._async_load_callback)
+            self._async_load_callback = 0
+        if not self._light:
+            if self._async_load_conter > 0:
+                self._async_load_conter -= 1
+                self._async_load_callback = BigWorld.callback(ASYNC_LOAD_CALLBACK_DELAY, self._run_light)
+            else:
+                self._async_load_conter = ASYNC_LOAD_COUNTER_LIMIT
+                self._create_light()
+            return
+        self.enabled = True
+        try:
+            self.node_head = self._parent.model.node('HP_lamp')
+        except:
+            print "Headlight (ERROR): can't attach headlight on the model"
+            traceback.print_stack()
+            print traceback.format_exc()
+            self._stop_light()
+            return
+
+        if not self._m_conv_root:
+            m_o = Matrix(self._parent.model.matrix)
+            m_o.invert()
+            self._m_conv_root = Matrix(self._parent_matrix)
+            self._m_conv_root.postMultiply(m_o)
+        self._is_default_source = False
+        self.set_default_source()
+        try:
+            self._light.visible = self._parent.model.visible
+        except:
+            traceback.print_exc()
+
+        self._light.colour = (400, 400, 400, 255)
+        self._particles.force(1)
+        try:
+            self._parent.model.light_tourist2_skinned.glowFactor = (1, 0, 0, 0)
+        except:
+            print "Headlight (ERROR): can't apply headlight skin"
+            print traceback.format_exc()
+
+        self._update_particle()
+        if not self._check_headlight_coroutine:
+            self._check_headlight_coroutine = self.check_headlight(self)
+            self._check_headlight_coroutine.run()
+        if getattr(self._parent, '_portal_shell', False):
+            BigWorld.callback(0.2, self.playSfxLampBroke)
+
+    def _update_particle(self):
+        if not self._particles:
+            return
+        if not self._parent:
+            return
+        if not self._parent.model:
+            return
+        try:
+            if self.enabled and not self._parent.isFPSmode():
+                if not self._particles.attached:
+                    self._parent.model.node('HP_lens').attach(self._particles)
+                    self._particles.force(1)
+            elif self._particles.attached:
+                self._parent.model.node('HP_lens').detach(self._particles)
+                self._particles.clear()
+        except:
+            traceback.print_exc()
+
+    def _stop_light(self, update_inventory = False):
+        if not self.on:
+            return
+        else:
+            self.enabled = False
+            self._light.source = None
+            self._light.visible = False
+            self._light.colour = (0, 0, 0, 0)
+            self._particles.clear()
+            if update_inventory and self._item_id:
+                player = BigWorld.player()
+                if player is self._parent and player.__class__.__name__ == 'PlayerAvatar':
+                    player.partiallyUpdateInventory(self._item_id)
+            try:
+                if self._parent:
+                    self._parent.model.light_tourist2_skinned.glowFactor = (0, 0, 0, 0)
+            except:
+                print "Headlight (ERROR): can't apply headlight skin"
+                print traceback.format_exc()
+
+            self._update_particle()
+            return
+
+    @property
+    def on(self):
+        return self._light and self.enabled
+
+    @property
+    def cur_item_id(self):
+        return self.on and self._item_id
+
+    @BWCoroutine
+    def check_headlight(self):
+        while True:
+            yield BWWaitForPeriod(1)
+            if self.on and self.node_head:
+                if self.node_head.isActualCoords:
+                    self.set_default_source()
+                else:
+                    self.set_conv_source()
+            else:
+                break
+
+        self._check_headlight_coroutine = None
+        return

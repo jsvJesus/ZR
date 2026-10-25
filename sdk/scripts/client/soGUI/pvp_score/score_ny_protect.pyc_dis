@@ -1,0 +1,441 @@
+# Embedded file name: ./client/soGUI/pvp_score/score_ny_protect.py
+import GUI
+import BigWorld
+import BWPersonality
+from Helpers.PyGUI import PyGUIBase
+import csconstans
+from csconstans import TEAM_RED
+from csconstans import GAME_STATUS
+import time
+import traceback
+from full_score_ny_protect import FullScore
+from Helpers.BWCoroutine import BWMemberCoroutine, BWWaitForPeriod
+from Localization import lc
+from utils import secToTimerText
+import sounds_manager as sm
+from utils import plog
+import ItemsUtils
+from functools import partial
+DEBUG_MODE = False
+
+def getPlayerPosition(pvp_data):
+    player = BigWorld.player()
+    player_list = csconstans.sort_players_table(pvp_data['players'], teamID=player.teamID)
+    for index, pl in enumerate(player_list):
+        if pl['name'] == player.name:
+            return (index + 1, pl)
+
+
+NY_ITEM_TYPE = 802239
+
+def get_ny_item_count():
+    player = BigWorld.player()
+    return ItemsUtils.get_item_number_by_type(player, NY_ITEM_TYPE)
+
+
+class PlayerTop(PyGUIBase):
+
+    def __init__(self, component):
+        PyGUIBase.__init__(self, component)
+        component.script = self
+        self.score_data = None
+        self._is_end = -1
+        self._resizable = []
+        self.setupRoot()
+        self.setupContent()
+        return
+
+    def setupRoot(self):
+        cmp = self.component
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'CLIP'
+        cmp.horizontalAnchor = 'RIGHT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.colour = (0, 0, 0, 100)
+        cmp.materialFX = 'BLEND'
+        cmp.height = 130
+        cmp.width = 220
+        cmp.textureName = 'textures/default/white.dds'
+        cmp.position = (0.99, 0.99, 0.05)
+
+    def setupContent(self):
+        left_offs = 20
+        upp_offs = 10
+        txt = GUI.Text(lc('score_pvp.label_plscore'))
+        txt.horizontalAnchor = 'LEFT'
+        txt.verticalAnchor = 'BOTTOM'
+        txt.verticalPositionMode = 'PIXEL'
+        txt.horizontalPositionMode = 'PIXEL'
+        txt.font = 'RobotoCondensedRegular_20.font'
+        txt.position = (left_offs, 30 + upp_offs, 0)
+        self.component.addChild(txt, 'label_1')
+        txt = GUI.Text(u'18')
+        txt.horizontalAnchor = 'LEFT'
+        txt.verticalAnchor = 'BOTTOM'
+        txt.verticalPositionMode = 'PIXEL'
+        txt.horizontalPositionMode = 'PIXEL'
+        txt.font = 'RobotoCondensedRegular_24.font'
+        txt.position = (120, 30 + upp_offs, 0)
+        self.component.addChild(txt, 'plscore')
+        self._resizable.append([self.component.label_1, self.component.plscore])
+        txt = GUI.Text(lc('score_pvp.label_my_score_position'))
+        txt.horizontalAnchor = 'LEFT'
+        txt.verticalAnchor = 'BOTTOM'
+        txt.verticalPositionMode = 'PIXEL'
+        txt.horizontalPositionMode = 'PIXEL'
+        txt.font = 'RobotoCondensedRegular_20.font'
+        txt.position = (left_offs, 55 + upp_offs, 0)
+        self.component.addChild(txt, 'label_2')
+        txt = GUI.Text(u'18')
+        txt.horizontalAnchor = 'LEFT'
+        txt.verticalAnchor = 'BOTTOM'
+        txt.verticalPositionMode = 'PIXEL'
+        txt.horizontalPositionMode = 'PIXEL'
+        txt.font = 'RobotoCondensedRegular_24.font'
+        txt.position = (120, 55 + upp_offs, 0)
+        self.component.addChild(txt, 'position_my')
+        self._resizable.append([self.component.label_2, self.component.position_my])
+        txt = GUI.Text('----------')
+        txt.horizontalAnchor = 'LEFT'
+        txt.verticalAnchor = 'BOTTOM'
+        txt.verticalPositionMode = 'PIXEL'
+        txt.horizontalPositionMode = 'PIXEL'
+        txt.font = 'RobotoCondensedRegular_20.font'
+        txt.position = (left_offs, 80 + upp_offs, 0)
+        self.component.addChild(txt, 'label_pl_ny_items_sep')
+        txt = GUI.Text(lc('score_pvp.label_pl_ny_items'))
+        txt.horizontalAnchor = 'LEFT'
+        txt.verticalAnchor = 'BOTTOM'
+        txt.verticalPositionMode = 'PIXEL'
+        txt.horizontalPositionMode = 'PIXEL'
+        txt.font = 'RobotoCondensedRegular_20.font'
+        txt.position = (left_offs, 105 + upp_offs, 0)
+        self.component.addChild(txt, 'label_pl_ny_items')
+        txt = GUI.Text(u'0')
+        txt.horizontalAnchor = 'LEFT'
+        txt.verticalAnchor = 'BOTTOM'
+        txt.verticalPositionMode = 'PIXEL'
+        txt.horizontalPositionMode = 'PIXEL'
+        txt.font = 'RobotoCondensedRegular_24.font'
+        txt.position = (120, 105 + upp_offs, 0)
+        self.component.addChild(txt, 'ny_items_count')
+        self._resizable.append([self.component.label_pl_ny_items, self.component.ny_items_count])
+
+    def updateScore(self, data):
+        self.score_data = data
+        my_info = getPlayerPosition(data)
+        if my_info:
+            pl_position, pl = my_info
+            self.component.plscore.text = str(pl['plscore'])
+            self.component.position_my.text = str(pl_position)
+        else:
+            self.component.plscore.text = '-'
+            self.component.position_my.text = '-'
+        self.resize()
+
+    def _setTimerText(self, text, is_end = False):
+        self.component.ny_items_count.text = str(get_ny_item_count())
+        self.resize()
+
+    def resize(self):
+        max_line_width = 0
+        for label, txt in self._resizable:
+            w0, _ = label.stringDimensions(label.text)
+            w1, _ = txt.stringDimensions(txt.text)
+            txt.position[0] = w0 + label.position[0] + 3
+            line_width = txt.position[0] + w1 + 5 + 10
+            max_line_width = max(max_line_width, line_width)
+
+        self.component.width = max(max_line_width, 100)
+
+
+class ScoreNYProtect(PyGUIBase):
+
+    def __init__(self, component):
+        PyGUIBase.__init__(self, component)
+        component.script = self
+        self._music = None
+        self.score_data = None
+        self._is_timer = True
+        self._top = None
+        self._timer = None
+        self.setupRoot()
+        self.setupContent()
+        return
+
+    def setupRoot(self):
+        cmp = self.component
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'CLIP'
+        cmp.horizontalAnchor = 'CENTER'
+        cmp.verticalAnchor = 'CENTER'
+        cmp.widthMode = cmp.heightMode = 'CLIP'
+        cmp.colour = (255, 0, 0, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.height = 2
+        cmp.width = 2
+        cmp.position = (0, 0, 0.05)
+
+    def setupContent(self):
+        self._player_top = PlayerTop(GUI.Window())
+        self._full = FullScore()
+        self.component.addChild(self._player_top.component, 'player_top')
+        self.component.addChild(self._full.component, 'full')
+        self._player_top.component.visible = False
+        self._full.component.visible = False
+        txt = GUI.Text(u'')
+        txt.horizontalAnchor = 'CENTER'
+        txt.verticalAnchor = 'BOTTOM'
+        txt.verticalPositionMode = 'CLIP'
+        txt.horizontalPositionMode = 'CLIP'
+        txt.font = 'RobotoCondensedRegular_36.font'
+        txt.position = (0, 0.6, 0.3)
+        self.component.addChild(txt, 'up_text')
+
+    def hide(self):
+        self.component.visible = False
+        self.score_data = None
+        if self._timer:
+            try:
+                self._timer.stop()
+            except:
+                traceback.print_exc()
+
+            self._timer = None
+        return
+
+    def show(self):
+        self.component.visible = True
+        if self.component.parent is None:
+            BWPersonality.GUICore.worldLayer.delChild('ScoreNYProtect')
+            BWPersonality.GUICore.worldLayer.addChild(self.component, 'ScoreNYProtect')
+        if self._full:
+            self._full.setTitle('')
+        player = BigWorld.player()
+        self.onChangeTeamPVP(getattr(player, 'teamID', 0))
+        if not self._timer:
+            self._timer = self._timer_tick()
+            self._timer.run()
+        self._is_timer = True
+        return
+
+    @BWMemberCoroutine
+    def _timer_tick(self):
+        while True:
+            self._updateTimer()
+            yield BWWaitForPeriod(1.0)
+
+    def _updateTimer(self):
+        if not self._top:
+            return
+        if not self._is_timer:
+            return
+        text = '--:--'
+        is_end = False
+        if self.score_data:
+            gameInfo = self.score_data['gameInfo']
+            is_end = gameInfo['gameStatus'] == GAME_STATUS.END_GAME
+            self._on_game_status(gameInfo['gameStatus'])
+            timeLostSec = gameInfo['gameTimeEnd'] + BWPersonality.gpd.time_diff - time.time()
+            if timeLostSec > 0:
+                text = secToTimerText(timeLostSec)
+        self._top._setTimerText(text, is_end)
+
+    def scoreBarVisible(self):
+        return self._full and self._full.component.visible
+
+    def onChangeTeamPVP(self, value):
+        self._player_top.component.visible = False
+        self._top = None
+        if value == TEAM_RED:
+            self._top = self._player_top
+        if not self._top:
+            return
+        else:
+            self._top.component.visible = True
+            if self.score_data:
+                self.setScoreData(self.score_data)
+            return
+
+    def setUpText(self, text):
+        self.component.up_text.text = text
+        self.component.up_text.visible = bool(text)
+
+    def onSetBestCursor(self, mouse_cursor):
+        pass
+
+    def pvpScoreStartExtraTime(self):
+        pass
+
+    def pvpScoreStartRound(self):
+        self._is_timer = True
+        self.setUpText(u'')
+
+    def pvpScorePauseRound(self):
+        self._is_timer = True
+
+    _music_param_val = None
+
+    def _update_music_param(self, music_param_val):
+        if self._music_param_val == music_param_val:
+            return
+        if DEBUG_MODE:
+            plog('[DEBUG] _update_music_param %s -> %s', self._music_param_val, music_param_val)
+        self._music_param_val = music_param_val
+        BWPersonality.music.update_music_param('music/spaces/inst_elka_defence', 'elka_state', music_param_val)
+
+    def on_change_inPVPinstance(self, value):
+        if DEBUG_MODE:
+            plog('[DEBUG] on_change_inPVPinstance', value)
+        self._music_param_val = None
+        self._elka_model = None
+        self._sound_elka = None
+        self._game_status = None
+        self._prev_health_ratio = 100
+        return
+
+    def pvpScoreEvent(self, eventID, code, msg):
+        if DEBUG_MODE:
+            plog('[DEBUG] pvpScoreEvent', [eventID, code, msg])
+        if eventID == csconstans.EVENT_NY_PROTECT_WIN:
+            self.setVisibleScore(True)
+            txt = lc('soPvPStats.window.title_ny_protect_win')
+            self._full.setTitle(txt)
+        elif eventID == csconstans.EVENT_NY_PROTECT_FAIL:
+            self.setVisibleScore(True)
+            txt = lc('soPvPStats.window.title_ny_protect_fail')
+            self._full.setTitle(txt)
+        elif eventID == csconstans.EVENT_NY_PROTECT_CHANGE_ELKA_HP:
+            self._on_change_hp_elka(code)
+        elif eventID == csconstans.EVENT_NY_PROTECT_START_PHASE:
+            self._on_start_phase(code)
+        elif eventID == csconstans.EVENT_NY_PROTECT_END_PHASE:
+            self._on_end_phase(code)
+
+    def pvpScoreWinPlayer(self, playerName):
+        pass
+
+    def pvpScoreWinTeam(self, teamID):
+        pass
+
+    def setScoreData(self, data):
+        self.score_data = data
+        if self._top:
+            self._top.updateScore(data)
+        if self._full:
+            self._full.updateScore(data)
+
+    def setVisibleScore(self, doShow):
+        if self._full:
+            self._full.show() if doShow else self._full.hide()
+
+    _elka_model = None
+
+    def _get_elka_model(self):
+        if self._elka_model:
+            return self._elka_model
+        player = BigWorld.player()
+        arr = player.entitiesInRange(200, 'AgroObject')
+        if not arr:
+            return
+        self._elka_model = arr[0].model
+        return self._elka_model
+
+    _sound_elka = None
+
+    def _play_sound_elka(self, sound_name):
+        if self._sound_elka:
+            return
+
+        def _on_end():
+            self._sound_elka = None
+            return
+
+        model = self._get_elka_model()
+        sound = sm.getSound(sound_name, model=model)
+        sound.set_end_callback(_on_end)
+        sound.play()
+        self._sound_elka = sound
+
+    _game_status = None
+
+    def _on_game_status(self, game_status):
+        if self._game_status == game_status:
+            return
+        if DEBUG_MODE:
+            plog('[DEBUG] _on_game_status %s -> %s', self._game_status, game_status)
+        self._game_status = game_status
+        if game_status == GAME_STATUS.WARM_UP:
+            self._on_warm_up()
+        elif game_status == GAME_STATUS.BATTLE:
+            self._on_battle()
+
+    def _on_warm_up(self):
+        if DEBUG_MODE:
+            plog('[DEBUG] _on_warm_up')
+        self.setUpText(lc('soFlashPVP.messages.warmup'))
+        self._update_music_param('intro')
+
+    def _on_battle(self):
+        if DEBUG_MODE:
+            plog('[DEBUG] _on_battle')
+
+        def _on_end_first():
+
+            def _play_second():
+                if DEBUG_MODE:
+                    plog('[DEBUG] _play_second')
+                sm.playSound('environment/events/elka_defence/phrases/queen/phrase2')
+
+            BigWorld.callback(3, _play_second)
+
+        sound = sm.getSound('environment/events/elka_defence/phrases/queen/phrase1')
+        sound.set_end_callback(_on_end_first)
+        sound.play()
+
+    _prev_health_ratio = 100
+
+    def _on_change_hp_elka(self, health_ratio):
+        if DEBUG_MODE:
+            plog('[DEBUG] _on_change_hp_elka %s -> %s', self._prev_health_ratio, health_ratio)
+        if health_ratio > self._prev_health_ratio:
+            self._prev_health_ratio = health_ratio
+            return
+        self._prev_health_ratio = health_ratio
+        if health_ratio < 0.2:
+            self._play_sound_elka('environment/events/elka_defence/phrases/voevoda/elka_bad')
+        elif health_ratio < 0.3:
+            self._play_sound_elka('environment/events/elka_defence/phrases/elka/pain/phrase1')
+        elif health_ratio < 0.5:
+            self._play_sound_elka('environment/events/elka_defence/phrases/elka/pain/phrase2')
+        elif health_ratio < 0.8:
+            self._play_sound_elka('environment/events/elka_defence/phrases/elka/pain/phrase3')
+
+    def _on_start_phase(self, phase_index):
+        if DEBUG_MODE:
+            plog('[DEBUG] _on_start_phase', phase_index)
+        if phase_index == 1:
+            model = self._get_elka_model()
+
+            def _on_end_first():
+
+                def _play_second():
+                    if DEBUG_MODE:
+                        plog('[DEBUG] _play_second')
+                    sm.playSound('environment/events/elka_defence/phrases/voevoda/intro', model=model)
+
+                BigWorld.callback(3, _play_second)
+
+            sound = sm.getSound('environment/events/elka_defence/phrases/elka/intro', model=model)
+            sound.set_end_callback(_on_end_first)
+            sound.play()
+            BigWorld.callback(15, partial(self._update_music_param, 'active_start'))
+        else:
+            model = self._get_elka_model()
+            sm.playSound('environment/events/elka_defence/phrases/voevoda/beware', model=model)
+            self._update_music_param('active')
+
+    def _on_end_phase(self, phase_index):
+        if phase_index in (2, 4, 6):
+            model = self._get_elka_model()
+            sm.playSound('environment/events/elka_defence/phrases/voevoda/moroz', model=model)
+        self._update_music_param('calm')

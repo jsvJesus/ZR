@@ -1,0 +1,314 @@
+# Embedded file name: ./client/BattleHeliGhost.py
+import traceback
+from Math import Vector3
+import BWPersonality
+import BigWorld
+from bheli.battleheli_utils import model_name, get_point_data, get_heli_data, StateIndices, TimePeriods, scan_pitch, scan_angle, scan_dist, show_debug_info
+from bheli.navigator import Navigator
+from utils import lazyproperty
+import math_bw
+from draw_utils_extend import LinesHolder
+from math import pi, tan, sin, cos
+from Math import Matrix
+from bheliclient.heli_gun import HeliGun
+
+class Point:
+
+    def __init__(self, point_data):
+        self._point_data = point_data
+
+    @property
+    def speed(self):
+        return self._point_data['speed']
+
+    @property
+    def position(self):
+        return self._point_data['position']
+
+    @property
+    def index(self):
+        return self._point_data['index']
+
+    @property
+    def matrix(self):
+        return self._point_data['matrix']
+
+
+class BattleHeliGhost(BigWorld.Entity):
+
+    def __init__(self, *args, **kargs):
+        BigWorld.Entity.__init__(self, *args, **kargs)
+        self._navigator = Navigator(self)
+        self._prevpoint2 = None
+        self._prevpoint = None
+        self._nextpoint = None
+        self._entity_id = None
+        self._state = None
+        self._position, self._ypr = (None, None)
+        self._speed_factor = 1.0
+        self._gun = HeliGun(self)
+        return
+
+    def prerequisites(self):
+        return [model_name]
+
+    def onEnterWorld(self, prereqs):
+        self.model = prereqs[model_name]
+        self.model.visible = False
+        self._request_data()
+        self._line_renderer = None
+        if show_debug_info:
+            self._line_renderer = LinesHolder(max_lines=500, def_color=(1, 0, 0, 1))
+        self._tick()
+        try:
+            self.model.fly()
+        except:
+            print traceback.format_exc()
+
+        return
+
+    def onLeaveWorld(self):
+        if self._line_renderer:
+            self._line_renderer.clear()
+        self._gun.on_destroy()
+
+    def _tick(self):
+        if self.isDestroyed:
+            return
+        else:
+            time_delta = BigWorld.getTimeDelta() * self._speed_factor
+            if self._state is None:
+                pass
+            elif self._state == StateIndices.Prepare:
+                self.bheli_ratio += time_delta / TimePeriods.PrepareTime
+                self._apply_start_point(math_bw.clamp(self.bheli_ratio))
+                if self.bheli_ratio >= 1:
+                    self.bheli_ratio = 0
+                    self._state = StateIndices.Normal
+            elif self._state == StateIndices.Normal:
+                self._navigator.tick(time_delta)
+                if self._navigator.arrived:
+                    self.bheli_ratio = 0
+                    self._state = StateIndices.Finalize
+                    self._apply_point(self.bheli_ratio, self._nextpoint._point_data)
+            elif self._state == StateIndices.Finalize:
+                self.bheli_ratio += time_delta / TimePeriods.FinalizeTime
+                self._apply_point(math_bw.clamp(self.bheli_ratio), self._nextpoint._point_data)
+                if self.bheli_ratio >= 1:
+                    self.bheli_ratio = 0
+                    self._state = StateIndices.NotCycle
+                    self._cycle_index += 1
+                    self.model.visible = False
+            elif self._state == StateIndices.NotCycle:
+                self.bheli_ratio += time_delta / TimePeriods.CyclePeriod
+                self._apply_start_point(math_bw.clamp(self.bheli_ratio))
+                self.model.visible = False
+                if self.bheli_ratio >= 1:
+                    self.bheli_ratio = 0
+                    self._state = StateIndices.Prepare
+            else:
+                raise RuntimeError
+            if self._line_renderer:
+                self._line_renderer.clear()
+                m = Matrix(self.matrix)
+                m_rotate = Matrix()
+                m_rotate.setRotateYPR((0, scan_pitch, 0))
+                m.preMultiply(m_rotate)
+                self._line_renderer.setMatrix(m)
+                borders_count = 24
+                height = tan(scan_angle) * scan_dist
+                for i in xrange(borders_count):
+                    alpha = pi * 2 * i / borders_count
+                    self._line_renderer.add((0, 0, 0), (sin(alpha) * height, cos(alpha) * height, scan_dist))
+
+            BigWorld.callback(0, self._tick)
+            return
+
+    def seek_points(self):
+        if not self._prevpoint2 or not self._prevpoint or not self._nextpoint:
+            return False
+        if not self._nextpoint2:
+            next2point_guid = self._navigator.get_random_next_guid(self._nextpoint._point_data, self._entity_id, self._cycle_index)
+            next2point = get_point_data(self._space_name, next2point_guid)
+            self._nextpoint2 = Point(next2point)
+        return True
+
+    def swap_points(self):
+        self._prevpoint2 = self._prevpoint
+        self._prevpoint = self._nextpoint
+        self._nextpoint = self._nextpoint2
+        self._nextpoint2 = None
+        self._points = None
+        return
+
+    def _apply_start_point(self, ratio):
+        point_data = get_point_data(self._space_name, get_heli_data(self._space_name, self.index)['start_point'])
+        self._apply_point(ratio, point_data)
+
+    def _apply_point(self, ratio, point_data):
+        self._points = None
+        self._prevpoint2 = Point(point_data)
+        self._prevpoint = Point(point_data)
+        self._nextpoint = Point(point_data)
+        self._nextpoint2 = Point(point_data)
+        self.bheli_ratio = ratio
+        self._navigator.apply_ratio_to_position()
+        return
+
+    def _run(self, state_index, point_index, cycle_index, ratio):
+        """ final point can be 141 """
+        self._cycle_index = cycle_index
+        self._state = state_index
+        if self._state == StateIndices.Prepare:
+            self._apply_start_point(ratio)
+        elif self._state == StateIndices.Normal:
+            point_data = get_point_data(self._space_name, point_index)
+            self._points = None
+            self._prevpoint2 = Point(point_data)
+            self._prevpoint = Point(point_data)
+            nextpoint_guid = self._navigator.get_random_next_guid(point_data, self._entity_id, self._cycle_index)
+            nextpoint_data = get_point_data(self._space_name, nextpoint_guid)
+            self._nextpoint = Point(nextpoint_data)
+            nextpoint2_guid = self._navigator.get_random_next_guid(nextpoint_data, self._entity_id, self._cycle_index)
+            nextpoint2_data = get_point_data(self._space_name, nextpoint2_guid)
+            self._nextpoint2 = Point(nextpoint2_data)
+            self.bheli_ratio = ratio
+            self._navigator.apply_ratio_to_position()
+        elif self._state == StateIndices.Finalize:
+            point_data = get_point_data(self._space_name, point_index)
+            self._apply_point(ratio, point_data)
+        elif self._state == StateIndices.NotCycle:
+            point_data = get_point_data(self._space_name, point_index)
+            self._apply_point(ratio, point_data)
+            self.model.visible = False
+        else:
+            raise RuntimeError
+        return
+
+    def got_bheli_sync_data3(self, entity_id, share_blob):
+        self._entity_id = entity_id
+        self._gun.set_target(share_blob['target'] or None)
+        cycle_index = share_blob['cycle_index']
+        point_index = share_blob['point_index']
+        state_index = share_blob['state_index']
+        ratio = share_blob['ratio']
+        if self._state is None:
+            self._run(state_index, point_index, cycle_index, ratio)
+        else:
+
+            def compare():
+                if cycle_index > self._cycle_index:
+                    return 1
+                elif cycle_index < self._cycle_index:
+                    return -1
+                elif state_index > self._state:
+                    return 1
+                elif state_index < self._state:
+                    return -1
+                elif self._state in (StateIndices.NotCycle, StateIndices.Prepare, StateIndices.Finalize):
+                    if ratio > self._ratio:
+                        return 1
+                    if ratio < self._ratio:
+                        return -1
+                    return 0
+                elif self._state == StateIndices.Normal:
+                    if self._prevpoint.index != point_index:
+
+                        def evaluate_next_index(point_index, distance):
+                            next_data = get_point_data(self._space_name, point_index)
+                            for i in xrange(distance):
+                                next_guid = self._navigator.get_random_next_guid(next_data, self._entity_id, self._cycle_index)
+                                next_data = get_point_data(self._space_name, next_guid)
+
+                            return next_data['index']
+
+                        for i in xrange(1, 4):
+                            if evaluate_next_index(self._prevpoint.index, i) == point_index:
+                                return 1
+                            if evaluate_next_index(point_index, i) == self._prevpoint.index:
+                                return -1
+
+                        return None
+                    if ratio > self._ratio:
+                        return 1
+                    if ratio < self._ratio:
+                        return -1
+                    return 0
+                else:
+                    raise RuntimeError
+                    return None
+
+            try:
+                from utils import PY
+                compare_result = compare()
+            except:
+                print 'BattleHeliGhost (ERROR)', self._prevpoint, PY(share_blob)
+                if self._prevpoint:
+                    print 'self._prevpoint.index', self._prevpoint.index
+                traceback.print_exc()
+                traceback.print_stack()
+                compare_result = None
+
+            if compare_result is None:
+                self._run(state_index, point_index, cycle_index, ratio)
+            else:
+                self._speed_factor = math_bw.clamp(self._speed_factor + compare_result * 0.1, 0.8, 1.2)
+        return
+
+    def _request_data(self):
+        if self.isDestroyed:
+            return
+        if self._entity_id:
+            entity = BigWorld.entities.get(self._entity_id)
+            sync_time = entity and 1
+            self.got_bheli_sync_data3(self._entity_id, entity.share_blob)
+        else:
+            sync_time = 5
+            self._p.base.request_bheli_sync_data(self.index)
+        BigWorld.callback(sync_time, self._request_data)
+
+    @property
+    def bheli_points(self):
+        if not self._points:
+            self._points = (self._prevpoint2,
+             self._prevpoint,
+             self._nextpoint,
+             self._nextpoint2)
+        return self._points
+
+    @property
+    def bheli_position(self):
+        return self._position
+
+    @bheli_position.setter
+    def bheli_position(self, value):
+        self.model.visible = True
+        self._position = Vector3(value)
+        if self._ypr:
+            self.filter.debugPosition(self._position, self._ypr)
+
+    @property
+    def bheli_ratio(self):
+        return self._ratio
+
+    @bheli_ratio.setter
+    def bheli_ratio(self, value):
+        self._ratio = value
+
+    @property
+    def bheli_ypr(self):
+        return self._ypr
+
+    @bheli_ypr.setter
+    def bheli_ypr(self, value):
+        self._ypr = value
+        if self._position:
+            self.filter.debugPosition(self._position, self._ypr)
+
+    @property
+    def _p(self):
+        return BigWorld.player()
+
+    @lazyproperty
+    def _space_name(self):
+        return BWPersonality.game.get_space_name_advanced(self._p.spaceID)[7:]

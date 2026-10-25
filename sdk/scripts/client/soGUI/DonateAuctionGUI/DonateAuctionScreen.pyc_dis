@@ -1,0 +1,151 @@
+# Embedded file name: ./client/soGUI/DonateAuctionGUI/DonateAuctionScreen.py
+import BWPersonality
+from Helpers.PyGUI.PyGUIBase import PyGUIBase
+from Helpers.PyGUI.DraggableComponent import DraggableComponent
+import ScreenCreator
+import BigWorld
+from DetailWin import DetailWin
+import QuesterConsts
+
+class DonateAuctionScreen(PyGUIBase, DraggableComponent):
+    factoryString = 'soGUI.DonateAuctionScreen'
+
+    def __init__(self):
+        component = ScreenCreator.compile_screen_component(self._select_row)
+        component.script = self
+        component.closeBox.script.onClick = self.hide
+        PyGUIBase.__init__(self, component)
+        DraggableComponent.__init__(self, True, True, True)
+        self._tick_handler = None
+        self._detail_win = None
+        self._entity = None
+        return
+
+    def handleMouseButtonEvent(self, comp, event):
+        return DraggableComponent.handleMouseButtonEvent(self, comp, event)
+
+    def _select_row(self, base_data):
+        if not self._detail_win:
+            self._detail_win = DetailWin()
+            self._detail_win.stake_callback = self._on_stake
+            self._detail_win.withdraw_callback = self._on_withdraw
+            BWPersonality.GUICore.worldLayer.addChild(self._detail_win.component, DetailWin.factoryString)
+        if self._detail_win.base_data == base_data and self._detail_win.visible:
+            return
+        self._detail_win.set_base_data(base_data)
+        self._detail_win.show()
+
+    def _on_stake(self, base_name, stake_value):
+        self._data_provider.cell.add_auction_stake1(base_name, stake_value)
+
+    def _on_withdraw(self, base_name):
+        self._data_provider.base.withdraw_stake1(base_name)
+
+    def hide(self):
+        self._stop_tick()
+        self._entity = None
+        if not self.visible:
+            return
+        else:
+            self.component.visible = False
+            self._bases_list.clear()
+            if self._detail_win:
+                self._detail_win.hide()
+            BWPersonality.GUICore.setBestCursor()
+            self._data_provider.unsubscribe_auction1()
+            return
+
+    def _start_tick(self):
+        if not self._tick_handler:
+            self._tick()
+
+    def _stop_tick(self):
+        if self._tick_handler:
+            BigWorld.cancelCallback(self._tick_handler)
+            self._tick_handler = None
+        return
+
+    def _tick(self):
+        if not self.visible:
+            self._stop_tick()
+            return
+        self._bases_list.tick()
+        if self._detail_win:
+            self._detail_win.tick()
+        self._tick_handler = BigWorld.callback(1.0, self._tick)
+
+    def _got_auction_data(self, auction_data):
+        if not self.component.visible:
+            return
+        self._bases_list.clear()
+        for base_short_data in auction_data:
+            self._bases_list.add_element(base_short_data)
+
+        self._bases_list.apply()
+        self._dark_screen.visible = False
+        self._start_tick()
+        if self._detail_win and self._detail_win.visible:
+            detail_win_data = self._detail_win.base_data
+            detail_win_data and self._bases_list.select_element(detail_win_data)
+
+    def _poll_distance(self):
+        if not self.visible:
+            return
+        if not self._entity or self._entity.isDestroyed:
+            self.hide()
+            return
+        if self._data_provider.isDestroyed:
+            self.hide()
+            return
+        if (self._entity.position - self._data_provider.position).length > QuesterConsts.MAX_DIALOG_DISTANCE:
+            self.hide()
+            return
+        BigWorld.callback(1, self._poll_distance)
+
+    def show(self, entity):
+        if self.visible:
+            return
+        self._entity = entity
+        self._bases_list.clear()
+        self._dark_screen.visible = True
+        self.component.visible = True
+        BWPersonality.GUICore.setBestCursor()
+        self._data_provider.request_auction_data_and_subscribe1(self._got_auction_data)
+        self._poll_distance()
+
+    def got_auction_detail3(self, base_long_data):
+        if not self.visible:
+            return
+        base_short_data = base_long_data['short_data']
+        if self._bases_list.has_elements():
+            self._bases_list.update_element(base_short_data)
+        if self._detail_win and self._detail_win.base_data['name'] == base_short_data['name']:
+            self._detail_win.set_auction_detail4(base_long_data)
+
+    def on_base_updated3(self, base_indexes):
+        if len(base_indexes) <= 3:
+            for base_index in base_indexes:
+                base_data = self._bases_list.get_base_data_by_index(base_index)
+                self._data_provider.request_auction_detail1(base_data['name'])
+
+        else:
+            self._bases_list.clear()
+            self._dark_screen.visible = True
+            self._stop_tick()
+            self._data_provider.request_auction_data_and_subscribe1(self._got_auction_data)
+
+    @property
+    def visible(self):
+        return self.component.visible
+
+    @property
+    def _bases_list(self):
+        return self.component.bases_list.script
+
+    @property
+    def _dark_screen(self):
+        return self.component.darkScreen
+
+    @property
+    def _data_provider(self):
+        return BigWorld.player()

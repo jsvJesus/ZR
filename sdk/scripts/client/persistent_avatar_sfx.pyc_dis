@@ -1,0 +1,144 @@
+# Embedded file name: ./client/persistent_avatar_sfx.py
+"""
+        \xd0\xbf\xd1\x80\xd0\xb8\xd1\x86\xd0\xb5\xd0\xbf\xd0\xbb\xd1\x8f\xd0\xb5\xd0\xbc\xd1\x8b\xd0\xb5 \xd0\xba \xd0\xb8\xd0\xb3\xd1\x80\xd0\xbe\xd0\xba\xd0\xb0\xd0\xbc SFX \xd0\xb2 \xd0\xb7\xd0\xb0\xd0\xb2\xd0\xb8\xd1\x81\xd0\xb8\xd0\xbc\xd0\xbe\xd1\x81\xd1\x82\xd0\xb8 \xd0\xbe\xd1\x82 \xd0\xba\xd0\xb0\xd1\x80\xd1\x82\xd1\x8b
+
+"""
+import BigWorld
+from FX.persistent_ext_bg import loadPersistentExtBG
+from utils import ignoreError
+from functools import partial
+import traceback
+import Weather
+SPACE_SFX = {'spaces/novaya_south': 'sfx/player/cold_breath.xml',
+ 'spaces/novaya_north': 'sfx/player/cold_breath.xml',
+ 'spaces/event_new_year_main_2024': 'sfx/player/cold_breath.xml',
+ 'spaces/test_physics': 'sfx/player/cold_breath.xml'}
+
+class PersistentAvatarSfx:
+    _persistent_sfx = None
+    _persistent_sfx_name = ''
+    _persistent_sfx_loading = False
+
+    def onEnterWorld(self, prereqs = None):
+        self._updatePersistentSFX()
+        if self.isPersistentSfxEnableForWeather():
+            Weather.s_weather.addListener('weather', self._onWeatherChanged)
+
+    def onLeaveWorld(self):
+        self.clearPersistentSFX()
+
+    def clearPersistentSFX(self):
+        self._stopPersistentSFX()
+        self._persistent_sfx = None
+        self._persistent_sfx_name = None
+        self._persistent_sfx_loading = None
+        if self.isPersistentSfxEnableForWeather():
+            Weather.s_weather.removeListener('weather', self._onWeatherChanged)
+        return
+
+    def isPersistentSfxEnableForWeather(self):
+        return False
+
+    def _onWeatherChanged(self, *w, **kw):
+        if self.isDestroyed:
+            print 'WARNING _onWeatherChanged, isDestroyed', self
+            traceback.print_stack()
+            return
+        self._updatePersistentSFX()
+
+    def onChangeMapSpace(self):
+        self._updatePersistentSFX()
+
+    def onPreModelChange(self):
+        self._stopPersistentSFX()
+
+    def onPostModelChange(self):
+        self._updatePersistentSFX()
+
+    def _getPersistentSFXname(self):
+        if not self.isOutsideShell():
+            return ''
+        name = ''
+        if self.isPersistentSfxEnableForWeather() and Weather.s_weather.system:
+            name = Weather.s_weather.system.persistent_sfx_name
+        return SPACE_SFX.get(self.getSpaceName(), name)
+
+    def onCahngeFPSMode(self, mode):
+        self._updatePersistentSFX()
+
+    def onChangeInsideShell(self):
+        self._updatePersistentSFX()
+
+    @ignoreError
+    def _updatePersistentSFX(self):
+        sfx_name = self._getPersistentSFXname()
+        if not sfx_name and self._persistent_sfx:
+            self._stopPersistentSFX()
+            self._persistent_sfx = None
+            self._persistent_sfx_name = None
+            return
+        else:
+            if sfx_name and self._persistent_sfx_name and sfx_name != self._persistent_sfx_name:
+                self._stopPersistentSFX()
+                self._persistent_sfx = None
+                self._persistent_sfx_name = None
+            if not sfx_name:
+                return
+            if self._persistent_sfx_loading:
+                return
+            if not self.model:
+                return
+            if self.active_transform:
+                return
+            if getattr(self, 'npcSuit', False):
+                return
+            if not self.isHeadExist():
+                return
+            if self._persistent_sfx:
+                if self.isFPSmode():
+                    if self._persistent_sfx.played:
+                        self._stopPersistentSFX(detach=False)
+                    return
+                if not self._persistent_sfx.source:
+                    self._persistent_sfx.attach(self.model)
+                if not self._persistent_sfx.played:
+                    self._persistent_sfx.go()
+                return
+            self._persistent_sfx_loading = True
+            loadPersistentExtBG(sfx_name, partial(self._onLoadPersistentSFX, sfx_name))
+            return
+
+    def _onLoadPersistentSFX(self, sfx_name, fx_obj):
+        if self.isDestroyed:
+            return
+        self._persistent_sfx_loading = False
+        if self._persistent_sfx_name:
+            print '**********'
+            print self, self._persistent_sfx_name, sfx_name, self._getPersistentSFXname()
+            raise ValueError
+        if self._getPersistentSFXname() != sfx_name:
+            return
+        self._persistent_sfx_name = sfx_name
+        self._persistent_sfx = fx_obj
+        if not self.model:
+            return
+        if self.isFPSmode():
+            return
+        if not self.isHeadExist():
+            return
+        self._persistent_sfx.attach(self.model)
+        self._persistent_sfx.go()
+
+    @ignoreError
+    def _stopPersistentSFX(self, detach = True):
+        if not self._persistent_sfx:
+            return
+        try:
+            self._persistent_sfx.stop()
+        except:
+            print '**********'
+            print self, self._persistent_sfx
+            traceback.print_exc()
+
+        if detach:
+            self._persistent_sfx.detach()

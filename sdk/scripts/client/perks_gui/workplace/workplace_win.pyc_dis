@@ -1,0 +1,285 @@
+# Embedded file name: ./client/perks_gui/workplace/workplace_win.py
+import BigWorld
+import GUI
+import math_bw
+from ui.panel import Panel, EventType
+from perks_system import perks_parser
+from history_tracker import HistoryTracker
+from copypaster import Copypaster
+from node import Node, Condition
+import Keys
+from copy import deepcopy
+from dev_edges_wrapper import DevEdgesWrapper
+from paths_wrapper import PathsWrapper
+from dijkstra import Graph
+from math import sin, cos, pi
+
+class WorkPlace(Panel):
+    _scale = 0.0002
+
+    def __init__(self, parent_comp, name, depth = 0.5):
+        Panel.__init__(self, parent_comp, name, depth=depth)
+        self.change_interseption(interscept_keys=True)
+        self._copypaster = Copypaster()
+        self._load_from_file()
+        comp = GUI.TriComponent()
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.width, comp.height = (2, 2)
+        comp.position = (0, 0, 0.9)
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+        comp.baseColor = (1, 0.5, 0, 0.17)
+        comp.endColor = (1, 0, 0.2, 0)
+        shapes = []
+        size = 0.8
+        for angle in (0, 2 * pi / 3, 4 * pi / 3):
+            point0 = (0, 0)
+            point1 = (cos(angle) * size, sin(angle) * size)
+            point2 = (cos(angle + pi / 3) * size, sin(angle + pi / 3) * size)
+            shapes.append((point0, point1, point2))
+
+        comp.setShapes(shapes)
+        self.component.addChild(comp, 'tris')
+        comp = GUI.Window()
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.width, comp.height = (2, 2)
+        comp.position = (0, 0, 1)
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+        self.component.addChild(comp, 'temp')
+        self._selected_node = None
+        self._dev_mode = None
+        self.set_dev_mode(False)
+        self.on_node_selected_callback = lambda *args: None
+        return
+
+    def on_event(self, event_type, data = None):
+        Panel.on_event(self, event_type, data)
+        if event_type in (EventType.Drag, EventType.Scale):
+            self._clamp_in_borders()
+
+    def _clamp_in_borders(self):
+        min_height, max_height = self.transform._clamp_size
+        if min_height is not None and max_height is not None:
+            min_height, max_height = min_height[1], max_height[1]
+            cur_height = self.transform.ratio_height
+            scale = math_bw.inverse_lerpclam(min_height, max_height, cur_height)
+            circle_ratio = math_bw.lerpclamp(0.5, 0.7, scale)
+            comp = self.component
+            prev_mode = (comp.horizontalPositionMode, comp.verticalPositionMode)
+            prev_anchor = (comp.horizontalAnchor, comp.verticalAnchor)
+            comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+            comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+            screen_width, screen_height = BigWorld.screenSize()
+            screen = comp.localToScreen((0, 0))
+            screen = (screen[0] * 0.5 + 0.5, screen[1] * 0.5 + 0.5)
+            x_pos = screen[0] * screen_width
+            y_pos = screen[1] * screen_height
+            if comp.position[0] + comp.width * circle_ratio < 0:
+                x_pos = int(-comp.width * circle_ratio)
+            elif comp.position[0] + comp.width * (1 - circle_ratio) > screen_width:
+                x_pos = int(screen_width - comp.width * (1 - circle_ratio))
+            if comp.position[1] + comp.height * circle_ratio < 0:
+                y_pos = int(comp.height * circle_ratio + screen_height)
+            elif comp.position[1] + comp.height * (1 - circle_ratio) > screen_height:
+                y_pos = int(comp.height * (1 - circle_ratio))
+            self.transform.set_screen_pos(0, 0, x_pos, y_pos)
+            comp.horizontalPositionMode, comp.verticalPositionMode = prev_mode
+            comp.horizontalAnchor, comp.verticalAnchor = prev_anchor
+        return
+
+    def set_dev_mode(self, mode):
+        if mode == self._dev_mode:
+            return
+        self._dev_mode = mode
+        self._edges_wrapper.set_visible(mode)
+        self._paths_wrapper.set_visible(not mode, self._nodes, self._edges_wrapper)
+        self._update_node_conditions()
+        self._update_edge_visual()
+        for n in self._nodes:
+            m = mode and not n.pos.length < 0.01
+            n.set_draggable(m)
+            n.change_interseption(intercept_moving=True)
+            n.change_interseption(intercept_buttons=True)
+
+    def _update_edge_visual(self):
+
+        def node_distance(node_id0, node_id1):
+            return self._node_by_id[node_id0].pos.distTo(self._node_by_id[node_id1].pos)
+
+        learned_edges = set()
+        for edge in self._edges_wrapper.edges:
+            if self._has_perk(edge.node0) and self._has_perk(edge.node1):
+                learned_edges.add(edge.id)
+
+        self._paths_wrapper.update_edges_visual(learned_edges)
+
+    def _has_perk(self, perk_id):
+        return perks_parser.has_perk_id(perk_id, self._perks)
+
+    def animate_buy(self, node, callback):
+        edges = []
+        animation_time = 1
+        for parent_id in self._graph.get_all_valid_parents(node.id, self._has_perk):
+            edge = self._edges_wrapper.get_edge_by_nodes(parent_id, node.id)
+            if edge:
+                edges.append(edge)
+
+        self._paths_wrapper.animate_buy(node.pos, edges, animation_time)
+        counter = [2]
+
+        def on_single_animation_ended():
+            counter[0] -= 1
+            if counter[0] == 0:
+                callback()
+
+        children = self._graph.get_all_valid_children(node.id, lambda n_id: True)
+        available_children = []
+        for child_id in children:
+            child = self._node_by_id[child_id]
+            if child.and_dep:
+                parents = self._graph.get_all_valid_parents(child_id, lambda ch_id: ch_id != node.id)
+                if any((not self._has_perk(p) for p in parents)):
+                    continue
+                available_children.append(child)
+            elif not self._has_perk(child.id):
+                available_children.append(child)
+
+        wait_time = 0
+        node.animate_buy(animation_time, on_single_animation_ended)
+        if available_children:
+            for ac in available_children:
+                ac.animate_enable(animation_time, wait_time, on_single_animation_ended)
+
+        else:
+            on_single_animation_ended()
+
+    def _update_node_conditions(self):
+        enabled_nodes = self._graph.get_zone_outer_border(perks_parser.original_perk_id, self._has_perk)
+
+        def validate_node(node_id):
+            node = self._node_by_id[node_id]
+            if node.and_dep:
+                return self._graph.are_all_parents_valid(node_id, self._has_perk)
+            return True
+
+        enabled_nodes = filter(validate_node, enabled_nodes)
+        for n in self._nodes:
+            if self._dev_mode:
+                n.set_condition(Condition.Dev)
+            elif not perks_parser.is_perk_valid(n.id):
+                n.set_condition(Condition.Bad)
+            elif self._has_perk(n.id):
+                n.set_condition(Condition.Bought)
+            elif n.id in enabled_nodes:
+                n.set_condition(Condition.Enabled)
+            else:
+                n.set_condition(Condition.Disabled)
+
+    def on_perks_updated(self):
+        self._update_node_conditions()
+        self._update_edge_visual()
+
+    def reload_from_file(self):
+        self._dev_mode = None
+        reload(perks_parser)
+        self._load_from_file()
+        self.set_dev_mode(True)
+        return
+
+    def _load_from_file(self):
+        self._copypaster.reset()
+        data = perks_parser.get_perks_raw_data()
+        self._node_by_id = {}
+        self._nodes = []
+        for i, node in enumerate(data['nodes']):
+            n = Node(node, (node['pos'][0] * WorkPlace._scale, node['pos'][1] * WorkPlace._scale), self.component, 'node' + str(i))
+            n.mouse_button_interseptor = self._intersept_node_mouse_button
+            self._node_by_id[node['id']] = n
+            self._nodes.append(n)
+
+        self._edges_wrapper = DevEdgesWrapper(self.component, data['edges'], self._node_by_id)
+        self._paths_wrapper = PathsWrapper(self.component)
+        self._edges_wrapper.mouse_button_interseptor = self._intersept_edge_mouse_button
+        self._history_tracker = HistoryTracker(self._nodes, self._edges_wrapper.edges)
+        self._graph = Graph(self._nodes, self._edges_wrapper.edges)
+
+    def save_to_file(self):
+        data = deepcopy(perks_parser.get_perks_raw_data())
+        for node_data in data['nodes']:
+            node = next((n for n in self._nodes if n.id == node_data['id']))
+            x = node.pos[0] / WorkPlace._scale
+            y = node.pos[1] / WorkPlace._scale
+            node_data['pos'] = (x, y)
+
+        for edge_data in data['edges']:
+            edge = next((e for e in self._edges_wrapper.edges if e.id == edge_data['id']))
+            if 'params' not in edge_data:
+                edge_data['params'] = {}
+            edge_data['params']['ratio'] = edge.ratio
+            edge_data['params']['inverted'] = edge.inverted
+
+        perks_parser.set_persk_raw_data(data)
+
+    def _intersept_edge_mouse_button(self, edge, part, event):
+        if event.isKeyDown() and event.modifiers in (Keys.MODIFIER_CTRL, Keys.MODIFIER_SHIFT):
+            self._copypaster.element_clicked(edge, part, event.modifiers)
+            return True
+        return False
+
+    def _intersept_node_mouse_button(self, node, event):
+        if self._dev_mode:
+            if event.modifiers in (Keys.MODIFIER_CTRL, Keys.MODIFIER_SHIFT):
+                self._copypaster.element_clicked(node, None, event.modifiers)
+                return True
+        else:
+            if self._selected_node:
+                self._selected_node.set_selected(False)
+            self._selected_node = node
+            self._selected_node.set_selected(True)
+            force = event.modifiers == Keys.MODIFIER_CTRL and BigWorld.player().isAdminAccess(6)
+            self.on_node_selected_callback(node, force)
+            self._update_edge_visual()
+            return False
+        return False
+
+    def on_standard_click(self, event):
+        if self._selected_node:
+            self._selected_node.set_selected(False)
+        self._selected_node = None
+        self.on_node_selected_callback(None)
+        self._update_edge_visual()
+        return
+
+    def on_show(self):
+        self._update_node_conditions()
+        self._update_edge_visual()
+        self._clamp_in_borders()
+
+    def handleKeyEvent(self, event):
+        if not self._dev_mode:
+            return False
+        if event.repeatCount > 0:
+            return False
+        self._copypaster.reset()
+        if event.key == Keys.KEY_Z and event.isKeyDown() and event.modifiers == Keys.MODIFIER_CTRL:
+            self._history_tracker.pop_change()
+            return True
+        return False
+
+    def handleMouseButtonEvent(self, component, event):
+        if not self._dev_mode:
+            return Panel.handleMouseButtonEvent(self, component, event)
+        if self._edges_wrapper.handleMouseButtonEvent(component, event):
+            return True
+        return Panel.handleMouseButtonEvent(self, component, event)
+
+    def get_tooltip_providers(self):
+        return filter(lambda n: n.has_tooltip(), self._nodes)
+
+    @property
+    def _perks(self):
+        return BigWorld.player().perks
+
+    def on_size_changed(self):
+        self._clamp_in_borders()

@@ -1,0 +1,433 @@
+# Embedded file name: ./client/soGUI/equip_paint/equip_block/equip_tablegrid.py
+from itertools import chain
+from copy import deepcopy
+from Items import ItemsCatalog
+import DyeConstant
+import ItemsUtils
+import GUI
+from ..tablegrid.tablegrid import TableGrid, Cell
+from ..tablegrid.table_model import TableModel, ItemData
+from Inventory import Inventory
+from sounds_manager import playSound
+import colorCodes
+
+class ItemDataET:
+    OnSelecionChanged, OnEquipChanged, OnCamoColorsChanged, OnColorChanged, OnEmblemChanged, OnChanged = ((r, 'equipitemdata') for r in range(6))
+
+
+class EquipItemData(ItemData):
+
+    def __init__(self, item, is_equipped, parent_id):
+        ItemData.__init__(self, item)
+        self.parent_id = parent_id
+        self._is_equipped = is_equipped
+        self._is_selected = False
+        self._original_item = deepcopy(item)
+        self._changes = None
+        return
+
+    @property
+    def icon_name(self):
+        if ItemsUtils.is_sub_item(self._item):
+            return ItemsUtils.GetIconName(None, self._item['itemType'])
+        else:
+            return ItemsUtils.GetIconName(self._item)
+
+    @property
+    def item_type(self):
+        return self._item.get('complexItemType') or self._item['itemType']
+
+    @property
+    def item_id(self):
+        return self._item.get('complexItemID') or self._item['itemID']
+
+    def reset(self):
+        if not self.changes:
+            return
+        camo_id = self.camo_id
+        colors = self.colors4rgba
+        emblem_id = self.emblem_id
+        inc_params = ItemsUtils.get_inc_param(self._original_item)
+        ItemsUtils.set_inc_param(self._item, inc_params)
+        self._update_changes()
+        if self.camo_id != camo_id:
+            self.notify_listeners(ItemDataET.OnCamoColorsChanged)
+        elif colors != self.colors4rgba:
+            self.notify_listeners(ItemDataET.OnColorChanged)
+        if emblem_id != self.emblem_id:
+            self.notify_listeners(ItemDataET.OnEmblemChanged)
+
+    def _update_changes(self):
+        if self._item == self._original_item:
+            changes = None
+        else:
+            changes = {}
+            new_colors, new_camo_id = (None, None)
+            new_colorise = ItemsUtils.getItemColorise(self._item)
+            if new_colorise:
+                new_colors, new_camo_id, _ = new_colorise
+                new_colors = self._convert_colorlist_to_colors(new_colors)
+            original_colorise = ItemsUtils.getItemColorise(self._original_item)
+            original_colors, original_camo_id = (None, None)
+            if original_colorise:
+                original_colors, original_camo_id, _ = original_colorise
+                original_colors = self._convert_colorlist_to_colors(original_colors)
+            if (new_colors, new_camo_id) != (original_colors, original_camo_id):
+                changes['camo'] = {'new_camo_id': new_camo_id,
+                 'new_colors': new_colors,
+                 'original_camo_id': original_camo_id,
+                 'original_colors': original_colors}
+            new_emblem = ItemsUtils.get_item_emblem_unsafe(self._item)
+            original_emblem = ItemsUtils.get_item_emblem_unsafe(self._original_item)
+            if new_emblem != original_emblem:
+                changes['emblem'] = {'new_emblem': new_emblem,
+                 'original_emblem': original_emblem}
+        self.changes = changes or None
+        return
+
+    def get_change_cost(self):
+        cost = 0
+        if not self.changes:
+            return cost
+        emblem_data = self.changes.get('emblem')
+        if emblem_data:
+            cost += DyeConstant.get_emblem_tickets(self.item_type, emblem_data['new_emblem'])
+        camo_data = self.changes.get('camo')
+        if camo_data:
+            cost += DyeConstant.get_camo_tickets(self.item_type, camo_data['new_camo_id'])
+        return cost
+
+    @property
+    def changes(self):
+        return self._changes
+
+    @changes.setter
+    def changes(self, value):
+        if self._changes == value:
+            return
+        self._changes = value
+        self.notify_listeners(ItemDataET.OnChanged)
+
+    def apply_template(self, camo_id, colors):
+        if camo_id:
+            colors = map(self._convert_color_to_dictcolor, colors)
+        else:
+            colors = [None] * 4
+        ItemsUtils.setItemColorise(self._item, colors[0], colors[1], colors[2], colors[3], camo_id)
+        self._update_changes()
+        self.notify_listeners(ItemDataET.OnCamoColorsChanged)
+        return
+
+    @property
+    def camo_id(self):
+        colorise = ItemsUtils.getItemColorise(self._item)
+        return colorise and colorise[1] or None
+
+    @camo_id.setter
+    def camo_id(self, value):
+        if self.camo_id == value:
+            return
+        colors = DyeConstant.get_camo_default_colors(self.item_type, value) or {}
+
+        def convert_color(channel):
+            col = colors.get(channel) or (0, 0, 0)
+            return {'r': col[0],
+             'g': col[1],
+             'b': col[2],
+             'a': 255}
+
+        ItemsUtils.setItemColorise(self._item, convert_color('R'), convert_color('G'), convert_color('B'), convert_color('A'), value)
+        self._update_changes()
+        self.notify_listeners(ItemDataET.OnCamoColorsChanged)
+
+    def _convert_color_to_dictcolor(self, col):
+        if not col:
+            col = (255, 0, 255)
+        return {'r': col[0],
+         'g': col[1],
+         'b': col[2],
+         'a': 255}
+
+    def _convert_colorlist_to_colors(self, colorlist):
+        colors = []
+        for i in range(4):
+            i *= 3
+            colors.append(colorlist[i:i + 3] + (255,))
+
+        return tuple(colors)
+
+    def apply_color(self, channel, color):
+        colors = list(self.colors4rgba)
+        colors[channel] = color
+        colors = map(self._convert_color_to_dictcolor, colors)
+        ItemsUtils.setItemColorise(self._item, colors[0], colors[1], colors[2], colors[3], self.camo_id)
+        self._update_changes()
+        self.notify_listeners(ItemDataET.OnColorChanged)
+
+    @property
+    def colors4rgba(self):
+        colorise = ItemsUtils.getItemColorise(self._item)
+        if not colorise:
+            return None
+        else:
+            return self._convert_colorlist_to_colors(colorise[0])
+
+    @property
+    def colors12(self):
+        return ItemsUtils.getItemColorise(self._item)
+
+    @property
+    def colors_tuple(self):
+        inc_params = ItemsUtils.get_inc_param(self._item)
+        c0 = inc_params.get(ItemsCatalog.INC_COLORISE_A) or 0
+        c1 = inc_params.get(ItemsCatalog.INC_COLORISE_B) or 0
+        return (c0, c1)
+
+    def is_colorised(self):
+        return bool(ItemsUtils.getItemColorise(self._item))
+
+    @property
+    def emblem_id(self):
+        return ItemsUtils.get_item_emblem_unsafe(self._item)
+
+    @emblem_id.setter
+    def emblem_id(self, value):
+        if self.emblem_id == value:
+            return
+        ItemsUtils.set_item_emblem_unsafe(self._item, value)
+        self._update_changes()
+        self.notify_listeners(ItemDataET.OnEmblemChanged)
+
+    @property
+    def equipped(self):
+        return self._is_equipped
+
+    @equipped.setter
+    def equipped(self, value):
+        if self._is_equipped == value:
+            return
+        self._is_equipped = value
+        self.notify_listeners(ItemDataET.OnEquipChanged)
+
+    @property
+    def selected(self):
+        return self._is_selected
+
+    @selected.setter
+    def selected(self, value):
+        if value == self._is_selected:
+            return
+        self._is_selected = value
+        self.notify_listeners(ItemDataET.OnSelecionChanged)
+
+
+class ModelET:
+    OnSelectionChanged, = ((r, 'equipmodel') for r in range(1))
+
+
+class EquipModel(TableModel):
+
+    def __init__(self):
+        TableModel.__init__(self)
+        self._selected = None
+        return
+
+    def set_items(self, equipped_items, inventory_items):
+        self._equipped_ids = set()
+        self._parents = {}
+        for item in equipped_items:
+            item_id = item.get('complexItemID') or item['itemID']
+            self._equipped_ids.add(item_id)
+
+        for item in chain(equipped_items, inventory_items):
+            subs = item.get('itemList')
+            if not subs:
+                continue
+            for sub in subs:
+                self._parents[sub['itemID']] = item['complexItemID']
+
+        TableModel.set_items(self, equipped_items + inventory_items)
+        del self._equipped_ids
+        del self._parents
+
+    def _create_item_data(self, item):
+        item_id = item.get('complexItemID') or item['itemID']
+        parent_id = self._parents.get(item_id)
+        return EquipItemData(item, item_id in self._equipped_ids, parent_id)
+
+    def update_equipped(self, on_ids, off_ids):
+        parents = {}
+        for item in self._items:
+            parents[item.item_id] = item.parent_id
+
+        off_ids = set([ iid for iid in off_ids if not parents.get(iid) ])
+        on_ids = set([ iid for iid in on_ids if not parents.get(iid) ])
+        off_ids -= on_ids
+        for item in self._items:
+            if not item.parent_id:
+                item_id = item.item_id
+                if item.equipped:
+                    item.equipped = item_id in off_ids and False
+            elif item_id in on_ids:
+                item.equipped = True
+
+    def get_items(self, item_ids):
+        return [ item for item in self._items if item.item_id in item_ids ]
+
+    def find_parent(self, item_id):
+        parent_id = None
+        for i in range(len(self._items) - 1, -1, -1):
+            item = self._items[i]
+            if item.item_id == item_id:
+                if ItemsUtils.is_sub_item(item._item):
+                    parent_id = item.parent_id
+                    continue
+                else:
+                    return item
+            if item.item_id == parent_id:
+                return item
+
+        return
+
+    def reset_items(self):
+        for item in self._items:
+            item.reset()
+
+    @property
+    def selected(self):
+        return self._selected
+
+    @selected.setter
+    def selected(self, value):
+        if self._selected == value:
+            return
+        if self._selected:
+            self._selected.selected = False
+        self._selected = value
+        if self._selected:
+            self._selected.selected = True
+        data = {'model': self}
+        self.notify_listeners(ModelET.OnSelectionChanged, data)
+
+
+class CellET:
+    OnToggleSelectRequested, OnTooltipTextRequested = ((r, 'equipcell') for r in range(2))
+
+
+class EquipCell(Cell):
+
+    def __init__(self, component):
+        Cell.__init__(self, component)
+        component.isClip = False
+        comp = GUI.Window()
+        comp.materialFX = 'BLEND'
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.wm, comp.hm = ('CLIP', 'CLIP')
+        comp.filterType = 'LINEAR'
+        comp.width, comp.height = (1.8, 1.8)
+        comp.position = (0, 0, 0.7)
+        self.component.addChild(comp, 'image')
+        comp = GUI.Window('soGUI/frame/paint/borderslot.dds')
+        comp.materialFX = 'BLEND'
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.wm, comp.hm = ('CLIP', 'CLIP')
+        comp.width, comp.height = (2, 2)
+        comp.position = (0, 0, 0.8)
+        self.component.addChild(comp, 'frame')
+        comp = GUI.Window('soGUI/frame/paint/slot.dds')
+        comp.materialFX = 'BLEND'
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.wm, comp.hm = ('CLIP', 'CLIP')
+        comp.position = (0, 0, 0.9)
+        comp.colour = (255, 255, 255, 125)
+        comp.width, comp.height = (2, 2)
+        self.component.addChild(comp, 'back')
+        icon_size = 0.6
+        comp = GUI.Window('soGUI/maps/Icons/icon_item_painted.dds')
+        comp.materialFX = 'BLEND'
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.ha, comp.va = ('CENTER', 'TOP')
+        comp.wm, comp.hm = ('CLIP', 'CLIP')
+        comp.filterType = 'LINEAR'
+        comp.visible = False
+        ratio = float(comp.texture.width) / comp.texture.height
+        comp.width, comp.height = icon_size, icon_size / ratio
+        comp.position = (0.8, 0.9, 0.2)
+        self.component.addChild(comp, 'painted')
+        comp = GUI.Window('soGUI/maps/Icons/icon_item_label.dds')
+        comp.materialFX = 'BLEND'
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.ha, comp.va = ('CENTER', 'TOP')
+        comp.wm, comp.hm = ('CLIP', 'CLIP')
+        comp.filterType = 'LINEAR'
+        comp.visible = False
+        ratio = float(comp.texture.width) / comp.texture.height
+        comp.width, comp.height = icon_size, icon_size / ratio
+        comp.position = (0.4, 0.9, 0.2)
+        self.component.addChild(comp, 'emblemed')
+
+    def _on_mouse_down(self):
+        data = {'item': self._item}
+        self.notify_listeners(CellET.OnToggleSelectRequested, data)
+
+    def _update_visual(self):
+        self.component.back.visible = self._item.equipped
+        self.component.frame.visible = self._item.selected
+        self.component.painted.visible = self._item.is_colorised()
+        self.component.emblemed.visible = bool(self._item.emblem_id)
+
+    def set_item(self, item):
+        Cell.set_item(self, item)
+        if not item:
+            return
+        self.component.image.textureName = item.icon_name
+        self._update_visual()
+
+    def get_tooltip_text(self):
+        if self._item:
+            data = {'tooltiptext': None,
+             'item': self._item._item}
+            self.notify_listeners(CellET.OnTooltipTextRequested, data)
+            return data['tooltiptext']
+        else:
+            return
+
+    def _on_itemdata_event(self, event_type, data):
+        Cell._on_itemdata_event(self, event_type, data)
+        if event_type in (ItemDataET.OnSelecionChanged,
+         ItemDataET.OnEquipChanged,
+         ItemDataET.OnCamoColorsChanged,
+         ItemDataET.OnColorChanged,
+         ItemDataET.OnEmblemChanged):
+            self._update_visual()
+
+
+class EquipTableGrid(TableGrid):
+
+    def __init__(self, component, table_model):
+        TableGrid.__init__(self, component, table_model)
+        self._shown_entity = None
+        return
+
+    def _get_cell_class(self, col, row):
+        return EquipCell
+
+    def on_show(self, entity):
+        self._shown_entity = entity
+
+    def _on_cell_event(self, event_type, data):
+        if event_type == CellET.OnToggleSelectRequested:
+            if data['item'].selected:
+                self._tm.selected = None
+            else:
+                self._tm.selected = data['item']
+            playSound('ui/menu_click')
+        elif event_type == CellET.OnTooltipTextRequested:
+            citem = data['item']
+            if ItemsUtils.is_sub_item(citem):
+                citem = ItemsUtils.ConvertSubItemToItem(citem)
+            data['tooltiptext'] = Inventory.GetItemString(citem, entity=self._shown_entity, includeWeight=False, active_color=colorCodes.active_text_color, inactive_color=colorCodes.inactive_text_color)
+        return

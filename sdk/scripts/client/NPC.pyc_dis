@@ -1,0 +1,854 @@
+# Embedded file name: ./client/NPC.py
+"""
+Created on 17.08.2010
+
+@author: muzhig
+"""
+import BigWorld
+from utils_bw import if_not_destroyed
+import traceback
+from Avatar import Avatar
+import ItemsUtils
+from NPCs import NPCs, SpeechType
+from NPCSound import NPCSound
+from Items import ItemsCatalog
+import tmp_npc_head_provider
+from soGUI.soInworldMarkers import soInworldMarker
+from utils_bw import inRange
+from NPCAnimations import NPCAnimations
+from Trader import Trader
+import Helpers.Caps
+from InteractiveObject import InteractiveObject
+from Localization import lc
+from CueModel import CueModel
+from Math import Vector3
+from math_bw import random_vector
+from ClanWarehouse import ClanWarehouse
+import os
+import json
+from EquipSlotsConfigs import EquipSlotTypes as EST
+import ResMgr
+from Fabric.FaceSettings import LimitsConfigurator as LC
+from Fabric import face_randomizer
+import AdditionalNPCParameters
+import Constants
+from utils import lazyproperty
+import colorCodes as cc
+import rep_utils
+from rep_utils import Bonus
+from CharacterUtils import CharacterConst
+HEAD_PRESETS_PATH = 'headpresets'
+
+def catch_error(foo):
+    u""" """
+
+    def bar(self, *w, **kw):
+        try:
+            return foo(self, *w, **kw)
+        except:
+            print self, ':'
+            raise
+
+    return bar
+
+
+_personality_cache = {}
+
+def getPersonalityNPC(preset_path):
+    if preset_path not in _personality_cache:
+        data = ResMgr.openSection(preset_path)
+        if data is None:
+            _personality_cache[preset_path] = None
+            return
+        data = json.loads(data.asBinary)
+        if 'mark' not in data[0]:
+            data[0]['mark'] = {'id': 0,
+             'color': 0}
+        _personality_cache[preset_path] = data
+    return _personality_cache.get(preset_path)
+
+
+class NPC(Avatar, Trader, InteractiveObject, NPCAnimations, CueModel, ClanWarehouse, NPCSound):
+
+    def __init__(self):
+        AdditionalNPCParameters.applyAllAttr(self)
+        Avatar.__init__(self)
+        Trader.__init__(self)
+        if self.npcName == 'clan_base_trader':
+            if Helpers.Caps.CAP_BASE_TRADE not in self.targetCaps:
+                self.targetCaps += [Helpers.Caps.CAP_BASE_TRADE]
+        InteractiveObject.__init__(self)
+        NPCAnimations.__init__(self)
+        NPCSound.__init__(self)
+        self.facingTracker1 = None
+        self.additionalModel = None
+        self.throw_callback_id = 0
+        self.autogunModel = None
+        self.dialog_actions = False
+        self.idPotHeadTrackIn = None
+        self.idPotHeadTrackOut = None
+        self._pot_cam_inside = None
+        self.isBursting = False
+        self.headProvider_entity = None
+        self._head_to_pl_tID = 0
+        self._isBrustWeapon = False
+        self._weapon_attack = False
+        self._tmp_py_head_prov = None
+        self.headProvider_to_target = None
+        self.magnitude = 17
+        self.is_disable_hand_gravity = True
+        if self.npcType == NPCs.warehouse_transport:
+            ClanWarehouse.__init__(self)
+        self.update_target_caps()
+        try:
+            self._load_personality()
+        except:
+            print 'ERROR LOAD PERSONALITY', repr(self.head_preset_name), self
+            traceback.print_exc()
+
+        self.debug = False
+        BigWorld.callback(0.1, self.debug_draw)
+        return
+
+    def getAdditionalParam(self, attr):
+        return AdditionalNPCParameters.get(self.npcName, attr)
+
+    def __str__(self):
+        if self.isDestroyed:
+            return '%s(%s)Destroyed' % (self.__class__.__name__, self.id)
+        return '%s(%s, %s)' % (self.__class__.__name__, self.id, self.npcName)
+
+    def get_repr_name(self):
+        return 'NPC:%s' % self.npcName
+
+    def update_target_caps(self):
+        if self.isDecomposed:
+            self.targetCaps = []
+            return
+        elif self.can_revived:
+            self.targetCaps = [Helpers.Caps.CAP_CAN_REVIVE]
+            return
+        elif self.dead:
+            self.targetCaps = [Helpers.Caps.CAP_CAN_OPEN_AND_EXPLORE]
+            return
+        else:
+            cap = None
+            if self.npcType == NPCs.clan_warehouse:
+                cap = [Helpers.Caps.CAP_CLAN_WAREHOUSE]
+            elif self.npcType == NPCs.warehouse_transport:
+                cap = [Helpers.Caps.CAP_DONATE_BASE_MANAGER]
+            elif self.npcType == NPCs.clan_trader:
+                cap = [Helpers.Caps.CAP_CLAN_TRADER]
+            if cap and cap not in self.targetCaps:
+                self.targetCaps += cap
+            if self.talkFlag and Helpers.Caps.CAP_CAN_TALK not in self.targetCaps:
+                self.targetCaps += [Helpers.Caps.CAP_CAN_TALK]
+            return
+
+    debug_ids = []
+
+    def debug_draw(self):
+        if self.isDestroyed:
+            return
+        BigWorld.callback(0.1, self.debug_draw)
+        if not self.debug:
+            return
+        import DrawPrimitivesUtils, math
+        DrawPrimitivesUtils.del_lines(self.debug_ids)
+        self.debug_ids = DrawPrimitivesUtils.draw_cone(self.position, self.yaw, 150 * math.pi / 180.0, 0, 20, (0, 1, 0), self.getDirection(), alwaysdraw=False)
+
+    def getDirection(self):
+        direction = Vector3()
+        direction.setPitchYaw(self.pitch, self.yaw)
+        return direction
+
+    def _get_personality_npc(self):
+        preset_path = os.path.join(HEAD_PRESETS_PATH, self.head_preset_name + '.fcd')
+        return getPersonalityNPC(preset_path)
+
+    def _load_personality(self):
+        """ \xd0\xb7\xd0\xb0\xd0\xb3\xd1\x80\xd1\x83\xd0\xb6\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xb8\xd0\xb7 \xd1\x84\xd0\xb0\xd0\xb9\xd0\xbb\xd0\xb8\xd0\xba\xd0\xb0 \xd0\xbf\xd1\x80\xd0\xb5\xd1\x81\xd0\xb5\xd1\x82 \xd1\x81 \xd1\x80\xd0\xbe\xd0\xb6\xd0\xb5\xd0\xb9 """
+        data = None
+        if self.head_preset_name:
+            data = self._get_personality_npc()
+        if data is None:
+            data = face_randomizer.compile_random_personality(self.id, self.face_limits_type)
+        self.personality, face_parts = data
+        for slot_type, slot_data in face_parts.items():
+            EST.set_slot_data(self, slot_type, slot_data)
+
+        return
+
+    def initTargetCaps(self, *w, **kw):
+        pass
+
+    def setAvatarGuns(self):
+        if self.npcSuit:
+            return
+        Avatar.setAvatarGuns(self)
+
+    def default_filter(self):
+        if self.npcType == NPCs.STATIC_NPC:
+            f = BigWorld.NoneFilter()
+            f.movable = False
+            return f
+        return BigWorld.AvatarDropFilter()
+
+    def onEnterWorld(self, prereq):
+        if self.npcSuit:
+            self.enable_tracker = 0
+        Avatar.onEnterWorld(self, prereq)
+        if not self.model and getattr(BigWorld.player(), 'accessLevel', 0) > 0:
+            m = BigWorld.Model('models/bolvan/sphere.model')
+            m.position = self.position
+            m.scale = (1, 50, 1)
+            m.newScaleTest = (1, 50, 1)
+            BigWorld.getGeometricInstance().addLine(self.position, BigWorld.player().position, (1, 0, 0, 1), 1)
+            self.addModel(m)
+            self.model = BigWorld.Model('models/bolvan/helpers/npc.model')
+        NPCAnimations.onEnterWorld(self)
+        self.default_headTracker = self.headTrackerEnable
+        self.update_targeting()
+        InteractiveObject.onEnterWorld(self)
+        if self.displayName:
+            self.name = NPCs.key_name_to_local(self.displayName)
+        elif NPCs.getName(self.npcName) != u'' and NPCs.getName(self.npcName) != '<NO DATA>':
+            self.name = NPCs.getName(self.npcName)
+        else:
+            self.name = NPCs.names_by_npcType.get(self.npcType, u'NPC')
+        group_id = self.get_aggr_group()
+        if group_id:
+            BigWorld.player().subscribe_repvalue(group_id, self._on_repvalue_got)
+        self._pot_cam_inside = BigWorld.addPot(self.matrix, Constants.INTERACTION_DISTANCE, self.potCamIn)
+        self.updateFlashLight()
+        self.update_target_caps()
+        self.checkDecomposed()
+        if self.npcType not in (NPCs.WALKER_NPC, NPCs.WALKER_DUNGEON_NPC):
+            if BigWorld.collide(self.spaceID, self.position + (0, 100, 0), self.position + (0, 1, 0)):
+                self.model.canBeWet = False
+        if self.npcType in (NPCs.MELEE_ATTACKER,):
+            self.onMeleeStartAttack(self.npcKnife, 1)
+
+    def onLeaveWorld(self):
+        Avatar.onLeaveWorld(self)
+        if self.idPotHeadTrackIn:
+            BigWorld.delPot(self.idPotHeadTrackIn)
+        if self.idPotHeadTrackOut:
+            BigWorld.delPot(self.idPotHeadTrackOut)
+        if self._pot_cam_inside:
+            BigWorld.delPot(self._pot_cam_inside)
+        NPCAnimations.onLeaveWorld(self)
+        if self.headProvider_to_target:
+            self.headProvider_to_target.pDebugCall = None
+        if self._tmp_py_head_prov:
+            self._tmp_py_head_prov.destroy()
+        self.headProvider_to_target = None
+        self._tmp_py_head_prov = None
+        self.remove_listener_from_player()
+        group_id = self.get_aggr_group()
+        if group_id and BigWorld.player():
+            BigWorld.player().unsubscribe_repvalue(group_id, self._on_repvalue_got)
+        return
+
+    def onPostModelChange(self):
+        Avatar.onPostModelChange(self)
+        NPCAnimations.onPostModelChange(self)
+
+    def _update_avatar_model(self, new_model = None, callback = None):
+        Avatar._update_avatar_model(self, new_model, callback=callback)
+        slacefactor = self.model_scale
+        if slacefactor:
+            if slacefactor > 0:
+                self.model.scale = (slacefactor, slacefactor, slacefactor)
+                self.model.newScaleTest = (slacefactor, slacefactor, slacefactor)
+                self.model.moveScale = 1.0 / slacefactor
+                self.model.motors[0].matchModelScale = True
+                self.model.motors[0].matchModelScaleInv = True
+                self.changeFootsScaleFix(True)
+            if slacefactor > 1.0:
+                self.bbRadius = 3.0 * slacefactor
+
+    def updateFlashLight(self):
+        for slot_name, weapon in self.weapon_slots.items():
+            canshow = self.model and self.model.visible and not self.dead
+            weapon.switchSpotLight(canshow)
+
+    def remove_listener_from_player(self):
+        player = BigWorld.player()
+        if player and player.__class__.__name__ == 'PlayerAvatar':
+            player.remove_listener(self)
+
+    def set_dead(self, old_value):
+        Avatar.set_dead(self, old_value)
+        if self.dead:
+            self.potCallbackOut(0, 0)
+        self.update_target_caps()
+        if not self.dead and inRange(self, BigWorld.player(), Constants.INTERACTION_DISTANCE ** 2):
+            BigWorld.player().NeedToCloseItemCache(self)
+        if self.model:
+            self.model.isCalcBoundBoxFromNodes = self.dead
+        self.updateFlashLight()
+
+    def CheckRestriction(self, channel, check_server = True):
+        return True
+
+    def potCallbackOut(self, enteredTrap, handle):
+        if self.isDestroyed:
+            return
+        elif self.is_old_npc:
+            return
+        else:
+            if not enteredTrap:
+                if not self.model:
+                    return
+                try:
+                    if getattr(self, 'eyes_controller', None):
+                        self.eyes_controller.track_bone(None)
+                except:
+                    print self
+                    traceback.print_exc()
+
+                if self.headProvider_to_target:
+                    self.headProvider_to_target.pDebugCall = None
+                if self._tmp_py_head_prov:
+                    self._tmp_py_head_prov.destroy()
+                self.headProvider_to_target = None
+                self._tmp_py_head_prov = None
+                self.updateTorsoHeadProvider()
+                self.remove_listener_from_player()
+            return
+
+    def directHeadTo(self, node):
+        if not self.model:
+            return
+        if self.headProvider_to_target and self.headProvider_to_target.target == node:
+            return
+        npc_head = self.model.node('Head')
+        self.headProvider_to_target = BigWorld.DiffDirProvider(npc_head, node)
+        self.headProvider_to_target.NPCSmoothPitchMode = True
+        self._tmp_py_head_prov = tmp_npc_head_provider.MatrixProviderNPC(self, self.headProvider_to_target)
+        self.updateTorsoHeadProvider()
+        if hasattr(self, 'eyes_controller'):
+            try:
+                self.eyes_controller.track_bone(node)
+            except:
+                print self, node
+                traceback.print_exc()
+
+    def potCallbackIn(self, enteredTrap, handle):
+        if getattr(self, 'npcSuit', False):
+            return
+        if not enteredTrap:
+            return
+        if self.dead:
+            return
+        if not self.model:
+            return
+        if not BigWorld.player().model:
+            return
+        try:
+            player_head = BigWorld.player().model.node('Head')
+        except:
+            player_head = BigWorld.player().model.matrix
+
+        self.directHeadTo(player_head)
+        BigWorld.player().remove_listener(self)
+        BigWorld.player().add_listener(self)
+
+    def potCamIn(self, enteredTrap, handle):
+        BigWorld.player().onNearNPC(self.id, enteredTrap)
+
+    @if_not_destroyed
+    def startBurst(self):
+        self.isBursting = True
+        Avatar.startBurst(self)
+
+    @if_not_destroyed
+    def endBurst(self):
+        self.isBursting = False
+        Avatar.endBurst(self)
+
+    def startBurstWeapon(self):
+        Avatar.startBurstWeapon(self)
+        self._isBrustWeapon = True
+        self._weapon_attack = True
+        BigWorld.cancelCallback(self._head_to_pl_tID)
+        self.updateTorsoHeadProvider()
+
+    def endBurstWeapon(self):
+        Avatar.endBurstWeapon(self)
+        self._isBrustWeapon = False
+        self._weapon_attack = True
+        BigWorld.cancelCallback(self._head_to_pl_tID)
+        self._head_to_pl_tID = BigWorld.callback(3.5, self._onEndWeaponAttack)
+        self.updateTorsoHeadProvider()
+        self.on_speech_event(SpeechType.ATTACK)
+
+    def onPlayerFire(self):
+        Avatar.onPlayerFire(self)
+        BigWorld.cancelCallback(self._head_to_pl_tID)
+        self._weapon_attack = True
+        self._head_to_pl_tID = BigWorld.callback(3.5, self._onEndWeaponAttack)
+        self.updateTorsoHeadProvider()
+        self.on_speech_event(SpeechType.ATTACK)
+
+    def onStartReloadWeapon(self, weapon_slot, new_ammo_type, reload_speed = 1.0):
+        Avatar.onStartReloadWeapon(self, weapon_slot, new_ammo_type, reload_speed)
+        self.on_speech_event(SpeechType.RELOAD)
+
+    def onStartReloadWeaponManual(self, need_ammo_number, new_ammo_type, reload_speed = 1.0):
+        Avatar.onStartReloadWeaponManual(self, need_ammo_number, new_ammo_type, reload_speed)
+        self.on_speech_event(SpeechType.RELOAD)
+
+    @if_not_destroyed
+    def _onEndWeaponAttack(self):
+        self._weapon_attack = False
+        self.updateTorsoHeadProvider()
+
+    def on_death_effect(self):
+        return self.on_speech_event(SpeechType.DEATH)
+
+    def onDeath(self, *args):
+        Avatar.onDeath(self, *args)
+        if self.throw_callback_id:
+            BigWorld.cancelCallback(self.throw_callback_id)
+            self.throw_callback_id = 0
+        BigWorld.player().forceStopDialogByNPC(self.id)
+        self.cancelDelayedActionOnLaunch()
+        self.update_target_caps()
+
+    def on_damaged(self, source_data, damagetaken_data):
+        Avatar.on_damaged(self, source_data, damagetaken_data)
+        self.on_speech_event(SpeechType.PAIN)
+
+    def onRevive(self):
+        Avatar.onRevive(self)
+        self.update_target_caps()
+
+    def getWeaponAttachIDs(self):
+        if self.ActiveItemType == self.ActiveWeaponSet2['PrimarySlot']['itemType']:
+            return self.npcWeaponPrimaryAttachItemIDs
+        elif self.ActiveItemType == self.ActiveWeaponSet2['SecondarySlot']['itemType']:
+            return self.npcWeaponSecondaryAttachItemIDs
+        else:
+            return []
+
+    STOP_MODE = 2
+
+    def update_isMovingTest(self, isinit = False):
+        if self.model:
+            if isinit:
+                self.model.motors[0].isInputMove = True
+                self.model.motors[0].useAntiSlipping = False
+                return
+            if self.STOP_MODE == 0:
+                self.model.motors[0].isInputMove = self.isMovingTest
+                self.model.motors[0].useAntiSlipping = False
+            if self.STOP_MODE == 1:
+                self.model.motors[0].isInputMove = self.isMovingTest
+                self.model.motors[0].useAntiSlipping = True
+            elif self.STOP_MODE == 2:
+                self.model.motors[0].isInputMove = False
+                self.model.motors[0].useAntiSlipping = self.isMovingTest
+            elif self.STOP_MODE == 3:
+                self.model.motors[0].isInputMove = False
+                self.model.motors[0].useAntiSlipping = True
+
+    def set_npcFlags(self, v):
+        self.removeCaps(Helpers.Caps.CAP_CAN_EXCHANGE)
+
+    def getEquippedItemType(self):
+        return ItemsUtils.GetEquippedItemType(self)
+
+    def getMarkHeight(self):
+        if self.active_transform and self.active_transform.getMarkHeight():
+            return self.active_transform.getMarkHeight()
+        return self.mark_height
+
+    def getHeightContainer(self, *w, **kw):
+        return 0.0
+
+    def getAdditionalModels(self):
+        if self.npcSuit:
+            return []
+        if self.transformationID:
+            return []
+        return ['characters2/clothing/ManNude/ManTeeth.model']
+
+    def onAvatarModelChanged(self):
+        Avatar.onAvatarModelChanged(self)
+        self.updateHeadTrackerPots()
+        if self.dead and self.model:
+            self.model.isCalcBoundBoxFromNodes = 1
+        try:
+            self.playAnimationByIDInList(self.playedAnimationIndexList, True)
+        except:
+            traceback.print_exc()
+
+        try:
+            if self.isDisableDialogs:
+                self.model.idle_sit_0()
+        except:
+            traceback.print_exc()
+
+    def trackable_updated(self):
+        try:
+            BigWorld.player().remove_listener(self)
+        except:
+            traceback.print_exc()
+
+        self.updateHeadTrackerPots()
+
+    def trackable_preupdate(self, target):
+        pass
+
+    in_head_track_position = 5.0
+    out_head_track_position = 15.0
+
+    def updateHeadTrackerPots(self):
+        if self.idPotHeadTrackIn:
+            BigWorld.delPot(self.idPotHeadTrackIn)
+        if self.idPotHeadTrackOut:
+            BigWorld.delPot(self.idPotHeadTrackOut)
+        if not self.enable_tracker:
+            return
+        if self.headTrackerEnable:
+            self.idPotHeadTrackIn = BigWorld.addPot(self.matrix, self.in_head_track_position, self.potCallbackIn)
+            self.idPotHeadTrackOut = BigWorld.addPot(self.matrix, self.out_head_track_position, self.potCallbackOut)
+        else:
+            self.potCallbackOut(0, 0)
+
+    def dropItem(self, id):
+        pass
+
+    def prepareForTeleport(self):
+        pass
+
+    def afterTeleport(self):
+        pass
+
+    def set_talkFlag(self, old_value):
+        InteractiveObject.set_talkFlag(self, old_value)
+
+    def set_isDisableDialogs(self, old_value):
+        if self.isDisableDialogs:
+            self.model.idle_sit_0()
+        else:
+            self.model.idle_sit_0.stop()
+
+    def set_attack_active_target_id(self, old_value):
+        p = BigWorld.player()
+        if self.attack_active_target_id and p:
+            p.forceStopDialogByNPC(self.id)
+        self.update_targeting()
+
+    def set_weaponStatus(self, old):
+        Avatar.set_weaponStatus(self, old)
+        self.updateTorsoHeadProvider()
+
+    def update_targeting(self):
+        if not isinstance(self.filter, BigWorld.AvatarDropFilter):
+            return
+        if self.attack_active_target_id:
+            target = BigWorld.entities.get(self.attack_active_target_id)
+            if target:
+                self.filter.useTargetPosition = True
+                self.filter.targetMatrix = target.matrix
+                if self.model:
+                    self.potCallbackOut(0, 0)
+                    self.headTrackerEnable = False
+                    self.updateHeadTrackerPots()
+                return
+        self.headTrackerEnable = self.default_headTracker
+        self.filter.useTargetPosition = False
+        self.updateHeadTrackerPots()
+
+    def throw_grenade(self, position, velocity, original_id, target_id, duration, grenade_type):
+        """ \xd1\x81\xd0\xb5\xd1\x80\xd0\xb2\xd0\xb5\xd1\x80 \xd1\x82\xd1\x80\xd0\xb5\xd0\xb1\xd1\x83\xd0\xb5\xd1\x82 \xd1\x80\xd0\xbe\xd0\xb4\xd0\xb8\xd1\x82\xd1\x8c \xd0\xb3\xd1\x80\xd0\xb0\xd0\xbd\xd0\xb0\xd1\x82\xd1\x83 \xd0\xb8 \xd1\x81\xd0\xbe\xd0\xbf\xd1\x80\xd0\xbe\xd0\xb2\xd0\xbe\xd0\xb4\xd0\xb8\xd1\x82\xd1\x8c \xd0\xb0\xd0\xbd\xd0\xb8\xd0\xbc\xd0\xb0\xd1\x86\xd0\xb8\xd0\xb5\xd0\xb9 \xd0\xb1\xd1\x80\xd0\xbe\xd1\x81\xd0\xb0\xd0\xbd\xd0\xb8\xd1\x8f """
+        self._last_grenade_type = grenade_type
+        self._last_grenage_params = (position,
+         velocity,
+         original_id,
+         target_id)
+        self._throw_need = True
+        self.drawStartThrowGrenade(grenade_type)
+        self.on_speech_event(SpeechType.THROW)
+
+    def throw(self, params, position, velocity, throw_type, callbackOnThrow = None):
+        """ \xd1\x81\xd0\xb5\xd1\x80\xd0\xb2\xd0\xb5\xd1\x80 \xd1\x82\xd1\x80\xd0\xb5\xd0\xb1\xd1\x83\xd0\xb5\xd1\x82 \xd1\x80\xd0\xbe\xd0\xb4\xd0\xb8\xd1\x82\xd1\x8c \xd0\xb3\xd1\x80\xd0\xb0\xd0\xbd\xd0\xb0\xd1\x82\xd1\x83 \xd0\xb8 \xd1\x81\xd0\xbe\xd0\xbf\xd1\x80\xd0\xbe\xd0\xb2\xd0\xbe\xd0\xb4\xd0\xb8\xd1\x82\xd1\x8c \xd0\xb0\xd0\xbd\xd0\xb8\xd0\xbc\xd0\xb0\xd1\x86\xd0\xb8\xd0\xb5\xd0\xb9 \xd0\xb1\xd1\x80\xd0\xbe\xd1\x81\xd0\xb0\xd0\xbd\xd0\xb8\xd1\x8f """
+        position, velocity, original_id, target_id = self._last_grenage_params
+        params = {'fromServer': True,
+         'originalID': original_id,
+         'targetID': target_id}
+        return super(NPC, self).throw(params, position, velocity, throw_type, callbackOnThrow=callbackOnThrow)
+
+    def end_throw_grenade(self, position, velocity, clientGrenadeID, throw_type):
+        pass
+
+    def getPlayerFireResult(self, shot_number = 0):
+        """ \xd0\xb2\xd0\xbe\xd0\xb7\xd0\xb2\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd1\x84\xd0\xbb\xd0\xb0\xd0\xb3 \xd0\xbd\xd0\xb0\xd1\x85\xd0\xbe\xd0\xb6\xd0\xb4\xd0\xb5\xd0\xbd\xd0\xb8\xd1\x8f \xd0\xbe\xd1\x80\xd1\x83\xd0\xb6\xd0\xb8\xd1\x8f \xd0\xb2 \xd0\xb2\xd0\xbe\xd0\xb4\xd0\xb5 \xd0\xb8 \xd0\xb2\xd0\xb5\xd0\xba\xd1\x82\xd0\xbe\xd1\x80\xd1\x8b \xd0\xbd\xd0\xb0\xd0\xbf\xd1\x80\xd0\xb0\xd0\xb2\xd0\xbb\xd0\xb5\xd0\xbd\xd0\xb8\xd1\x8f \xd0\xbf\xd1\x83\xd0\xbb\xd1\x8c """
+        if not self.active_weapon:
+            return
+        if not self.active_weapon_model:
+            return
+        if not self.active_weapon_model.visible:
+            return
+        sys_point, barrel_point, direction = self.get_firing_point()
+        weapon_in_water = bool(BigWorld.waterCollide(barrel_point, barrel_point))
+        if bool(BigWorld.collide(self.spaceID, sys_point, barrel_point)):
+            return (weapon_in_water, [])
+        shot_directions = []
+        if self.attack_active_target_id:
+            target = BigWorld.entities.get(self.attack_active_target_id)
+            if target:
+                target_pos = Vector3(target.position)
+                target_pos.y += target.get_height() * 3 / 4.0
+                direction = target_pos - barrel_point
+                direction.normalise()
+        bullet_spread = self.active_weapon.getBulletSpread()
+        for i in xrange(self.active_weapon.getNumberOfBullet()):
+            bullet_vector = random_vector(direction, bullet_spread)
+            shot_directions.append(bullet_vector)
+
+        return (weapon_in_water, shot_directions)
+
+    @property
+    def face_limits_type(self):
+        return LC.NPC
+
+    def updateTorsoHeadProvider(self, tr_param = None):
+        self.head_look_cam = False
+        self._torso_disbale_by_lookaround = False
+        if not self._tracker_is_init:
+            return
+        self.tracker_torso.directionProvider = self.torsoProvider_entity
+
+        def busy_with_attack():
+            return self._isBrustWeapon or self._weapon_attack or not self.IsAvatarBored()
+
+        if self.headProvider_to_target and not busy_with_attack():
+            if self.tracker_head.directionProvider != self.headProvider_to_target:
+                self.tracker_head.directionProvider = self.headProvider_to_target
+                if self._tmp_py_head_prov:
+                    self._tmp_py_head_prov.reset()
+        else:
+            self.tracker_head.directionProvider = self.headProvider_entity
+            if self._tmp_py_head_prov:
+                self._tmp_py_head_prov.reset()
+        self.tracker_torso.dirToZeroOnLimit = False
+        self.updateHeadAddYPR(tr_param)
+
+    def stopUsingItemAnimation(self, force = False):
+        NPCAnimations.stopUsingItemAnimation(self, force)
+
+    def GetCharacterEquippedItemsDict(self):
+        from soGUI.soCharacterScreen import soCharacterScreen2
+        data = {}
+        blank_models = {soCharacterScreen2.INDEX_HEAD: ItemsCatalog.HAT_BLANK['TypeID'],
+         soCharacterScreen2.INDEX_FACE: ItemsCatalog.MASK_BLANK['TypeID'],
+         soCharacterScreen2.INDEX_BACKPACK: ItemsCatalog.BACKPACK_BLANK['TypeID'],
+         soCharacterScreen2.INDEX_PALMS: ItemsCatalog.GLOVES_BLANK['TypeID'],
+         soCharacterScreen2.INDEX_ARMOR: ItemsCatalog.ARMOR_BLANK['TypeID'],
+         soCharacterScreen2.INDEX_CHEST: ItemsCatalog.SHIRT_BLANK['TypeID'],
+         soCharacterScreen2.INDEX_LEGS: ItemsCatalog.PANTS_BLANK['TypeID'],
+         soCharacterScreen2.INDEX_FEET: ItemsCatalog.BOOTS_BLANK['TypeID'],
+         soCharacterScreen2.INDEX_GADGET1: ItemsCatalog.GADGET_ADD_BLANK['TypeID'],
+         soCharacterScreen2.INDEX_GADGET2: ItemsCatalog.GADGET_ADD_BLANK['TypeID'],
+         soCharacterScreen2.INDEX_GADGET3: ItemsCatalog.GADGET_ADD_BLANK['TypeID'],
+         soCharacterScreen2.INDEX_GADGET4: ItemsCatalog.GADGET_ADD_BLANK['TypeID'],
+         soCharacterScreen2.INDEX_GADGET5: ItemsCatalog.GADGET_ADD_BLANK['TypeID'],
+         soCharacterScreen2.INDEX_GADGET6: ItemsCatalog.GADGET_ADD_BLANK['TypeID'],
+         soCharacterScreen2.INDEX_GADGET7: ItemsCatalog.GADGET_ADD_BLANK['TypeID'],
+         soCharacterScreen2.INDEX_GADGET8: ItemsCatalog.GADGET_ADD_BLANK['TypeID'],
+         soCharacterScreen2.INDEX_PRIMARY: ItemsCatalog.WEAPONMAIN_BLANK['TypeID'],
+         soCharacterScreen2.INDEX_PRIMARY2: ItemsCatalog.WEAPONMAIN_BLANK['TypeID'],
+         soCharacterScreen2.INDEX_SECONDARY: ItemsCatalog.WEAPONPISTOL_BLANK['TypeID']}
+        for key, type_id in blank_models.items():
+            data[key] = ItemsUtils.CreateFakeItem(type_id)
+
+        weap = {soCharacterScreen2.INDEX_PRIMARY: 'PrimarySlot',
+         soCharacterScreen2.INDEX_PRIMARY2: 'Primary2Slot',
+         soCharacterScreen2.INDEX_SECONDARY: 'SecondarySlot'}
+        for key, weapon_key in weap.items():
+            slot = self.ActiveWeaponSet2[weapon_key]
+            if slot['itemID']:
+                item = ItemsUtils.GetComplexItemByID(self, slot['itemID'])
+                if item:
+                    data[key] = item
+                else:
+                    print 'not found weapon', slot['itemID']
+                    try:
+                        data[key]['error_item'] = True
+                    except:
+                        traceback.print_exc()
+
+                    traceback.print_exc()
+
+        return data
+
+    def get_ammo_type(self):
+        if not self.active_weapon:
+            if not getattr(self, '_print_warn_get_ammo_type_active_weapon1', None):
+                self._print_warn_get_ammo_type_active_weapon1 = True
+                print 'ERROR: NPC::get_ammo_type() no active_weapon', self, self.id, self.position
+            return 600
+        else:
+            ammo_type = self.active_weapon._ammoType
+            if not ammo_type:
+                if not getattr(self, '_print_warn_get_ammo_type_active_weapon2', None):
+                    self._print_warn_get_ammo_type_active_weapon2 = True
+                    print 'ERROR: NPC::get_ammo_type() not found ammos', self, self.id, self.position, ammo_type, self.active_weapon.getAmmoType()
+                ammo_type = 600
+            return ammo_type
+
+    def rotateModelTo(self, target_matrix):
+        self.filter.useTargetPosition = True
+        self.filter.targetMatrix = target_matrix
+
+    def get_target_mark(self, distance):
+        if distance > Constants.INTERACTION_DISTANCE:
+            return None
+        elif self.dead:
+            return soInworldMarker.MARKER_USE
+        else:
+            return soInworldMarker.MARKER_TALK
+
+    def setPatrol(self, value):
+        self.set_patrol(value)
+
+    def check_saved_animations(self, section):
+        return NPCAnimations.check_saved_animations(self, section)
+
+    def can_talk(self):
+        return not self.isDisableDialogs and not self.is_sitting_in_car() and not self.attack_active_target_id and not self.in_helicopter
+
+    def get_looting_types(self):
+        return [Constants.TYPE_SEARCH]
+
+    @lazyproperty
+    def repair_classes(self):
+        """ \xd0\xba\xd0\xbb\xd0\xb0\xd1\x81\xd1\x81 \xd0\xbf\xd1\x80\xd0\xb5\xd0\xb4\xd0\xbc\xd0\xb5\xd1\x82\xd0\xbe\xd0\xb2, \xd0\xba\xd0\xbe\xd1\x82\xd0\xbe\xd1\x80\xd1\x8b\xd0\xb5 \xd1\x83\xd0\xbc\xd0\xb5\xd0\xb5\xd1\x82 \xd1\x87\xd0\xb8\xd0\xbd\xd0\xb8\xd1\x82\xd1\x8c """
+        result = set([])
+        if Constants.REPAIROPT_WEAPON in self.getAdditionalParam('repair_type'):
+            result.add(ItemsCatalog.WEAPON)
+        if Constants.REPAIROPT_CLOTHER in self.getAdditionalParam('repair_type'):
+            result.add(ItemsCatalog.CLOTH)
+        if Constants.REPAIROPT_GADGET in self.getAdditionalParam('repair_type'):
+            result.add(ItemsCatalog.GADGET)
+        return result
+
+    def DoAction(self, *args):
+        pass
+
+    def GetGrenadeThrowModifyer(self):
+        return 1.0
+
+    def get_time_looting(self, open_type):
+        return 4.0
+
+    def onOpen(self, player):
+        return True
+
+    def onClose(self, player):
+        pass
+
+    def set_CarryingItems(self, old_value):
+        if inRange(self, BigWorld.player(), Constants.INTERACTION_DISTANCE ** 2):
+            BigWorld.player().NeedToUpdateItemCache()
+        items, _ = BigWorld.player().filterItemsWithoutQuests(self.CarryingItems)
+        if not items:
+            BigWorld.player().NeedToCloseItemCache(self)
+
+    def isPersistentSfxEnableForWeather(self):
+        return True
+
+    def isOutsideShell(self):
+        res = BigWorld.isOtside(self.spaceID, self.position)
+        return res > 0
+
+    def _has_positive_bonus(self, bonus_id, rep_id, rep_value):
+        bonus_value = rep_utils.get_bonus_value(rep_id, bonus_id)
+        return bool(bonus_value is not None and rep_value >= bonus_value)
+
+    def _on_repvalue_got(self, group_id, value):
+        if self.get_aggr_group() != group_id:
+            return
+        else:
+            penalty_value = rep_utils.get_bonus_value(group_id, Bonus.Enemy)
+            if penalty_value is not None:
+                self._player_war = value <= penalty_value
+                self._type_rep = self._has_positive_bonus(Bonus.RepeatQuests, group_id, value) and NPCSound.GOOD_REP
+            elif self._has_positive_bonus(Bonus.Resp, group_id, value):
+                self._type_rep = NPCSound.MID_REP
+            else:
+                self._type_rep = NPCSound.BAD_REP
+            return
+
+    @property
+    def ignorePK(self):
+        return self.bit_flags & 1
+
+    @property
+    def ignorePVP(self):
+        return self.bit_flags & 2
+
+    @property
+    def ignoreWAR(self):
+        return self.bit_flags & 4
+
+    @property
+    def isAgressive(self):
+        return self.bit_flags & 8
+
+    def _is_aggressive(self):
+        if self.isAgressive:
+            return True
+        player = BigWorld.player()
+        if not player:
+            return
+        if not self.ignorePVP:
+            if player.AgrFlag:
+                return True
+        if not self.ignoreWAR:
+            if getattr(self, '_player_war', False):
+                return True
+        if not self.ignorePK:
+            if player.karma >= CharacterConst.PK_KARMA_PER_AGGR:
+                return True
+        if self.clanName and player.clanName and self.clanName in player.clanEnemies:
+            return True
+
+    def get_nametext_color(self):
+        if self.get_clantext_color() == cc.mark_clan_in_alliance:
+            return cc.mark_name
+        if self._is_aggressive():
+            return cc.mark_clan_in_war
+        return cc.mark_name
+
+    def get_clantext_color(self):
+        player = BigWorld.player()
+        if player.clanName and self.clanName in player.clanEnemies:
+            return cc.mark_clan_in_war
+        if player.clanID and self.clanName == player.clanUnion:
+            return cc.mark_clan_in_alliance
+        return cc.mark_clan_neutral
+
+    def setWaypoint(self, position):
+        print 'setWaypoint', position
+        import DrawPrimitivesUtils
+        DrawPrimitivesUtils.clear_drawings()
+        DrawPrimitivesUtils.draw_sphere(position, 0.5)
+
+    def onMeleeStartAttack(self, item_type, attack_id):
+        super(NPC, self).onMeleeStartAttack(item_type, attack_id)
+        self.on_speech_event(SpeechType.ATTACK)
+
+    def set_isDecomposed(self, b):
+        self.checkDecomposed()
+        self.update_target_caps()
+
+    def checkDecomposed(self):
+        self.model.visible = not self.isDecomposed
+
+    def get_aggr_group(self):
+        return self.group_for_quest or self.getAdditionalParam('group_for_aggr')

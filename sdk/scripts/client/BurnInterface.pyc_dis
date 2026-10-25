@@ -1,0 +1,221 @@
+# Embedded file name: ./client/BurnInterface.py
+import BigWorld
+import ResourceLoader
+import traceback
+import Constants
+import sounds_manager as sounds
+from Math import Matrix
+from utils import lazyproperty
+ASYNC_LOAD_COUNTER_LIMIT = 50
+ASYNC_LOAD_CALLBACK_DELAY = 0.1
+
+class BurnInterface:
+
+    def __init__(self):
+        self._isBurn = None
+        self._isBurn_smoke = None
+        self._hd_end_burn_smoke = None
+        self._burn_tick_id = 0
+        self._burn_world_model = None
+        self._particles_burn = None
+        self._particles_burn_smoke = None
+        self._last_hips_cache = None
+        self._burn_sound = None
+        self._async_load_callback = 0
+        self._async_load_counter = 0
+        return
+
+    def onEnterWorld(self):
+        if getattr(self, 'is_burning', False):
+            self.burn(True)
+
+    def onLeaveWorld(self):
+        self.__stopBurnSound()
+
+    def __stopBurnSound(self):
+        if self._burn_sound:
+            try:
+                self._burn_sound.stop()
+            except:
+                traceback.print_exc()
+
+            self._burn_sound = None
+        return
+
+    def updateSoundBurn(self, muted = False):
+        if not self._burn_sound:
+            return
+        self._burn_sound.muted = muted
+
+    def burn(self, status):
+        self._stopWait_endBurnSmoke()
+        if self._isBurn and not status:
+            self._isBurn_smoke = True
+            self._hd_end_burn_smoke = BigWorld.callback(7.0, self._endBurnSmoke)
+        else:
+            self._isBurn_smoke = False
+            self._stopWait_endBurnSmoke()
+        self._isBurn = status
+        try:
+            self._updateBurn()
+        except:
+            print 'Burn _updateBurn error', status
+            traceback.print_exc()
+
+        if self._isBurn and not self._burn_sound and self == BigWorld.player():
+            try:
+                if self._burn_world_model:
+                    self._burn_sound = sounds.getSound('players/burning', model=self._burn_world_model)
+                    self._burn_sound.play()
+            except:
+                traceback.print_exc()
+
+        if not self._isBurn:
+            self.__stopBurnSound()
+
+    def set_is_burning(self, old_value):
+        self.burn(self.is_burning)
+
+    def _endBurnSmoke(self):
+        if self.isDestroyed:
+            return
+        self._isBurn_smoke = False
+        self._updateBurn()
+        self.stopBurn()
+
+    def _stopWait_endBurnSmoke(self):
+        if self._hd_end_burn_smoke:
+            BigWorld.cancelCallback(self._hd_end_burn_smoke)
+        self._hd_end_burn_smoke = None
+        return
+
+    def stopBurn(self):
+        if self._burn_tick_id:
+            BigWorld.cancelCallback(self._burn_tick_id)
+        self._burn_tick_id = None
+        if self._burn_world_model:
+            self._burn_world_model.root.attachments = []
+            self.delModel(self._burn_world_model)
+            self._burn_world_model = None
+        return
+
+    def onChangeModel(self):
+        self._last_hips_cache = None
+        if not self._isBurn and not self._isBurn_smoke:
+            return
+        else:
+            self._updateBurn()
+            return
+
+    def _updateBurn(self):
+        if getattr(self, 'active_transform', None) and self.active_transform.raw_configs.get('isHelicopter'):
+            return
+        elif not self._last_hips:
+            return
+        else:
+            if self._async_load_callback:
+                BigWorld.cancelCallback(self._async_load_callback)
+                self._async_load_callback = 0
+
+            def try_load(load_func):
+                if self._async_load_counter > 0:
+                    self._async_load_counter -= 1
+                    self._async_load_callback = BigWorld.callback(ASYNC_LOAD_CALLBACK_DELAY, self._updateBurn)
+                else:
+                    self._async_load_counter = ASYNC_LOAD_COUNTER_LIMIT
+                    load_func()
+
+            if not self._burn_world_model:
+                if True:
+                    self._burn_world_model = BigWorld.Model('')
+                    self._burn_world_model.pushBoundingBox((-2, -1, -2), (2, 2, 2))
+                    self.addModel(self._burn_world_model)
+                    self._burn_world_model.position = self.position
+            if not self._particles_burn:
+
+                def load_particles():
+
+                    def on_load_particles(prereqs):
+                        if self.isDestroyed:
+                            return
+                        self._particles_burn = prereqs.produce(0)
+                        self._particles_burn_smoke = prereqs.produce(1)
+                        self._async_load_counter = 0
+                        self._updateBurn()
+
+                    resource_list = ((ResourceLoader.PARTICLE, 'particles/_bonfire_pers.xml'), (ResourceLoader.PARTICLE, 'particles/fire_place_nofire.xml'))
+                    ResourceLoader.asyncLoad(resource_list, on_load_particles)
+
+                try_load(load_particles)
+                return
+
+            def detach_particle(particle):
+                if particle in self._burn_world_model.root.attachments:
+                    self._burn_world_model.root.detach(particle)
+
+            def attach_particle(particle):
+                if self._dummy_model not in self._burn_world_model.root.attachments:
+                    self._burn_world_model.root.attach(self._dummy_model)
+                if particle not in self._burn_world_model.root.attachments:
+                    self._burn_world_model.root.attach(particle)
+
+            if self._isBurn:
+                attach_particle(self._particles_burn)
+                detach_particle(self._particles_burn_smoke)
+            else:
+                detach_particle(self._particles_burn)
+                if self._isBurn_smoke:
+                    attach_particle(self._particles_burn_smoke)
+                else:
+                    detach_particle(self._particles_burn_smoke)
+            if self._burn_tick_id:
+                BigWorld.cancelCallback(self._burn_tick_id)
+            self.__burn_tick()
+            return
+
+    def __burn_tick(self):
+        if self.isDestroyed:
+            return
+        else:
+            offset = self.get_hips_offset()
+            if not self._last_hips:
+                print 'BurnInterface: not self._last_hips', self
+                return
+            if not self._burn_world_model:
+                print 'BurnInterface: not self._burn_world_model', self
+                return
+            try:
+                self._burn_world_model.position = Matrix(self._last_hips).translation + offset
+                if self.model:
+                    self._burn_world_model.visible = self.model.visible
+            except:
+                traceback.print_exc()
+                self._burn_world_model.root.attachments = []
+                self.delModel(self._burn_world_model)
+                self._burn_world_model = None
+
+            self._burn_tick_id = BigWorld.callback(0, self.__burn_tick)
+            return
+
+    @lazyproperty
+    def _dummy_model(self):
+        return BigWorld.Model('')
+
+    @property
+    def _last_hips(self):
+        if not self._last_hips_cache:
+            try:
+                hips_name = self.get_effect_hips_name()
+                if hips_name == 'root':
+                    self._last_hips_cache = self.model.root
+                else:
+                    self._last_hips_cache = self.model.node(hips_name)
+            except:
+                print 'BURN HIPS ERROR:: NOT FOUND HIPS', self, self.get_effect_hips_name()
+                if self.__class__.__name__ in Constants.CREATURE_CLASSES:
+                    print 'Mob type:{0} sub_type:{1}'.format(self.creatureType, self.creatureSubType)
+
+        return self._last_hips_cache
+
+    def get_hips_offset(self):
+        return (0, 0, 0)

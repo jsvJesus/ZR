@@ -1,0 +1,313 @@
+# Embedded file name: ./common/EffectUtils.py
+import Stats
+import StatChanges
+import traceback
+from itertools import chain
+from collections import defaultdict
+from Localization import lc
+import colorCodes as cc
+
+class EFFECT_TYPE:
+    UNDEFINED, BUFF, DEBUFF = xrange(3)
+
+
+class ON_REAPPLY:
+    NONE, STACKS, DURATION, ALL, REPLACE = xrange(5)
+
+
+class SOURCE:
+    ITEMS, EXTERNAL, AVATAR_SPECIAL, CREATURE_SPECIAL, SPACE_SPECIAL, CLIENT, GASMASK_FILTER, CLAN_PERKAURA = xrange(8)
+
+
+def getEffectLcName(EffectID, user = None, utf8 = False):
+    return lc('EffectDataName.EFFNAME_%s' % EffectID, user=user, utf8=utf8)
+
+
+def getEffectTooltip(EffectID):
+    return getEffectTooltipColored(EffectID, active_color=u'', inactive_color=u'')
+
+
+def getEffectTooltipColored(EffectID, active_color = cc.active_xml, inactive_color = cc.inactive_xml):
+    """ http://k-dev.stalker.so:8090/issues/28697 """
+    text = active_color + lc('EffectDataTooltip.EFFTOOLTIP_%s' % EffectID)
+    while text and text[-1] in (']', '['):
+        text = text[:-1]
+
+    text = text.replace(']', active_color)
+    text = text.replace('[', inactive_color)
+    return text
+
+
+def getTickDuration():
+    return 0.5
+
+
+def getEffect(effectId):
+    from EffectData import EffectsConfig
+    if EffectsConfig.has_key(effectId):
+        return EffectsConfig[effectId]
+    else:
+        print '\tEffectUtils.getEffect: no such effect', effectId
+        return None
+        return None
+
+
+def isEffBuff(eff_id):
+    ef = getEffect(eff_id)
+    return ef and ef['type'] == EFFECT_TYPE.BUFF
+
+
+def isEffDeBuff(eff_id):
+    ef = getEffect(eff_id)
+    return ef and ef['type'] == EFFECT_TYPE.DEBUFF
+
+
+def parseEffectDamage(effects):
+    result = []
+    if not isinstance(effects, list):
+        effects = [effects]
+    for effect in effects:
+        for eff in chain(effect.get('passive', []), effect.get('active', [])):
+            if eff.get('className') not in ('DamagePassiveEff', 'DamageActiveEff'):
+                continue
+            damage_type = eff.get('type')
+            if damage_type and damage_type not in result:
+                result.append(damage_type)
+
+    return result
+
+
+def parseEffectSpecial(effects):
+    result = []
+    if not isinstance(effects, list):
+        effects = [effects]
+    for effect in effects:
+        value = 0
+        for eff in chain(effect.get('passive', []), effect.get('active', [])):
+            if eff.get('className') != 'StaminaDeltaUsageEff':
+                continue
+            value += eff['value']
+
+        if value:
+            tool_tip = 'EffectData.Roast_rat_tooltip'
+            result.append(tool_tip)
+
+    return result
+
+
+def parseEffectApply(effects):
+    result = []
+    if not isinstance(effects, list):
+        effects = [effects]
+    for effect in effects:
+        for eff in chain(effect.get('passive', []), effect.get('active', [])):
+            if eff.get('className') not in ('ApplyEffectPassiveEff', 'ApplyEffectActiveEff'):
+                continue
+            if eff['type']:
+                tool_tip = getEffectLcName(eff['type'])
+                if tool_tip and tool_tip not in result:
+                    result.append(tool_tip)
+
+    return result
+
+
+def parseEffectStates(effects):
+    result = {}
+
+    def _parceBodyZone(dct, value, result):
+        for zone in dct:
+            if not result.has_key(zone):
+                result[zone] = {}
+            for defns in dct[zone]:
+                if not result[zone].has_key(defns):
+                    result[zone][defns] = 0
+                result[zone][defns] += eff.get('value') if eff.get('statChangeType') != StatChanges.PERCENTS else eff.get('value') * 10
+
+    if not isinstance(effects, list):
+        effects = [effects]
+    for effect in effects:
+        states = effect.get('passive')
+        if not states:
+            continue
+        for eff in states:
+            if eff.get('className') not in ('StatChangeEff', 'StatChangeDefenceEff'):
+                continue
+            eff_stat = eff.get('stat_index')
+            if eff_stat is None:
+                continue
+            for stat in eff_stat:
+                if stat == Stats.ch_Defence:
+                    if not result.has_key(stat):
+                        result[stat] = {}
+                    _parceBodyZone(eff_stat[stat], eff.get('value'), result[stat])
+                else:
+                    if not result.has_key(stat):
+                        result[stat] = {'value': 0,
+                         'type': 0}
+                    result[stat]['value'] += eff.get('value', 0)
+                    result[stat]['type'] = eff.get('statChangeType')
+                    result[stat]['formula'] = eff.get('formula')
+
+    return result
+
+
+def getBaseEffectParam(baseEffect, paramName = None, default = None):
+    """ Used to retrieve baseEffect data from globalData. If paramName == None, then return all baseEffect data """
+    if paramName == None:
+        return getEffect(baseEffect['id'])
+    else:
+        return getEffect(baseEffect['id']).get(paramName, default)
+        return
+
+
+def hasEffectTag(baseEffect, seatch_tag):
+    tags = getEffect(baseEffect['id']).get('ef_tags', [])
+    return seatch_tag in tags
+
+
+def _canPrintWarn():
+    import BigWorld
+    component = getattr(BigWorld, 'component', None)
+    if component in ('cell', 'base'):
+        return True
+    elif component == 'client':
+        if BigWorld.isConsumer():
+            return False
+        return True
+    else:
+        return False
+
+
+def prepareEffectsConfig(EffectsConfig):
+    """ Prepares EffectData.EffectsConfig:
+            * Set ids for effects
+            * Convert durations in seconds to ticks
+            * Active/passive class select (it makes no sence to do this work by game designers)
+    """
+    for EffectID, ef in EffectsConfig.items():
+        ef['id'] = EffectID
+
+    for baseEf in EffectsConfig.values():
+        if baseEf['sources'] or baseEf['stackDuration'] <= 0:
+            baseEf['stackDuration'] = -1
+
+    for ef in [ ef for ef in EffectsConfig.values() if ef['stackDuration'] != -1 ]:
+        ef['stackDuration'] /= getTickDuration()
+
+    passive = [ subEf for ef in EffectsConfig.values() for subEf in ef['passive'] ]
+    active = [ subEf for ef in EffectsConfig.values() for subEf in ef['active'] ]
+    for subEf in active:
+        subEf['interval'] /= getTickDuration()
+
+    def getEffName(eff_id):
+        from Config.Effects import EffectNames
+        name = EffectNames.ID_TO_NAME.get(eff_id, '???')
+        return '%s[%s]' % (name, eff_id)
+
+    stat_changers = [ ef for ef in passive if ef['className'] in ('StatChangeEff', 'StatChangeDefenceEff') ]
+    for subEf in stat_changers:
+        index = subEf['stat_index']
+        if not isinstance(index, list):
+            index = [index]
+        for i, val in enumerate(index):
+            if not isinstance(val, list):
+                index[i] = [val]
+
+        for val in index:
+            dicts = [ {} for i in xrange(len(index)) ]
+            dicts.append(True)
+            for i in xrange(len(index) - 1, -1, -1):
+                for val in index[i]:
+                    dicts[i][val] = dicts[i + 1]
+
+        subEf['stat_index'] = dicts[0]
+
+    testUnicueSubEffects(EffectsConfig)
+
+
+def testUnicueSubEffects(EffectsConfig):
+    import BigWorld
+    if BigWorld.component != 'cell':
+        return
+    from Effect.SubEffects import SubEffectClass
+    from Effect.SubEffects import EffectTypes
+    from Config.Effects import EffectNames
+    unic = {}
+
+    def getEffName(eff_id):
+        name = EffectNames.ID_TO_NAME.get(eff_id, '???')
+        return '%s[%s]' % (name, eff_id)
+
+    def validate_subeff(eff_id, subefflist):
+        for i in xrange(len(subefflist) - 1, -1, -1):
+            sub_name = subefflist[i]['className']
+            if sub_name not in EffectTypes:
+                del subefflist[i]
+                print 'EFFECT ERROR: Eff %s SubEff %r uncknown!!' % (eff_id, sub_name)
+                traceback.print_stack()
+
+    for eff_id, ef in EffectsConfig.items():
+        validate_subeff(eff_id, ef['passive'])
+        validate_subeff(eff_id, ef['active'])
+        for subeff in ef['passive'] + ef['active']:
+            subeff_cls = SubEffectClass(subeff)
+            if subeff_cls and getattr(subeff_cls, 'MUST_BE_UNIQUE', False):
+                sub_name = subeff['className']
+                unic[sub_name] = unic.get(sub_name, []) + [eff_id]
+
+    errors = []
+    for sub_name, eff_ids in unic.items():
+        if len(eff_ids) > 1:
+            errors.append([sub_name, eff_ids])
+
+    if errors and _canPrintWarn():
+        print 'DESIGNER_WARNING! \xd0\x9d\xd0\xb5\xd1\x81\xd0\xba\xd0\xbe\xd0\xbb\xd1\x8c\xd0\xba\xd0\xbe \xd1\x8d\xd1\x84\xd1\x84\xd0\xb5\xd0\xba\xd1\x82\xd0\xbe\xd0\xb2 \xd0\xb8\xd1\x81\xd0\xbf\xd0\xbe\xd0\xbb\xd1\x8c\xd0\xb7\xd1\x83\xd1\x8e\xd1\x82 \xd0\xbe\xd0\xb4\xd0\xb8\xd0\xbd \xd0\xb8 \xd1\x82\xd0\xbe\xd1\x82 \xd0\xb6\xd0\xb5 \xd1\x81\xd1\x83\xd0\xb1-\xd1\x8d\xd1\x84\xd1\x84\xd0\xb5\xd0\xba\xd1\x82 \xd0\xbf\xd0\xbe\xd0\xbc\xd0\xb5\xd1\x87\xd0\xb5\xd0\xbd\xd0\xbd\xd1\x8b\xd0\xb9 \xd0\xba\xd0\xb0\xd0\xba \xd1\x83\xd0\xbd\xd0\xb8\xd0\xba\xd0\xb0\xd0\xbb\xd1\x8c\xd0\xbd\xd1\x8b\xd0\xb9'
+        print '\xd0\xad\xd1\x82\xd0\xbe \xd0\xbc\xd0\xbe\xd0\xb6\xd0\xb5\xd1\x82 \xd0\xbf\xd1\x80\xd0\xb8\xd0\xb2\xd0\xb5\xd1\x81\xd1\x82\xd0\xb8 \xd0\xba \xd0\xbd\xd0\xb5\xd0\xbe\xd0\xb6\xd0\xb8\xd0\xb4\xd0\xb0\xd0\xbd\xd0\xbd\xd1\x8b\xd0\xbc \xd0\xbf\xd0\xbe\xd1\x81\xd0\xbb\xd0\xb5\xd0\xb4\xd1\x81\xd1\x82\xd0\xb2\xd0\xb8\xd1\x8f\xd0\xbc \xd0\xbf\xd1\x80\xd0\xb8 \xd0\xbf\xd1\x80\xd0\xb8\xd0\xbc\xd0\xb5\xd0\xbd\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb8 \xd1\x82\xd0\xb0\xd0\xba\xd0\xb8\xd1\x85 \xd1\x8d\xd1\x84\xd1\x84\xd0\xb5\xd0\xba\xd1\x82\xd0\xbe\xd0\xb2 \xd0\xbe\xd0\xb4\xd0\xbd\xd0\xbe\xd0\xb2\xd1\x80\xd0\xb5\xd0\xbc\xd0\xb5\xd0\xbd\xd0\xbd\xd0\xbe'
+        for sub_name, eff_ids in errors:
+            print '\xd0\xa1\xd1\x83\xd0\xb1-\xd1\x8d\xd1\x84\xd1\x84\xd0\xb5\xd0\xba\xd1\x82:', sub_name, '  \xd0\xad\xd1\x84\xd1\x84\xd0\xb5\xd0\xba\xd1\x82\xd1\x8b:', '  '.join(map(getEffName, eff_ids))
+
+
+def spaceSpecialEffectsId(EffectsConfig):
+    eff_ids = []
+    space_ids = {}
+    for ef_id, ef in EffectsConfig.items():
+        if ef.get('sources') and SOURCE.SPACE_SPECIAL in ef['sources']:
+            if not ef.get('spaces'):
+                print 'DESIGNER_WARNING: spaceSpecialEffectsId: SPACE_SPECIAL eff %d - \xd0\xbd\xd0\xb5 \xd0\xb8\xd0\xbc\xd0\xb5\xd0\xb5\xd1\x82 \xd0\xba\xd0\xb0\xd1\x80\xd1\x82' % ef_id
+            else:
+                eff_ids.append(ef_id)
+                for space in ef['spaces']:
+                    if space not in space_ids:
+                        space_ids[space] = []
+                    space_ids[space].append(ef_id)
+
+        elif ef.get('spaces'):
+            print 'DESIGNER_WARNING: spaceSpecialEffectsId: ef %d - \xd0\xb8\xd0\xbc\xd0\xb5\xd0\xb5\xd1\x82 \xd0\xba\xd0\xb0\xd1\x80\xd1\x82\xd1\x8b, \xd0\xbd\xd0\xbe \xd0\xbd\xd0\xb5 \xd1\x8f\xd0\xb2\xd0\xbb\xd1\x8f\xd0\xb5\xd1\x82\xd1\x81\xd1\x8f SPACE_SPECIAL )' % ef_id
+
+    return (eff_ids, space_ids)
+
+
+def is_anomaly_effect(eff_id):
+    eff_data = getEffect(eff_id)
+    return eff_data.has_key('_sctipt_name_') and eff_data['_sctipt_name_'].startswith('Anomaly_')
+
+
+def get_eff_in_formulas():
+    """
+    \xd0\x92\xd0\xbe\xd0\xb7\xd0\xb2\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd1\x8d\xd1\x84\xd1\x84\xd0\xb5\xd0\xba\xd1\x82\xd1\x8b, \xd0\xb8\xd1\x81\xd0\xbf\xd0\xbe\xd0\xbb\xd1\x8c\xd0\xb7\xd1\x83\xd0\xb5\xd0\xbc\xd1\x8b\xd0\xb5 \xd0\xb2 \xd1\x84\xd0\xbe\xd1\x80\xd0\xbc\xd1\x83\xd0\xbb\xd0\xb0\xd1\x85
+    """
+    from EffectData import EffectsConfig
+    target_formulas = set(['F.MulOtherEffectStacks',
+     'F.impactIfHas_AND_Effects',
+     'F.impactIfHas_NOT_AND_Effects',
+     'F.impactIfHas_OR_Effects',
+     'F.impactIfHas_NOT_OR_Effects'])
+    eff_in_formulas = defaultdict(list)
+    for ef in EffectsConfig.values():
+        for subEf in ef['passive']:
+            if subEf.get('formula') in target_formulas:
+                if subEf['className'] != 'StatChangeEff':
+                    for otherEffectID in subEf.get('otherEffectIDlist', []):
+                        eff_in_formulas[otherEffectID].append(subEf)
+
+    return eff_in_formulas

@@ -1,0 +1,198 @@
+# Embedded file name: ./client/maputils/data_loader.py
+from time import time
+import BigWorld
+from Math import Vector3
+import json
+from requester import post_request as post, get_request as get
+from space_utils import get_space_id_by_name
+from utils import Listenable
+from functools import partial
+from notes_cache import NotesCache
+import BWPersonality
+import traceback
+from MapNotes import MapNotes
+_DEBUG_IGNORE_SERVER_CACHE = False
+
+class EventType:
+    CommonMarksLoaded, PersonalMarksLoaded, PersonalCreated = range(3)
+
+
+class ValidType:
+    Valid, Absent, Invalid = range(3)
+
+
+class DataLoader(Listenable):
+
+    def __init__(self):
+        Listenable.__init__(self)
+        self._notes_server = None
+        self._p = BigWorld.player()
+        if not self._p.offline_mode and getattr(BWPersonality.game, 'unique_server_id', None):
+            self._notes_server = u'http://k-mmap.stalker.so:8000/' + BWPersonality.game.unique_server_id
+        self._p.common_marks_loaded = self._on_baseapp_common_marks_loaded
+        host = BigWorld.server()
+        self._notes_cache = NotesCache(self._p.name, host)
+        return
+
+    def take_db_notes_key(self, hashkey, db_id):
+        self._hashkey = hashkey
+        self._db_id = db_id
+
+    def _log(self, *args):
+        print 'Notes:', time(), args
+
+    def _on_baseapp_common_marks_loaded(self, space_name, npcs_ids, area_indices, markquest_ids):
+        data = {'space_name': space_name,
+         'npcs_ids': npcs_ids,
+         'area_indices': area_indices,
+         'markquest_ids': markquest_ids}
+        self.notify_listeners(EventType.CommonMarksLoaded, data)
+
+    def _debug_get_ok(self):
+
+        def callback(code, headers, body):
+            self._log('debug check ok', code, headers, body)
+
+        def error_callback(error_string):
+            self._log('debug check error', error_string)
+
+        get('http://k-mmap.stalker.so:8000/', callback=callback, errorCallback=error_callback)
+
+    def load_marks(self, space_name, attempts = 2):
+        if BigWorld.player().isDestroyed:
+            return
+        elif attempts < 0:
+            self._log('attempts failed', space_name)
+            self._notify_personal(space_name, [], ValidType.Invalid)
+            self._debug_get_ok()
+            return
+        else:
+            attempts -= 1
+            self._p.base.load_common_marks(space_name)
+            if self._notes_server and not BigWorld.player().offline_mode:
+                map_id = get_space_id_by_name(space_name[7:])
+                if map_id is None:
+                    self._notify_personal(space_name, [], ValidType.Absent)
+                    return
+                cache_version = self._notes_cache.get_version(map_id)
+                if _DEBUG_IGNORE_SERVER_CACHE:
+                    cache_version = 0
+                if cache_version is None:
+                    BigWorld.callback(0, partial(self.load_marks, space_name, attempts))
+                    return
+                self._log('load_marks', space_name, cache_version, self._notes_server)
+
+                def callback(code, headers, body):
+                    if code == 200:
+                        body = json.loads(body)
+                    if code != 200 or body['code'] != 0:
+                        self._log('ERROR callback code', code, headers, body)
+                        BigWorld.callback(0, partial(self.load_marks, space_name, attempts))
+                        return
+                    marks = []
+                    server_cache_version = int(body['version'])
+                    if cache_version == server_cache_version:
+                        try:
+                            iterator = self._notes_cache.get_data(map_id)
+                        except:
+                            traceback.print_stack()
+                            traceback.print_exc()
+                            self._notes_cache.update(map_id, 0)
+                            BigWorld.callback(0, partial(self.load_marks, space_name, attempts))
+                            return
+
+                    else:
+                        iterator = body['result']
+                        self._notes_cache.update(map_id, server_cache_version)
+                    for uid, note_value, f1, f2, text in iterator:
+                        note_type, color = MapNotes.unpack(int(note_value))
+                        marks.append({'spaceName': space_name,
+                         'position': Vector3(float(f1), 0, float(f2)),
+                         'notes': text,
+                         'flags': note_type,
+                         'uid': int(uid),
+                         'color': color})
+
+                    self._log('notes loaded', (len(marks),
+                     cache_version,
+                     server_cache_version,
+                     cache_version == server_cache_version))
+                    self._notify_personal(space_name, marks, ValidType.Valid)
+
+                def error_callback(error_string):
+                    self._log('ERROR load errorcallback', error_string)
+                    BigWorld.callback(0, partial(self.load_marks, space_name, attempts))
+
+                args = {'hashkey': self._hashkey,
+                 'dbid': self._db_id,
+                 'map_id': map_id,
+                 'version': cache_version}
+                get(self._notes_server, callback=callback, errorCallback=error_callback, args=args)
+            return
+
+    def _notify_personal(self, space_name, marks, valid_type):
+        data = {'space_name': space_name,
+         'marks': marks,
+         'valid_type': valid_type}
+        self.notify_listeners(EventType.PersonalMarksLoaded, data)
+
+    def delete_personal_mark(self, servuid, space_name):
+        if self._notes_server:
+            map_id = get_space_id_by_name(space_name[7:])
+            self._notes_cache.update(map_id, 0)
+
+            def callback(code, headers, body):
+                body = json.loads(body)
+                if body['code'] != 0:
+                    self._log('ERROR: del callback', code, headers, body)
+                    raise RuntimeError
+                server_cache_version = int(body['version'])
+                self._notes_cache.update(map_id, server_cache_version)
+                self._log('note deleted', map_id, server_cache_version)
+
+            def error_callback(error_string):
+                self._log('ERROR: del errorcallback', error_string)
+                raise RuntimeError
+
+            args = {'hashkey': self._hashkey,
+             'dbid': self._db_id,
+             'map_id': map_id,
+             'uid': servuid}
+            post(self._notes_server + '/del', callback=callback, errorCallback=error_callback, args=args)
+
+    def create_personal_mark(self, position, space_name, mark):
+        if self._notes_server:
+            text, mark_type, color = mark['notes'], mark['flags'], mark['color']
+            map_id = get_space_id_by_name(space_name[7:])
+            self._notes_cache.update(map_id, 0)
+
+            def callback(code, headers, body):
+                body = json.loads(body)
+                if body['code'] != 0:
+                    self._log('ERROR create callback', code, headers, body)
+                    raise RuntimeError
+                data = {'space_name': space_name,
+                 'uid': mark['uid'],
+                 'servuid': body['rowid']}
+                server_cache_version = int(body['version'])
+                self._notes_cache.update(map_id, server_cache_version)
+                self.notify_listeners(EventType.PersonalCreated, data)
+                self._log('note created', map_id, server_cache_version)
+
+            def error_callback(error_string):
+                self._log('ERROR create error callback', error_string)
+                raise RuntimeError
+
+            mark_value = MapNotes.pack(mark_type, color)
+            args = {'hashkey': self._hashkey,
+             'dbid': self._db_id,
+             'map_id': map_id,
+             'note_type': mark_value,
+             'f1': position.x,
+             'f2': position.y,
+             'value': text.encode('utf8')}
+            post(self._notes_server + '/create', callback=callback, errorCallback=error_callback, args=args)
+
+    def on_release(self):
+        Listenable.on_release(self)
+        self._notes_cache.flush(BigWorld.player().marks_data.personal_marks)

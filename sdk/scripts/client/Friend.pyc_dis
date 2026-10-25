@@ -1,0 +1,192 @@
+# Embedded file name: ./client/Friend.py
+import BigWorld
+import BWPersonality
+from ChatChannelConfig import CHANNEL_CONSTS
+from Localization import lc
+import Constants
+import gui_jokes
+import random
+from utils import CaseInsensitiveStringListSet
+from codesMsg import FRIEND_CODED_MESSAGES
+from msgbox_templates import ask_yes_no
+from gui_const import MESSAGEBOX
+from utils import lazyproperty
+
+class Friend:
+
+    def onEnterWorld(self):
+        self._friend_gui.delegate = self
+        self.base.request_friends_list()
+        self._ready_attemts = 3
+        self._friends_online = CaseInsensitiveStringListSet()
+        self._friends_offline = CaseInsensitiveStringListSet()
+        self._add_friend_timeout = {}
+
+    def onLeaveWorld(self):
+        self._friend_gui.delegate = None
+        return
+
+    def delete_friendship(self, friend_name):
+        self.base.delete_friendship(friend_name)
+
+    def delete_black(self, black_name):
+        self.base.delete_black(black_name)
+
+    def got_friends_list(self, friends_online, friends_offline, black_list, ready):
+        if not ready:
+            self._ready_attemts -= 1
+            print 'Friend (WARNING): friend list not ready'
+            if self._ready_attemts > 0:
+                BigWorld.callback(5, self.base.request_friends_list)
+        self._friends_online = CaseInsensitiveStringListSet(friends_online)
+        self._friends_offline = CaseInsensitiveStringListSet(friends_offline)
+        self._black_list = CaseInsensitiveStringListSet(black_list)
+        self._friend_gui.on_friends_updated()
+        self._friend_gui.on_blacks_updated()
+        if self.hide_all_other_avatar_key:
+            for name in friends_online + friends_offline:
+                friend_avatar = self.getAvatarByName(name.decode('utf8'))
+                if friend_avatar:
+                    friend_avatar.updateVisibleForPlayer()
+
+    def on_friend_online(self, friend_name):
+        if not self.enteredWorld:
+            return
+        self._friends_online.add(friend_name)
+        self._friends_offline.remove(friend_name)
+        self._friend_gui.on_friends_updated()
+        if self._friend_gui.notify_checked:
+            self.putMessage(CHANNEL_CONSTS.SYSTEM, lc('GUI.FriendList.QueryFriend1') + ' ' + friend_name.decode('utf-8') + ' ' + lc('GUI.FriendList.isOnline'))
+
+    def on_black_deleted(self, black_name):
+        self._black_list.remove(black_name)
+        self._friend_gui.on_blacks_updated()
+        self.putMessage(CHANNEL_CONSTS.SYSTEM, lc('GUI.FriendList.QueryFriend1') + ' ' + black_name.decode('utf-8') + ' ' + lc('GUI.FriendList.playerIsDeleted'))
+
+    def on_friend_added(self, friend_name):
+        if not self.enteredWorld:
+            return
+        self._friends_online.add(friend_name)
+        self._friends_offline.remove(friend_name)
+        self._friend_gui.on_friends_updated()
+        self.putMessage(CHANNEL_CONSTS.SYSTEM, lc('GUI.FriendList.QueryFriend1') + ' ' + friend_name.decode('utf-8') + ' ' + lc('GUI.FriendList.addedToFriendList'))
+        if self.hide_all_other_avatar_key:
+            friend_avatar = self.getAvatarByName(friend_name.decode('utf8'))
+            if friend_avatar:
+                friend_avatar.updateVisibleForPlayer()
+
+    def on_black_added(self, black_name):
+        self._black_list.add(black_name)
+        self._friend_gui.on_blacks_updated()
+        self.putMessage(CHANNEL_CONSTS.SYSTEM, lc('GUI.FriendList.QueryFriend1') + ' ' + black_name.decode('utf-8') + ' ' + lc('GUI.FriendList.addedToBlackList'))
+
+    def on_friend_deleted(self, friend_name):
+        if not self.enteredWorld:
+            return
+        self._friends_online.remove(friend_name)
+        self._friends_offline.remove(friend_name)
+        self._friend_gui.on_friends_updated()
+        self.putMessage(CHANNEL_CONSTS.SYSTEM, lc('GUI.FriendList.QueryFriend1') + ' ' + friend_name.decode('utf-8') + ' ' + lc('GUI.FriendList.deletedFriendmsg'))
+        friend_avatar = self.getAvatarByName(friend_name.decode('utf8'))
+        if friend_avatar:
+            friend_avatar.updateVisibleForPlayer()
+
+    def on_friend_offline(self, friend_name):
+        if not self.enteredWorld:
+            return
+        self._friends_offline.add(friend_name)
+        self._friends_online.remove(friend_name)
+        self._friend_gui.on_friends_updated()
+        if self._friend_gui.notify_checked:
+            self.putMessage(CHANNEL_CONSTS.SYSTEM, lc('GUI.FriendList.QueryFriend1') + ' ' + friend_name.decode('utf-8') + ' ' + lc('GUI.FriendList.isOffline'))
+
+    def add_friend_request(self, friend_name):
+        if BigWorld.time() - self._add_friend_timeout.get(friend_name, 0) < 30:
+            self.putMessage(CHANNEL_CONSTS.SYSTEM, lc('GUI.FriendList.InviteNotSend'))
+            return
+        if friend_name in self.friends_offline or friend_name in self.friends_online:
+            self.putMessage(CHANNEL_CONSTS.SYSTEM, lc('GUI.FriendList.QueryFriend1') + ' ' + friend_name.decode('utf-8') + ' ' + lc('GUI.FriendList.isAlreadyYourFriend'))
+            return
+        if self._friends_number >= Constants.MAX_FRIENDS:
+            self.putMessage(CHANNEL_CONSTS.SYSTEM, lc('GUI.FriendList.ExceededLimitFriends'))
+            return
+        self._add_friend_timeout[friend_name] = BigWorld.time()
+        self.base.add_friend_request(friend_name)
+
+    def add_black_request(self, black_name):
+        if black_name in self._black_list:
+            self.putMessage(CHANNEL_CONSTS.SYSTEM, lc('GUI.FriendList.playerFoundInBlackList'))
+            return
+        if len(self._black_list) >= Constants.MAX_IGNORE:
+            self.putMessage(CHANNEL_CONSTS.SYSTEM, lc('GUI.FriendList.ExceededLimitBlackList'))
+            return
+        if self.is_friend(black_name):
+
+            def callback(event, data):
+                if event == MESSAGEBOX.EVENT_BTNPRESS:
+                    if data['btn'] == MESSAGEBOX.BTN_YES:
+                        self.base.add_black_request(black_name, True)
+                    elif data['btn'] == MESSAGEBOX.BTN_NO:
+                        self.base.add_black_request(black_name, False)
+
+            text = lc('GUI.FriendList.RemoveBlackFriend').format(black_name.decode('utf8'))
+            ask_yes_no('Friend.frend_to_blacklist', lc('GUI.FriendList.RemoveBlackFriendTitle'), text, callback)
+        else:
+            self.base.add_black_request(black_name, True)
+
+    def be_my_friend(self, friend_name):
+
+        def callback(event):
+            if event == gui_jokes.askUserYesNo.YES:
+                if self._friends_number >= Constants.MAX_FRIENDS:
+                    self.putMessage(CHANNEL_CONSTS.SYSTEM, lc('GUI.FriendList.ExceededLimitFriends'))
+                else:
+                    self.base.friend_request_confirmed(friend_name)
+
+        POS = (0.1 + random.random() * 0.1, -0.3 - random.random() * 0.1)
+        gui_jokes.askUserYesNo(lc('GUI.FriendList.CaptionQueryWindow'), lc('GUI.FriendList.QueryFriend1') + ' ' + friend_name.decode('utf8') + ' ' + lc('GUI.FriendList.QueryFriend2'), callback, POS=POS, modal=False)
+
+    def is_friend(self, friend_name):
+        return friend_name in self._friends_online or friend_name in self._friends_offline
+
+    def is_black(self, black_name):
+        return black_name in self._black_list
+
+    def show_friend_message(self, code):
+        self.putMessage(CHANNEL_CONSTS.SYSTEM, FRIEND_CODED_MESSAGES.get_message(code))
+
+    def is_in_group(self, friend_name):
+        return self.checkMemberInPartyByName(friend_name)
+
+    def on_notify_changed(self, checked):
+        if checked:
+            self.putMessage(CHANNEL_CONSTS.SYSTEM, lc('GUI.FriendList.NotifyChecked'))
+        else:
+            self.putMessage(CHANNEL_CONSTS.SYSTEM, lc('GUI.FriendList.NotifyUnchecked'))
+
+    def is_in_clan(self, friend):
+        return bool(friend.clanName)
+
+    @lazyproperty
+    def _black_list(self):
+        return CaseInsensitiveStringListSet()
+
+    @property
+    def _friends_number(self):
+        return len(self.friends_online) + len(self.friends_offline)
+
+    @property
+    def _friend_gui(self):
+        return BWPersonality.GUICore.friend_list
+
+    @property
+    def friends_online(self):
+        return self._friends_online
+
+    @property
+    def friends_offline(self):
+        return self._friends_offline
+
+    @property
+    def blacks(self):
+        return self._black_list

@@ -1,0 +1,1394 @@
+# Embedded file name: ./client/Creature.py
+"""
+Created on 18.08.2010
+
+@author: muzhig
+"""
+from functools import partial
+import traceback
+import BigWorld
+import random
+import time
+from Math import Vector3, Vector4
+from Math import Matrix
+from math import pi
+import particles
+import Constants
+import ResMgr
+import SFXer
+import GUI
+from ItemHolder import ItemHolder
+from utils import hierarchy_get, multi_get
+from client_utils import execute_model_action, execute_multiple_model_action
+from Victim import Victim
+from Damager import Damager
+from Avatar import Avatar
+from sounds_manager import playSound, getSound
+from Effects import Effects
+from Teleportable import Teleportable
+from CreatureCommon import CreatureCommon
+from Skills import Skills, Skill, TeleportSkill
+from Config import Creatures as Cfg
+from Config.Skills import SkillsTypes
+from Config.Creatures import get_state_name, BrainStates
+from Bleeding import Bleeding
+from Colliders import COLLIDER_NODE_NAME, COLLIDER_BOX_NAME, COLLIDER_BODY_ZONE, COLLIDER_MIN_BOUNDS, COLLIDER_MAX_BOUNDS, COLLIDER_TRANSFORM
+from Helpers.Caps import CAP_CAN_OPEN_AND_EXPLORE, CAP_EXCLUDE
+from utils_bw import inRange
+from soGUI.soInworldMarkers import soInworldMarker
+from BurnInterface import BurnInterface
+from Config.Damage import SourceTypes
+from EffectData import EffectNames
+from utils_bw import if_not_destroyed
+from Woundable import Woundable
+from creature_footsteps import CreatureFootsteps
+from PostProcessing.area_fluctuation import fluctuation_eff
+from PostProcessing.creature_fadeout import creature_fader
+import FX
+from FX.persistent_ext_bg import loadPersistentExtBG
+from Lootable import Lootable
+from creature_stipple import CreatureStipple
+from creature_attack_hits import CreatureAttackHits
+from CellListenerUtils import VisibleObjectType as VOT
+import CellListenerUtils
+from client_utils import readable_space_pos
+DEBUG_SOUND = False
+STOP_SOUND_PERSIST = False
+
+def switchDebugSoundMode():
+    global DEBUG_SOUND
+    DEBUG_SOUND = not DEBUG_SOUND
+    for e in BigWorld.entities.values():
+        if isinstance(e, Creature):
+            e.updateDebugSoundMode()
+
+    return DEBUG_SOUND
+
+
+def _createDebugTextNode(mob):
+    textnode = GUI.Text('')
+    textnode.explicitSize = True
+    textnode.colourFormatting = True
+    textnode.multiline = True
+    textnode.size = (5, 1)
+    textnode.colour = (255, 255, 255, 255)
+    textnode.filterType = 'LINEAR'
+    textnode.verticalAnchor = 'BOTTOM'
+    textnode.position = (0, mob.get_height() + 0.5, 0)
+    return textnode
+
+
+brainStateToIcon = {BrainStates.ATTACK_NO_TARGET: None,
+ BrainStates.ATTACK_COOLDOWN: soInworldMarker.MARKER_USE,
+ BrainStates.ATTACK_SUCCESS: soInworldMarker.MARKER_USE,
+ BrainStates.ATTACK_TOO_FAR: None,
+ BrainStates.GO_PROMENADE: soInworldMarker.MARKER_TRADE,
+ BrainStates.GO_NEXT_WAYPOINT: soInworldMarker.MARKER_PLAYER,
+ BrainStates.FOLLOW_TARGET: soInworldMarker.MARKER_PICKUP,
+ BrainStates.DEAD: soInworldMarker.MARKER_PK}
+
+class EntityFXAction:
+    action_name = '?'
+
+    def __init__(self, entity, actions = None, sounds = None, sfxes = None):
+        self.entity = entity
+        self.actions = actions and actions.get('actions') or []
+        self._random_actions = actions and actions.get('random', True)
+        self.sounds = sounds if sounds is not None else []
+        self.sfxes = sfxes if sfxes is not None else []
+        self.active_callbacks = {}
+        return
+
+    def run(self, duration = None, callback = None, restart = False):
+
+        def model_action_callback(_index):
+            del self.active_callbacks[_index]
+            if not self.active_callbacks and callback:
+                callback()
+
+        if not self.active_callbacks or restart:
+            self.active_callbacks = {}
+            if self.actions:
+                index = 0
+                self.active_callbacks[index] = None
+                if self._random_actions:
+                    act_name = random.choice(self.actions)
+                    handle, error = execute_model_action(self.entity.model, act_name, duration, partial(model_action_callback, index))
+                else:
+                    act_name = None
+                    handle, error = execute_multiple_model_action(self.entity.model, self.actions, duration, partial(model_action_callback, index))
+                if handle:
+                    self.active_callbacks[index] = handle
+                if error:
+                    subtype_name = Cfg.get_subtype_name(self.entity.creatureType, self.entity.level)
+                    print 'Creature (ERROR) bad action', [self.entity.creatureType,
+                     subtype_name,
+                     self.actions,
+                     act_name]
+            for sound_path in self.sounds:
+                self.run_sound(sound_path)
+
+            for sfx_path in self.sfxes:
+                try:
+                    FX.bufferedOneShotEffect(sfx_path, self.entity.model, maxDuration=21.0)
+                except Exception as err:
+                    print 'ERROR FOR:', self.entity, self.action_name
+                    raise err
+
+        return
+
+    def cancel_callbacks(self):
+        for callback_handle in self.active_callbacks.values():
+            if callback_handle:
+                BigWorld.cancelCallback(callback_handle)
+
+        self.active_callbacks = {}
+
+    def stop(self):
+        self.cancel_callbacks()
+        for action_name in self.actions:
+            self.stop_model_action(action_name)
+
+        for sound_path in self.sounds:
+            self.entity.stopSoundCreature(sound_path)
+
+        for sfx_path in self.sfxes:
+            pass
+
+    def run_sound(self, sound_path):
+        pass
+
+    def stop_model_action(self, action_name):
+        pass
+
+
+class CreatureFXAction(EntityFXAction):
+
+    def __init__(self, entity, action_name):
+        self.action_name = action_name
+        try:
+            config = entity.get_config(Cfg.ACTIONS)[self.action_name]
+        except KeyError:
+            config = {}
+            print 'DESIGNER_ERROR: CreatureFXAction: creature({0} {1}) has no action {2}'.format(entity.creatureType, Cfg.get_subtype_name(entity.creatureType, entity.level), repr(action_name))
+
+        actions, sounds, sfxes = multi_get(config, Cfg.ACT_MODEL_ACTIONS, Cfg.ACT_SOUNDS, Cfg.ACT_SFXES)
+        EntityFXAction.__init__(self, entity, actions, sounds, sfxes)
+
+    def run_sound(self, sound_path):
+        try:
+            self.entity.playSoundCreature(sound_path, self.entity.model)
+        except:
+            print self
+            traceback.print_exc()
+            traceback.print_stack()
+
+    def stop_model_action(self, action_name):
+        self.entity.model.action(action_name).stop()
+
+
+class Creature(BigWorld.Entity, CreatureCommon, Victim, Damager, Skills, Effects, Teleportable, Woundable, Bleeding, ItemHolder, BurnInterface, CreatureFootsteps, Lootable, CreatureStipple, CreatureAttackHits):
+
+    def __init__(self):
+        BigWorld.Entity.__init__(self)
+        Skills.__init__(self)
+        Effects.__init__(self)
+        Bleeding.__init__(self)
+        Woundable.__init__(self)
+        BurnInterface.__init__(self)
+        CreatureFootsteps.__init__(self)
+        CreatureAttackHits.__init__(self)
+        self._end_live = False
+        self._debugsound_attach = None
+        self._debugsound_textnode = None
+        self._idle_soundpot = None
+        self._idleSoundInside = False
+        self._model_root = None
+        self.LOCK_PUT_ITEM = True
+        self.targetCaps = []
+        self.name = 'CreatureName'
+        self.filter = BigWorld.AvatarDropFilter()
+        self.updateFilterParam()
+        self.filter.smart_filter = bool(self.get_config(Cfg.ALING_TO_GROUND_SMART))
+        self.filter.cacheTime = 1500 + random.randint(1000, 2000)
+        self.posFilterOff()
+        self.setAlingToGround(True)
+        self.model = None
+        self.soundsPersist = {}
+        self.soundsPersistNames = set()
+        self._debug_sound_list = []
+        self.state_transition_callback = None
+        self.actions = {}
+        self.water_listener_id = None
+        self._pot_playerpos = 0
+        sfx_name = self.get_config(Cfg.RECOMPOSE_SFX)
+        if sfx_name:
+            FX.prepare_buffer(sfx_name)
+        return
+
+    def updateDebugSoundMode(self):
+        if DEBUG_SOUND and not self._debugsound_attach:
+            if not self.model:
+                return
+            self._debugsound_textnode = _createDebugTextNode(self)
+            self._debugsound_attach = GUI.Attachment()
+            self._debugsound_attach.component = self._debugsound_textnode
+            self._debugsound_attach.faceCamera = True
+            self.model.root.attach(self._debugsound_attach)
+            radius = self.get_config(Cfg.IDLESOUNDRADIUS)
+            self.model_radius = BigWorld.Model('models/Test/cylinder_1m.model')
+            self.model_radius.empty = 'Default'
+            self.model_radius.scale = (radius, 0.2, radius)
+            self.model_radius.newScaleTest = (radius, 0.2, radius)
+            self.model.root.attach(self.model_radius)
+            self._update_debug_text()
+            self.__timer_debug()
+        elif self._debugsound_attach and not DEBUG_SOUND:
+            self._clear_debug_attaches()
+
+    def _showSoundDebug(self, sound_path, duration, sound):
+        if not DEBUG_SOUND:
+            return
+        self._debug_sound_list.insert(0, [time.time() + duration, sound_path, sound])
+        self._update_debug_text()
+
+    def _update_debug_text(self):
+        if not DEBUG_SOUND:
+            return
+        if not self._debugsound_attach:
+            return
+        height_text = 0.3
+        size_y = 0
+        text = ''
+        if self._debug_sound_list:
+            cur_time = time.time()
+            for elem in self._debug_sound_list[:]:
+                end_time, sound_path, sound = elem
+                lost_time = end_time - cur_time
+                if lost_time < -3:
+                    self._debug_sound_list.remove(elem)
+                    continue
+                state = ''
+                lost_time_str = '[stop]'
+                color = '\\c101010FF;'
+                if lost_time > 0:
+                    color = '\\c0000ffFF;'
+                    lost_time_str = '%.2f' % lost_time
+                if sound._fsound:
+                    color = '\\c00ff00FF;'
+                elif lost_time > 0:
+                    color = '\\cff0000FF;'
+                text += '%s %s %s %s\n' % (color,
+                 lost_time_str,
+                 sound_path,
+                 state)
+                size_y += height_text
+
+        if not self.soundsPersist:
+            text += '\\cffff00FF;--- no persist sound ---\n'
+            size_y += height_text
+        else:
+            size_y += height_text * len(self.soundsPersist)
+            for s in self.soundsPersist.values():
+                if s._fsound.isVirtual:
+                    text += '\\cff0000FF; %s[VIRTUAL]' % s.sound_path
+                else:
+                    text += '\\c00ff00FF;%s' % s.sound_path
+                text += '\n'
+
+        size = (0.01, size_y)
+        self._debugsound_textnode.text = text
+        self._debugsound_textnode.size = size
+
+    def __timer_debug(self):
+        if not DEBUG_SOUND:
+            return
+        if self.isDestroyed:
+            return
+        if not self._debugsound_textnode:
+            return
+        BigWorld.callback(0.1, self.__timer_debug)
+        self._update_debug_text()
+
+    def onCueFootTriggered(self, event_type, position, sound):
+        if not DEBUG_SOUND:
+            return
+
+        class DebFootSound:
+
+            def __init__(self, entity, event_type, position, sound):
+                self.entity = entity
+                self._time_end = time.time()
+                destroy_after = 5.0
+                if sound and sound.duration > 0:
+                    self._time_end += sound.duration
+                    destroy_after = sound.duration + 1.0
+                BigWorld.callback(destroy_after, self.destroy)
+                self._m = BigWorld.Model('models/bolvan/sphere.model')
+                if position:
+                    self._m.position = position
+                else:
+                    self._m.position = self.entity.position
+                self._m.newScaleTest = (0.2, 0.2, 0.2)
+                BigWorld.addModel(self._m)
+                self._textnode = self._getTextNode()
+                self._attach = GUI.Attachment()
+                self._attach.component = self._textnode
+                self._attach.faceCamera = True
+                self._m.root.attach(self._attach)
+                if not sound:
+                    self._textnode.text = u'\\cff0000FF;no sound  %s\n' % self.entity.getSoundByType(event_type)
+                elif not position:
+                    self._textnode.text = u'\\cff0000FF;no collide  %s\n' % self.entity.getSoundByType(event_type)
+                else:
+                    self._sound = sound
+                    self._update()
+
+            def _update(self):
+                if not self.entity:
+                    return
+                if not self._sound:
+                    return
+                if self.entity.isDestroyed:
+                    return
+                if self._sound._fsound:
+                    if self._sound._fsound.isVirtual:
+                        self._textnode.text = u'\\cAA0000FF;%s[VIRT]\n' % self._sound.sound_path
+                    else:
+                        t = self._time_end - time.time()
+                        self._textnode.text = u'\\c00aa00FF;%.1f %s\n' % (t, self._sound.sound_path)
+                else:
+                    self._textnode.text = u'\\c101010FF;%s\n' % self._sound.sound_path
+                BigWorld.callback(0.1, self._update)
+
+            def _getTextNode(self):
+                textnode = GUI.Text('xxx\n')
+                textnode.explicitSize = True
+                textnode.colourFormatting = True
+                textnode.multiline = True
+                textnode.size = (0.01, 0.3)
+                textnode.colour = (255, 255, 255, 255)
+                textnode.filterType = 'LINEAR'
+                textnode.verticalAnchor = 'BOTTOM'
+                textnode.position = (0, 0.2, 0)
+                return textnode
+
+            def destroy(self):
+                self._sound = None
+                self.entity = None
+                self._textnode = None
+                self._attach = None
+                BigWorld.delModel(self._m)
+                self._m = None
+                return
+
+        DebFootSound(self, event_type, position, sound)
+
+    def _clear_debug_attaches(self):
+        self._debug_sound_list = []
+        if not self._debugsound_attach:
+            return
+        else:
+            try:
+                self.model.root.detach(self._debugsound_attach)
+            except:
+                traceback.print_exc()
+
+            try:
+                self.model.root.detach(self.model_radius)
+            except:
+                traceback.print_exc()
+
+            self._debugsound_attach.component = None
+            self._debugsound_attach = None
+            self._debugsound_textnode = None
+            self.model_radius = None
+            return
+
+    def posFilterOn(self):
+        pass
+
+    def posFilterOff(self):
+        if hasattr(self, '_lines_holder'):
+            self._lines_holder.clear()
+
+    def postitionFilter(self, point0, point1, point2, point3, point4, point5, dist_mean, num_points, normal):
+        if self.model and BigWorld.player().debugEnabled:
+            from draw_utils_extend import LinesHolder
+            if not hasattr(self, '_lines_holder'):
+                self._lines_holder = LinesHolder(max_lines=0)
+            self._lines_holder.clear()
+            self._lines_holder.add(self.position, self.position + normal, (255, 255, 255, 255), True)
+            self._lines_holder.add(point0, point2, (0, 255, 0, 255), True)
+            self._lines_holder.continue_line(point4, (0, 255, 0, 255), True)
+            self._lines_holder.continue_line(point0, (0, 255, 0, 255), True)
+            self._lines_holder.add(point1, point3, (255, 0, 0, 255), True)
+            self._lines_holder.continue_line(point5, (255, 0, 0, 255), True)
+            self._lines_holder.continue_line(point1, (255, 0, 0, 255), True)
+        return dist_mean
+
+    def __repr__(self):
+        if self.isDestroyed:
+            return 'Creature[%s]Destroyed' % self.id
+        pos = readable_space_pos(self)
+        return 'Creature[{0}] at {1} Type: {2}/{3!r}/{4} '.format(self.id, pos, self.creatureType, self.creatureSubType, self.level)
+
+    def updateFilterParam(self):
+        if not self.filter or not hasattr(self.filter, 'minRoll'):
+            return
+        minRoll, maxRoll = self.get_roll_param()
+        minPitch, maxPitch = self.get_pitch_param()
+        self.setAlingToGround(True)
+        self.filter.smart_filter = bool(self.get_config(Cfg.ALING_TO_GROUND_SMART))
+        self.filter.cacheTime = 1500 + random.randint(1000, 2000)
+        self.filter.collideDist = self.get_collide_distance()
+        self.filter.blendRatio = 0.5
+        self.filter.checkRadius = self.get_radius_model()
+        self.filter.minRoll = minRoll * pi / 180
+        self.filter.minPitch = minPitch * pi / 180
+        self.filter.maxRoll = maxRoll * pi / 180
+        self.filter.maxPitch = maxPitch * pi / 180
+
+    def prerequisites(self):
+        paths = self.get_all_state_models()
+        _prereq = paths
+        return _prereq
+
+    def is_default_model(self, model_path):
+        return self.model.sources[0] == model_path
+
+    def onEnterWorld(self, prereqs):
+        if self.get_model_path() not in prereqs.failedIDs:
+            try:
+                self.model = prereqs[self.get_model_path()]
+            except Exception as err:
+                print 'AHTUNG! error load model %r' % self.get_model_path(), self
+                print err
+                traceback.print_exc()
+                print 'prereqs.failedIDs:', prereqs.failedIDs
+                print 'prereqs.keys:', prereqs.keys()
+                model_path = self.get_model_path()
+                print 'LOAD CREATURE MODEL MAIN THREAD :%r' % model_path, self
+                self.model = BigWorld.Model(model_path)
+                print 'END LOAD MODEL'
+                print
+
+        else:
+            print 'AHTUNG! %s  model in failedIDs' % self, self.get_model_path()
+            print 'prereqs.failedIDs:', prereqs.failedIDs
+            model = BigWorld.Model('models/misc/system/MobSpawnPoint.model')
+            model.position = self.position
+            self.addModel(model)
+        self.on_model_changed()
+        self.checkDecomposed()
+        IdleSoundRadius = self.get_config(Cfg.IDLESOUNDRADIUS)
+        self._idle_soundpot = BigWorld.addPot(self.matrix, IdleSoundRadius, self.idleSoundTrap)
+        self._set_current_state(self.state, fix_dead=False)
+        self.checkBleeding()
+        Skills.onEnterWorld(self, prereqs)
+        Woundable.onEnterWorld(self)
+        BurnInterface.onEnterWorld(self)
+        self.updateDebugSoundMode()
+        CreatureStipple.onEnterWorld(self)
+        for cue, sound in self.get_cue_sounds().items():
+            try:
+                self.model.cue(cue, partial(self._got_que, sound))
+            except:
+                print "Creature (ERROR): can't find cure named", [cue, sound], self
+                print traceback.format_exc()
+
+        if self.dead and self.get_config(Cfg.FLY_CORPS_SFX):
+            BigWorld.callback(1.0, self._createFlyCorps)
+
+    def on_model_changed(self):
+        action_matcher = self.model.motors[0]
+        action_matcher.entityCollision = 0
+        action_matcher.collisionRooted = 0
+        action_matcher.collisionHeight = self.get_height()
+        action_matcher.collisionRadius = self.get_width() * 0.5
+        action_matcher.collisionMoveSpeed = 2.0
+        action_matcher.turnModelToEntity = self.get_config().get('turn_enable', False)
+        action_matcher.bodyTwistSpeed = self.get_config().get('turn_speed', 21.0)
+        scale = self.get_config(Cfg.MODEL_SCALE)
+        self.model.scale = Vector3(scale, scale, scale)
+        self.model.newScaleTest = Vector3(scale, scale, scale)
+        self.bbRadius = (self.get_height() + self.get_width()) * scale * 1.5
+        try:
+            if scale > 0:
+                self.model.moveScale = 1.0 / scale
+                self.model.motors[0].matchModelScale = True
+                self.model.motors[0].matchModelScaleInv = True
+        except:
+            traceback.print_exc()
+
+        self.set_normal_tint()
+        footSoundPath = self.get_config(Cfg.FOOTSTEPS_SOUND)
+        fallSoundPath = self.get_config(Cfg.FALL_SOUND)
+        CreatureFootsteps.createCueFootSteps(self, footSoundPath, fallSoundPath)
+        if self.get_config(Cfg.ATTACK_TRANSPORT):
+            CreatureAttackHits.initAttackTransportCues(self, self.get_config(Cfg.TRANSPORT_HIT_SFX))
+        self.model.motors[0].errorStringNotifier = self.AM_errorStringNotifier
+        if self.isDecomposed:
+            self.model.visible = False
+        if self.dead and not self.isDecomposed:
+            self.model.isCalcBoundBoxFromNodes = 1
+            if not self.looted or self.CarryingItems:
+                self.targetCaps = [CAP_CAN_OPEN_AND_EXPLORE]
+            else:
+                Lootable.set_max_butch_tint(self)
+        self.setAlingToGround(True)
+        try:
+            self.add_collider()
+        except:
+            print '\nERROR FOR ', self
+            traceback.print_stack()
+            traceback.print_exc()
+
+    def apply_spots(self, tint_name, tint_value):
+        spots_cfg = self.get_config(Cfg.RANDOM_SPOTS)
+        if not spots_cfg:
+            return
+        elif tint_value == 'Default':
+            return
+        else:
+            random.seed(self.id + self.spaceID)
+            try:
+                tint = getattr(self.model, tint_name, None)
+                if tint:
+                    for key, python_key in (('rotation', '_Grad_angle1'),
+                     ('scale', '_scale1'),
+                     ('vertical_shift', '_shiftY1'),
+                     ('horizontal_shift', '_shiftX1')):
+                        value = spots_cfg.get(key)
+                        if value:
+                            setattr(tint, python_key, Vector4(random.uniform(*value), 0, 0, 0))
+
+            except:
+                print '\nCreature (ERROR): wrong spots', self
+                print ' model=', self.model.sources
+                print ' tint_name=', repr(tint_name)
+                print ' tint_value=', repr(tint_value)
+                traceback.print_exc()
+                print
+
+            random.seed()
+            return
+
+    def set_normal_tint(self):
+        tints_cfg = self.get_config(Cfg.TINTS)
+        if tints_cfg and tints_cfg[self.tint_id]:
+            for tint_name, tint_value in tints_cfg[self.tint_id].items():
+                try:
+                    self.model.__setattr__(tint_name, tint_value)
+                    self.apply_spots(tint_name, tint_value)
+                except:
+                    print '\nCreature (ERROR): set_normal_tint', self
+                    print ' model=', self.model.sources
+                    print ' tint_name=', repr(tint_name)
+                    print ' tint_value=', repr(tint_value)
+                    traceback.print_exc()
+                    print
+
+        else:
+            dye_list = self.get_butch_dye()
+            if dye_list:
+                for dye_name in dye_list:
+                    dye_name = str(dye_name)
+                    tint = getattr(self.model, dye_name).tint
+                    if tint.endswith('_corpse'):
+                        tint = tint.replace('_corpse', '')
+                    self.model.__setattr__(dye_name, tint)
+                    self.apply_spots(dye_name, tint)
+
+    def get_butch_tint(self):
+        tint_list = self.get_butch_dye()
+        if not tint_list:
+            return 'Default'
+        tint_name = tint_list[0]
+        tints_cfg = self.get_config(Cfg.TINTS)
+        if tints_cfg and tints_cfg[self.tint_id]:
+            tint = tints_cfg[self.tint_id].get(tint_name)
+            if not tint:
+                raise ValueError('ERROR not found butch tint [{0}]. MOB[{1}]'.format(tint_name, self))
+        else:
+            tint = getattr(self.model, tint_name).tint
+        return tint
+
+    def get_butch_dye(self):
+        return [ str(i) for i in self.get_config(Cfg.BUTCH_DYE) ]
+
+    def _got_que(self, sound_name):
+        if not self.isDestroyed and self.model:
+            sound = playSound(sound_name, self.model, self.get_sfx_volume())
+            sound.set_pitch(self.get_pitch())
+
+    def recompose(self):
+        self._end_live = False
+        self.clear_blood(1.0, True)
+        self.filter.reset()
+        self.set_normal_tint()
+        BigWorld.callback(0.01, self.playSfxRecompose)
+        self._idleSoundTrap()
+
+    def playSfxRecompose(self):
+        if self.isDestroyed:
+            return
+        sfx_name = self.get_config(Cfg.RECOMPOSE_SFX)
+        if sfx_name:
+            FX.bufferedOneShotEffect(sfx_name, self.model)
+
+    def AM_errorStringNotifier(self, string):
+        msg = unicode(string)
+        caps = '    caps:\n'
+        import AnimationCaps
+        for cap_id in self.model.motors[0].matchCaps:
+            caps += '%s: %s\n' % (cap_id, AnimationCaps.getCapNameById(cap_id))
+
+        msg += '     ' + caps
+        print '----- ', self, self.model.sources
+        print msg.encode('utf-8')
+
+    def get_looting_types(self):
+        return self.get_config(Cfg.LOOTING_TYPES)
+
+    def get_effect_hips_name(self):
+        return self.get_config(Cfg.EFFECT_HIPS)
+
+    def get_hips_offset(self):
+        return tuple(self.get_config(Cfg.HIPS_OFFSET))
+
+    def get_cue_sounds(self):
+        return self.get_config(Cfg.CUE_SOUNDS)
+
+    def get_roll_param(self):
+        config = self.get_state_config().get(Cfg.ROLL_PARAM)
+        if not config:
+            return self.get_config(Cfg.ROLL_PARAM)
+        return config
+
+    def get_collide_distance(self):
+        return self.get_config(Cfg.COLLIDE_DIST)
+
+    def get_pitch_param(self):
+        config = self.get_state_config().get(Cfg.PITCH_PARAM)
+        if not config:
+            return self.get_config(Cfg.PITCH_PARAM)
+        return config
+
+    def get_radius_model(self):
+        return self.get_config(Cfg.RADIUS_MODEL) * self.get_config(Cfg.MODEL_SCALE)
+
+    def _apply_caps(self, caps, fix_dead = True):
+        caps = list(caps)
+
+        def _apply():
+            if self.isDestroyed:
+                return
+            self.model.motors[0].matchCaps = list(caps)
+            self._apply_caps_id = 0
+
+        if getattr(self, '_apply_caps_id', 0):
+            BigWorld.cancelCallback(self._apply_caps_id)
+        if fix_dead and 5 in caps:
+            self._apply_caps_id = BigWorld.callback(0.2, _apply)
+            return
+        _apply()
+
+    def get_all_state_models(self):
+        result = [self.get_model_path()]
+        states = self.get_config(Cfg.STATES)
+        for state in states.values():
+            model = state.get('model', None)
+            if not model:
+                continue
+            model_path = str(Cfg.MODELS_ROOT + model)
+            if model_path not in result:
+                result.append(model_path)
+
+        return result
+
+    def _change_state_model(self, new_state, callback):
+        new_state_config = self.get_config(Cfg.STATES)[new_state]
+        new_model = new_state_config.get('model', None)
+
+        def on_load(model):
+            section = None
+            if self.model:
+                section = ResMgr.DataSection('saved_action_queue')
+                self.model.saveActionQueue(section)
+            self.model = model
+            if section:
+                self.model.restoreActionQueue(section)
+            self.on_model_changed()
+            callback()
+            return
+
+        model_path = self.get_model_path() if not new_model else str(Cfg.MODELS_ROOT + new_model)
+        if self.is_default_model(model_path):
+            callback()
+            return
+        else:
+            BigWorld.fetchModel(model_path, on_load)
+            return
+
+    def _set_current_state(self, new_state, fix_dead = True):
+        """Direct state change."""
+        new_state_config = self.get_config(Cfg.STATES)[new_state]
+        self._apply_caps(new_state_config['caps'], fix_dead=fix_dead)
+        is_random = new_state_config.get('actions_random', False)
+        if is_random:
+            persistent_actions = new_state_config.get('persistent_actions', [])
+            if persistent_actions:
+                self.do_named_action(random.choice(persistent_actions))
+        else:
+            for action in new_state_config.get('persistent_actions', []):
+                self.do_named_action(action)
+
+        self.current_state = new_state
+        self.name = self.get_name()
+
+    def set_attack_active_target_id(self, old_value):
+        Skills.set_attack_active_target_id(self, old_value)
+        self.update_filter_use_player_pos()
+
+    def update_filter_use_player_pos(self):
+        distance = self.get_config(Cfg.DISTANCE_USE_TARGET_FILTER)
+        if distance:
+            use_plpos = self.attack_active_target_id == BigWorld.player().id
+            not use_plpos and self._pot_playerpos and BigWorld.delPot(self._pot_playerpos)
+            self._pot_playerpos = 0
+            self.filter.useTargetPosition = False
+            self.filter.targetMatrix = None
+        elif use_plpos and not self._pot_playerpos:
+            self._pot_playerpos = BigWorld.addPot(self.matrix, distance, self._onPlayerInsideFilter)
+        return
+
+    def _onPlayerInsideFilter(self, enteredTrap, handle):
+        if enteredTrap:
+            self.filter.useTargetPosition = True
+            self.filter.targetMatrix = BigWorld.player().matrix
+        else:
+            self.filter.useTargetPosition = False
+            self.filter.targetMatrix = None
+        return
+
+    def set_state(self, old_state):
+
+        def test_state():
+            if self.isDestroyed:
+                return
+            if self.state != self.current_state:
+                print 'FIX state', self, '%s -> %s' % (self.get_creature_state_name(self.current_state), self.get_creature_state_name(self.state))
+                self.change_state(self.current_state, self.state)
+
+        BigWorld.callback(0.1, test_state)
+
+    def change_state(self, prev_state, new_state):
+        """Start state transition."""
+        if prev_state != self.current_state:
+            prev_state_config = self.get_state_config(prev_state)
+            entering_data = prev_state_config.get('entering_actions', {})
+            for action in entering_data.get('actions', []):
+                self.get_action(action).cancel_callbacks()
+
+            for action in prev_state_config.get('persistent_actions', []):
+                self.stop_named_action(action)
+
+        if self.state_transition_callback is not None:
+            BigWorld.cancelCallback(self.state_transition_callback)
+            self.state_transition_callback = None
+        curr_state_config = self.get_state_config(self.current_state)
+        self.current_state = new_state
+        self.updateFilterParam()
+        entering_data = curr_state_config.get('entering_actions', {})
+        for action in entering_data.get('actions', []):
+            self.get_action(action).cancel_callbacks()
+
+        for action in curr_state_config.get('persistent_actions', []):
+            self.stop_named_action(action)
+
+        trans_data = hierarchy_get(curr_state_config, ['transitions', new_state])
+        if trans_data and trans_data['time'] > 0:
+            for action in trans_data['actions']:
+                self.do_named_action(action, duration=trans_data['time'])
+
+            self.state_transition_callback = BigWorld.callback(trans_data['time'], partial(self._init_new_state, new_state))
+        else:
+            self._init_new_state(new_state)
+        return
+
+    def changeVisibleEffect(self, effect):
+        added_new_effect = Effects.changeVisibleEffect(self, effect)
+        self.addEffectSFX(effect['id'])
+
+    def removeVisibleEffect(self, effectId):
+        Effects.removeVisibleEffect(self, effectId)
+        self.removeEffectSFX(effectId)
+
+    def setAlingToGround(self, value):
+        if self.model:
+            self.model.motors[0].useEntityPitchAndRoll = value
+        if self.filter:
+            self.filter.alignToGround = value
+
+    @if_not_destroyed
+    def __action_ended(self, callbacks_needed, new_state, action):
+        self.__action_played += 1
+        if self.__action_played >= callbacks_needed:
+            self._set_current_state(new_state)
+
+    @if_not_destroyed
+    def _init_new_state(self, new_state):
+        new_state_config = self.get_state_config(new_state)
+
+        def on_load_cb():
+            entering_data = new_state_config['entering_actions']
+            if entering_data and entering_data['time'] > 0:
+                callbacks_needed = len(entering_data['actions'])
+                self.__action_played = 0
+                for action in entering_data['actions']:
+                    self.do_named_action(action, duration=entering_data['time'], callback=partial(self.__action_ended, callbacks_needed, new_state, action))
+
+            else:
+                self._set_current_state(new_state)
+
+        self._change_state_model(new_state, on_load_cb)
+
+    def get_action(self, action_name):
+        try:
+            return self.actions[action_name]
+        except KeyError:
+            self.actions[action_name] = CreatureFXAction(self, action_name)
+            return self.actions[action_name]
+
+    def do_named_action(self, action_name, duration = None, callback = None):
+        try:
+            self.get_action(action_name).run(duration, callback)
+        except:
+            print self, self.model, 'action=%s' % action_name, self.model.sources
+            raise
+
+    def stop_named_action(self, action_name):
+        try:
+            self.get_action(action_name).stop()
+        except:
+            print self, self.model, 'action=%s' % action_name, self.model.sources
+            raise
+
+    def event_fired(self, event_name):
+        for action_name in self.get_config(Cfg.EVENTS).get(event_name, []):
+            self.do_named_action(action_name)
+
+    def create_skill(self, skill_id):
+        skill_cfg = self.get_skill_config(skill_id)
+        if skill_cfg[Cfg.SKILL_TYPE] == SkillsTypes.TELEPORT:
+            skill = TeleportSkill(self, skill_cfg.get('ignore_tracking'), cfg=skill_cfg)
+        else:
+            skill = Skill(self, skill_cfg.get('ignore_tracking'), cfg=skill_cfg)
+        for action_name in skill_cfg['actions']:
+            skill.add_action(action_name)
+
+        if skill_cfg.get('tracker'):
+            skill.add_override_tracker(skill_cfg['tracker'])
+        waves = skill_cfg.get('waves_damage') or []
+        for wave_config in waves:
+            wave = {'sfx': wave_config.get('sfx'),
+             'direct': wave_config.get('direct'),
+             'abilities': wave_config.get('abilities')}
+            skill.add_wave(wave)
+
+        return skill
+
+    def add_collider(self):
+        Victim.add_collider(self)
+        count = 0
+        for box_cfg in self.get_config(Cfg.COLLIDERS):
+            count += 1
+            if box_cfg[COLLIDER_BOX_NAME] in self.colliderNames:
+                box_cfg[COLLIDER_BOX_NAME] = box_cfg[COLLIDER_BOX_NAME] + '__box_%s' % count
+            transform = box_cfg[COLLIDER_TRANSFORM] if box_cfg.has_key(COLLIDER_TRANSFORM) else None
+            if self.get_config(Cfg.HITBOX_FIX) == 'repey':
+                transform = self._fix_collider_matrix_repey(transform)
+            elif self.get_config(Cfg.HITBOX_FIX) == 'draug':
+                transform = self._fix_collider_matrix_draug(transform)
+            self.attach_collider_box(box_cfg[COLLIDER_BOX_NAME], box_cfg[COLLIDER_NODE_NAME], box_cfg[COLLIDER_BODY_ZONE], box_cfg[COLLIDER_MIN_BOUNDS], box_cfg[COLLIDER_MAX_BOUNDS], transform)
+
+        return
+
+    def _fix_collider_matrix_draug(self, transform):
+        if transform is None:
+            return
+        else:
+            transform = Matrix(transform)
+            m_fix = Matrix()
+            m_fix.setScale((10, 10, 10))
+            transform.preMultiply(m_fix)
+            m_fix = Matrix()
+            m_fix.setRotateYPR((0, 3.24, pi))
+            transform.postMultiply(m_fix)
+            return transform
+
+    def _fix_collider_matrix_repey(self, transform):
+        if transform is None:
+            return
+        else:
+            transform = Matrix(transform)
+            m_fix = Matrix()
+            m_fix.setRotateYPR((0, -pi, pi))
+            transform.postMultiply(m_fix)
+            return transform
+
+    def debugReloadHitBoxs(self):
+        import os
+        import BWPersonality
+        file_name = self.get_config(Cfg.HITBOX_PATH)
+        config_path = 'characters/creatures/' + file_name
+        print config_path
+        full_path = os.path.dirname(os.getcwd()) + '/res/' + config_path
+        data = open(full_path).read().replace('<bodyZone>\t</bodyZone>', '<bodyZone> TORSO </bodyZone>')
+        with open(full_path, 'w') as f:
+            f.write(data)
+        ResMgr.purge(config_path)
+        Cfg.load_and_cache_creatures()
+        self.add_collider()
+        BWPersonality.gpd.sendHightMessage('reload conf: %s' % config_path)
+
+    def debugReloadModel(self):
+        sources = self.model.sources
+        print 'sources', sources
+        for x in sources:
+            ResMgr.purge(x, 1)
+            ResMgr.purge(x.replace('.model', '.visual'), 1)
+            ResMgr.purge(x.replace('.model', '.primitives'), 1)
+
+        self.model.reloadModel()
+        path = self.get_model_path()
+        print 'path', repr(path)
+        self.onLeaveWorld()
+        if self.model:
+            self.model = None
+        BigWorld.Model(path).reloadModel()
+
+        class PREQ(dict):
+            failedIDs = []
+
+        preq = PREQ({path: BigWorld.Model(path)})
+        self.onEnterWorld(preq)
+        self.debugReloadActions()
+        import BWPersonality
+        BWPersonality.gpd.sendHightMessage('reload model: %s' % self)
+        return
+
+    def debugReloadActions(self):
+        basemodel_path = self.model.sources[0]
+        ResMgr.purge(basemodel_path)
+        self.model.motors[0].debugRelaodActtion(basemodel_path)
+        import BWPersonality
+        BWPersonality.gpd.sendHightMessage('reload actions: %s' % basemodel_path)
+
+    def _onEndFadeOut(self, model):
+        if self.isDestroyed:
+            return
+        if self.isDecomposed:
+            self.model.visible = False
+
+    def _fadeOutModel(self):
+        if self.isDestroyed:
+            return
+        else:
+            delay = self.get_decompose_fadeouttime()
+            distance = BigWorld.camera().position.distTo(self.position)
+            if delay > 0 and distance < 150 and self._model_root and self._model_root.isActualCoords:
+                creature_fader.enable(self.model, self._onEndFadeOut, delay)
+            else:
+                self.model.visible = False
+            self._model_root = None
+            sfx_name = self.get_config(Cfg.DECOMPOSE_SFX)
+            if self._end_live:
+                if not self.get_config(Cfg.DECOMPOSE_ENDLIVE_SFX):
+                    sfx_name = sfx_name
+                sfx_name and SFXer.playSFX(sfx_name, self.model.position + (0, 0.1, 0))
+            return
+
+    def _showModel(self):
+        if self.isDestroyed:
+            return
+        if self.isDecomposed:
+            return
+        self.model.visible = True
+
+    def checkDecomposed(self):
+        if self.isDecomposed:
+            if self.model.visible:
+                self._model_root = self.model.root
+                BigWorld.callback(0.01, self._fadeOutModel)
+            BigWorld.player().NeedToCloseItemCache(self)
+            self.stopSounds()
+            self.targetCaps = []
+            self.model.isCalcBoundBoxFromNodes = 0
+            if self.dead:
+                self.targetCaps = [CAP_EXCLUDE]
+        else:
+            creature_fader.cancelModel(self.model)
+            BigWorld.callback(0.1, self._showModel)
+
+    def onLeaveWorld(self):
+        Skills.onLeaveWorld(self)
+        CreatureFootsteps.clearCueFootSteps(self)
+        if self.get_config(Cfg.ATTACK_TRANSPORT):
+            CreatureAttackHits.clearCueHits(self, self.get_config(Cfg.TRANSPORT_HIT_SFX))
+        Woundable.onLeaveWorld(self)
+        CreatureStipple.onLeaveWorld(self)
+        self.stopSounds()
+        self.soundsPersistNames.clear()
+        if self._idle_soundpot:
+            BigWorld.delPot(self._idle_soundpot)
+        if self._pot_playerpos:
+            BigWorld.delPot(self._pot_playerpos)
+        self._clear_debug_attaches()
+        creature_fader.cancelModel(self.model)
+        BurnInterface.stopBurn(self)
+        if inRange(self, BigWorld.player(), Constants.INTERACTION_DISTANCE ** 2):
+            BigWorld.player().NeedToUpdateItemCache()
+        self.filter.targetMatrix = None
+        for cue, sound in self.get_cue_sounds().items():
+            self.model.cue(cue, None)
+
+        self._clearFlyCorps()
+        self.model = None
+        self._model_root = None
+        return
+
+    def set_isDecomposed(self, b):
+        self.checkDecomposed()
+        self._clearFlyCorps()
+
+    def on_death(self, source_data, item_type, noSound = False):
+        Skills.on_death(self)
+        Victim.on_death(self, source_data, item_type)
+        Bleeding.on_death(self)
+        self.stopSounds()
+        self.soundsPersistNames.clear()
+
+    def on_damaged(self, source_data, damagetaken_data):
+        Victim.on_damaged(self, source_data, damagetaken_data)
+        if source_data['type'] == SourceTypes.EFFECT:
+            self.bleed_on_effect(source_data, damagetaken_data)
+            return
+        self.bleed_on_damage(source_data, damagetaken_data)
+        if not self.is_dead():
+            self.event_fired(Cfg.EV_ON_TAKE_DAMAGE)
+        CreatureStipple.onDamaged(self, source_data, damagetaken_data)
+
+    def onBoarHit(self, damager):
+        pass
+
+    def blood_sfx_on_damage(self, damage_source, damagetaken_data):
+        if damagetaken_data.has_key('ammo_type'):
+            ammo_type = damagetaken_data['ammo_type']
+        else:
+            ammo_type = None
+            damager = BigWorld.entities.get(damage_source['entity_id'])
+            if damager:
+                ammo_type = damager.get_ammo_type()
+            else:
+                return
+        return self.get_bleed_sfx(damagetaken_data['body_zone'], ammo_type)
+
+    def get_blood_drip_sfx(self):
+        return 'sfx/hits/bleed_red_decal.xml'
+
+    def bleed_on_effect(self, damage_source, damagetaken_data):
+        sfx_name = self.get_config(Cfg.BLEED_EFFECT_SFX)
+        if not sfx_name:
+            return
+        blood_rel_pos = self.blood_rel_pos(damagetaken_data['body_zone']) + self.position
+        bloodvector = (0.01, -1, 0.01)
+        self.bleedglobal(blood_rel_pos, bloodvector, sfx_name)
+
+    def bleed_on_damage(self, damage_source, damagetaken_data):
+        if damage_source['entity_id'] == BigWorld.player().id:
+            return
+        if self.is_sfx_damager_locked(damage_source['entity_id']):
+            return
+        damager = BigWorld.entity(damage_source['entity_id'], True)
+        blood_rel_pos = self.blood_rel_pos(damagetaken_data['body_zone']) + self.position
+        if damager:
+            bloodvector = self.position - damager.position + blood_rel_pos - (0.01, 1, 0.01)
+            damager_pos = damager.position + (0.01, 1, 0.01)
+            damager_dir = blood_rel_pos - damager_pos
+            doCollide = self.skeletonCollider.doCollide(damager_pos, damager_dir)
+            if doCollide:
+                blood_rel_pos = self.skeletonCollider.impactPoint
+        else:
+            bloodvector = (0.01, 1, 0.01)
+        sfx_id = self.blood_sfx_on_damage(damage_source, damagetaken_data)
+        self.bleedglobal(blood_rel_pos, bloodvector, sfx_id)
+
+    def stopSoundCreature(self, soundPath):
+        if STOP_SOUND_PERSIST:
+            if soundPath in self.soundsPersistNames:
+                self.soundsPersistNames.remove(soundPath)
+            sound = self.soundsPersist.pop(soundPath, None)
+            if sound:
+                sound.stop()
+                sound.releaseSound()
+        return
+
+    def _addPersistSound(self, soundPath, sound):
+        if not self._idleSoundInside:
+            return
+        if self.dead or self.isDecomposed:
+            return
+        if soundPath in self.soundsPersist:
+            return
+        self.soundsPersist[soundPath] = sound
+        sound.play()
+        return True
+
+    def playSoundCreature(self, soundPath, model):
+        if not self.model:
+            return
+        elif not soundPath:
+            return
+        elif soundPath in self.soundsPersist:
+            return
+        elif soundPath in self.soundsPersistNames:
+            return
+        else:
+            try:
+                sound = getSound(soundPath, volumeFactor=self.get_sfx_volume(), model=self.model)
+            except Exception:
+                traceback.print_exc()
+                print 'soundPath', soundPath
+                return
+
+            if sound is None:
+                return
+            if sound.duration < 0:
+                self.soundsPersistNames.add(soundPath)
+                if not self._addPersistSound(soundPath, sound):
+                    sound.releaseSound()
+                    return
+            elif not self.isDecomposed:
+                sound.play()
+            if DEBUG_SOUND:
+                self._showSoundDebug(soundPath, sound.duration, sound)
+            sound.set_pitch(self.get_pitch())
+            return sound
+
+    def _idleSoundTrap(self):
+        if not self._idleSoundInside:
+            self.stopSounds()
+        elif self.model:
+            for soundPath in self.soundsPersistNames:
+                try:
+                    sound = getSound(soundPath, volumeFactor=self.get_sfx_volume(), model=self.model)
+                except Exception:
+                    traceback.print_exc()
+                    print 'soundPath', soundPath
+                    continue
+
+                if sound:
+                    if self._addPersistSound(soundPath, sound):
+                        sound.set_pitch(self.get_pitch())
+
+    def idleSoundTrap(self, enteredTrap, handle):
+        if self.isDestroyed:
+            return
+        self._idleSoundInside = enteredTrap
+        self._idleSoundTrap()
+
+    def stopSounds(self):
+        for sound in self.soundsPersist.values():
+            if sound is not None:
+                sound.stop()
+                sound.releaseSound()
+
+        self.soundsPersist.clear()
+        return
+
+    def onTeleportCalled(self, teleport_type, expected_position):
+        self.filter = BigWorld.DumbFilter()
+
+    def onTeleportEnded(self, wasSuccessful, direction = None):
+        Skills.onTeleportEnded(self, wasSuccessful, direction)
+        self.filter = BigWorld.AvatarDropFilter()
+
+    def set_CarryingItems(self, old_value):
+        if inRange(self, BigWorld.player(), Constants.INTERACTION_DISTANCE ** 2):
+            BigWorld.player().NeedToUpdateItemCache()
+        items, _ = BigWorld.player().filterItemsWithoutQuests(self.CarryingItems)
+        if not items:
+            self.targetCaps = []
+            BigWorld.player().NeedToCloseItemCache(self)
+            self.model.isCalcBoundBoxFromNodes = 0
+            if self.dead:
+                self.targetCaps = [CAP_EXCLUDE]
+        elif self.dead and not self.isDecomposed:
+            self.targetCaps = [CAP_CAN_OPEN_AND_EXPLORE]
+            self.model.isCalcBoundBoxFromNodes = 1
+
+    def get_interaction_dist(self):
+        return self.get_config(Cfg.INTERACTION_DISTANCE)
+
+    def set_dead(self, old):
+        if self.dead and self.get_config(Cfg.FLY_CORPS_SFX):
+            BigWorld.callback(self.get_config(Cfg.FLY_CORPS_TIME), self._createFlyCorps)
+        else:
+            self._clearFlyCorps()
+        if self.dead:
+            self.targetCaps = not self.isDecomposed and (self.CarryingItems or self.looted and not not self.CarryingItems) and [CAP_CAN_OPEN_AND_EXPLORE]
+            self.name = self.get_name()
+            self.height = 1.0
+            self.model.isCalcBoundBoxFromNodes = 1
+        else:
+            BigWorld.player().NeedToCloseItemCache(self)
+            self.targetCaps = [CAP_EXCLUDE]
+            self.model.isCalcBoundBoxFromNodes = 0
+        self.onSetDead()
+
+    def _createFlyCorps(self):
+        if self.isDestroyed:
+            return
+        elif not self.dead:
+            return
+        elif self.isDecomposed:
+            return
+        elif getattr(self, '_fly_corps', None):
+            return
+        else:
+            loadPersistentExtBG(self.get_config(Cfg.FLY_CORPS_SFX), self._onLoadFlyCorps)
+            return
+
+    def _onLoadFlyCorps(self, fx_obj):
+        if self.isDestroyed:
+            return
+        elif not self.dead:
+            return
+        elif self.isDecomposed:
+            return
+        else:
+            raise not getattr(self, '_fly_corps', None) or AssertionError
+            self._fly_corps = fx_obj
+            self._fly_corps.attach(self.model)
+            self._fly_corps.go()
+            return
+
+    def _clearFlyCorps(self):
+        if not getattr(self, '_fly_corps', None):
+            return
+        else:
+            try:
+                self._fly_corps.stop()
+                self._fly_corps.detach()
+            except:
+                traceback.print_exc()
+
+            self._fly_corps = None
+            return
+
+    def water_callback(self, watered, water_volume):
+        if watered:
+            if self.water_listener_id:
+                BigWorld.delWaterVolumeListener(self.water_listener_id)
+            self.water_listener_id = None
+            avatars = [ (avatar, avatar.position.distSqrTo(self.position)) for avatar in BigWorld.entities.values() if isinstance(avatar, Avatar) ]
+            avatars.sort(key=lambda x: x[1])
+            if len(avatars) == 1 or BigWorld.player() in (avatars[0][0], avatars[1][0]):
+                self.cell.water_entered()
+        return
+
+    def burn(self, status):
+        BurnInterface.burn(self, status)
+        if status and not self.water_listener_id:
+            self.water_listener_id = BigWorld.addWaterVolumeListener(self.matrix, self.water_callback)
+        if not status and self.water_listener_id:
+            BigWorld.delWaterVolumeListener(self.water_listener_id)
+            self.water_listener_id = None
+        return
+
+    def onOpen(self, player):
+        self.cell.onOpenContainer()
+        return True
+
+    def onClose(self, player):
+        self.cell.onCloseContainer()
+
+    def set_isBleending(self, old_value):
+        self.checkBleeding()
+
+    def checkBleeding(self):
+        if self.isBleending:
+            self.bleedDropEff()
+        else:
+            self.removeBleedDropEff()
+
+    def setDefenceStat(self, defence):
+        pass
+
+    def get_wound_base_model_id(self):
+        return (self.creatureType, self.level)
+
+    def get_target_mark(self, distance):
+        if CAP_CAN_OPEN_AND_EXPLORE not in self.targetCaps:
+            return None
+        elif distance > self.get_interaction_dist():
+            return None
+        else:
+            return soInworldMarker.MARKER_USE
+
+    def getHeightContainer(self, *w, **kw):
+        return 0.1
+
+    def get_hightlight(self, distance):
+        if CAP_CAN_OPEN_AND_EXPLORE not in self.targetCaps:
+            return None
+        elif distance > Constants.HILITE_MARKS_DISTANCE:
+            return None
+        else:
+            return True
+
+    def playAnimationLiveEnd(self):
+        self.stopSounds()
+        self._end_live = True
+        if self.dead:
+            return
+        anim_list = self.get_config(Cfg.ENDLIVE_ANIMATION)
+        if not anim_list:
+            return
+        act = self.model
+        for action_name in anim_list:
+            act = getattr(act, action_name)()
+
+    def spawn_isolated_effect(self, sfx, position = None):
+        if not sfx:
+            return
+        m = BigWorld.Model('')
+        m.position = position or self.position
+        BigWorld.addModel(m)
+        FX.bufferedOneShotEffect(sfx, m)
+        BigWorld.callback(15.0, partial(BigWorld.delModel, m))
+
+    def on_start_panic(self):
+        escape_state_config = next((state for state in self.get_config(Cfg.STATES).values() if state.get('__name__') == 'escape'))
+        entering_data = escape_state_config.get('entering_actions', {})
+        if entering_data and entering_data['time'] > 0:
+            for action in entering_data['actions']:
+                self.do_named_action(action, duration=entering_data['time'])
+
+    def onCallFrends(self):
+        assist = self.get_config(Cfg.ASSIST)
+        model_actions = assist.get('model_actions', [])
+        sfx = assist.get('sfx')
+        if sfx:
+            FX.bufferedOneShotEffect(sfx, self.model)
+        for act in model_actions:
+            self.model.action(act)()
+
+    def get_observe_visible_quest_object_type(self):
+        return VOT.Creature
+
+    def get_observe_visible_quest_object_hash(self):
+        mob_subtype = Cfg.get_subtype_name(self.creatureType, self.level)
+        return CellListenerUtils.calc_visibleobject_hash(VOT.Creature, self.creatureType, mob_subtype)

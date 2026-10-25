@@ -1,0 +1,394 @@
+# Embedded file name: ./client/clanboard_gui/fract_win.py
+import Keys
+import BigWorld
+import GUI
+import BWPersonality
+from Helpers.PyGUI.PyGUIBase import PyGUIBase, DragWin
+from Helpers.PyGUI.Utils import pixelperfect_component
+from soGUI.soButton import soButton
+from Localization import lc
+from utils import Listenable
+import colorCodes as cc
+import rep_utils
+from base_to_capture_common.properties_loaders import BasesDataLoader
+from base_to_capture_common.utils import CHANGE_TRADER_FRACT_COST
+config = BasesDataLoader.get_instance()
+from soGUI.soScrollBar import soScrollBar2
+from math_bw import clamp
+from soGUI.soTextField import soTextField3
+
+class LineEventType:
+    OnEnter, OnLeft, OnDown = ((r, 'fractline') for r in range(3))
+
+
+class ScrollEventType:
+    OnSelectionChanged, = ((r, 'scrollfractline') for r in range(1))
+
+
+class Line(PyGUIBase, Listenable):
+    height = 22
+
+    def __init__(self, component):
+        PyGUIBase.__init__(self, component)
+        Listenable.__init__(self)
+        self._hovered = False
+        self._selected = False
+        self._enabled = False
+        self.component.script = self
+        self.component.crossFocus = True
+        self.component.moveFocus = True
+        self.component.mouseButtonFocus = True
+        self.component.visible = False
+        self.component.materialFX = 'BLEND'
+        comp = GUI.Text(u'', 'RobotoCondensedRegular_18.font')
+        comp.hpm, comp.vpm = ('PIXEL', 'CLIP')
+        comp.ha, comp.va = ('LEFT', 'CENTER')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = self.component.width, self.component.height
+        comp.position = (32, 0, 0.5)
+        self.component.addChild(comp, 'name')
+        comp = GUI.Window()
+        comp.hpm, comp.vpm = ('PIXEL', 'CLIP')
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = (18, 18)
+        comp.position = (8, 0, 0.5)
+        self.component.addChild(comp, 'button')
+
+    def initialize(self, fract_id):
+        self.fract_id = fract_id
+        self.component.name.text = rep_utils.get_name(fract_id)
+        self._update_visual()
+
+    def handleMouseEnterEvent(self, comp):
+        if self._enabled:
+            self.notify_listeners(LineEventType.OnEnter, self)
+        return False
+
+    def handleMouseLeaveEvent(self, comp):
+        if self._enabled:
+            self.notify_listeners(LineEventType.OnLeft, self)
+        return False
+
+    def _update_visual(self):
+        if not self._enabled:
+            self.component.name.colour = (255, 255, 255, 100)
+        elif self._selected:
+            self.component.name.colour = (255, 255, 255, 255)
+        else:
+            self.component.name.colour = (255, 255, 255, 200)
+        if self._enabled and self._hovered:
+            self.component.colour = (255, 255, 255, 50)
+        else:
+            self.component.colour = (255, 255, 255, 0)
+        if self._selected:
+            self.component.button.textureName = 'soGUI/frame/map/radiobuttonon.dds'
+        else:
+            self.component.button.textureName = 'soGUI/frame/map/radiobuttonoff.dds'
+
+    def set_enabled(self, value):
+        self._enabled = value
+        self._update_visual()
+
+    def set_hovered(self, value):
+        self._hovered = value
+        self._update_visual()
+
+    def set_selected(self, value):
+        self._selected = value
+        self._update_visual()
+
+    def handleMouseButtonEvent(self, comp, event):
+        if self._enabled:
+            if event.key == Keys.KEY_LEFTMOUSE and event.isKeyDown():
+                self.notify_listeners(LineEventType.OnDown, self)
+        return False
+
+
+class ScrollView(PyGUIBase, Listenable):
+
+    def __init__(self, component):
+        Listenable.__init__(self)
+        PyGUIBase.__init__(self, component)
+        self._visible_count = 10
+        self._lines = []
+        self.component.script = self
+        self.component.crossFocus = True
+        self.component.moveFocus = True
+        self.component.mouseButtonFocus = True
+        self.component.height = Line.height * self._visible_count
+        self._hovered = None
+        self._selected = None
+        comp = GUI.Window()
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('RIGHT', 'TOP')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.position = (self.component.width, 0, 0.5)
+        self._sb = soScrollBar2(comp, steps=5, height=self.component.height)
+        self._sb.setValue(0)
+        self._sb.setVisualState('normal')
+        self._sb.scrollUp = self._scroll_up
+        self._sb.scrollDown = self._scroll_down
+        self._sb.scrollMoved = self._scroll_moved
+        self._sb.onBound()
+        self.component.addChild(comp)
+        comp = GUI.Window()
+        comp.materialFX = 'SOLID'
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('LEFT', 'TOP')
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = self.component.width - 18, 330
+        comp.position = (0, 0, 0.5)
+        self.component.addChild(comp, 'view')
+        return
+
+    def _on_line_event(self, event_type, line):
+        if event_type == LineEventType.OnEnter:
+            self.hovered = line
+        elif event_type == LineEventType.OnLeft:
+            if self.hovered == line:
+                self.hovered = None
+        elif event_type == LineEventType.OnDown:
+            self.selected = line
+        return
+
+    def _set_scroll_value(self, value):
+        value = clamp(value, 0, self._sb.steps)
+        if self._sb.getValue() == value:
+            return
+        self._sb.setValue(value)
+        self.component.view.position[1] = -Line.height * value
+
+    def _create_line(self):
+        comp = GUI.Window('soGUI/frame/paint/white.dds')
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('LEFT', 'TOP')
+        comp.width, comp.height = self.component.view.width, Line.height
+        comp.position = (0, 0, 0.5)
+        self.component.view.addChild(comp)
+        line = Line(comp)
+        line.add_listener(self._on_line_event)
+        self._lines.append(line)
+
+    def activate_fractions(self, awailable_fractions, cur_fraction):
+        awailable_fractions = set(awailable_fractions)
+        for line in self._lines:
+            if line.fract_id in awailable_fractions:
+                line.set_enabled(True)
+            if line.fract_id == cur_fraction:
+                self.selected = line
+
+    def set_fractions(self, fractions):
+        count = len(fractions)
+        self._sb.setSteps(max(0, count - self._visible_count))
+        self.component.view.height = count * Line.height
+        self.hovered = None
+        self.selected = None
+        for line in self._lines:
+            line.component.visible = False
+
+        while len(self._lines) < count:
+            self._create_line()
+
+        for i, fract_id in enumerate(fractions):
+            line = self._lines[i]
+            line.component.position[1] = i * Line.height
+            line.component.visible = True
+            line.initialize(fract_id)
+            line.set_enabled(False)
+
+        return
+
+    @property
+    def selected(self):
+        return self._selected
+
+    @selected.setter
+    def selected(self, value):
+        if self._selected == value:
+            return
+        if self._selected:
+            self._selected.set_selected(False)
+        self._selected = value
+        if self._selected:
+            self._selected.set_selected(True)
+        self.notify_listeners(ScrollEventType.OnSelectionChanged)
+
+    @property
+    def hovered(self):
+        return self._hovered
+
+    @hovered.setter
+    def hovered(self, value):
+        if self._hovered == value:
+            return
+        if self._hovered:
+            self._hovered.set_hovered(False)
+        self._hovered = value
+        if self._hovered:
+            self._hovered.set_hovered(True)
+
+    def handleMouseEvent(self, comp, event):
+        dz = event.dz
+        if dz > 0:
+            self._scroll_up()
+            return True
+        if dz < 0:
+            self._scroll_down()
+            return True
+        return True
+
+    def _scroll_moved(self, value):
+        self._set_scroll_value(value)
+
+    def _scroll_down(self):
+        self._set_scroll_value(self._sb.getValue() + 1)
+
+    def _scroll_up(self):
+        self._set_scroll_value(self._sb.getValue() - 1)
+
+
+class FractWin(DragWin):
+
+    def __init__(self):
+        comp = GUI.Window('soGUI/frame/paint/black.dds')
+        comp.materialFX = 'SOLID'
+        comp.position = (0, 0, 0.4)
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = (350, 400)
+        comp.visible = False
+        DragWin.__init__(self, comp)
+        self._awaited_answer = {}
+        comp = GUI.Text(lc('clan_win.FractWin.Caption'), 'RobotoCondensedRegular_18.font')
+        comp.colour = cc.active_rgba
+        comp.hpm, comp.vpm = ('CLIP', 'PIXEL')
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.position = (0, 24, 0.5)
+        self.component.addChild(comp)
+        comp = GUI.Window()
+        btn = soButton(comp)
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('RIGHT', 'TOP')
+        comp.width, comp.height = (18, 18)
+        comp.position = (self.component.width - 6, 6, 0.2)
+        self.component.addChild(comp, 'closeBox')
+        btn.onBound()
+        btn.initVSC('soGUI/elements/closeBox.xml')
+        btn.onClick = self.hide
+        comp = GUI.Window()
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.position = (20, 48, 0.8)
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width = 322
+        self.component.addChild(comp)
+        self._scroll = ScrollView(comp)
+        self._scroll.add_listener(self._on_scroll_event)
+        comp = GUI.Window()
+        btn = soButton(comp)
+        btn.initVSC('soGUI/elements/button_1.xml')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('RIGHT', 'BOTTOM')
+        comp.label.font = 'RobotoCondensedRegular_16.font'
+        comp.label.text = lc('clan_win.FractWin.Change')
+        comp.width, comp.height = (86, 26)
+        comp.position = (self.component.width / 2 - 16, 316, 0.1)
+        comp.script.onClick = self._on_change_click
+        self.component.addChild(comp)
+        btn.onBound()
+        self._change_btn = btn
+        comp = GUI.Window()
+        btn = soButton(comp)
+        btn.initVSC('soGUI/elements/button_1.xml')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'BOTTOM')
+        comp.label.font = 'RobotoCondensedRegular_16.font'
+        comp.label.text = lc('clan_win.FractWin.Cancel')
+        comp.width, comp.height = (86, 26)
+        comp.position = (self.component.width / 2 + 16, 316, 0.1)
+        comp.script.onClick = self.hide
+        self.component.addChild(comp)
+        btn.onBound()
+        comp = GUI.Window()
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width = self.component.width - 64
+        comp.position = (32, 328, 0.5)
+        self.component.addChild(comp)
+        tf = soTextField3(comp, width=comp.width, textWidth=comp.width, height=200)
+        text = cc.inactive_xml + u'<font=RobotoCondensedRegular_18.font><alignment=center>' + lc('clan_win.FractWin.Costnotify').format(cc.active_xml + unicode(CHANGE_TRADER_FRACT_COST))
+        tf.setText(text, immidiate=True)
+
+    @property
+    def visible(self):
+        return self.component.visible
+
+    def show(self, traderuniname):
+        if self.component.visible:
+            return
+        self._traderuniname = traderuniname
+        self.component.visible = True
+        self._on_show()
+        BigWorld.player().on_got_available_tradefractions = self._on_got_available_tradefractions
+        BigWorld.player().got_trader_fraction = self._got_trader_fraction
+        BigWorld.player().cell.get_available_tradefractions0(self._traderuniname)
+
+    def _on_change_click(self):
+        BigWorld.player().cell.buy_change_trader_fract0(self._traderuniname, self._scroll.selected.fract_id)
+        self.hide()
+
+    def _on_scroll_event(self, event_type, data):
+        if event_type == ScrollEventType.OnSelectionChanged:
+            self._update_change_button()
+
+    def _update_change_button(self):
+        enabled = self._cur_fraction is not None and self._scroll.selected and self._scroll.selected.fract_id != self._cur_fraction
+        self._change_btn.setDisabledState(not enabled)
+        return
+
+    def _on_show(self):
+        BWPersonality.GUICore.setBestCursor()
+        pixelperfect_component(self.component)
+        self._awaited_answer.clear()
+        self._cur_fraction = None
+        self._update_change_button()
+        base_name = BigWorld.player().get_current_base_name()
+        fractions = set()
+        for bn in config.get_spot(base_name):
+            fraction = config.get_fraction(bn)
+            if fraction:
+                fractions.add(fraction)
+
+        self._scroll.set_fractions(fractions)
+        return
+
+    def _on_got_available_tradefractions(self, fractions):
+        self._awaited_answer['fractions'] = fractions
+        if len(self._awaited_answer) == 2:
+            self._on_answer_ready()
+
+    def _got_trader_fraction(self, fract_id):
+        self._awaited_answer['fract_id'] = fract_id
+        if len(self._awaited_answer) == 2:
+            self._on_answer_ready()
+
+    def _on_answer_ready(self):
+        awailable_fractions = self._awaited_answer['fractions']
+        self._cur_fraction = self._awaited_answer['fract_id']
+        self._awaited_answer.clear()
+        self._scroll.activate_fractions(awailable_fractions, self._cur_fraction)
+
+    def _on_hide(self):
+        BWPersonality.GUICore.setBestCursor()
+        self._awaited_answer.clear()
+
+    def hide(self):
+        if not self.component.visible:
+            return
+        self.component.visible = False
+        self._on_hide()

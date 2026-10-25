@@ -1,0 +1,147 @@
+# Embedded file name: ./client/soGUI/StorehouseGUI/FilterStripe.py
+import ItemsUtils
+import GUI
+import donate_catalog_tags
+from soGUI.UtilsGUI.PaintButton import PaintButton
+from gui_const import INV_CONST
+from Localization import lc
+from functools import partial
+from Items import ItemsCatalog
+import ItemCategories as IC
+from Helpers.PyGUI.PyGUIBase import PyGUIBase
+
+class FilterStripe(PyGUIBase):
+    FTYPE_CATEGORY, FTYPE_SPECIAL, FTYPE_TAGS = xrange(3)
+    STYPE_ALL, STYPE_OTHER = xrange(2)
+
+    def __init__(self, component, need_categories, need_tags):
+        component.script = self
+        PyGUIBase.__init__(self, component)
+        self._setup_content(need_categories, need_tags)
+        self.on_filter_changed = lambda filter_data: None
+        self._active_button = self._filter_buttons[0]
+        self._active_button.enabled = False
+
+    def _setup_content(self, need_categories, need_tags):
+        filters = [{'type': FilterStripe.FTYPE_SPECIAL,
+          'data': FilterStripe.STYPE_ALL,
+          'name': lc('StoreHouse.filterstripe.ALL_TAG')}]
+        if need_categories:
+            filters.extend([{'type': FilterStripe.FTYPE_CATEGORY,
+              'data': INV_CONST.FILT_WEAPON,
+              'name': lc('ItemCategories.weapon')},
+             {'type': FilterStripe.FTYPE_CATEGORY,
+              'data': INV_CONST.FILT_CLOTHER,
+              'name': lc('ItemCategories.clother')},
+             {'type': FilterStripe.FTYPE_CATEGORY,
+              'data': INV_CONST.FILT_GADGETS,
+              'name': lc('ItemCategories.gadgets')},
+             {'type': FilterStripe.FTYPE_CATEGORY,
+              'data': INV_CONST.FILT_FOOD,
+              'name': lc('ItemCategories.food')},
+             {'type': FilterStripe.FTYPE_CATEGORY,
+              'data': INV_CONST.FILT_LOOT,
+              'name': lc('ItemCategories.loot')},
+             {'type': FilterStripe.FTYPE_CATEGORY,
+              'data': INV_CONST.FILT_ARTS,
+              'name': lc('ItemCategories.artifact')}])
+        if need_tags:
+            for tag_id in donate_catalog_tags.TAGS_IDS:
+                filters.append({'type': FilterStripe.FTYPE_TAGS,
+                 'data': set([tag_id]),
+                 'name': donate_catalog_tags.TAGS_LC[tag_id]})
+
+        filters.append({'type': FilterStripe.FTYPE_SPECIAL,
+         'data': FilterStripe.STYPE_OTHER,
+         'name': lc('StoreHouse.filterstripe.OTHER_TAG')})
+        self._filter_buttons = []
+        for i, filter_data in enumerate(filters):
+            filter_data['name'] = filter_data['name']
+            comp = GUI.Window()
+            comp.materialFX = 'SOLID'
+            button = PaintButton(comp, visual_state='soGUI/frame/storehouse/textButton.xml')
+            button.text = filter_data['name'].upper()
+            button._filter_data = filter_data
+            button.on_click = partial(self._on_click, button)
+            self.component.addChild(comp, 'tag' + str(i))
+            self._filter_buttons.append(button)
+
+    def set_premium_filter(self, items):
+        premium_tag = 1
+        for button in self._filter_buttons:
+            if button._filter_data['type'] != FilterStripe.FTYPE_TAGS:
+                continue
+            if premium_tag not in button._filter_data['data']:
+                continue
+            if not self._button_needed(button, items):
+                continue
+            break
+        else:
+            return
+
+        self._on_click(button)
+
+    def _on_click(self, button):
+        self._active_button.enabled = True
+        self._active_button = button
+        self._active_button.enabled = False
+        self.on_filter_changed(self._active_button._filter_data)
+
+    def _button_needed(self, button, items):
+        for item in items:
+            if self._filter_item(item, button):
+                return True
+
+        return False
+
+    def do_reposition(self, items):
+        margin = 0.0
+        space = 0.6
+        x = 0
+        for button in self._filter_buttons:
+            button_needed = self._button_needed(button, items)
+            if not button_needed:
+                button.component.visible = False
+                continue
+            button.component.visible = True
+            button.do_reposition()
+            comp = button.component
+            comp.widthMode, comp.heightMode = ('PIXEL', 'CLIP')
+            pixel_width = comp.label.stringDimensions(comp.label.text)[0]
+            comp.height = 2.0
+            comp.heightMode = 'PIXEL'
+            pixel_height = comp.height
+            comp.width = pixel_width + pixel_height * margin
+            comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+            comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'CLIP')
+            comp.position = (x, 1, 0.2)
+            x += comp.width + space * pixel_height
+            button.do_reposition()
+
+    def _filter_item(self, item, button):
+        filter_data = button._filter_data
+        item_type = item['item_type'] if item.has_key('item_type') else item['complexItemType']
+        if filter_data['type'] == FilterStripe.FTYPE_SPECIAL:
+            if filter_data['data'] == FilterStripe.STYPE_ALL:
+                return True
+            if filter_data['data'] == FilterStripe.STYPE_OTHER:
+                if item.has_key('tags') and not item['tags']:
+                    return True
+                item_category = ItemsCatalog.GetItemCategory(item_type)
+                filter_bit = IC.get_filter(item_category)
+                return filter_bit is None
+        else:
+            if filter_data['type'] == FilterStripe.FTYPE_TAGS:
+                return ItemsUtils.get_donat_tag(item_type) in filter_data['data']
+            if filter_data['type'] == FilterStripe.FTYPE_CATEGORY:
+                item_category = ItemsCatalog.GetItemCategory(item_type)
+                filter_bit = IC.get_filter(item_category)
+                if filter_bit is None:
+                    return False
+                filter_mask = button._filter_data['data']
+                return bool(filter_bit & filter_mask)
+        raise RuntimeError
+        return
+
+    def filter_item(self, item):
+        return self._filter_item(item, self._active_button)

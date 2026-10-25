@@ -1,0 +1,133 @@
+# Embedded file name: ./client/Transport.py
+import BWPersonality
+import sounds_manager as sounds
+import BigWorld
+import ResMgr
+import json
+from soGUI.soInworldMarkers import soInworldMarker
+import Helpers.Caps
+from TransportFilter import TransportFilter
+import math_bw
+from Localization import lc
+import RestrictionsUtils
+import Constants
+from Constants import ControlLockTypes as CLT
+from Constants import MESSAGE_TYPES as MT
+section = ResMgr.openSection('scripts/common/EnumProps/Transport.json')
+CONFIG = json.loads(section.asBinary)['model_index']['values']
+SOUND_PATH = 'transport/motorboat/boat_engine'
+SCREW_PIXIE_PATH = 'particles/anomaly/boatsprinkles.xml'
+SMOKE_PIXIE_PATH = 'particles/chimney_smoke.xml'
+
+class Transport(BigWorld.Entity):
+
+    def __init__(self):
+        BigWorld.Entity.__init__(self)
+        self._model_path = next((model for index, model in CONFIG if index == self.model_index), None)
+        self.targetCaps += [Helpers.Caps.CAP_INTERACT]
+        self._filter = None
+        self._sound = None
+        self._screw_particle = None
+        self._smoke_particle = None
+        self.model = None
+        self._next_interaction_time = 0
+        return
+
+    def prerequisites(self):
+        result = [SCREW_PIXIE_PATH, SMOKE_PIXIE_PATH]
+        if self._model_path:
+            result.append(self._model_path)
+        return result
+
+    def on_soon_depart(self):
+        if self.model:
+            sounds.playSound('transport/motorboat/gudok', self.model)
+
+    def onEnterWorld(self, prereqs):
+        self.model = (prereqs[self._model_path] if self._model_path else BigWorld.Model(''), 1)
+        self.model.isObstacle = True
+        self._filter = TransportFilter(self)
+        BigWorld.callback(0, self._pre_update_tick)
+        self._sound = sounds.getSound(SOUND_PATH, model=self.model)
+        self._sound.set_param('engineRPM', 1.0)
+        self._sound.play()
+        self._screw_particle = prereqs[SCREW_PIXIE_PATH]
+        self.model.node('Vint').attach(self._screw_particle)
+        self._smoke_particle = prereqs[SMOKE_PIXIE_PATH]
+        self.model.node('Smoke').attach(self._smoke_particle)
+        self._filter.onEnterWorld()
+        self._update_rpm_dependencies()
+
+    def _pre_update_tick(self):
+        if self.isDestroyed:
+            return
+        if self._filter:
+            dtime = BigWorld.getTimeDelta()
+            self.filter.forceOutput(dtime)
+            self.model.tickDisable = False
+            self.model.forceTick(dtime)
+            self.model.tickDisable = True
+            self.model.forceDraw()
+        BigWorld.callback(0, self._pre_update_tick)
+
+    def interact(self, interactor):
+        if interactor.in_transport:
+            return
+        if not BigWorld.player().CheckRestriction(RestrictionsUtils.CHANNEL_ITEMS):
+            BWPersonality.gpd.sendHightMessage(lc('PlayerAvatar.client.FAIL_CHECKRESTRICTION'), MT.PERSONAL)
+            return
+        if BigWorld.time() >= self._next_interaction_time:
+            self._next_interaction_time = BigWorld.time() + 1.0
+            BigWorld.player().setControlLock(CLT.TRANSPORT, True, lock_id=Constants.TRANSPORT_HARD_LOCK_ID, duration=1)
+            BigWorld.player().base.requets_boat_interaction1(self.id)
+
+    def get_seat_node(self, passanger_id):
+        for i in xrange(len(self.seats)):
+            if self.seats[i] == passanger_id:
+                break
+        else:
+            return None
+
+        if i == len(self.seats) - 1:
+            node = self.model.node('Driver')
+        else:
+            node = self.model.node('Seat_' + str(i + 1))
+        self.model.forceDraw()
+        return node
+
+    def onLeaveWorld(self):
+        if self._sound:
+            self._sound.stop()
+            self._sound.releaseSound()
+        if self._screw_particle:
+            self.model.node('Vint').detach(self._screw_particle)
+        if self._smoke_particle:
+            self.model.node('Smoke').detach(self._smoke_particle)
+        self._smoke_particle = None
+        self._screw_particle = None
+        self._sound = None
+        self.model = None
+        self._filter = None
+        return
+
+    def canLeaveUser(self, *e):
+        return True
+
+    def get_interaction_dist(self):
+        return 10.0
+
+    def get_target_mark(self, distance):
+        if distance < self.get_interaction_dist():
+            return soInworldMarker.MARKER_TALK
+
+    def _update_rpm_dependencies(self):
+        if self._sound:
+            self._sound.set_param('engineRPM', self.engineRPM)
+        if self._screw_particle:
+            self._screw_particle.system(0).actions[0].rate = math_bw.lerp(20.0, 200.0, self.engineRPM)
+
+    def set_engineRPM(self, old_value):
+        self._update_rpm_dependencies()
+
+    def get_mark_name(self):
+        return lc('Transport.name')

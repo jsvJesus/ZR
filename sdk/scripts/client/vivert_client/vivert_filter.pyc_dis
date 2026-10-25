@@ -1,0 +1,171 @@
+# Embedded file name: ./client/vivert_client/vivert_filter.py
+from math import pi
+import BigWorld
+import traceback
+from math_bw import inverse_lerpclam, map_angle
+from Math import Vector3, Matrix, Quaternion
+from navmesh3d.kdtree import KdTree
+from navmesh3d import serializator
+from utils import Listenable
+gi = BigWorld.getGeometricInstance()
+try:
+    if not BigWorld.isConsumer():
+        guid = 'D0273193.4533C156.574257B6.057FB7C3'
+        s_points, s_triangles, debug_data = serializator.load_from_guid(guid)
+        kdtree = KdTree(s_points, s_triangles)
+except:
+    traceback.print_exc()
+
+class EventType:
+    OnTick, = ((r, 'vfilter') for r in range(1))
+
+
+class VivertFilter(Listenable):
+
+    def __init__(self, vivert):
+        Listenable.__init__(self)
+        self._vivert = vivert
+        self.velocity = Vector3()
+        self.position = Vector3(self._vivert.position)
+        self.rotation = self._get_rotation(self.position, self._vivert.yaw, self._vivert.pitch)
+        self.yaw_speed = 0.0
+        self._vivert.filter = BigWorld.PythonFilter()
+        self._vivert.filter.resetFilter = lambda time: None
+        self._vivert.filter.inputFilter = self._input
+        self._vivert.filter.outputFilter = self._output
+        self._vivert.filter.lastInputFilter = self._last_input
+        self._server_transform = BigWorld.Model('models/test/xyz.model')
+        self._client_transform = BigWorld.Model('models/test/xyz.model')
+        BigWorld.addModel(self._server_transform)
+        BigWorld.addModel(self._client_transform)
+        self._data_line_time = 1.5
+        self._last_values = []
+
+    def _get_rotation(self, pos, yaw, pitch):
+        triangle = kdtree.search_closest(pos)[0]
+        forward = Vector3()
+        forward.setPitchYaw(pitch, yaw)
+        forward.normalise()
+        m = Matrix()
+        m.lookAt(pos, forward, triangle.n)
+        m.invert()
+        return Vector3(yaw, pitch, m.roll)
+
+    def _input(self, *args):
+        return self._input_debug(*args)
+
+    def _input_debug(self, time, space_id, vehicle_id, pos, pos_error, rotation):
+        yaw, pitch, _ = rotation
+        rotation = self._get_rotation(pos, yaw, pitch)
+        if self._last_values:
+            prev_last_value = self._last_values[-1]
+            prev_q = Quaternion()
+            prev_q.eulerAngles = prev_last_value['dir']
+            q = Quaternion()
+            q.eulerAngles = rotation
+            q.invert()
+            prev_q.postMultiply(q)
+            delta_yaw = prev_q.eulerAngles[0]
+            yaw_speed = delta_yaw / (time - prev_last_value['time'])
+        else:
+            yaw_speed = 0.0
+        self._last_values.append({'time': time,
+         'pos': Vector3(pos),
+         'velocity': Vector3(self._vivert.velocity),
+         'dir': rotation,
+         'yaw_speed': yaw_speed})
+        while self._last_values[0]['time'] < time - self._data_line_time:
+            del self._last_values[0]
+
+        t = Matrix()
+        t.setTranslate(pos)
+        r = Matrix()
+        r.setRotateYPR(rotation)
+        r.postMultiply(t)
+        self._server_transform.setWorldTransform(r)
+
+    def _output(self, time):
+        return self._output_debug(time)
+
+    def _output_debug(self, time):
+        if not self._last_values:
+            return
+        last_values = list(self._last_values)
+        last_value = self._last_values[-1]
+        extra_delay = 0.1
+        velocity2 = self._vivert.velocity + self._vivert.accel * extra_delay
+        extra_value1 = {'time': last_value['time'] + extra_delay,
+         'pos': last_value['pos'] + self._vivert.velocity * extra_delay,
+         'velocity': Vector3(velocity2),
+         'dir': last_value['dir'],
+         'yaw_speed': last_value['yaw_speed']}
+        velocity3 = velocity2 + self._vivert.accel * extra_delay
+        extra_value2 = {'time': extra_value1['time'] + extra_delay,
+         'pos': extra_value1['pos'] + velocity2 * extra_delay,
+         'velocity': Vector3(velocity3),
+         'dir': last_value['dir'],
+         'yaw_speed': last_value['yaw_speed']}
+        last_values.append(extra_value1)
+        last_values.append(extra_value2)
+        weighted_directions = []
+        time = BigWorld.time() - self._data_line_time * 0.5 + extra_delay * 2
+        pos = Vector3(0, 0, 0)
+        velocity = Vector3()
+        direction = Vector3(0, 0, 0)
+        total_weight = 0.0
+        yaw_speed = 0.0
+        for i, value in enumerate(last_values):
+            distance = abs(value['time'] - time) / (self._data_line_time * 0.5)
+            weight = inverse_lerpclam(1, 0, distance)
+            if weight != 0:
+                yaw, pitch, roll = value['dir']
+                q = Quaternion()
+                q.eulerAngles = (yaw, pitch, roll)
+                weighted_directions.append((q, weight))
+                pos += Vector3(value['pos']) * weight
+                yaw_speed += value['yaw_speed'] * weight
+                velocity += value['velocity'] * weight
+                direction += Vector3(value['dir'] * weight)
+                total_weight += weight
+
+        if total_weight == 0:
+            self.velocity = Vector3()
+            self.yaw_speed = 0.0
+            return
+        pos /= total_weight
+        self.velocity = velocity / total_weight
+        direction /= total_weight
+        self.yaw_speed = yaw_speed / total_weight
+
+        def combine_directions(d1, d2):
+            q1, w1 = d1
+            q2, w2 = d2
+            w = w1 + w2
+            q = Quaternion()
+            q.slerp(q1, q2, 1.0 - w1 / (w1 + w2))
+            return (q, w)
+
+        quaternion, total_weight = reduce(combine_directions, weighted_directions)
+        direction = quaternion.eulerAngles
+        t = Matrix()
+        t.setTranslate(pos)
+        r = Matrix()
+        r.setRotateYPR(direction)
+        t.preMultiply(r)
+        self._client_transform.setWorldTransform(t)
+        self.position = Vector3(pos)
+        self.rotation = Vector3(direction)
+        self.notify_listeners(EventType.OnTick)
+        return (pos, direction, Vector3())
+
+    def on_release(self):
+        self._vivert.filter.resetFilter = None
+        self._vivert.filter.inputFilter = None
+        self._vivert.filter.outputFilter = None
+        self._vivert.filter.lastInputFilter = None
+        BigWorld.delModel(self._server_transform)
+        BigWorld.delModel(self._client_transform)
+        return
+
+    def _last_input(self, *args):
+        return None

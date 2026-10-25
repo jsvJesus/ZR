@@ -1,0 +1,253 @@
+# Embedded file name: ./client/UserFire.py
+import BigWorld
+import BWPersonality
+import Math
+import random
+import ItemsUtils
+import time
+from Localization import lc
+from ItemHolder import ItemHolder
+from Helpers.Caps import CAP_CAN_OPEN_AND_EXPLORE_USER_FIRE
+import sounds_manager
+import traceback
+from Items import ItemsCatalog
+from functools import partial
+from user_fire_common import UserFireCommon
+USER_FIRE_TIMES = {}
+
+class UserFire(BigWorld.Entity, UserFireCommon, ItemHolder):
+    """" client/UserFire """
+    LIGHT_BLINK_SPEED = 0.15
+    LIGHT_BLINK_DELTA = 9.1e-05
+    UPDATE_TIME_LIFE = 0.2
+    LIGHT_MULTIPLY = 1.5
+    MODEL_NAME = 'models/misc/fireplace/bonfire/bonfire.model'
+    MODEL_NAME_TRI = 'models/props/camping/cooking/cooking_tripod.model'
+    MODEL_NAME_OFF = 'models/misc/fireplace/bonfire/bonfire_off.model'
+    PARTICLES_NAMES = ('particles/_bonfire3.xml', 'particles/_bonfire2.xml', 'particles/_bonfire.xml')
+    PARTICLES_NAME_OFF = 'particles/fire_place_nofire.xml'
+
+    def __init__(self):
+        BigWorld.Entity.__init__(self)
+        self.light_timer_id = None
+        self.sound = None
+        self._fireType = 0
+        self.targetCaps = [CAP_CAN_OPEN_AND_EXPLORE_USER_FIRE]
+        self.effects = None
+        self._sound = None
+        self._pl_inside = False
+        self.name = lc('soGUICore.soGUI.STRING_FirePlace') + u' %s' % self.pOwnerName
+        self._messageTimerHandle = None
+        self._messageAttachment = None
+        self._loopFire_timer_id = None
+        self.dict_items = {}
+        self._model_OFF = None
+        self._model = None
+        self._model_tri = None
+        self._sound_model = None
+        self._pot_models = {}
+        return
+
+    def prerequisites(self):
+        res_list = [self.MODEL_NAME,
+         self.MODEL_NAME_OFF,
+         self.MODEL_NAME_TRI,
+         self.PARTICLES_NAME_OFF]
+        return res_list + list(self.PARTICLES_NAMES)
+
+    def onEnterWorld(self, prereqs):
+        self._model = prereqs[self.MODEL_NAME]
+        self._model_OFF = prereqs[self.MODEL_NAME_OFF]
+        self._model_tri = prereqs[self.MODEL_NAME_TRI]
+        self.effect_OFF = prereqs[self.PARTICLES_NAME_OFF]
+        self.effects = []
+        for pname in self.PARTICLES_NAMES:
+            self.effects.append(prereqs[pname])
+
+        self._model_OFF.root.attach(self.effect_OFF)
+        self.addModel(self._model_tri)
+        self._model_tri.position = self.position
+        self._model_tri.visible = False
+        self._sound_model = BigWorld.Model('')
+        self._sound_model.position = self.position
+        self.addModel(self._sound_model)
+        self.light = light = BigWorld.PyChunkLight()
+        self.light_start_position = self.position + (0, 1.3, 0)
+        light.innerRadius = 2.0
+        light.outerRadius = 7.0
+        light.position = self.light_start_position
+        light.specular = 1
+        light.diffuse = 1
+        light.visible = 1
+        self._light_blink()
+        self._loopFire()
+        self._pot_handle = BigWorld.addPot(self.matrix, ItemsUtils.EXTRACTION_RANGE, self._playerPot)
+        self.changeFireEf(self._fireType)
+        self.updateVisibleTri()
+
+    def onLeaveWorld(self):
+        self.light.visible = False
+        if self.light_timer_id:
+            BigWorld.cancelCallback(self.light_timer_id)
+        if self._loopFire_timer_id:
+            BigWorld.cancelCallback(self._loopFire_timer_id)
+        if self._sound:
+            self._sound.stop()
+            self._sound = None
+        BigWorld.delPot(self._pot_handle)
+        if self._pl_inside:
+            BWPersonality.GUICore.showUserFire(False)
+        if self._model:
+            self._model.root.attachments = []
+        if self._model_OFF:
+            self._model_OFF.root.attachments = []
+        self.model = None
+        self._model = None
+        self._model_OFF = None
+        self._sound_model = None
+        self._model_tri = None
+        self._pot_models = None
+        self.effect_OFF = None
+        self.effects = None
+        self.light = None
+        self._sound = None
+        return
+
+    def changeFireEf(self, fireType):
+        if not self._model or not self._model_OFF:
+            return
+        else:
+            if fireType:
+                if self.model != self._model:
+                    self.model = self._model
+                for fire in self.model.root.attachments:
+                    self.model.root.detach(fire)
+
+                self.model.root.attach(self.effects[fireType - 1])
+                if not self._sound:
+                    self._sound = sounds_manager.playSound('environment/fire_campfire', self._sound_model)
+                if not USER_FIRE_TIMES.has_key(self.id):
+                    USER_FIRE_TIMES[self.id] = time.time()
+            else:
+                if self.model != self._model_OFF:
+                    self.model = self._model_OFF
+                if self._sound:
+                    self._sound.stop()
+                    self._sound = None
+                if USER_FIRE_TIMES.has_key(self.id):
+                    del USER_FIRE_TIMES[self.id]
+            return
+
+    @property
+    def left_time(self):
+        if not self.life_time_end:
+            return 0
+        left = self.life_time_end - BWPersonality.gpd.server_time
+        left = max(left, 0)
+        left = min(left, self.max_life_time)
+        return left
+
+    @property
+    def fireType(self):
+        left_time = self.left_time
+        if left_time <= 0.1:
+            return 0
+        return int(3 * (left_time - 0.1) / self.max_life_time) + 1
+
+    def get_fire_time(self):
+        if USER_FIRE_TIMES.has_key(self.id):
+            return time.time() - USER_FIRE_TIMES[self.id]
+        return 0
+
+    def _loopFire(self):
+        self._loopFire_timer_id = BigWorld.callback(self.UPDATE_TIME_LIFE, self._loopFire)
+        fireType = self.fireType
+        if self._fireType != fireType:
+            self.changeFireEf(fireType)
+            self._fireType = fireType
+        if not self.life_time_end:
+            return
+        left_time = self.left_time
+        multiply = self.LIGHT_MULTIPLY * left_time / self.max_life_time
+        self.light.colour = Math.Vector4(multiply * 255.0, multiply * 100.0, 25.0, multiply * 255.0)
+        if left_time:
+            self.dict_items = {}
+            server_time = BWPersonality.gpd.server_time
+            for entry in self.inTheProcessItems:
+                complexItemID = entry['itm']['complexItemID']
+                complexItemType = entry['itm']['complexItemType']
+                CookingTime = ItemsCatalog.GetItemParam(complexItemType)['CookingTime']
+                percent = (entry['end_time'] - server_time) / CookingTime
+                self.dict_items[complexItemID] = max(0, min(1, percent))
+
+            cookingpot_id = self.cookingpot_items['slot3']['complexItemID']
+            if cookingpot_id and self.cookingpot_items['end_time']:
+                percent = (self.cookingpot_items['end_time'] - server_time) / self.getCookTime()
+                self.dict_items[cookingpot_id] = max(0, min(1, percent))
+
+    def _light_blink(self):
+        delay = random.random() * self.LIGHT_BLINK_SPEED
+        self.light_timer_id = BigWorld.callback(delay, self._light_blink)
+
+        def r():
+            return random.randrange(-1000, 1000) * self.LIGHT_BLINK_DELTA
+
+        self.light.position = self.light_start_position + Math.Vector3(r(), r(), r())
+
+    def _playerPot(self, enteredTrap, handle):
+        self._pl_inside = enteredTrap
+        if enteredTrap:
+            BigWorld.player().NeedToUpdateItemCache()
+        else:
+            BWPersonality.GUICore.showUserFire(False)
+            if BigWorld.player().cacheObjectID == self.id:
+                BigWorld.player().cacheObjectID = None
+        return
+
+    def onLoadModelCookingPot(self, model_name_pot, model):
+        if self.isDestroyed:
+            return
+        self._pot_models[model_name_pot] = model
+        self.updateVisibleTri()
+
+    def updateVisibleTri(self):
+        if not self._model_tri:
+            return
+        else:
+            item = self.getCookingPotItem()
+            self._model_tri.visible = bool(item)
+            self._model_tri.node('pot').attachments = []
+            if item:
+                param = ItemsCatalog.GetItemParam(item['complexItemType'])
+                model_name_pot = param['ModelNames'].values()[0]
+                if model_name_pot not in self._pot_models:
+                    self._pot_models[model_name_pot] = None
+                    BigWorld.fetchModel(model_name_pot, partial(self.onLoadModelCookingPot, model_name_pot))
+                elif self._pot_models[model_name_pot]:
+                    self._model_tri.node('pot').attach(self._pot_models[model_name_pot])
+                    try:
+                        self._pot_models[model_name_pot].origin('pot')
+                    except:
+                        print 'ERROR FOR ', self, repr(model_name_pot)
+                        traceback.print_exc()
+
+            return
+
+    def set_isPublicAcces(self, old_value):
+        if self._pl_inside:
+            BWPersonality.GUICore.updateUserFire()
+
+    def set_inTheProcessItems(self, old_value):
+        if self._pl_inside:
+            BigWorld.player().NeedToUpdateItemCache()
+
+    def set_CarryingItems(self, old_value):
+        if self._pl_inside:
+            BigWorld.player().NeedToUpdateItemCache()
+            if len(self.CarryingItems) >= self.max_slot:
+                BWPersonality.GUICore.checkUserFireOferflow()
+
+    def set_cookingpot_items(self, old_value):
+        if self._pl_inside:
+            BigWorld.player().NeedToUpdateItemCache()
+        self.updateVisibleTri()

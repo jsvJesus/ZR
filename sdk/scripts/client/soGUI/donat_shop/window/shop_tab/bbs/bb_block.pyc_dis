@@ -1,0 +1,254 @@
+# Embedded file name: ./client/soGUI/donat_shop/window/shop_tab/bbs/bb_block.py
+import BigWorld
+from Items import ItemsCatalog
+from math import pi
+from ui.button import Button
+from soGUI.donat_shop.models.model import EventType as ModelET
+from Helpers.BWCoroutine import BWMemberCoroutine, BWWaitForPeriod
+from Helpers.PyGUI import Utils
+from math_bw import move_towards_angle_smooth_damp
+from ui.panel import Panel
+from ui.transform import pixel_params, clip_params
+from soGUI.donat_shop.window.win_ui.scroll_content import ScrollPart
+from soGUI.donat_shop.window.shop_tab.shop_item_view import ShopItemView
+
+class Line(Panel):
+
+    def __init__(self, component, name, shop_model, bin_model):
+        self._shop_model = shop_model
+        self._bin_model = bin_model
+        Panel.__init__(self, component, name)
+        self._views = []
+        self._item_types = None
+        self._cols = 0
+        self._index = None
+        self._space_width = None
+        return
+
+    def set_cols(self, cols, space, width):
+        if self._cols == cols + 1 and self._space_width == (space, width):
+            return
+        self._cols = cols + 1
+        self._space_width = (space, width)
+
+        def create_view():
+            name = 'view_' + str(len(self._views))
+            view = ShopItemView(self.component, name, self._shop_model, self._bin_model)
+            view.delay_load_time = 0
+            self._views.append(view)
+
+        def remove_view():
+            self.component.script.transform.del_child(self._views[-1].component)
+            del self._views[-1]
+
+        while len(self._views) < self._cols:
+            create_view()
+
+        while len(self._views) > self._cols:
+            remove_view()
+
+        total_width = width * self._cols + space * (self._cols - 1)
+        width /= total_width
+        space /= total_width
+        left = 0
+        for view in self._views:
+            view.transform.set_clip_mode((left,
+             0,
+             left + width,
+             1))
+            left += width + space
+
+        self._update_views()
+
+    def on_tick(self):
+        for view in self._views:
+            view.on_tick()
+
+    def set_item_types(self, item_types):
+        self._item_types = item_types
+        self._update_views()
+
+    def _update_views(self):
+        if not self._item_types or self._index is None:
+            return
+        elif len(self._views) > len(self._item_types):
+            return
+        else:
+            for i in range(len(self._views)):
+                item_index = (self._index + i) % len(self._item_types)
+                self._views[i].set_item_type(self._item_types[item_index])
+
+            return
+
+    @property
+    def index(self):
+        return self._index
+
+    @index.setter
+    def index(self, value):
+        if self._index == value:
+            return
+        self._index = value
+        self._update_views()
+
+    def on_size_changed(self):
+        Panel.on_size_changed(self)
+
+
+class BbBlock(ScrollPart):
+
+    def __init__(self, component, shop_model, bin_model):
+        ScrollPart.__init__(self)
+        self.component = component
+        self.component.script = self
+        self._shop_model = shop_model
+        self._repositions = []
+        self.component.isClip = False
+        self._item_types = []
+        self._index = None
+        self._shown_index = None
+        self._velocity = 0
+        self._coroutine_handler = None
+        self._cols = 0
+        self._slot_width = 0
+        self._slot_space = 0
+        btn_left = Button(self.component, 'btn_left', depth=0.5)
+        btn_left.set_visual('soGUI/frame/buttons/arrowleft_button_1.json')
+        texture = btn_left.component.frame.texture
+        btn_left.transform.set_pixel_mode((1, 0.5), (0, 0.5), (texture.width, texture.height), pixel_pos=(-10, 0))
+        btn_left.on_click = self._on_click_left
+        btn_left.component.frame.filterType = 'LINEAR'
+        self._repositions.append(btn_left)
+        btn_right = Button(self.component, 'btn_right', depth=0.5)
+        btn_right.set_visual('soGUI/frame/buttons/arrowright_button_1.json')
+        texture = btn_right.component.frame.texture
+        btn_right.transform.set_pixel_mode((0, 0.5), (1, 0.5), (texture.width, texture.height), pixel_pos=(10, 0))
+        btn_right.on_click = self._on_click_right
+        btn_right.component.frame.filterType = 'LINEAR'
+        self._repositions.append(btn_right)
+        clipper = Panel(self.component, 'clipper')
+        clipper.transform.set_clip_mode((0, 0, 1, 1))
+        self._repositions.append(clipper)
+        self._line = Line(self.component.clipper, 'line', shop_model, bin_model)
+        cpx = pixel_params(0, 0, 0)
+        cpy = clip_params((0, 1))
+        self._line.transform.set_mixed_mode(cpx, cpy)
+        self._shop_model.add_listener(self._on_shopmodel_event)
+        return
+
+    def _on_shopmodel_event(self, event_type, data):
+        if event_type == ModelET.OnItems:
+
+            def is_item_valid(item):
+                item_params = ItemsCatalog.GetItemParam(item['item_type'])
+                return bool(item_params.get('donat_shop_blackbox_line'))
+
+            self._item_types = [ item['item_type'] for item in self._shop_model.items if is_item_valid(item) ]
+            self._line.set_item_types(self._item_types)
+            self.index = 0
+
+    def on_tick(self):
+        self._line.on_tick()
+
+    def on_show(self):
+        pass
+
+    def on_hide(self):
+        pass
+
+    @BWMemberCoroutine
+    def _move_coroutine(self):
+        if self.shown_index is None or self.index is None or not Utils.is_visible_in_hierarchy(self.component):
+            self.index = None
+        else:
+            while self.shown_index != self.index:
+                dist = len(self._item_types)
+
+                def to_radians(value):
+                    return float(value) / dist * 2 * pi - pi
+
+                def from_radians(value):
+                    result = value / (2 * pi) * dist + dist * 0.5
+                    if result >= dist:
+                        result -= dist
+                    return result
+
+                cur_shown_index = to_radians(self.shown_index)
+                cur_index = to_radians(self.index)
+                cur_shown_index, self._velocity = move_towards_angle_smooth_damp(cur_shown_index, cur_index, self._velocity, 0.1, 50, BigWorld.getTimeDelta())
+                cur_shown_index = from_radians(cur_shown_index)
+                if abs(self._velocity) <= 0.001:
+                    cur_shown_index = self.index
+                self.shown_index = cur_shown_index
+                yield BWWaitForPeriod(0)
+
+        self._velocity = 0
+        self._coroutine_handler = None
+        return
+
+    @property
+    def index(self):
+        return self._index
+
+    @index.setter
+    def index(self, value):
+        self._index = value
+        if self.shown_index is None or self._index is None:
+            self.shown_index = self._index
+            if self._coroutine_handler:
+                self._coroutine_handler.stop()
+                self._coroutine_handler = None
+                self._velocity = 0
+        elif self.shown_index != self._index:
+            if not self._coroutine_handler:
+                self._coroutine_handler = self._move_coroutine()
+                self._coroutine_handler.run()
+        return
+
+    def _update_content(self):
+        self._update_line()
+
+    def _update_line(self):
+        if self.shown_index is None or not self._cols:
+            return
+        else:
+            move_ratio = self.shown_index % 1
+            pixel_ratio = self._line.transform.pixel_ratio
+            _, cpx, cpy = self._line.transform._mode
+            cpx = list(cpx)
+            cpx[3] = (self.component.width + self._slot_space + self._slot_width) / pixel_ratio
+            cpx[4] = -(self._slot_width + self._slot_space) * move_ratio / pixel_ratio
+            cpx = tuple(cpx)
+            self._line.set_cols(self._cols, self._slot_space, self._slot_width)
+            self._line.index = int(self._shown_index)
+            self._line.transform.set_mixed_mode(cpx, cpy)
+            return
+
+    @property
+    def shown_index(self):
+        return self._shown_index
+
+    @shown_index.setter
+    def shown_index(self, value):
+        self._shown_index = value
+        self._update_content()
+
+    def align_content(self):
+        for r in self._repositions:
+            r.transform.apply_mode()
+
+        ratio = 0.804
+        height = self.component.height
+        self._slot_width = height * ratio
+        min_space = 0.05 * height
+        self._cols = int((self.component.width + min_space) / (self._slot_width + min_space))
+        total_space = self.component.width - self._cols * self._slot_width
+        self._slot_space = total_space / (self._cols - 1)
+        self._update_line()
+        return (self._slot_width, self._cols)
+
+    def _on_click_right(self):
+        self.index = (self.index + 1) % len(self._item_types)
+
+    def _on_click_left(self):
+        self.index = (self.index - 1) % len(self._item_types)

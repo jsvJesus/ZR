@@ -1,0 +1,250 @@
+# Embedded file name: ./client/devil_utils/devil_filter.py
+import os
+import utils
+import BigWorld
+from Math import Vector3, Matrix
+from math_bw import inverse_lerpclam
+from math import sin, cos, atan2
+import utils_bw
+from utils import Listenable
+_WRITE_DEBUG = False
+
+class DebugWriter:
+    Input, Output, LastInput = range(3)
+
+    def __init__(self):
+        self._path = os.path.join(utils.stalker_path(), 'usercontent/devil.dvl')
+
+    def write(self, data_type, data):
+        with open(self._path, 'a') as f:
+            f.write('{0}\t{1}\t{2}\n'.format(BigWorld.time(), data_type, data))
+
+
+class EventType:
+    OnClientSpeedChanged, = ((r, 'DevilFilter') for r in range(1))
+
+
+class DevilFilter(Listenable):
+
+    def __init__(self, entity):
+        Listenable.__init__(self)
+        self._debug_server_model = None
+        self._debug_client_model = None
+        self._debug_server_pos = False
+        self._debug_client_pos = False
+        self._last_values = []
+        self._last_return_data = None
+        self._data_line_time = 1.5
+        self._debug_writer = None
+        self._speed = 0.0
+        self._filter = None
+        self._entity = entity
+        self.set_filter(BigWorld.PythonFilter)
+        return
+
+    def set_filter(self, delegate):
+        if self._filter:
+            if hasattr(self._filter, 'inputFilter'):
+                self._filter.inputFilter = None
+            if hasattr(self._filter, 'outputFilter'):
+                self._filter.outputFilter = None
+            if hasattr(self._filter, 'lastInputFilter'):
+                self._filter.lastInputFilter = None
+            self._filter = None
+        self._entity.filter = delegate()
+        self._filter = self._entity.filter
+        if delegate is BigWorld.PythonFilter:
+            self._filter.resetFilter = lambda time: None
+            self._filter.inputFilter = self._input
+            self._filter.outputFilter = self._output
+            self._filter.lastInputFilter = self._last_input
+            rotation = Vector3(self._entity.yaw, self._entity.pitch, self._entity.roll)
+            self._filter.inputFilter(BigWorld.time(), self._entity.spaceID, 0, self._entity.position, 0, rotation)
+        else:
+            self._filter.inputProxy = self._input_proxy
+            self._filter.outputProxy = self._ouput_proxy
+        return
+
+    def _input_proxy(self, time, space_id, vehicle_id, position, pos_err, rotation):
+        self._server_pos_updated(position, rotation)
+
+    def _ouput_proxy(self, position, direction, velocity):
+        self._client_pos_updated(position, direction)
+
+    def _client_pos_updated(self, pos, rotation):
+        if self._debug_client_pos:
+            if self._debug_client_model is None:
+                self._debug_client_model = BigWorld.Model('models/test/xyz.model')
+                self._debug_client_model.scale = (5, 5, 5)
+                self._debug_client_model.newScaleTest = (5, 5, 5)
+                BigWorld.addModel(self._debug_client_model)
+            m1 = Matrix()
+            m1.setTranslate(pos)
+            m2 = Matrix()
+            m2.setRotateYPR(rotation)
+            m1.preMultiply(m2)
+            self._debug_client_model.setWorldTransform(m1)
+            self._debug_client_model.visible = True
+        elif self._debug_client_model:
+            self._debug_client_model.visible = False
+        return
+
+    def _server_pos_updated(self, pos, rotation):
+        if self._debug_server_pos:
+            if self._debug_server_model is None:
+                self._debug_server_model = BigWorld.Model('models/test/xyz.model')
+                self._debug_server_model.scale = (5, 5, 5)
+                self._debug_server_model.newScaleTest = (5, 5, 5)
+                BigWorld.addModel(self._debug_server_model)
+            m1 = Matrix()
+            m1.setTranslate(pos)
+            m2 = Matrix()
+            m2.setRotateYPR(rotation)
+            m1.preMultiply(m2)
+            self._debug_server_model.setWorldTransform(m1)
+            self._debug_server_model.visible = True
+        elif self._debug_server_model:
+            self._debug_server_model.visible = False
+        return
+
+    def _input(self, *args):
+        self._debug_write(DebugWriter.Input, args)
+        self._input_debug(*args)
+
+    def _input_debug(self, time, space_id, vehicle_id, pos, pos_error, rotation):
+        if self._entity:
+            col = utils_bw.collideIgnoreNoVisible(self._entity.spaceID, pos + Vector3(0, 3, 0), pos - Vector3(0, 3, 0))
+            pos = col and col[0] or pos
+        self._time = time
+        self._space_id = space_id
+        self._vehicle_id = vehicle_id
+        self._pos = pos
+        self._pos_error = pos_error
+        self._rotation = rotation
+        self._last_values.append({'time': time,
+         'pos': pos,
+         'speed': self._entity.velocity.length,
+         'rot': rotation})
+        while self._last_values[0]['time'] < time - self._data_line_time:
+            del self._last_values[0]
+
+        self._server_pos_updated(pos, rotation)
+
+    def _output(self, time):
+        result = self._output_debug(time)
+        self._debug_write(DebugWriter.Output, result)
+        return result
+
+    def _output_debug(self, time):
+        if not self._last_values:
+            return
+        last_values = list(self._last_values)
+        last_value = self._last_values[-1]
+        extra_delay = 0.1
+        velocity2 = self._entity.velocity + self._entity.accel * extra_delay
+        rot_speed2 = self._entity.rot_speed + self._entity.rot_accel * extra_delay
+        extra_value1 = {'time': last_value['time'] + extra_delay,
+         'pos': last_value['pos'] + self._entity.velocity * extra_delay,
+         'speed': velocity2.length,
+         'rot': last_value['rot'] + Vector3(self._entity.rot_speed * extra_delay, 0, 0)}
+        velocity3 = velocity2 + self._entity.accel * extra_delay
+        extra_value2 = {'time': extra_value1['time'] + extra_delay,
+         'pos': extra_value1['pos'] + velocity2 * extra_delay,
+         'speed': velocity3.length,
+         'rot': extra_value1['rot'] + Vector3(rot_speed2 * extra_delay, 0, 0)}
+        last_values.append(extra_value1)
+        last_values.append(extra_value2)
+        time = BigWorld.time() - self._data_line_time * 0.5 + extra_delay * 2
+        pos = Vector3(0, 0, 0)
+        rot = Vector3(0, 0, 0)
+        total_weight = 0.0
+        fly_dist = 0.0
+        x, y = (0, 0)
+        speed = 0
+        for i, value in enumerate(last_values):
+            distance = abs(value['time'] - time) / (self._data_line_time * 0.5)
+            weight = inverse_lerpclam(1, 0, distance)
+            if weight != 0:
+                angle = Vector3(value['rot'])
+                pos += Vector3(value['pos']) * weight
+                rot += angle * weight
+                speed += value['speed'] * weight
+                x += cos(angle[0]) * weight
+                y += sin(angle[0]) * weight
+                total_weight += weight
+            if i > 0:
+                fly_dist += value['pos'].distTo(last_values[i - 1]['pos'])
+
+        if total_weight == 0:
+            self.speed = 0
+            self._update_turn_flag(self.speed)
+            return
+        pos /= total_weight
+        rot /= total_weight
+        self.speed = speed / total_weight
+        self._update_turn_flag(self.speed)
+        mean_yaw = atan2(y, x)
+        rot[0] = mean_yaw
+        self._client_pos_updated(pos, rot)
+        if self._last_return_data:
+            if pos.distSqrTo(self._last_return_data[0]) <= 0.0001:
+                pos = self._last_return_data[0]
+            if rot.distSqrTo(self._last_return_data[1]) <= 0.0001:
+                rot = self._last_return_data[1]
+        self._last_return_data = (pos, rot)
+        return (pos, rot, Vector3())
+
+    def _update_turn_flag(self, speed):
+        if self._entity.model:
+            self._entity.model.motors[0].turnModelToEntity = speed > 5
+
+    def debug_client_pos(self, value):
+        self._debug_client_pos = value
+
+    def debug_server_pos(self, value):
+        self._debug_server_pos = value
+
+    def _last_input(self, unused_time, unused_space_id, unused_vehicle_id, unused_pos, unused_pos_error, unused_rotation):
+        self._debug_write(DebugWriter.LastInput, (unused_time,
+         unused_space_id,
+         unused_vehicle_id,
+         unused_pos,
+         unused_pos_error,
+         unused_rotation))
+        return (True,
+         self._time,
+         self._space_id,
+         self._vehicle_id,
+         self._pos,
+         self._pos_error,
+         self._rotation)
+
+    def _debug_write(self, data_type, data):
+        if not _WRITE_DEBUG:
+            return
+        else:
+            if self._debug_writer is None:
+                self._debug_writer = DebugWriter()
+            self._debug_writer.write(data_type, data)
+            return
+
+    def release(self):
+        Listenable.release(self)
+        if self._debug_server_model:
+            BigWorld.delModel(self._debug_server_model)
+            self._debug_server_model = None
+        if self._debug_client_model:
+            BigWorld.delModel(self._debug_client_model)
+            self._debug_client_model = None
+        return
+
+    @property
+    def speed(self):
+        return self._speed
+
+    @speed.setter
+    def speed(self, value):
+        if self._speed == value:
+            return
+        self._speed = value
+        self.notify_listeners(EventType.OnClientSpeedChanged, self.speed)

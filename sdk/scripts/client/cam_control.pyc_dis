@@ -1,0 +1,189 @@
+# Embedded file name: ./client/cam_control.py
+import BigWorld
+import Math
+import math
+import CameraNode
+import Keys
+MATH_PI = math.pi
+MATH_2PI = math.pi * 2.0
+
+def clampAngles(start, end):
+    end = Math.Vector3(end)
+    rot = end - Math.Vector3(start)
+    for i in xrange(3):
+        if rot[i] <= -MATH_PI:
+            end[i] += MATH_2PI
+        elif rot[i] > MATH_PI:
+            end[i] -= MATH_2PI
+
+    return end
+
+
+class LinearCamera(object):
+
+    def __init__(self, cam_matrix, camera_udo, speed = 1.0):
+        self.deg_fov = 60
+        self.cam_matrix = cam_matrix
+        self.camera_udo = camera_udo
+        self.speed = speed
+
+    def tick(self):
+        campos = self.cam_matrix.translation
+        tagert_pos = self._cur_camera_udo.position
+        dist = (campos - tagert_pos).length
+        step = self.speed
+        mn_bl = 1.0
+        if dist >= step:
+            mn_bl = step / dist
+        self.cam_matrix.blendMatrix(mn_bl, self._cam_target_matrix)
+        if dist <= step:
+            next_cam = self._cur_camera_udo.next
+            if not self.onNodeChanged(next_cam):
+                return False
+            if next_cam:
+                self.prepare(next_cam)
+            elif self.camera_udo != self._cur_camera_udo:
+                self.prepare(self.camera_udo)
+
+    def prepare(self, cam_udo):
+        self._cur_camera_udo = cam_udo
+        self._cam_target_matrix = Math.Matrix()
+        self._cam_target_matrix.setRotateYPR((cam_udo.yaw, cam_udo.pitch, cam_udo.roll))
+        tmp = Math.Matrix()
+        tmp.setTranslate(cam_udo.position)
+        self._cam_target_matrix.postMultiply(tmp)
+        self.deg_fov = cam_udo.fov
+        BigWorld.projection().rampFov(math.radians(self.deg_fov), 2.0)
+
+    def onNodeChanged(self, new_udo_cam):
+        return True
+
+
+class AccelerationCamera(LinearCamera):
+    pass
+
+
+class SplineCamera(LinearCamera):
+
+    def __init__(self, cam_matrix, camera_udo, speed = 1.0):
+        LinearCamera.__init__(self, cam_matrix, camera_udo, speed)
+        self.__dt = 1.0
+
+    def prepare(self, cam_udo):
+        self._cur_camera_udo = cam_udo
+        self.poslist = []
+        self.rotlist = []
+        self.destId = 1
+        self.t = 1
+        _all_cams = []
+        self.deg_fov = cam_udo.fov
+        BigWorld.projection().rampFov(math.radians(self.deg_fov), 2.0)
+        cam = cam_udo
+        while True:
+            if cam in _all_cams:
+                if len(self.poslist) < 2:
+                    return False
+                for x in xrange(3):
+                    self.poslist.append(self.poslist[x])
+                    self.rotlist.append(self.rotlist[x])
+
+                self.destId = 0
+                return True
+            _all_cams.append(cam)
+            self.poslist.append(cam.position)
+            self.rotlist.append(Math.Vector3(cam.yaw, cam.pitch, cam.roll))
+            cam = cam.next
+            if not cam:
+                return False
+
+    def tick(self):
+        s_speed = 20.0
+        self.t += self.speed * 0.01 * self.__dt
+        if self.t >= 1.0:
+            self.destId += 1
+            if self.destId + 1 >= len(self.poslist):
+                self.destId = 2
+            self.t -= 1.0
+        p0 = self.poslist[self.destId - 2]
+        p1 = self.poslist[self.destId - 1]
+        p2 = self.poslist[self.destId + 0]
+        p3 = self.poslist[self.destId + 1]
+        r0 = self.rotlist[self.destId - 2]
+        r1 = self.rotlist[self.destId - 1]
+        r2 = self.rotlist[self.destId + 0]
+        r3 = self.rotlist[self.destId + 1]
+        r1 = clampAngles(r0, r1)
+        r2 = clampAngles(r1, r2)
+        r3 = clampAngles(r2, r3)
+        self.__dt = s_speed / ((p0 - p1).length + 2.0 * (p1 - p2).length + (p2 - p3).length)
+        t = self.t
+        t2 = t * t
+        t3 = t * t2
+        pos = 0.5 * (2 * p1 + (-p0 + p2) * t + (2 * p0 - 5 * p1 + 4 * p2 - p3) * t2 + (-p0 + 3 * p1 - 3 * p2 + p3) * t3)
+        rot = 0.5 * (2 * r1 + (-r0 + r2) * t + (2 * r0 - 5 * r1 + 4 * r2 - r3) * t2 + (-r0 + 3 * r1 - 3 * r2 + r3) * t3)
+        m = Math.Matrix()
+        m.setRotateYPR(rot)
+        direct = m.applyToAxis(2)
+        up = m.applyToAxis(1)
+        self.cam_matrix.lookAt(pos, direct, up)
+        self.cam_matrix.invert()
+
+
+class CameraControl(object):
+    cam_tick_id = 0
+    _camera_speed = 0.1
+    _cam_mover = None
+
+    def resetCamera(self):
+        self.__stop()
+        self._cam_mover = None
+        return
+
+    def playCamera(self, camera_udo):
+        if not camera_udo:
+            self.resetCamera()
+            return
+        self.__stop()
+        self.__setupFreeCamera()
+        self.__init_cam_udo = camera_udo
+        self._cam_mover = LinearCamera(self.fly_cam_matrix, camera_udo, self._camera_speed * 4)
+        self._cam_mover.prepare(camera_udo)
+        spl_cam = SplineCamera(self.fly_cam_matrix, camera_udo, self._camera_speed)
+        if spl_cam.prepare(camera_udo):
+            print 'init spline cam'
+
+            def setSplineCam(*e):
+                self._cam_mover = spl_cam
+                self._cam_mover.speed = self._camera_speed
+
+            self._cam_mover.onNodeChanged = setSplineCam
+        self.__tick()
+
+    @property
+    def camera_speed(self):
+        return self._camera_speed
+
+    @camera_speed.setter
+    def camera_speed(self, value):
+        self._camera_speed = value
+        if self._cam_mover:
+            self._cam_mover.speed = value
+
+    def __stop(self):
+        BigWorld.cancelCallback(self.cam_tick_id)
+        self._cam_mover = None
+        return
+
+    def __setupFreeCamera(self):
+        oldcam = BigWorld.camera()
+        self.fly_cam = BigWorld.FreeCamera(oldcam)
+        self.fly_cam_matrix = Math.Matrix(oldcam.invViewMatrix)
+        self.fly_cam.invViewProvider = self.fly_cam_matrix
+        BigWorld.camera(self.fly_cam)
+
+    def __tick(self):
+        self.cam_tick_id = BigWorld.callback(0, self.__tick)
+        if BigWorld.isKeyDown(Keys.KEY_SPACE):
+            return
+        if self._cam_mover:
+            self._cam_mover.tick()

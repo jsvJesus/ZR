@@ -1,0 +1,158 @@
+# Embedded file name: ./client/DummyRotating.py
+__author__ = 'yogi'
+from Math import Matrix, MatrixAnimation, Vector3
+from math import pi
+import BigWorld
+from math_bw import clamp_angle, lerp_angle2
+PI2 = 2 * pi
+centerY = pi / 2
+max_pitch = 0.9
+ROTATE_MODEL_SENSIVITY = 0.005
+ROTATE_MODEL_DISP = (-0.05, 0, -0.1)
+DEBUG = False
+
+class DummyRotating(object):
+    """        This singleton class rotate avatar dummy"""
+    model = None
+    _locked = True
+    _tickid = 0
+    _rotate_matrix = Matrix()
+
+    def __new__(cls):
+        if not hasattr(cls, 'instance'):
+            cls.instance = super(DummyRotating, cls).__new__(cls)
+            cls.instance.torso_sensivity = 0.5
+        return cls.instance
+
+    def init_motor(self, entity, position = None):
+        model = entity.model
+        for m in list(model.motors):
+            model.delMotor(m)
+
+        model.yaw = centerY
+        self.model = model
+        self._locked = False
+        init_provider = BigWorld.EntityDirProvider(entity, 1, 0)
+        self._head = Matrix(init_provider)
+        model.tracker_head.directionProvider = self._head
+        self._torso = Matrix(init_provider)
+        model.torso.directionProvider = self._torso
+        model.torso.rotateInWS = False
+        self._look_yaw = model.yaw
+        self._look_pitch = 0
+        self._head_node = model.node('Head')
+        self._rotate_matrix = Matrix()
+        self._rotate_yaw = model.yaw
+        self._rotate_yaw_cur = self._rotate_yaw
+        if position is None:
+            position = model.position
+        self._original_model_position = Vector3(position)
+        self._rotate_motor = BigWorld.Servo(self._rotate_matrix)
+        model.addMotor(self._rotate_motor)
+        self._update_rotate_matrix()
+        return
+
+    def start_loop(self):
+        self.stop_loop()
+        self._timer()
+
+    def stop_loop(self):
+        if self._tickid:
+            BigWorld.cancelCallback(self._tickid)
+            self._tickid = 0
+
+    def _timer(self):
+        self._tickid = BigWorld.callback(0, self._timer)
+        if not self._rotate_matrix:
+            return
+        if self._locked or not hasattr(self, 'model') or not self.model:
+            return
+        self._rotate_yaw_cur = self._rotate_yaw_cur + (self._rotate_yaw - self._rotate_yaw_cur) * 0.1
+        self._look_yaw = clamp_angle(self._look_yaw, self.model.yaw - pi * 0.5, self.model.yaw + pi * 0.5)
+        self._update_rotate_matrix()
+
+    def look_at_camera(self):
+        head_pos = Matrix(self._head_node).translation + (0, 0.15, 0)
+        cam_pos = BigWorld.camera().position
+        direction = cam_pos - head_pos
+        self._look_yaw = direction.yaw
+        self._look_pitch = direction.pitch
+        self._update_dummy()
+
+    def _update_dummy(self):
+        torso_yaw = lerp_angle2(self.model.yaw, self._look_yaw, self.torso_sensivity)
+        torso_pitch = self._look_pitch * self.torso_sensivity
+        self._head.setRotateYPR((self._look_yaw, self._look_pitch, 0))
+        self._torso.setRotateYPR((torso_yaw, torso_pitch, 0))
+        if DEBUG:
+            gi = BigWorld.getGeometricInstance()
+            gi.removeAll()
+            direction = Vector3()
+            direction.setPitchYaw(self._look_pitch, self._look_yaw)
+            gi.addLine(self.model.position + (0, 1.6, 0), self.model.position + direction + (0, 1.6, 0))
+            direction.setPitchYaw(0, self.model.yaw)
+            gi.addLine(self.model.position, self.model.position + direction, (1, 1, 1, 1))
+            for i in xrange(10):
+                point = self.model.position + direction * i * 0.1
+                gi.addLine(point, point + (0, 0.2, 0), (1, 1, 1, 1))
+
+            direction.setPitchYaw(torso_pitch, torso_yaw)
+            gi.addLine(self.model.position + (0, 1, 0), self.model.position + (0, 1, 0) + direction)
+
+    def _update_rotate_matrix(self):
+        self._rotate_matrix.setIdentity()
+        axis_disp = Matrix()
+        axis_disp.setTranslate(ROTATE_MODEL_DISP)
+        axis_rotate = Matrix()
+        axis_rotate.setRotateYPR((self._rotate_yaw_cur % PI2, 0, 0))
+        total_disp = Matrix()
+        total_disp.setTranslate(self._original_model_position)
+        self._rotate_matrix.postMultiply(axis_disp)
+        self._rotate_matrix.postMultiply(axis_rotate)
+        self._rotate_matrix.postMultiply(total_disp)
+        self._update_dummy()
+
+    def load_old_motor(self, model):
+        for m in list(model.motors):
+            model.delMotor(m)
+
+        model.position = self._rotate_matrix.translation
+        self.model = model
+        self.model.tracker_head.directionProvider = self._head
+        self.model.torso.directionProvider = self._torso
+        self.model.torso.rotateInWS = False
+        self.model.addMotor(self._rotate_motor)
+        self._update_rotate_matrix()
+
+    def lock(self, lock = True):
+        self._locked = lock
+
+    def rotate_model(self, dx, dy = 0):
+        """ \xd1\x86\xd0\xb5\xd0\xbb\xd0\xb8\xd0\xba\xd0\xbe\xd0\xbc \xd0\xbf\xd1\x80\xd0\xbe\xd0\xb2\xd0\xbe\xd1\x80\xd0\xb0\xd1\x87\xd0\xb8\xd0\xb2\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xb2\xd1\x81\xd1\x8e \xd0\xbc\xd0\xbe\xd0\xb4\xd0\xb5\xd0\xbb\xd1\x8c """
+        if self._locked or not hasattr(self, 'model') or not self.model:
+            return
+        self._rotate_yaw -= dx * ROTATE_MODEL_SENSIVITY
+        self._look_yaw -= dx * ROTATE_MODEL_SENSIVITY
+        self._look_yaw = clamp_angle(self._look_yaw, self.model.yaw - pi * 0.5, self.model.yaw + pi * 0.5)
+        self._update_rotate_matrix()
+        if dy:
+            self.rotate(0, dy=dy * 0.1)
+
+    def rotate(self, dx, dy = 0):
+        """ \xd0\xb1\xd0\xb0\xd1\x88\xd0\xba\xd1\x83 \xd0\xba\xd1\x80\xd1\x83\xd1\x82\xd0\xb8\xd1\x82 """
+        if self._locked or not hasattr(self, 'model') or not self.model:
+            return
+        self._look_yaw -= dx * ROTATE_MODEL_SENSIVITY
+        self._look_yaw = clamp_angle(self._look_yaw, self.model.yaw - pi * 0.5, self.model.yaw + pi * 0.5)
+        self._look_pitch += dy * ROTATE_MODEL_SENSIVITY
+        self._look_pitch = clamp_angle(self._look_pitch, -max_pitch, max_pitch)
+        self._update_dummy()
+
+    def set_rotation(self, look_yaw, look_pitch, rotate_yaw):
+        self._look_yaw, self._look_pitch, self._rotate_yaw = look_yaw, look_pitch, rotate_yaw
+        self._look_yaw = clamp_angle(self._look_yaw, self.model.yaw - pi * 0.5, self.model.yaw + pi * 0.5)
+        self._look_pitch = clamp_angle(self._look_pitch, -max_pitch, max_pitch)
+        self._update_dummy()
+
+    def get_rotation(self):
+        return (self._look_yaw, self._look_pitch, self._rotate_yaw)

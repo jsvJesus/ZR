@@ -1,0 +1,117 @@
+# Embedded file name: ./client/actions_recorder/imitators_provider.py
+from imitator import Imitator, EventType as I_ET, State
+from data_provider import EventType as D_ET
+
+class ImitatorsProvider:
+
+    def __init__(self, data_provider):
+        self._imitators = {}
+        self.singleton = False
+        self._data_provider = data_provider
+        self._data_provider.add_listener(self)
+
+    def on_imitator_event(self, event_type, data):
+        if event_type == I_ET.BeforePlay:
+            if self.singleton:
+                withdrawed_entity = None
+                for imitator in self._imitators.values():
+                    if withdrawed_entity:
+                        imitator.stop()
+                    else:
+                        withdrawed_entity = imitator.stop(withdraw_entity=True)
+
+                if withdrawed_entity:
+                    data['imitator'].accept_entity(withdrawed_entity)
+        return
+
+    def is_singleton_loop_end(self):
+        if not self.singleton:
+            return False
+        for imitator in self._imitators.values():
+            if imitator.loop_end:
+                return True
+
+        return False
+
+    def is_singleton_paused(self):
+        if not self.singleton:
+            return False
+        for imitator in self._imitators.values():
+            if imitator.state == State.Pause:
+                return True
+
+        return False
+
+    def start_play_and_pause_singleton_animation(self, animation):
+        self._data_provider.preload_tutorial_data()
+        self.set_singleton(True)
+        for data in self._data_provider.datas:
+            if data['name'] == animation:
+                imitator = self.get_imitator(data)
+                imitator.play()
+                imitator.set_pause(True)
+                break
+        else:
+            print 'imitator (ERROR):', animation, len(self._data_provider.datas)
+            raise RuntimeError(animation)
+
+    def play_singleton_animation(self, animation):
+        self._data_provider.preload_tutorial_data()
+        self.set_singleton(True)
+        for data in self._data_provider.datas:
+            if data['name'] == animation:
+                imitator = self.get_imitator(data)
+                if imitator.state == State.Pause:
+                    imitator.set_pause(False)
+                else:
+                    imitator.play()
+                break
+        else:
+            raise RuntimeError(animation)
+
+    def get_singleton_entity(self):
+        if not self.singleton:
+            return None
+        else:
+            for imitator in self._imitators.values():
+                if imitator.entity:
+                    return imitator.entity
+
+            return None
+
+    def set_all_loop(self, value):
+        for imitator in self._imitators.values():
+            imitator.set_loop(value)
+
+    def get_imitator(self, data):
+        if data['id'] not in self._imitators:
+            imitator = Imitator(data)
+            imitator.add_listener(self)
+            self._imitators[data['id']] = imitator
+        return self._imitators[data['id']]
+
+    def set_singleton(self, singleton):
+        if self.singleton != singleton:
+            for imitator in self._imitators.values():
+                imitator.stop()
+
+            self.singleton = singleton
+
+    def on_data_event(self, event_type, data):
+        if event_type == D_ET.DataRemoved:
+            imitator = self._imitators.get(data['data']['id'])
+            if imitator:
+                imitator.on_destroy()
+                del self._imitators[data['data']['id']]
+
+    def stop(self, data):
+        imitator = self._imitators.get(data['id'])
+        if imitator:
+            imitator.on_destroy()
+            del self._imitators[data['id']]
+
+    def destroy_all(self):
+        for imitator in self._imitators.values():
+            imitator.on_destroy()
+
+        self._imitators = {}

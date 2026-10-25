@@ -1,0 +1,132 @@
+# Embedded file name: ./client/FX/Effects/PersistentExt.py
+__author__ = 'monitorius'
+from functools import partial
+import BigWorld
+import Pixie
+import PostProcessing
+from Persistent import Persistent
+from FX.Effects.DynamicNodes import iDynamicNodes
+
+class PersistentExt(Persistent, iDynamicNodes):
+
+    def __init__(self, fileName = None, prereqs = None, store_sounds = None):
+        Persistent.__init__(self, fileName, prereqs, store_sounds)
+        iDynamicNodes.__init__(self)
+        self.spawn_rates = {}
+        self.spawn_stopped = False
+        self.pp_effects_id = []
+        self.pp_effects = {}
+        self.pp_effects_stopped = True
+
+    def __str__(self):
+        return repr(self) + '{0}'.format(self.fileName)
+
+    def attach(self, source):
+        """ Some particles (like MatrixSwarm) start playing immediately after attach,
+            without go() calling. So we need stop() effect right after attaching.
+        """
+        Persistent.attach(self, source)
+        self.pop_sfx_pp_effects()
+        self.stop()
+
+    def go_delayed(self, source = None, target = None, callbackFn = None, delay = 0, **kargs):
+        """Run sfx after delay time."""
+        if delay:
+            BigWorld.callback(delay, partial(self.go, target, callbackFn, **kargs))
+        else:
+            self.go(target, callbackFn, **kargs)
+
+    def go(self, target = None, callbackFn = None, **kargs):
+        self.resume_particles_spawn()
+        self.resume_sfx_pp_effects()
+        Persistent.go(self, target, callbackFn, **kargs)
+
+    def stop(self):
+        self.stop_all_sfx_pp_effects()
+        self.stop_particles_spawn()
+        return Persistent.stop(self)
+
+    def stop_all_sfx_pp_effects(self):
+        """\xd0\x9e\xd1\x81\xd1\x82\xd0\xb0\xd0\xbd\xd0\xb0\xd0\xb2\xd0\xbb\xd0\xb8\xd0\xb2\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xbf\xd0\xbe\xd1\x81\xd1\x82-\xd0\xbf\xd1\x80\xd0\xbe\xd1\x86\xd0\xb5\xd1\x81\xd1\x81\xd0\xb8\xd0\xbd\xd0\xb3 \xd1\x8d\xd1\x84\xd1\x84\xd0\xb5\xd0\xba\xd1\x82\xd1\x8b \xd0\xb8\xd0\xb7 sfx."""
+        if not self.pp_effects_id:
+            return
+        if not self.pp_effects_stopped:
+            for effect_id in self.pp_effects_id:
+                PostProcessing.removePPChain(effect_id)
+
+            self.pp_effects_id = []
+            self.pp_effects_stopped = True
+
+    def resume_sfx_pp_effects(self):
+        """\xd0\x97\xd0\xb0\xd0\xbf\xd1\x83\xd1\x81\xd0\xba\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xbf\xd0\xbe\xd1\x81\xd1\x82-\xd0\xbf\xd1\x80\xd0\xbe\xd1\x86\xd0\xb5\xd1\x81\xd1\x81\xd0\xb8\xd0\xbd\xd0\xb3 \xd1\x8d\xd1\x84\xd1\x84\xd0\xb5\xd0\xba\xd1\x82\xd1\x8b \xd0\xb8\xd0\xb7 sfx."""
+        if not self.pp_effects:
+            return
+        if self.pp_effects_stopped:
+            for actor_name, effects in self.pp_effects.items():
+                self.pp_effects_id.append(PostProcessing.addPPChainEffects(effects))
+
+            self.pp_effects_stopped = False
+
+    def pop_sfx_pp_effects(self):
+        """\xd0\x97\xd0\xb0\xd0\xbf\xd0\xbe\xd0\xbc\xd0\xb8\xd0\xbd\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xb8 \xd0\xbe\xd1\x81\xd1\x82\xd0\xb0\xd0\xbd\xd0\xb0\xd0\xb2\xd0\xbb\xd0\xb8\xd0\xb2\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xbf\xd0\xbe\xd1\x81\xd1\x82-\xd0\xbf\xd1\x80\xd0\xbe\xd1\x86\xd0\xb5\xd1\x81\xd1\x81\xd0\xb8\xd0\xbd\xd0\xb3 \xd1\x8d\xd1\x84\xd1\x84\xd0\xb5\xd0\xba\xd1\x82\xd1\x8b \xd0\xb8\xd0\xb7 sfx."""
+        for actor_name, actor in self.actors.items():
+            if not isinstance(actor, list):
+                continue
+            if not any((not isinstance(eff, PostProcessing.Effect) for eff in actor)):
+                self.pp_effects[actor_name] = actor
+                self.pp_effects_stopped = False
+
+        self.stop_all_sfx_pp_effects()
+
+    def iterate_particle_systems(self):
+        """Iterator through all PyParticleSystems of actor."""
+        for actor_name, actor in self.actors.items():
+            if isinstance(actor, Pixie.MetaParticleSystem):
+                for system_ind, system in enumerate([ actor.system(i) for i in range(actor.nSystems()) ]):
+                    key = (actor_name, system_ind)
+                    yield (key, system)
+
+    def iterate_particle_sources(self):
+        """Iterator through all SourcePSA in all particle systems of actor."""
+        for (actor_name, system_ind), system in self.iterate_particle_systems():
+            for action_ind, action in enumerate(system.actions):
+                if isinstance(action, Pixie.SourcePSA):
+                    key = (actor_name, system_ind, action_ind)
+                    yield (key, action)
+
+    def stop_particles_spawn(self):
+        if not self.spawn_stopped:
+            for action_key, action in self.iterate_particle_sources():
+                self.spawn_rates[action_key] = action.rate
+                action.rate = 0
+
+            self.spawn_stopped = True
+
+    def resume_particles_spawn(self):
+        if self.spawn_stopped:
+            for action_key, action in self.iterate_particle_sources():
+                try:
+                    action.rate = self.spawn_rates[action_key]
+                except KeyError:
+                    pass
+
+            self.spawn_stopped = False
+
+    def get_particles_number(self):
+        return sum((system.size() for key, system in self.iterate_particle_systems()))
+
+    def event_no_particles(self, callback, time_force_hard_destroy = 10):
+        self._count_sec_destroy = 0
+
+        def check_particles():
+            pn = self.get_particles_number()
+            self._count_sec_destroy += 1
+            if self._count_sec_destroy > time_force_hard_destroy:
+                callback()
+                return
+            if pn > 0:
+                BigWorld.callback(1, check_particles)
+            else:
+                callback()
+
+        check_particles()

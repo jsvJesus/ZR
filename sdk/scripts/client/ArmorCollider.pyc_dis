@@ -1,0 +1,98 @@
+# Embedded file name: ./client/ArmorCollider.py
+import BigWorld
+import DrawPrimitivesUtils
+import traceback
+from Items import ItemsCatalog
+from Math import Vector3, Matrix
+PENETRATE_LEN = 0.5
+
+class ArmorCollider(object):
+
+    def __init__(self, entity):
+        self.__entity = entity
+        self.__boxes = {}
+        self.__entity.armorCollider = None
+        return
+
+    def destroy(self):
+        self.clearColliders()
+        self.__entity = None
+        return
+
+    def clearColliders(self):
+        if not self.__entity or self.__entity.isDestroyed:
+            return
+        else:
+            try:
+                for node_name, box_param in self.__boxes.items():
+                    name, item_type, box, node = box_param
+                    node.detach(box)
+
+            except Exception:
+                traceback.print_exc()
+
+            if getattr(self.__entity, 'armorCollider', None):
+                self.__entity.armorCollider.clearColliders()
+                self.__entity.armorCollider = None
+            self.__boxes.clear()
+            return
+
+    def generateCollider(self):
+        if not self.__entity or self.__entity.isDestroyed or self.__entity.is_clothing():
+            return
+        else:
+            self.clearColliders()
+            self.__entity.armorCollider = BigWorld.SkeletonCollider()
+            if self.__entity.__class__.__name__ in ('Avatar', 'PlayerAvatar', 'NPC'):
+                if getattr(self.__entity, 'active_transform', None):
+                    return
+                for item in self.__entity.getVisualArmor().values():
+                    item_type = item['itemType']
+                    if not item_type:
+                        continue
+                    item_param = ItemsCatalog.GetItemParam(item_type)
+                    armor_params = item_param.get('ArmorCollider', {})
+                    for node_name, model_path in armor_params.items():
+                        self.__add_collider(node_name, model_path, item_type)
+
+            return
+
+    def __add_collider(self, node_name, model_path, item_type = 0, inside = False):
+        try:
+            box = BigWorld.ObstacleAttachment(model_path)
+        except Exception as e:
+            import traceback
+            traceback.print_stack()
+            print 'ERROR ArmorCollider::__add_collider', model_path
+            print e
+            return
+
+        box.bodyIndex = item_type
+        box.name = node_name
+        node = self.__entity.model.node(node_name)
+        node.attach(box)
+        self.__entity.armorCollider.addCollider(box)
+        self.__boxes[node_name] = (node_name,
+         item_type,
+         box,
+         node)
+
+    def do_collide(self, start_point, end_point, group_name):
+        result = []
+        if not self.__colliders.has_key(group_name):
+            return result
+        else:
+            direction = end_point - start_point
+            direction.normalise()
+            end_point = end_point + direction * PENETRATE_LEN
+            if getattr(BigWorld.player(), 'debugEnabled', None):
+                DrawPrimitivesUtils.clear_drawings()
+                DrawPrimitivesUtils.draw_line(start_point, end_point, (0, 1, 0, 1))
+            for name, organ_id, box in self.__colliders[group_name]:
+                m = Matrix(box.worldTransform)
+                p1 = m.applyPoint(box.minBounds)
+                p2 = m.applyPoint(box.maxBounds)
+                if box.collide(start_point, direction, 0):
+                    result.append(organ_id)
+
+            return result

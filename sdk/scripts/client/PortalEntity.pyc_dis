@@ -1,0 +1,129 @@
+# Embedded file name: ./client/PortalEntity.py
+import BigWorld
+from client_utils import readable_space_pos
+from sounds_manager import playSound
+name2portal_entity = {}
+
+class PortalEntity(BigWorld.Entity):
+
+    def __init__(self):
+        BigWorld.Entity.__init__(self)
+        self._triggers = []
+        self._pot_id = None
+        self.portal = None
+        self._fails = 0
+        return
+
+    def __repr__(self):
+        if self.isDestroyed:
+            return 'PortalEntity[%s]Destroyed' % self.id
+        return 'PortalEntity[%s] at %s (%s)' % (self.id, readable_space_pos(self), self.guid)
+
+    def onEnterWorld(self, prereqs):
+        self._loadtriggers()
+        self._create_portal()
+        self._pot_id = BigWorld.addPot(self.matrix, self.sizeX + 3.0, self._onPlNearby)
+
+    def _onPlNearby(self, entered, pot_id):
+        BigWorld.player().onPortalNearby(self.id, entered)
+
+    def _teleport_callback(self, position, yaw, pitch, roll):
+        player = BigWorld.player()
+        if not player:
+            return
+        player.onEnterPortal(self, position, yaw, pitch, roll)
+        playSound('players/portal_teleport')
+
+    def _create_portal(self):
+        if not self.guid:
+            self._fails += 1
+            print '[ERROR] _create_portal. PortalEntity no guid', self, self._fails
+            BigWorld.callback(0.01, self._create_portal)
+            return
+        if self.guid == self.partner_name:
+            raise RuntimeError('guid == partner_name: %s | %s' % (self, self.partner_name))
+        name2portal_entity[self.guid] = self
+        self.portal = BigWorld.Portal()
+        BigWorld.addPortal(self.portal)
+        if self.model_path and self.model_path.strip():
+            self.portal.modelPath = self.model_path.strip()
+        self.portal.size = (self.sizeX, self.sizeY)
+        self.portal.setWorldTransform(self.matrix)
+        self.portal.teleportCallback = self._teleport_callback
+        self.attach_partner(self.partner_name)
+
+    def attach_partner(self, name):
+        if name not in name2portal_entity:
+            return
+        other = name2portal_entity[name]
+        if other.partner_name != self.guid:
+            raise RuntimeError('Failed attach_partner. other.partner_name != self.guid: %s | %s' % (other.partner_name, self))
+        other.portal.partner = self.portal
+        self.portal.partner = other.portal
+
+    def detach_partner(self, name):
+        if name not in name2portal_entity:
+            return
+        else:
+            other = name2portal_entity[name]
+            if other.partner_name != self.guid:
+                print 'Failed detach_partner. other.partner_name != self.guid: %s | %s' % (other.partner_name, self)
+            if other.portal:
+                other.portal.partner = None
+            return
+
+    def onLeaveWorld(self):
+        self._destroy_triggers()
+        if self._pot_id:
+            BigWorld.delPot(self._pot_id)
+            if hasattr(BigWorld.player(), 'onPortalNearby'):
+                BigWorld.player().onPortalNearby(self.id, False)
+            self._pot_id = None
+        self.detach_partner(self.partner_name)
+        if self.portal:
+            BigWorld.delPortal(self.portal)
+            self.portal = None
+        if self.guid in name2portal_entity:
+            del name2portal_entity[self.guid]
+        else:
+            print '[ERROR] onLeaveWorld. PortalEntity not found', self
+        return
+
+    def _loadtriggers(self):
+        if self.isDestroyed:
+            return
+        try:
+            for udo in self.triggers:
+                pos = udo.position
+                if udo.__class__.__name__ == 'UserDataObjectRef':
+                    raise BigWorld.UnresolvedUDORefException('UserDataObjectRef')
+
+        except BigWorld.UnresolvedUDORefException:
+            BigWorld.callback(0.5, self._loadtriggers)
+            return
+
+        for udo in self.triggers:
+            props = {'radius': udo.radius,
+             'portalTriggerType': int(udo.portalTriggerType),
+             'portalID': self.id}
+            eid = BigWorld.createEntity('PortalEntityTrigger', self.spaceID, 0, udo.position, udo.direction, props)
+            self._triggers.append(eid)
+
+    def _destroy_triggers(self):
+        for trid in getattr(self, '_triggers', []):
+            BigWorld.destroyEntity(trid)
+
+        self._triggers = []
+
+    def disablePortal(self):
+        if not self.portal:
+            return
+        else:
+            self.detach_partner(self.partner_name)
+            self.portal = None
+            return
+
+    def enablePortal(self):
+        if self.portal:
+            return
+        self._create_portal()

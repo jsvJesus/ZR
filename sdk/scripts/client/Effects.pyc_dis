@@ -1,0 +1,203 @@
+# Embedded file name: ./client/Effects.py
+import BigWorld
+import BWPersonality
+from utils import hierarchy_get
+from EffectUtils import getEffect
+from FX_extension import SFXGroup, PersistentSFX
+from EffectData import EffectNames
+from PostProcessing import addPPChainByName, removePPChain
+import FX
+from FX.persistent_ext_bg import loadPersistentExtAsync
+SPECIAL_VISIBLE_EFFECTS = set([EffectNames.HallucinationsSpider,
+ EffectNames.HallucinationsMob,
+ EffectNames.event_drunkage_2016,
+ EffectNames.HideAllOtherAvatar])
+
+class Effects:
+
+    def __init__(self):
+        self.initEffects()
+        self.current_effects = {}
+        self.posteffects = {}
+        self.effects_sfxes = {}
+        self.effects_posteffects = {}
+        self.addEffectsSFXes(self.effectsVisibleForOther)
+
+    def initEffects(self):
+        pass
+
+    def onPreModelChange(self):
+        for sfxGroup in self.effects_sfxes.values():
+            sfxGroup.stop()
+            for x in sfxGroup.sfxes:
+                if x.source is not None:
+                    x.sfx.detach()
+
+        return
+
+    def onPostModelChange(self):
+        for sfxGroup in self.effects_sfxes.values():
+            for x in sfxGroup.sfxes:
+                x.sfx.attach(self.model)
+
+            sfxGroup.play()
+
+    def addPosteffects(self, effectId):
+        if self is not BigWorld.player():
+            print 'WARNING. addPosteffects for non player', effectId, self
+            return
+        effect = getEffect(effectId)
+        if not effect:
+            return
+        posteffects = effect['posteffects']
+        if posteffects:
+            if not self.posteffects.has_key(effectId):
+                self.posteffects[effectId] = []
+        for postEf in posteffects:
+            postEfNum = self.effects_posteffects.get(postEf, 0)
+            if postEfNum == 0:
+                self.posteffects[effectId].append(addPPChainByName(postEf, 100))
+            self.effects_posteffects[postEf] = postEfNum + 1
+
+    def removePosteffects(self, effectId):
+        posteffects = getEffect(effectId)['posteffects']
+        for postEf in posteffects:
+            postEfNum = self.effects_posteffects.get(postEf, 0)
+            if postEfNum == 1:
+                eff_id = self.posteffects[effectId].pop(0)
+                removePPChain(eff_id)
+            if postEfNum > 0:
+                self.effects_posteffects[postEf] = postEfNum - 1
+
+    def addEffectSFX(self, effectId):
+        """
+        async add persistent sfx
+        """
+        if effectId in self.effects_sfxes:
+            return
+        self.effects_sfxes[effectId] = SFXGroup()
+        sfxes = hierarchy_get(getEffect(effectId), ['sfxes', 'persistent'])
+        if sfxes:
+            sfx_paths = tuple((sfxData['path'] for sfxData in sfxes if sfxData.get('other_clients', True) or self is BigWorld.player()))
+            if sfx_paths:
+
+                def on_load(prereqs):
+                    if self.isDestroyed:
+                        return
+                    if not self.model:
+                        return
+                    sfxGroup = self.effects_sfxes.get(effectId)
+                    if not sfxGroup:
+                        return
+                    for sfx_path in sfx_paths:
+                        sfxGroup.addSFX(PersistentSFX(sfx_path, self.model, prereqs))
+
+                    sfxGroup.play()
+
+                def try_load():
+                    if not self.model:
+                        self._attepts += 1
+                        if self._attepts > 3:
+                            return
+                        BigWorld.callback(1, try_load)
+                        return
+                    loadPersistentExtAsync(sfx_paths, on_load)
+
+                self._attepts = 0
+                try_load()
+        if effectId == EffectNames.Bleed:
+            self.bleedDropEff()
+        elif effectId == EffectNames.InjuredAvatar:
+            self.setInjuredMode(True)
+        elif effectId == EffectNames.pvp_safe:
+            if self.model:
+                self.model.stipple = True
+
+    def addEffectsSFXes(self, effectIdList):
+        for effId in effectIdList:
+            self.addEffectSFX(effId)
+
+    def removeEffectSFX(self, effectId):
+        sfxGroup = self.effects_sfxes.pop(effectId, None)
+        if sfxGroup:
+            sfxGroup.stop()
+        sfx_paths = tuple((sfxData['path'] for sfxData in hierarchy_get(getEffect(effectId), ['sfxes', 'onRemove'], [])))
+        for sfx_path in sfx_paths:
+            FX.bufferedOneShotEffect(sfx_path, self.model)
+
+        if effectId == EffectNames.Bleed:
+            self.removeBleedDropEff()
+        elif effectId == EffectNames.InjuredAvatar:
+            self.setInjuredMode(False)
+        elif effectId == EffectNames.pvp_safe:
+            if self.model:
+                self.model.stipple = False
+        return
+
+    def removeEffectsSFXes(self, effectIdList):
+        for effId in effectIdList:
+            self.removeEffectSFX(effId)
+
+    def set_effectsVisibleForOther(self, oldValues):
+        self.removeEffectsSFXes(oldValues)
+        self.addEffectsSFXes(self.effectsVisibleForOther)
+
+    def setSlice_effectsVisibleForOther(self, path, oldValues):
+        newValues = self.effectsVisibleForOther[path[-1][0]:path[-1][1]]
+        self.removeEffectsSFXes(oldValues)
+        self.addEffectsSFXes(newValues)
+
+    def get_effect_hips_name(self):
+        return 'Hips'
+
+    def get_hips_offset(self):
+        return (0, 0.1, 0)
+
+    def addSpecialVisibleEffect(self, effect):
+        pass
+
+    def removeSpecialVisibleEffect(self, effectID):
+        pass
+
+    def changeVisibleEffect(self, effect):
+        """ Return True if new effect was added, return False if effect is already present """
+        effectID = effect['id']
+        if effectID in SPECIAL_VISIBLE_EFFECTS:
+            self.addSpecialVisibleEffect(effect)
+        if effectID in self.current_effects:
+            self.current_effects[effectID] = effect
+            return False
+        else:
+            self.current_effects[effectID] = effect
+            return True
+
+    def removeVisibleEffect(self, effectID):
+        """ Return True if successfully removed effect, otherwise return False """
+        if effectID in SPECIAL_VISIBLE_EFFECTS:
+            self.removeSpecialVisibleEffect(effectID)
+        if effectID in self.current_effects:
+            del self.current_effects[effectID]
+            return True
+        else:
+            return False
+
+    def isAffectedBy(self, ef_id):
+        if ef_id in self.current_effects:
+            return True
+        return False
+
+    def getEffectStacks(self, ef_id):
+        effect = self.current_effects.get(ef_id)
+        if not effect:
+            return None
+        else:
+            return effect['stacks']
+
+    def hideAllOtherAvatar(self, status):
+        pass
+
+    def beginEffAnimation(self, animId):
+        raise NotImplementedError
+
+    def endEffAnimation(self, animId):
+        raise NotImplementedError

@@ -1,0 +1,210 @@
+# Embedded file name: ./client/Turret.py
+import BigWorld
+from Localization import lc
+from Helpers.Caps import CAP_INTERACT
+from soGUI.soInworldMarkers import soInworldMarker
+import FX
+import TurretUtil
+import RestrictionsUtils
+from tank_parts.tank_mark import TankMarker
+from FX.persistent_ext_bg import loadPersistentExtAsync
+
+class Turret(BigWorld.Entity):
+
+    def __init__(self):
+        BigWorld.Entity.__init__(self)
+        self.targetCaps = [CAP_INTERACT]
+        self.name = lc(self.prop_local_name or 'Turret.turret_name')
+        self._locked = False
+        self._ui_marker = None
+        self._sfx_persistent = None
+        self._sfx_activated = None
+        self._sfx_deactivated = None
+        self._sfx_state = 0
+        self._model_path = TurretUtil.get_model_path(self.prop_model_index)
+        return
+
+    def prerequisites(self):
+        return [self._model_path]
+
+    def onEnterWorld(self, prereqs):
+        self.model = prereqs[self._model_path]
+        scale = self.prop_model_scale
+        self.model.scale = (scale, scale, scale)
+        self.model.newScaleTest = (scale, scale, scale)
+        self.model.isObstacle = True
+        self._play_sfx_persistent()
+        self._update_model_sfx()
+
+    def onLeaveWorld(self):
+        self._remove_all_model_sfx()
+        self.model = None
+        return
+
+    def interact(self, player):
+        if self._locked:
+            return
+        player.cancel_action_release()
+        if not player.CheckRestriction(RestrictionsUtils.CHANNEL_ITEMS) or player.control_locked or player.dead:
+            return
+        self._locked = True
+
+        def off_lock():
+            self._locked = False
+
+        BigWorld.callback(1, off_lock)
+        if self.charge_ratio < 1:
+            self.cell.interact()
+        else:
+            player.systemMsgChat(lc('Turret.msg.ALREADY_LOADED'))
+
+    def get_mark_name(self):
+        return self.name
+
+    def get_target_mark(self, distance):
+        if distance > TurretUtil.INTERACTION_DIST:
+            return None
+        else:
+            return soInworldMarker.MARKER_USE
+
+    def get_hightlight(self, distance):
+        if distance > TurretUtil.INTERACTION_DIST:
+            return None
+        else:
+            return True
+
+    def _play_sfx_persistent(self):
+        if not self.model:
+            return
+        if self.prop_sfx_persistent:
+
+            def on_load(prereqs):
+                if self.isDestroyed:
+                    return
+                self._sfx_persistent = FX.PersistentExt(self.prop_sfx_persistent, prereqs)
+                self._sfx_persistent.attach(self.model)
+                self._sfx_persistent.go()
+
+            loadPersistentExtAsync([self.prop_sfx_persistent], on_load)
+
+    def _play_sfx_activated(self):
+        if self._sfx_state & TurretUtil.SFX_ACTIVATED:
+            return
+        self._sfx_state ^= TurretUtil.SFX_ACTIVATED
+        if not self.model:
+            return
+        if self.prop_sfx_activated_persistent:
+            if self._sfx_activated:
+                self._sfx_activated.go()
+            else:
+
+                def on_load(prereqs):
+                    if self.isDestroyed:
+                        return
+                    self._sfx_activated = FX.PersistentExt(self.prop_sfx_activated_persistent, prereqs)
+                    self._sfx_activated.attach(self.model)
+                    self._sfx_activated.go()
+
+                loadPersistentExtAsync([self.prop_sfx_activated_persistent], on_load)
+
+    def _play_sfx_deactivated(self):
+        if self._sfx_state & TurretUtil.SFX_DEACTIVATED:
+            return
+        self._sfx_state ^= TurretUtil.SFX_DEACTIVATED
+        if not self.model:
+            return
+        if self.prop_sfx_deactivated_persistent:
+            if self._sfx_deactivated:
+                self._sfx_deactivated.go()
+            else:
+
+                def on_load(prereqs):
+                    if self.isDestroyed:
+                        return
+                    self._sfx_deactivated = FX.PersistentExt(self.prop_sfx_deactivated_persistent, prereqs)
+                    self._sfx_deactivated.attach(self.model)
+                    self._sfx_deactivated.go()
+
+                loadPersistentExtAsync([self.prop_sfx_deactivated_persistent], on_load)
+
+    def _stop_sfx_activated(self):
+        if not self._sfx_state & TurretUtil.SFX_ACTIVATED:
+            return
+        self._sfx_state ^= TurretUtil.SFX_ACTIVATED
+        if self._sfx_activated:
+            self._sfx_activated.stop()
+
+    def _stop_sfx_deactivated(self):
+        if not self._sfx_state & TurretUtil.SFX_DEACTIVATED:
+            return
+        self._sfx_state ^= TurretUtil.SFX_DEACTIVATED
+        if self._sfx_deactivated:
+            self._sfx_deactivated.stop()
+
+    def _remove_all_model_sfx(self):
+        for udo in self.prop_model_udos:
+            try:
+                udo.deactivate(force=True)
+            except BigWorld.UnresolvedUDORefException:
+                pass
+
+        if self._sfx_persistent:
+            self._sfx_persistent.stop()
+            self._sfx_persistent.detach()
+            self._sfx_persistent = None
+        if self._sfx_activated:
+            self._sfx_activated.stop()
+            self._sfx_activated.detach()
+            self._sfx_activated = None
+        if self._sfx_deactivated:
+            self._sfx_deactivated.stop()
+            self._sfx_deactivated.detach()
+            self._sfx_deactivated = None
+        self._sfx_state = 0
+        return
+
+    def _update_model_sfx(self):
+        self._update_models()
+        if self.activated and self.charge_ratio > 0:
+            self._stop_sfx_deactivated()
+            self._play_sfx_activated()
+        else:
+            self._stop_sfx_activated()
+
+    def on_low_charge(self):
+        self._play_sfx_deactivated()
+
+    def get_mark_distance(self):
+        return 70.0
+
+    def get_custom_mark(self, distance):
+        if distance > self.get_mark_distance():
+            return
+        else:
+            if self._ui_marker is None:
+                self._ui_marker = TankMarker(self, 2)
+                self._ui_marker.set_ratio(self.charge_ratio)
+            return self._ui_marker
+
+    def set_charge_ratio(self, old_value):
+        if self._ui_marker:
+            self._ui_marker.set_ratio(self.charge_ratio)
+        self._update_model_sfx()
+
+    def set_activated(self, old_value):
+        self._update_model_sfx()
+
+    def _update_models(self):
+        if self.isDestroyed:
+            return
+        to_anim = self.activated and self.charge_ratio > 0
+        for udo in self.prop_model_udos:
+            if not hasattr(udo, 'activate'):
+                BigWorld.callback(1.0, self._update_models)
+                return
+
+        for udo in self.prop_model_udos:
+            udo.setObstacle(False)
+            udo.is_need_check_player_inside = False
+            if hasattr(udo, '_to_anim'):
+                udo.activate(to_anim=to_anim, spinner_speed=TurretUtil.MODEL_SPINNER_SPEED)

@@ -1,0 +1,261 @@
+# Embedded file name: ./client/soGUI/donat_shop/window/bin_animator.py
+from math_bw import move_towards
+from utils import Listenable
+import GUI
+from Items import ItemsCatalog
+import BigWorld
+from Math import Vector3, Vector2, Matrix
+from ui.panel import Panel
+from ui.text import Text
+import sounds_manager as sounds
+from soGUI.donat_shop.models.bin_model import EventType as BinET
+from soGUI.donat_shop.models.store_model import EventType as StorET
+from Helpers.PyGUI import Utils
+
+class BinAnimator(Panel):
+
+    def __init__(self, component, fly_component, bin_model):
+        Panel.__init__(self, component, 'binanimator')
+        self.component.isClip = False
+        self._tick_handler = None
+        self._desired_swell = 0
+        self._swell_factor = 0
+        comp = GUI.Window()
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.position = (0, 0, 0.8)
+        self.component.addChild(comp, 'sweller')
+
+        def _prepare_circle_comp(comp):
+            comp.wm, comp.hm = ('PIXEL', 'CLIP')
+            comp.va = 'CENTER'
+            comp.materialFX = 'BLEND'
+            comp.height = 2
+            comp.vpm = 'CLIP'
+            comp.filterType = 'LINEAR'
+            comp.position = (0, 0, 0.5)
+
+        comp = GUI.Window('soGUI/frame/donatshop/circle_left.dds')
+        _prepare_circle_comp(comp)
+        comp.ha = 'LEFT'
+        comp.hpm = 'CLIP'
+        comp.position[0] = -1
+        self.component.sweller.addChild(comp, 'cleft')
+        comp = GUI.Window('soGUI/frame/donatshop/circle_right.dds')
+        _prepare_circle_comp(comp)
+        comp.ha = 'RIGHT'
+        comp.hpm = 'CLIP'
+        comp.position[0] = 1
+        self.component.sweller.addChild(comp, 'cright')
+        comp = GUI.Window('soGUI/frame/donatshop/circle_center.dds')
+        _prepare_circle_comp(comp)
+        comp.ha = 'LEFT'
+        comp.hpm = 'PIXEL'
+        comp.position[0] = 0
+        self.component.sweller.addChild(comp, 'ccenter')
+        self._bin_model = bin_model
+        self._bin_model.add_listener(self._on_binmodel_event)
+        self._txt = Text(self.component, 'txt', size=24, depth=0.2)
+        self._txt.transform.set_clip_mode((0, 0, 1, 1))
+        self._flier = IconFlyer(fly_component)
+        self._flier.add_listener(self._on_flier_event)
+        self._update_content()
+        return
+
+    def on_show(self):
+        self._update_content()
+
+    def _on_flier_event(self, event_type, data):
+        if event_type == IconFlyerET.OnFly:
+            self._update_content()
+            self._swell()
+
+    def _swell(self):
+        self._desired_swell = 1.0
+        if not self._tick_handler:
+            self._tick()
+
+    @property
+    def swell_factor(self):
+        return self._swell_factor
+
+    @swell_factor.setter
+    def swell_factor(self, value):
+        if value == self._swell_factor:
+            return
+        self._swell_factor = value
+        self._update_content()
+
+    def _tick(self):
+        self._tick_handler = None
+        if not Utils.is_visible_in_hierarchy(self.component):
+            return
+        else:
+            if self._desired_swell > self.swell_factor:
+                speed = 10.0
+            else:
+                speed = (self.swell_factor - self._desired_swell) * 5 + 1
+            self.swell_factor = move_towards(self.swell_factor, self._desired_swell, BigWorld.getTimeDelta() * speed)
+            if self.swell_factor == 1 and self._desired_swell == 1:
+                self._desired_swell = 0
+            if self.swell_factor == 0 and self._desired_swell == 0:
+                return
+            self._tick_handler = BigWorld.callback(0, self._tick)
+            return
+
+    def _update_content(self):
+        count = self._bin_model.total_count - self._flier.fly_count()
+        if not count:
+            self.component.visible = False
+            return
+        self.component.visible = True
+        self._txt.set_text(unicode(count))
+        scale = self.swell_factor * 0.5 + 1
+        comp = self.component.sweller
+        comp.height = self.component.height * scale
+        comp.width = max(self._txt.get_string_width() + comp.height * 0.5, comp.height)
+        parent_comp = comp
+        space = parent_comp.width
+        comp = parent_comp.cleft
+        ratio = float(comp.texture.width) / comp.texture.height
+        comp.width = parent_comp.height * ratio
+        space -= comp.width
+        comp = parent_comp.cright
+        ratio = float(comp.texture.width) / comp.texture.height
+        comp.width = parent_comp.height * ratio
+        space -= comp.width
+        lcomp = comp
+        comp = parent_comp.ccenter
+        if space > 0:
+            comp.visible = True
+            comp.width = space
+            comp.position[0] = lcomp.width
+        else:
+            comp.visible = False
+
+    def _on_binmodel_event(self, event_type, data):
+        if event_type in (BinET.OnCountChanged, StorET.OnCountChanged):
+            if data:
+                shop_item_view = data['shop_item_view']
+                shop_item_view and data['count'] > data['prev_count'] and self._flier.fly(shop_item_view)
+            else:
+                self._update_content()
+
+    def on_size_changed(self):
+        Panel.on_size_changed(self)
+        destination = (self.component.width * 0.5, self.component.height * 0.5)
+        destination = self.component.localToScreen(destination)
+        self._flier.set_destination(destination)
+        self._update_content()
+
+
+class UpdateResult:
+    Fly, Stick, Ready = range(3)
+
+
+class FlyItem:
+
+    def __init__(self, base_component, start_point, end_point, size, item_type):
+        self._start_point = Vector3(start_point[0], start_point[1], 0.1)
+        self._end_point = Vector3(end_point[0], end_point[1], 0.1)
+        self._disp = self._end_point - self._start_point
+        self._time = 0.0
+        self._time_out = False
+        self._life_time = 0.3
+        self._matrix = Matrix()
+        self._matrix.setIdentity()
+        self._size = size
+        self._start_pend_time = 0.05
+        self._end_pend_time = 0.1
+        self.state = UpdateResult.Fly
+        item_params = ItemsCatalog.GetItemParam(item_type)
+        icon_name = item_params.get('IconShopItem', item_params['IconName'])
+        comp = GUI.Simple(icon_name)
+        comp.materialFX = 'BLEND'
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.position = (start_point[0], start_point[1], 0.1)
+        comp.width, comp.height = self._size
+        base_component.addChild(comp)
+        self.component = comp
+        shader = GUI.MatrixShader()
+        shader.target = self._matrix
+        shader.blend = False
+        comp.addShader(shader, 'shader')
+
+    def update(self, time_delta):
+        if self._end_pend_time <= 0:
+            self._time_out = True
+        if self._time_out:
+            self.state = UpdateResult.Ready
+            return
+        self._start_pend_time -= time_delta
+        if self._start_pend_time <= 0:
+            self._time += time_delta
+        if self._time > self._life_time:
+            self._end_pend_time -= self._time - self._life_time
+            self._time = self._life_time
+            self.state = UpdateResult.Stick
+        self._update_matrix(self._time / self._life_time)
+
+    def _update_matrix(self, ratio):
+        x = self._disp[0] * ratio ** 5
+        y = self._disp[1] * ratio
+        translate_matrix = Matrix()
+        translate_matrix.setTranslate((x, y, 0))
+        scale = (1 - ratio ** 5) * 0.7 + 0.3
+        self.component.width, self.component.height = self._size * scale
+        self._matrix.set(translate_matrix)
+
+
+class IconFlyerET:
+    OnFly, OnCompleted = ((r, 'iconflyer') for r in range(2))
+
+
+class IconFlyer(Listenable):
+
+    def __init__(self, component):
+        Listenable.__init__(self)
+        self._component = component
+        self._fly_items = {}
+        self._callback_handler = None
+        return
+
+    def fly(self, shop_item_view):
+        image_comp = shop_item_view.component.image
+        size = Vector2(image_comp.width, image_comp.height)
+        screen_pos = image_comp.localToScreen(size * 0.5)
+        sounds.playSound('ui/whoosh')
+        fly_item = FlyItem(self._component, screen_pos, self._destination, size, shop_item_view.item_type)
+        self._fly_items[fly_item] = shop_item_view
+        shop_item_view.set_image_visible(False, fly_item)
+        if not self._callback_handler:
+            BigWorld.callback(0, self._tick)
+
+    def fly_count(self):
+        return len([ f for f in self._fly_items if f.state == UpdateResult.Fly ])
+
+    def _tick(self):
+        self._callback_handler = None
+        remove_all = not Utils.is_visible_in_hierarchy(self._component)
+        for f, siv in self._fly_items.items():
+            f.update(BigWorld.getTimeDelta())
+            if f.state == UpdateResult.Ready or remove_all:
+                self._component.delChild(f.component)
+                del self._fly_items[f]
+                siv.set_image_visible(True, f)
+            elif f.state == UpdateResult.Stick:
+                siv.set_image_visible(True, f)
+                self.notify_listeners(IconFlyerET.OnFly)
+
+        if not self._fly_items:
+            self.notify_listeners(IconFlyerET.OnCompleted)
+            return
+        else:
+            self._callback_handler = BigWorld.callback(0, self._tick)
+            return
+
+    def set_destination(self, destination):
+        self._destination = destination

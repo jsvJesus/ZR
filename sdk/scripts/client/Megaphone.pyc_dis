@@ -1,0 +1,101 @@
+# Embedded file name: ./client/Megaphone.py
+import BigWorld
+import BWPersonality
+from functools import partial
+import sounds_manager
+from Localization import lc
+from megaphone_config import MEGAPHONE_TEXT_MAX_DIST, SOUND_NAME_TO_SUBTITLES
+from client_utils import readable_space_pos
+from datetime import datetime
+
+def plog(msg, *args):
+    if args:
+        try:
+            line = msg % args
+        except:
+            line = '%s: %s' % (msg, ' | '.join(map(str, args)))
+
+    else:
+        line = msg
+    print '[%s] %s' % (str(datetime.now())[:-3], line)
+
+
+class Megaphone(BigWorld.Entity):
+
+    def __init__(self):
+        BigWorld.Entity.__init__(self)
+        self._sound = None
+        self._subs_cid = None
+        return
+
+    def __repr__(self):
+        if self.isDestroyed:
+            return 'Megaphone[%s]Destroyed' % self.id
+        return 'Megaphone[%s] at %s' % (self.id, readable_space_pos(self))
+
+    def onEnterWorld(self, prereqs):
+        self.model = BigWorld.Model('')
+        self._play_sound()
+
+    def onLeaveWorld(self):
+        self._stop_sound()
+        self.model = None
+        return
+
+    def set_megaphone_activated_time(self, old_val):
+        if self.megaphone_activated_time:
+            self._play_sound()
+        else:
+            self._stop_sound()
+
+    def _play_sound(self):
+        if not self.megaphone_sound_name:
+            plog('[ERROR] _play_sound. not megaphone_sound_name', self)
+            return
+        if not self.megaphone_activated_time:
+            plog('[ERROR] _play_sound. not megaphone_activated_time', self)
+            return
+        self._stop_sound()
+        self._sound = sounds_manager.getSound(self.megaphone_sound_name, model=self.model)
+        if not self._sound:
+            plog('[ERROR] _play_sound. not sound', self, self.megaphone_sound_name)
+            return
+        elapsed = max(0, BWPersonality.gpd.server_time - self.megaphone_activated_time)
+        if elapsed > self._sound.duration:
+            return
+        if hasattr(self._sound, 'set_end_callback'):
+            self._sound.set_end_callback(partial(self._sound_ended, self.megaphone_sound_name))
+        self._sound.set_cursor(elapsed)
+        self._sound.play()
+        player = BigWorld.player()
+        if not player or self.position.distTo(player.position) > MEGAPHONE_TEXT_MAX_DIST:
+            return
+        local_key = SOUND_NAME_TO_SUBTITLES.get(self.megaphone_sound_name)
+        if local_key:
+            text = lc(local_key, default='')
+            self._show_subtitles(text, self._sound.duration - elapsed)
+
+    def _show_subtitles(self, text, duration):
+        if not text or duration <= 0:
+            return
+        from soGUI.SubsWindow import instance as subs_window
+        self._subs_cid = subs_window.output_subs('%s' % text, duration)
+
+    def _hide_subtitles(self):
+        from soGUI.SubsWindow import instance as subs_window
+        subs_window.hide_subtitles(self._subs_cid)
+
+    def _sound_ended(self, sound_name):
+        if self._sound:
+            self._hide_subtitles()
+            self._sound = None
+        return
+
+    def _stop_sound(self):
+        if self._sound:
+            if hasattr(self._sound, 'set_end_callback'):
+                self._sound.set_end_callback(None)
+            self._sound.stop(disable_fade=True)
+            self._hide_subtitles()
+            self._sound = None
+        return

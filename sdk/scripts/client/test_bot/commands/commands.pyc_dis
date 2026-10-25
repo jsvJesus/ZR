@@ -1,0 +1,893 @@
+# Embedded file name: ./client/test_bot/commands/commands.py
+from Math import Vector3
+from Helpers.BWCoroutine import BWMemberCoroutine, BWWaitForPeriod, BWWaitForCondition, BWCoroutineTimeoutException, BWWaitForCoroutine
+import traceback
+import BWPersonality
+import BigWorld
+import QuesterConsts
+from Constants import TestBotConstants as TBC
+from Helpers.PyGUI import Utils
+import Quest
+import ItemsUtils
+from gui_const import MESSAGEBOX
+from party_common import MemberStatus as S
+
+class SimpleCommand:
+
+    def __init__(self, args):
+        self._args = args.split()
+        self._str_args = args
+        self.errors = []
+
+    def get_cur_count(self, item_type):
+        count = 0
+        for citem in BigWorld.player().CarryingItems:
+            if citem['complexItemType'] == item_type:
+                count += ItemsUtils.GetItemNumber(citem)
+
+        return count
+
+    def dialog_ready_condition(self):
+        dialog_screen = BWPersonality.GUICore.dialog_screen
+        if not dialog_screen.visible or dialog_screen.pending:
+            return False
+        button_comps = dialog_screen._buttons_block.component.buttonsblock.children
+        if not button_comps:
+            return False
+        for _, btn_comp in button_comps:
+            if not Utils.is_visible_in_hierarchy(btn_comp) or btn_comp.script.buttonDisabled:
+                return False
+
+        return True
+
+    @BWMemberCoroutine
+    def run(self):
+        raise NotImplementedError
+
+
+class TpNameCommand(SimpleCommand):
+
+    @BWMemberCoroutine
+    def run(self):
+        try:
+            yield BWWaitForPeriod(0)
+            npc_name = self._args[0]
+
+            def npc_near_condition():
+                for entity in BigWorld.entities.values():
+                    if getattr(entity, 'npcName', None) == npc_name:
+                        return (entity.position - BigWorld.player().position).length < QuesterConsts.MAX_DIALOG_DISTANCE
+
+                return False
+
+            if npc_near_condition():
+                return
+
+            def world_ready_condition():
+                return BigWorld.spaceLoadStatus() >= 1.0
+
+            BWPersonality.GUICore.chatConsole.run_command('tpnpc ' + npc_name)
+            try:
+                yield BWWaitForCondition(npc_near_condition, 5, 0.5)
+            except BWCoroutineTimeoutException:
+                pass
+
+            other_world = BigWorld.spaceLoadStatus() < 1.0
+            try:
+                yield BWWaitForCondition(world_ready_condition, 180, 0.5)
+            except BWCoroutineTimeoutException:
+                self.errors.append(u'too long map loading time')
+                return
+
+            try:
+                yield BWWaitForCondition(npc_near_condition, 30 if other_world else 5, 0.5)
+            except BWCoroutineTimeoutException:
+                self.errors.append(u'npc {0} not found'.format(npc_name))
+                return
+
+        except GeneratorExit:
+            pass
+        except:
+            traceback.print_stack()
+            traceback.print_exc()
+            self.errors.append(u'python error')
+
+
+class StartDialog(SimpleCommand):
+
+    @BWMemberCoroutine
+    def run(self):
+        try:
+            yield BWWaitForPeriod(0)
+            npc_name = self._args[0]
+            tpname_command = TpNameCommand(npc_name)
+            yield BWWaitForCoroutine(tpname_command.run())
+            if tpname_command.errors:
+                self.errors.extend(tpname_command.errors)
+                return
+            for entity in BigWorld.entities.values():
+                if getattr(entity, 'npcName', None) == npc_name:
+                    break
+            else:
+                self.errors.append(u'npc {0} not found'.format(npc_name))
+                return
+
+            if self.dialog_ready_condition():
+                dialog_screen = BWPersonality.GUICore.dialog_screen
+                dialog_screen.hide()
+            BigWorld.player().start_talk(entity)
+            try:
+                yield BWWaitForCondition(self.dialog_ready_condition, 5.0, 0.5)
+            except BWCoroutineTimeoutException:
+                self.errors.append(u"can't open dialog with entity " + npc_name)
+                return
+
+        except GeneratorExit:
+            pass
+        except:
+            traceback.print_stack()
+            traceback.print_exc()
+            self.errors.append(u'python error')
+
+        return
+
+
+class SayCommand(SimpleCommand):
+
+    @BWMemberCoroutine
+    def run(self):
+        try:
+            yield BWWaitForPeriod(0)
+            phrase = self._str_args.lower()
+            dialog_screen = BWPersonality.GUICore.dialog_screen
+            try:
+                yield BWWaitForCondition(self.dialog_ready_condition, 5.0, 0.5)
+                yield BWWaitForPeriod(0)
+            except BWCoroutineTimeoutException:
+                self.errors.append(u"can't find replica: " + phrase)
+                return
+
+            for _, btn_comp in dialog_screen._buttons_block.component.buttonsblock.children:
+                if phrase in btn_comp.label.text.lower() and not btn_comp.script.buttonDisabled:
+                    btn_comp.script.onClick()
+                    return
+
+            self.errors.append(u"can't find replica: " + phrase)
+            return
+        except GeneratorExit:
+            pass
+        except:
+            traceback.print_stack()
+            traceback.print_exc()
+            self.errors.append(u'python error')
+
+
+class TpPos(SimpleCommand):
+
+    @BWMemberCoroutine
+    def run(self):
+        try:
+            yield BWWaitForPeriod(0)
+            tp_position = None
+            if len(self._args) == 3:
+                try:
+                    x, y, z = map(float, self._args)
+                    tp_position = Vector3(x, y, z)
+                except:
+                    pass
+
+            if not tp_position:
+                self.errors.append(u'bad teleport position ' + self._args)
+                return
+
+            def near_condition():
+                return BigWorld.player().position.distTo(tp_position) < 1.0
+
+            def world_ready_condition():
+                return BigWorld.spaceLoadStatus() >= 1.0
+
+            try:
+                yield BWWaitForCondition(world_ready_condition, 180, 0.5)
+            except BWCoroutineTimeoutException:
+                self.errors.append(u'too long map loading time')
+                return
+
+            if not near_condition():
+                BWPersonality.GUICore.chatConsole.run_command(u'tp {0}'.format(tp_position))
+            try:
+                yield BWWaitForCondition(near_condition, 5, 0.5)
+            except BWCoroutineTimeoutException:
+                self.errors.append(u'cant teleport')
+                return
+
+        except GeneratorExit:
+            pass
+        except:
+            traceback.print_stack()
+            traceback.print_exc()
+            self.errors.append(u'python error')
+
+        return
+
+
+class InviteSelf(SimpleCommand):
+
+    @BWMemberCoroutine
+    def run(self):
+        try:
+            yield BWWaitForPeriod(0)
+
+            def is_in_party():
+                return BigWorld.player()._party_status != S.Lone
+
+            if is_in_party():
+                yield BWWaitForPeriod(0)
+                return
+            BigWorld.player()._invite_timer._last_invoke_time.clear()
+            BWPersonality.GUICore.chatConsole.run_command(u'invite {0}'.format(BigWorld.player().name))
+            msbox = [None]
+
+            def find_msbox():
+                for box in BWPersonality.GUICore.msgBoxMgr.msgBoxes.values():
+                    if u'\u043f\u0440\u0438\u0433\u043b\u0430\u0448\u0435\u043d\u0438\u0435 \u0432 \u043e\u0442\u0440\u044f\u0434' in box.caption.lower():
+                        msbox[0] = box
+                        return True
+
+                return False
+
+            try:
+                yield BWWaitForCondition(find_msbox, 5.0, 0)
+            except BWCoroutineTimeoutException:
+                self.errors.append(u"can't find invite agreement")
+                return
+
+            for btn in msbox[0].btns:
+                if btn['type'] == MESSAGEBOX.BTN_YES:
+                    btn_comp = getattr(msbox[0].component, 'btn_{0}'.format(btn['type']))
+                    btn_comp.script.onClick()
+                    break
+            else:
+                self.errors.append(u"can't find proper invite agreement")
+                return
+
+            try:
+                yield BWWaitForCondition(is_in_party, 2.0, 0)
+            except BWCoroutineTimeoutException:
+                self.errors.append(u"can't invite self")
+                return
+
+        except GeneratorExit:
+            pass
+        except:
+            traceback.print_stack()
+            traceback.print_exc()
+            self.errors.append(u'python error')
+
+        return
+
+
+class SetRepCommand(SimpleCommand):
+
+    @BWMemberCoroutine
+    def run(self):
+        try:
+            yield BWWaitForPeriod(0)
+            rep_id, rep_value = map(int, self._args)
+            player = BigWorld.player()
+            completed = [None]
+
+            def test_bot(args):
+                if args[0] == TBC.GetRep:
+                    completed[0] = args
+
+            player.test_bot = test_bot
+            player.base.test_bot([TBC.SetRep, rep_id, rep_value])
+            yield BWWaitForPeriod(0)
+            player.base.test_bot([TBC.GetRep, rep_id])
+            yield BWWaitForPeriod(0)
+            try:
+                yield BWWaitForCondition(lambda : completed[0] is not None, 5, 0.5)
+            except BWCoroutineTimeoutException:
+                self.errors.append(u'server not responding while change rep {0} {1}'.format(rep_id, rep_value))
+                return
+
+            if completed[0][1:] != [rep_id, rep_value]:
+                self.errors.append(u"can't change rep {0} {1}".format(rep_id, rep_value))
+                return
+        except GeneratorExit:
+            pass
+        except:
+            traceback.print_stack()
+            traceback.print_exc()
+            self.errors.append(u'python error')
+
+        return
+
+
+class SayStatus(SimpleCommand):
+
+    @BWMemberCoroutine
+    def run(self):
+        try:
+            yield BWWaitForPeriod(0)
+            dialog_screen = BWPersonality.GUICore.dialog_screen
+            value = self._args[0].lower() in ('true', '1')
+            phrase = self._str_args.split(' ', 1)[1].lower()
+            try:
+                yield BWWaitForCondition(self.dialog_ready_condition, 5.0, 0.5)
+                yield BWWaitForPeriod(0)
+            except BWCoroutineTimeoutException:
+                self.errors.append(u'dialog not opened, phrase: ' + phrase)
+                return
+
+            has_phrase = False
+            for _, btn_comp in dialog_screen._buttons_block.component.buttonsblock.children:
+                if phrase in btn_comp.label.text.lower():
+                    has_phrase = True
+                    break
+
+            if value:
+                if not has_phrase:
+                    self.errors.append(u"can't find replica {0}".format(phrase))
+                    return
+            elif has_phrase:
+                self.errors.append(u'bad replica found {0}'.format(phrase))
+                return
+        except GeneratorExit:
+            pass
+        except:
+            traceback.print_stack()
+            traceback.print_exc()
+            self.errors.append(u'python error')
+
+
+class QuestStatus(SimpleCommand):
+
+    @BWMemberCoroutine
+    def run(self):
+        try:
+            yield BWWaitForPeriod(0)
+            player = BigWorld.player()
+            status = self._args[0].lower()
+            quest_id = int(self._args[1])
+
+            def test_bot(args):
+                if args[0] == TBC.CheckQuest:
+                    completed[0] = args
+
+            start_time = BigWorld.time()
+            while True:
+                completed = [None]
+                player.test_bot = test_bot
+                yield BWWaitForPeriod(0)
+                player.base.test_bot([TBC.CheckQuest, quest_id])
+                yield BWWaitForPeriod(0)
+                try:
+                    yield BWWaitForCondition(lambda : completed[0] is not None, 5, 0.5)
+                except BWCoroutineTimeoutException:
+                    self.errors.append(u'server not responding while quest status {0} {1}'.format(status, quest_id))
+                    return
+
+                error = None
+                server_quest_id, server_status = completed[0][1:]
+                if server_status == Quest.STATE_OPENED:
+                    if status not in ('open', 'opened'):
+                        error = u'bad quest status {0} {1} STATE_OPENED'.format(quest_id, status)
+                elif server_status == Quest.STATE_ONTEST:
+                    if status not in ('ontest',):
+                        error = u'bad quest status {0} {1} STATE_ONTEST'.format(quest_id, status)
+                elif server_status == Quest.STATE_CLOSED:
+                    if status not in ('close', 'closed'):
+                        error = u'bad quest status {0} {1} STATE_CLOSED'.format(quest_id, status)
+                elif server_status == Quest.STATE_FREEZ:
+                    if status not in ('freez',):
+                        error = u'bad quest status {0} {1} STATE_FREEZ'.format(quest_id, status)
+                elif server_status == Quest.STATE_FAILED:
+                    if status not in ('fail', 'failed'):
+                        error = u'bad quest status {0} {1} STATE_FAILED'.format(quest_id, status)
+                elif server_status == Quest.STATE_ABSENT:
+                    if status not in ('absent',):
+                        error = u'bad quest status {0} {1} STATE_ABSENT'.format(quest_id, status)
+                if not error or BigWorld.time() - start_time >= 3.0:
+                    break
+
+            if error:
+                self.errors.append(error)
+        except GeneratorExit:
+            pass
+        except:
+            traceback.print_stack()
+            traceback.print_exc()
+            self.errors.append(u'python error')
+
+        return
+
+
+class CreateItem(SimpleCommand):
+
+    @BWMemberCoroutine
+    def run(self):
+        try:
+            yield BWWaitForPeriod(0)
+            item_type, item_count = map(int, self._args)
+            needed_count = item_count - self.get_cur_count(item_type)
+            if needed_count > 0:
+                BWPersonality.GUICore.chatConsole.run_command('item {0} {1}'.format(item_type, needed_count))
+            try:
+                yield BWWaitForCondition(lambda : self.get_cur_count(item_type) >= item_count, 5, 0.5)
+                yield BWWaitForPeriod(0)
+            except BWCoroutineTimeoutException:
+                self.errors.append(u"can't get item {0} {1}".format(item_type, item_count))
+                return
+
+        except GeneratorExit:
+            pass
+        except:
+            traceback.print_stack()
+            traceback.print_exc()
+            self.errors.append(u'python error')
+
+
+class AnswerStatus(SimpleCommand):
+
+    @BWMemberCoroutine
+    def run(self):
+        try:
+            yield BWWaitForPeriod(0)
+            history_log = BWPersonality.GUICore.dialog_screen._history_log
+            value = self._args[0].lower() in ('true', '1')
+            phrase = self._str_args.split(' ', 1)[1].lower()
+            try:
+                yield BWWaitForCondition(self.dialog_ready_condition, 5.0, 0.5)
+                yield BWWaitForPeriod(0)
+            except BWCoroutineTimeoutException:
+                self.errors.append(u'dialog not opened, phrase: ' + phrase)
+                return
+
+            npc_phrase = history_log._last_npc_phrase.lower()
+            if value:
+                if phrase not in npc_phrase:
+                    self.errors.append(u'npc no replica {0}'.format(phrase))
+                    return
+            elif phrase in npc_phrase:
+                self.errors.append(u'npc bad replica {0}'.format(phrase))
+                return
+        except GeneratorExit:
+            pass
+        except:
+            traceback.print_stack()
+            traceback.print_exc()
+            self.errors.append(u'python error')
+
+
+class ItemsCheck(SimpleCommand):
+
+    @BWMemberCoroutine
+    def run(self):
+        try:
+            yield BWWaitForPeriod(0)
+            item_type, item_count = map(int, self._args)
+            try:
+                yield BWWaitForCondition(lambda : self.get_cur_count(item_type) >= item_count, 5, 0.5)
+            except BWCoroutineTimeoutException:
+                self.errors.append(u'not enough items {0} {1}'.format(item_type, item_count))
+                return
+
+        except GeneratorExit:
+            pass
+        except:
+            traceback.print_stack()
+            traceback.print_exc()
+            self.errors.append(u'python error')
+
+
+class EquipItem(SimpleCommand):
+
+    @BWMemberCoroutine
+    def run(self):
+        try:
+            yield BWWaitForPeriod(0)
+            player = BigWorld.player()
+            ison = self._args[0].lower() == 'on'
+            item_type = int(self._args[1])
+
+            def is_on_condition():
+                equipped_ids = ItemsUtils.GetEquipSetFullIDs(player)
+                for item_index in ItemsUtils.get_multiple_item_indices_by_ids(player, equipped_ids):
+                    if player.CarryingItems[item_index]['complexItemType'] == item_type:
+                        return True
+
+                return False
+
+            if ison:
+                if is_on_condition():
+                    return
+                equipped_ids = ItemsUtils.GetEquipSetFullIDs(player)
+                citem = [None]
+
+                def find_item_on():
+                    for ci in player.CarryingItems:
+                        if ci['complexItemType'] != item_type:
+                            continue
+                        if ci['complexItemID'] in equipped_ids:
+                            continue
+                        if not player.can_put_on_item(ci):
+                            continue
+                        citem[0] = ci
+                        return True
+
+                    return False
+
+                try:
+                    yield BWWaitForCondition(find_item_on, 5, 0.5)
+                except BWCoroutineTimeoutException:
+                    self.errors.append(u'cant find item {0} to put it on'.format(item_type))
+                    return
+
+                player.put_on_item(citem[0])
+                try:
+                    yield BWWaitForCondition(lambda : not player.is_clothing(), 10, 0.5)
+                    yield BWWaitForCondition(is_on_condition, 5, 0.5)
+                except BWCoroutineTimeoutException:
+                    self.errors.append(u'cant put item {0} on'.format(item_type))
+                    return
+
+            else:
+                if not is_on_condition():
+                    return
+                citem = [None]
+
+                def find_item_off():
+                    equipped_ids = ItemsUtils.GetEquipSetFullIDs(player)
+                    for item_index in ItemsUtils.get_multiple_item_indices_by_ids(player, equipped_ids):
+                        ci = player.CarryingItems[item_index]
+                        if ci['complexItemType'] != item_type:
+                            continue
+                        if not player.can_put_off_items([ci]):
+                            continue
+                        citem[0] = ci
+                        return True
+
+                    return False
+
+                try:
+                    yield BWWaitForCondition(find_item_off, 5, 0.5)
+                except BWCoroutineTimeoutException:
+                    self.errors.append(u'cant find item {0} to put it off'.format(item_type))
+                    return
+
+                player.put_off_item(citem[0])
+                try:
+                    yield BWWaitForCondition(lambda : not player.is_clothing(), 10, 0.5)
+                    yield BWWaitForCondition(lambda : not is_on_condition(), 5, 0.5)
+                except BWCoroutineTimeoutException:
+                    self.errors.append(u'cant put item {0} on'.format(item_type))
+                    return
+
+        except GeneratorExit:
+            pass
+        except:
+            traceback.print_stack()
+            traceback.print_exc()
+            self.errors.append(u'python error')
+
+        return
+
+
+class DelItem(SimpleCommand):
+
+    @BWMemberCoroutine
+    def run(self):
+        try:
+            yield BWWaitForPeriod(0)
+            player = BigWorld.player()
+            item_type = int(self._args[0])
+            last_search_items = [None, None]
+
+            def check_presence():
+                items_to_delete = []
+                items_to_putoff = []
+                equipped_ids = ItemsUtils.GetEquipSetFullIDs(player)
+                for citem in player.CarryingItems:
+                    if citem['complexItemType'] != item_type:
+                        continue
+                    if citem['complexItemID'] in equipped_ids:
+                        items_to_putoff.append(citem)
+                    else:
+                        items_to_delete.append(citem)
+
+                last_search_items[0] = items_to_putoff
+                last_search_items[1] = items_to_delete
+                return bool(items_to_delete or items_to_putoff)
+
+            if not check_presence():
+                return
+            items_to_putoff, items_to_delete = last_search_items
+            for item_put_off in items_to_putoff:
+                coroutine = EquipItem('off {0}'.format(item_put_off['complexItemType']))
+                yield BWWaitForCoroutine(coroutine.run())
+                items_to_delete.append(item_put_off)
+
+            if items_to_delete:
+                player.delete_items(items_to_delete)
+                player.NeedToUpdateInventory(need_block=True)
+                try:
+                    yield BWWaitForCondition(lambda : not check_presence(), 5, 0.5)
+                except BWCoroutineTimeoutException:
+                    self.errors.append(u'cant del item {0}'.format(item_type))
+                    return
+
+        except GeneratorExit:
+            pass
+        except:
+            traceback.print_stack()
+            traceback.print_exc()
+            self.errors.append(u'python error')
+
+        return
+
+
+class AchWipe(SimpleCommand):
+
+    @BWMemberCoroutine
+    def run(self):
+        try:
+            yield BWWaitForPeriod(0)
+            player = BigWorld.player()
+            completed = [None]
+
+            def test_bot(args):
+                if args[0] == TBC.AchWipe:
+                    completed[0] = True
+
+            player.test_bot = test_bot
+            player.base.test_bot([TBC.AchWipe])
+            yield BWWaitForPeriod(0)
+            try:
+                yield BWWaitForCondition(lambda : completed[0] is not None, 5, 0.5)
+            except BWCoroutineTimeoutException:
+                self.errors.append(u'server not responding while wiping achs')
+                return
+
+        except GeneratorExit:
+            pass
+        except:
+            traceback.print_stack()
+            traceback.print_exc()
+            self.errors.append(u'python error')
+
+        return
+
+
+class Wait(SimpleCommand):
+
+    @BWMemberCoroutine
+    def run(self):
+        try:
+            yield BWWaitForPeriod(0)
+            time = float(self._args[0])
+            yield BWWaitForPeriod(time)
+        except GeneratorExit:
+            pass
+        except:
+            traceback.print_stack()
+            traceback.print_exc()
+            self.errors.append(u'python error')
+
+
+class QuestsWipe(SimpleCommand):
+
+    @BWMemberCoroutine
+    def run(self):
+        try:
+            yield BWWaitForPeriod(0)
+            player = BigWorld.player()
+            BWPersonality.GUICore.chatConsole.run_command('questswipe')
+            yield BWWaitForPeriod(0)
+
+            def test_bot(args):
+                if args[0] == TBC.QuestsWipe:
+                    has_quests = args[1]
+                    completed[0] = not has_quests
+
+            start_time = BigWorld.time()
+            while True:
+                completed = [None]
+                player.test_bot = test_bot
+                yield BWWaitForPeriod(0)
+                player.base.test_bot([TBC.QuestsWipe])
+                yield BWWaitForPeriod(0)
+                try:
+                    yield BWWaitForCondition(lambda : completed[0] is not None, 5, 0.5)
+                except BWCoroutineTimeoutException:
+                    self.errors.append(u'server not responding wipe quests')
+                    return
+
+                if completed[0]:
+                    break
+                if BigWorld.time() - start_time > 5.0:
+                    self.errors.append(u"can't wipe quests")
+                    return
+
+        except GeneratorExit:
+            pass
+        except:
+            traceback.print_stack()
+            traceback.print_exc()
+            self.errors.append(u'python error')
+
+        return
+
+
+class QuestComplete(SimpleCommand):
+
+    @BWMemberCoroutine
+    def run(self):
+        try:
+            yield BWWaitForPeriod(0)
+            player = BigWorld.player()
+            quest_id = int(self._args[0])
+            BWPersonality.GUICore.chatConsole.run_command('questcomplete ' + str(quest_id))
+
+            def test_bot(args):
+                if args[0] == TBC.CheckQuest:
+                    completed[0] = args[1:]
+
+            start_time = BigWorld.time()
+            while True:
+                completed = [None]
+                player.test_bot = test_bot
+                yield BWWaitForPeriod(0)
+                player.base.test_bot([TBC.CheckQuest, quest_id])
+                yield BWWaitForPeriod(0)
+                try:
+                    yield BWWaitForCondition(lambda : completed[0] is not None, 5, 0.5)
+                except BWCoroutineTimeoutException:
+                    self.errors.append(u'server not responding while completing quest {0}'.format(quest_id))
+                    return
+
+                server_quest_id, server_status = completed[0]
+                if server_status in (Quest.STATE_CLOSED, Quest.STATE_ABSENT):
+                    break
+                if BigWorld.time() - start_time > 5.0:
+                    self.errors.append(u"can't close quest {0}".format(quest_id))
+                    return
+
+        except GeneratorExit:
+            pass
+        except:
+            traceback.print_stack()
+            traceback.print_exc()
+            self.errors.append(u'python error')
+
+        return
+
+
+class QuestGet(SimpleCommand):
+
+    @BWMemberCoroutine
+    def run(self):
+        try:
+            yield BWWaitForPeriod(0)
+            quest_id = str(int(self._args[0]))
+            BWPersonality.GUICore.chatConsole.run_command('questget ' + quest_id)
+            quest_status = QuestStatus('opened ' + quest_id)
+            yield BWWaitForCoroutine(quest_status.run())
+            if quest_status.errors:
+                self.errors.extend(quest_status.errors)
+                return
+        except GeneratorExit:
+            pass
+        except:
+            traceback.print_stack()
+            traceback.print_exc()
+            self.errors.append(u'python error')
+
+
+class RunConsole(SimpleCommand):
+
+    @BWMemberCoroutine
+    def run(self):
+        try:
+            yield BWWaitForPeriod(0)
+            command = ' '.join(self._args)
+            BWPersonality.GUICore.chatConsole.run_command(command)
+        except GeneratorExit:
+            pass
+        except:
+            traceback.print_stack()
+            traceback.print_exc()
+            self.errors.append(u'python error')
+
+
+class MoneySet(SimpleCommand):
+
+    @BWMemberCoroutine
+    def run(self):
+        try:
+            yield BWWaitForPeriod(0)
+            player = BigWorld.player()
+            money = int(self._args[0])
+            BWPersonality.GUICore.chatConsole.run_command('money ' + str(money))
+
+            def completed():
+                return player.CreditNumber == money
+
+            try:
+                yield BWWaitForCondition(completed, 5, 0.5)
+            except BWCoroutineTimeoutException:
+                self.errors.append(u'cant get money {0}'.format(money))
+                return
+
+        except GeneratorExit:
+            pass
+        except:
+            traceback.print_stack()
+            traceback.print_exc()
+            self.errors.append(u'python error')
+
+
+class AchSet(SimpleCommand):
+
+    @BWMemberCoroutine
+    def run(self):
+        try:
+            yield BWWaitForPeriod(0)
+            ach_id = int(self._args[0])
+            player = BigWorld.player()
+            completed = [None]
+
+            def test_bot(args):
+                if args[0] == TBC.GetAch:
+                    completed[0] = args[2]
+
+            player.test_bot = test_bot
+            player.base.test_bot([TBC.SetAch, ach_id])
+            yield BWWaitForPeriod(0)
+            player.base.test_bot([TBC.GetAch, ach_id])
+            yield BWWaitForPeriod(0)
+            try:
+                yield BWWaitForCondition(lambda : completed[0] is not None, 5, 0.5)
+            except BWCoroutineTimeoutException:
+                self.errors.append(u'server not responding while setting ach {0}'.format(ach_id))
+                return
+
+            if not completed[0]:
+                self.errors.append(u"can't set ach {0}".format(ach_id))
+                return
+        except GeneratorExit:
+            pass
+        except:
+            traceback.print_stack()
+            traceback.print_exc()
+            self.errors.append(u'python error')
+
+        return
+
+
+_command_to_class = {'tpnpc': TpNameCommand,
+ 'start_dialog': StartDialog,
+ 'say': SayCommand,
+ 'set_rep': SetRepCommand,
+ 'say_status': SayStatus,
+ 'answer_status': AnswerStatus,
+ 'quest_status': QuestStatus,
+ 'item': CreateItem,
+ 'answer_status': AnswerStatus,
+ 'item_status': ItemsCheck,
+ 'equip': EquipItem,
+ 'delitem': DelItem,
+ 'achset': AchSet,
+ 'achwipe': AchWipe,
+ 'inviteself': InviteSelf,
+ 'tppos': TpPos,
+ 'wait': Wait,
+ 'quest_get': QuestGet,
+ 'quests_wipe': QuestsWipe,
+ 'quest_complete': QuestComplete,
+ 'money_set': MoneySet,
+ 'run_console': RunConsole}
+
+def get_coroutine(command_name, args):
+    command_class = _command_to_class.get(command_name)
+    return command_class and command_class(args)

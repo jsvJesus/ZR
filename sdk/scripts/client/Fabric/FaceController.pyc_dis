@@ -1,0 +1,326 @@
+# Embedded file name: ./client/Fabric/FaceController.py
+import BigWorld
+import client_utils
+import math_bw
+from Math import Matrix, Vector3
+import FaceSettings
+from FaceSettings import LimitsConfigurator as LC
+from utils import pyFixedToNativePythonType
+import sys
+import math
+import tracker_lod_settings
+
+class Handle(object):
+
+    def __init__(self, name, config):
+        self.config = config
+        self.prev_morph_disp = None
+        self.morph_disp = Matrix()
+        self.bone_matrix = Matrix()
+        self.name = name
+        self.pair = None
+        self.reset()
+        return
+
+    def set_pair(self, pair_handle):
+        self.pair = pair_handle
+
+    def apply_update(self, world, local):
+        self.bone_matrix = Matrix(world)
+        local.preMultiply(self.morph_disp)
+
+    def transform(self, direction):
+        axises = []
+        for axis_name in self.config['gizmos']:
+            if axis_name == 'MoveX':
+                axises.append((Vector3(1, 0, 0), False))
+            elif axis_name == 'MoveY':
+                axises.append((Vector3(0, 1, 0), False))
+            elif axis_name == 'MoveZ':
+                axises.append((Vector3(0, 0, 1), False))
+            elif axis_name == 'ScalePosX':
+                axises.append((Vector3(1, 0, 0), True))
+            elif axis_name == 'ScalePosY':
+                axises.append((Vector3(0, 1, 0), True))
+            elif axis_name == 'ScalePosZ':
+                axises.append((Vector3(0, 0, 1), True))
+            elif axis_name == 'ScaleNegX':
+                axises.append((Vector3(-1, 0, 0), True))
+            elif axis_name == 'ScaleNegY':
+                axises.append((Vector3(0, -1, 0), True))
+            elif axis_name == 'ScaleNegZ':
+                axises.append((Vector3(0, 0, -1), True))
+
+        matrix = Matrix(self.bone_matrix)
+        matrix.preMultiply(self.morph_disp)
+        matrix.invert()
+        local_direction = matrix.applyVector(direction)
+
+        def get_nearest_axis():
+            min_angle = sys.float_info.max
+            for axis in axises:
+                angle = math_bw.angle_between_vectors(local_direction, axis[0])
+                if angle > math.pi * 0.5:
+                    angle = abs(angle - math.pi)
+                if angle < min_angle:
+                    min_angle, min_axis = angle, axis
+
+            return min_axis
+
+        def calc_disp(axis_dir, sensivity):
+            a = Vector3(abs(axis_dir.x), abs(axis_dir.y), abs(axis_dir.z))
+            return local_direction.dot(a) * sensivity
+
+        axis = get_nearest_axis()
+        axis_dir, scale_mode = axis
+        m = Matrix()
+        if scale_mode:
+            axis_dir *= calc_disp(axis_dir, 10)
+            m.setScale(axis_dir + Vector3(1, 1, 1))
+        else:
+            axis_dir *= calc_disp(axis_dir, 1)
+            m.setTranslate(axis_dir)
+        self.morph_disp.preMultiply(m)
+        self.apply_limits()
+        self.prev_morph_disp = Matrix(self.morph_disp)
+        if self.pair:
+            self.pair.morph_disp.set(self.morph_disp)
+
+    def apply_limits(self):
+        limits = self.config.get('limits', {})
+        reached_limit = False
+        translation = self.morph_disp.translation
+        x_limit = limits.get('MoveX', FaceSettings.default_limit)
+        if translation.x > x_limit[1] or translation.x < x_limit[0]:
+            reached_limit = True
+        y_limit = limits.get('MoveY', FaceSettings.default_limit)
+        if translation.y > y_limit[1] or translation.y < y_limit[0]:
+            reached_limit = True
+        z_limit = limits.get('MoveZ', FaceSettings.default_limit)
+        if translation.z > z_limit[1] or translation.z < z_limit[0]:
+            reached_limit = True
+        scale = math_bw.getScaleMatrix(self.morph_disp)
+        x_limit = limits.get('ScaleX', FaceSettings.default_scale_limit)
+        if scale.x > x_limit[1] or scale.x < x_limit[0]:
+            reached_limit = True
+        y_limit = limits.get('ScaleY', FaceSettings.default_scale_limit)
+        if scale.y > y_limit[1] or scale.y < y_limit[0]:
+            reached_limit = True
+        z_limit = limits.get('ScaleZ', FaceSettings.default_scale_limit)
+        if scale.z > z_limit[1] or scale.z < z_limit[0]:
+            reached_limit = True
+        if reached_limit:
+            if self.prev_morph_disp:
+                self.morph_disp = Matrix(self.prev_morph_disp)
+            else:
+                self.morph_disp.setIdentity()
+
+    def destroy(self):
+        self.pair = None
+        return
+
+    def reset(self):
+        self.morph_disp.setIdentity()
+
+    @property
+    def position(self):
+        m = Matrix(self.bone_matrix)
+        m.preMultiply(self.morph_disp)
+        return m.translation
+
+    @property
+    def raw_data(self):
+        return Matrix(self.morph_disp)
+
+    @raw_data.setter
+    def raw_data(self, value):
+        self.morph_disp = Matrix(value)
+        self.prev_morph_disp = Matrix(value)
+
+
+class FaceController(object):
+
+    @staticmethod
+    def create_controller(entity, justOnePythonDraw = False):
+        FaceController.destroy_controller(entity)
+        model = entity.model
+        model.simple_face_tracker = BigWorld.Tracker()
+        model.simple_face_tracker.testTick = False
+        model.simple_face_tracker.fashionEraID = 4
+        model.simple_face_tracker.maxLod = tracker_lod_settings.simple_face_lod
+        model.simple_face_tracker.nodeMatrixUpdateType = 'UPDATE_SELECTED'
+        model.simple_face_tracker.nodeMatrixUpdateList = ['Head']
+        model.simple_face_tracker.removeAllAdditionalNodes()
+        node_info = BigWorld.NodeInfoFace(model, LC.config(entity.face_limits_type)['bones'])
+        node_info.justOnePythonDraw = justOnePythonDraw
+        model.simple_face_tracker.addAdditionalNode(node_info)
+        entity.face_controller = FaceController(node_info, LC.config(entity.face_limits_type))
+        return entity.face_controller
+
+    @staticmethod
+    def destroy_controller(entity):
+        if hasattr(entity, 'face_controller'):
+            entity.face_controller.destroy()
+            del entity.face_controller
+        model = entity.model
+        if hasattr(model, 'simple_face_tracker'):
+            model.simple_face_tracker.removeAllAdditionalNodes()
+            del model.simple_face_tracker
+
+    def switch_node_info(self, dynamic):
+        if dynamic:
+            self.node_info.pTick = self.tick
+            self.node_info.pDraw = self.draw
+        self.dynamic = dynamic
+        self.node_info.justOnePythonDraw = not dynamic
+
+    def __init__(self, node_info, config):
+        self.config = config
+        self.node_info = node_info
+        self.node_info.pTick = self.tick
+        self.node_info.pDraw = self.draw
+        self.prev_mouse_down = False
+        self.name_to_handle = None
+        self.h_load_controller = None
+        self.handles = None
+        self._unpaired_handles = None
+        self._pending_raw_data = None
+        self._out_cache = None
+        self.dynamic = False
+        self._debug_tick_counter = 0
+        self._ignore_bones = set()
+        return
+
+    def set_filter(self, ignore_bones):
+        """ ignore_bones - \xd0\xbb\xd1\x8e\xd0\xb1\xd0\xbe\xd0\xb9 iterable \xd1\x81 \xd0\xbd\xd0\xb0\xd0\xb7\xd0\xb2\xd0\xb0\xd0\xbd\xd0\xb8\xd1\x8f\xd0\xbc\xd0\xb8 \xd0\xba\xd0\xbe\xd1\x81\xd1\x82\xd0\xb5\xd0\xb9,
+        \xd0\xba\xd0\xbe\xd1\x82\xd0\xbe\xd1\x80\xd1\x8b\xd0\xb5 \xd0\xb7\xd0\xb0\xd0\xb4\xd0\xb5\xd0\xb9\xd1\x81\xd1\x82\xd0\xb2\xd0\xbe\xd0\xb2\xd0\xb0\xd0\xbd\xd1\x8b \xd0\xbd\xd0\xb5 \xd0\xb1\xd1\x83\xd0\xb4\xd1\x83\xd1\x82 """
+        self._ignore_bones = ignore_bones or []
+
+    def tick(self, dtime):
+        pass
+
+    def draw(self, wind, bones):
+        if self.handles is None:
+            self.create_handles(pyFixedToNativePythonType(bones))
+        if self._out_cache is None or self.dynamic:
+            self._debug_tick_counter += 1
+            self._out_cache = []
+            for chain_index, bones_chain in enumerate(bones):
+                bones_out = []
+                for bone_index, (world, local) in enumerate(bones_chain):
+                    bone_name = self.config['bones'][chain_index][bone_index]
+                    if bone_name in self.name_to_handle:
+                        self.name_to_handle[bone_name].apply_update(world, local)
+                    bones_out.append(local)
+
+                self._out_cache.append(bones_out)
+
+        return self._out_cache
+
+    def create_handles(self, bones):
+        self.name_to_handle = {}
+        self.handles = []
+        for chain_index, bones_chain in enumerate(bones):
+            for bone_index, (world, local) in enumerate(bones_chain):
+                bone_name = self.config['bones'][chain_index][bone_index]
+                if bone_name in self.config['handles'] and bone_name not in self.name_to_handle:
+                    handle_config = self.config['handles'][bone_name]
+                    handle = Handle(bone_name, handle_config)
+                    self.name_to_handle[bone_name] = handle
+                    self.handles.append(handle)
+
+        self._unpaired_handles = []
+        pairs = set()
+        for handle in self.handles:
+            pair_name = self.config['handles'][handle.name].get('pair')
+            if pair_name:
+                handle.set_pair(self.name_to_handle[pair_name])
+                pairs.add(handle.pair)
+            if handle not in pairs:
+                self._unpaired_handles.append(handle)
+
+        self.h_load_controller = None
+        if self._pending_raw_data:
+            self.raw_data = self._pending_raw_data
+            self._pending_raw_data = None
+        return
+
+    def destroy(self):
+        self.node_info = None
+        if self.handles:
+            for handle in self.handles:
+                handle.destroy()
+
+        if self.h_load_controller:
+            BigWorld.cancelCallback(self.h_load_controller)
+        self.handles = None
+        return
+
+    def limites_changed(self):
+        raise NotImplementedError
+
+    def reset(self):
+        for handle in self.handles:
+            handle.reset()
+
+    def drag_handles(self, from_pos, to_pos, handles_list):
+        if not self.name_to_handle:
+            return
+
+        def drag_one_handle(handle_name):
+            handle = self.name_to_handle.get(handle_name)
+            if not handle:
+                return
+            src, ray = client_utils.getMousePosDir(to_pos)
+            dist = (handle.position - src).length
+            ray.normalise()
+            to_pos_world = src + ray * dist
+            src, ray = client_utils.getMousePosDir(from_pos)
+            dist = (handle.position - src).length
+            ray.normalise()
+            from_pos_world = src + ray * dist
+            direction_world = to_pos_world - from_pos_world
+            handle.transform(direction_world)
+
+        map(drag_one_handle, handles_list)
+
+    @property
+    def raw_data(self):
+        if self._pending_raw_data:
+            return self._pending_raw_data
+        elif self._unpaired_handles is None:
+            return
+        else:
+            result = []
+            for handle in self._unpaired_handles:
+                if handle.name in self._ignore_bones:
+                    result.append(handle.ignore_raw_data)
+                else:
+                    result.append(handle.raw_data)
+
+            return result
+
+    @raw_data.setter
+    def raw_data(self, value):
+        if self._unpaired_handles is None:
+            self._pending_raw_data = value
+            return
+        elif value is None:
+            return
+        elif len(value) != len(self._unpaired_handles):
+            print 'FaceController (ERROR): \xd0\xa3\xd1\x81\xd1\x82\xd0\xb0\xd0\xbd\xd0\xb0\xd0\xb2\xd0\xbb\xd0\xb8\xd0\xb2\xd0\xb0\xd0\xb5\xd0\xbc\xd1\x8b\xd0\xb9 \xd1\x84\xd0\xbe\xd1\x80\xd0\xbc\xd0\xb0\xd1\x82 \xd1\x80\xd0\xbe\xd0\xb6\xd0\xb8 \xd0\xbd\xd0\xb5 \xd1\x81\xd0\xbe\xd0\xb2\xd0\xbf\xd0\xb0\xd0\xb4\xd0\xb0\xd0\xb5\xd1\x82 \xd1\x81 \xd1\x82\xd0\xb5\xd0\xba\xd1\x83\xd1\x89\xd0\xb8\xd0\xbc'
+            return
+        else:
+            for i, handle in enumerate(self._unpaired_handles):
+                if handle.name in self._ignore_bones:
+                    handle.reset()
+                    handle.ignore_raw_data = value[i]
+                else:
+                    handle.raw_data = value[i]
+                if handle.pair:
+                    if handle.pair.name in self._ignore_bones:
+                        handle.pair.reset()
+                    else:
+                        handle.pair.raw_data = value[i]
+
+            return

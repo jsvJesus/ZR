@@ -1,0 +1,168 @@
+# Embedded file name: ./client/soGUI/hunt_gui/hunt_tab.py
+import BWPersonality
+import BigWorld
+import colorCodes as cc
+import GUI
+from Helpers.PyGUI.PyGUIBase import Interceptor
+from header_block import HeaderBlock
+from hunt_table import HuntTable
+from hunt_loader import HuntLoader, EventType as LoaderET
+from soGUI.sales.filters.pageblock import Pageblock, EventType as PagerET
+from table_line import EventType as LineET
+import gui_jokes
+from Localization import lc
+from utils import groupNumber
+from soGUI.textMoney import getColorMoney
+from hunt_utils import NotifyCodes as NC
+
+class HuntTab(Interceptor):
+
+    def __init__(self):
+        comp = GUI.Window()
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'BOTTOM')
+        comp.width, comp.height = (2, 2)
+        comp.position = (0, -1, 0.2)
+        Interceptor.__init__(self, comp, interscept_keys=True)
+        comp.script = self
+        comp.visible = False
+        comp.heightMode = 'PIXEL'
+        comp.height -= 56
+        header_height = 36
+        comp = GUI.Window()
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'TOP')
+        comp.widthMode, comp.heightMode = ('CLIP', 'PIXEL')
+        comp.width, comp.height = 2, header_height
+        comp.position = (0, 1, 0.9)
+        self.component.addChild(comp)
+        self._header = HeaderBlock(comp)
+        self._header.on_mode_changed_callback = self._on_sort_mode_changed
+        pages_height = 58
+        comp = GUI.Window()
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'TOP')
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.width, comp.height = (2, 2)
+        comp.position = (0, header_height, 0.9)
+        self.component.addChild(comp, 'table')
+        comp.heightMode = 'PIXEL'
+        comp.height -= header_height + pages_height
+        self._table = HuntTable(comp, self._header.widths)
+        self._table.add_listener(self._on_table_event)
+        comp = GUI.Window('soGUI/frame/paint/white.dds')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.width, comp.height = (2, 2)
+        comp.position = (0, 0, 0)
+        comp.colour = (0, 0, 0, 150)
+        comp.materialFX = 'BLEND'
+        self.component.table.addChild(comp, 'load')
+        Interceptor(comp)
+        self._load = comp
+        comp = GUI.Simple('soGUI/frame/journal/load_anim/load_pips')
+        comp.materialFX = 'BLEND'
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = (35, 10)
+        comp.position = (0, 0, 0)
+        self.component.table.load.addChild(comp)
+        comp = GUI.Window()
+        comp.widthMode, comp.heightMode = ('CLIP', 'PIXEL')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'BOTTOM')
+        comp.width, comp.height = 2, pages_height
+        comp.position = (0, -1, 0.5)
+        self._pageblock = Pageblock(comp)
+        self.component.addChild(comp)
+        self._loader = HuntLoader(min(self._table.rows_count, 20))
+        self._visible = False
+
+    def _on_table_event(self, event_type, data):
+        if event_type == LineET.OnOrderClick:
+
+            def callback(event):
+                if event == gui_jokes.askUserYesNo.YES:
+                    BigWorld.player().base.subscription_wanted1(data['wanted'])
+                    self._loader.restore_load(*self._header.mode)
+
+            status = cc.green_xml + lc('HeadHunter.ui.online') if data['online'] else cc.inactive_xml + lc('HeadHunter.ui.offline')
+            reward = groupNumber(data['reward'], "'") + ' ' + lc('tmplocal.strings.RUB')
+            reward = cc.rgba_to_xml(getColorMoney(data['reward'])) + reward
+            text = u'{0}: {1}\n{2}: {3}\n{4}: {5}'.format(cc.inactive_xml + lc('HeadHunter.ui.header.killer'), cc.highlighted_xml + data['wanted'], cc.inactive_xml + lc('HeadHunter.ui.header.status'), status, cc.inactive_xml + lc('HeadHunter.ui.header.reward'), reward)
+            gui_jokes.askUserYesNo(lc('HeadHunter.ui.takeorder'), text, callback)
+        elif event_type == LineET.OnCancelClick:
+
+            def callback(event):
+                if event == gui_jokes.askUserYesNo.YES:
+                    BigWorld.player().base.unsubscription_wanted1(data['wanted'])
+                    self._loader.restore_load(*self._header.mode)
+
+            text = cc.inactive_xml + lc('HeadHunter.ui.canceltext').format(cc.highlighted_xml + data['wanted'] + cc.inactive_xml)
+            gui_jokes.askUserYesNo(lc('HeadHunter.ui.cancelorder'), text, callback)
+        elif event_type == LineET.OnDonateClick:
+            name, clan = data['wanted'], data['clan']
+
+            def callback(result):
+                if result:
+                    BigWorld.player().donate_offender0(name, result)
+                    self._donate_pend_callback = True
+
+            BWPersonality.GUICore.showSubmitOffender(name, clan, donate_mode=True, callback=callback)
+
+    def _on_sort_mode_changed(self):
+        self._loader.set_mode_and_load_start(*self._header.mode)
+
+    def hunt_notify(self, code, str_args, int_args):
+        if not self.component.visible:
+            return
+        if code == NC.SubmitOk:
+            if self._donate_pend_callback:
+                self._loader.restore_load(*self._header.mode)
+                self._donate_pend_callback = False
+
+    def _on_loader_event(self, event_type, data):
+        if event_type == LoaderET.OnEndLoad:
+            self._table.set_lines(data['lines'])
+            self._pageblock.set_data(data['range'], data['total'])
+            self._load.visible = False
+        elif event_type == LoaderET.OnStartLoad:
+            self._donate_pend_callback = False
+            self._pageblock.disable()
+            self._load.visible = True
+
+    def _on_page_event(self, event_type, data):
+        if event_type == PagerET.OnNextClick:
+            self._loader.load_next()
+        elif event_type == PagerET.OnEndClick:
+            self._loader.load_end()
+        elif event_type == PagerET.OnPrevClick:
+            self._loader.load_prev()
+        elif event_type == PagerET.OnStartClick:
+            self._loader.load_start()
+
+    def show(self):
+        if self._visible:
+            return
+        self._donate_pend_callback = False
+        self._pageblock.disable()
+        self._loader.add_listener(self._on_loader_event)
+        self._pageblock.add_listener(self._on_page_event)
+        self._visible = True
+        self._table.set_lines([])
+        self._loader.restore_load(*self._header.mode)
+
+    def hide(self):
+        if not self._visible:
+            return
+        self._donate_pend_callback = False
+        self._loader.remove_listener(self._on_loader_event)
+        self._pageblock.remove_listener(self._on_page_event)
+        self._loader.on_hide()
+        self._header.on_hide()
+        self._visible = False
+
+    def release(self):
+        self._table.release()

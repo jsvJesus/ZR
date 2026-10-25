@@ -1,0 +1,351 @@
+# Embedded file name: ./client/DungeonExplosiveEntity.py
+import FX
+import json
+import math
+import SFXer
+import random
+import ResMgr
+import BigWorld
+import ItemsUtils
+from Damager import Damager
+from Localization import lc
+from Grenade import UP_VECTOR
+from Items import ItemsCatalog
+from BoxStatus import BoxStatus
+from Math import Vector3, Matrix
+from MovableBox import MovableBox
+from FiringDefs import BODY_ZONES
+from Helpers.Caps import CAP_INTERACT
+from SfxCatalog import SFX_HIT_CATALOG
+from CrossingCarriage import SimplySmoothFilter
+from EntityHealthBar import EntityHealthBar
+from FX.persistent_ext_bg import loadPersistentExtAsync
+section = ResMgr.openSection('scripts/common/EnumProps/ExplosiveEntity.json')
+CONFIG = json.loads(section.asBinary)['model_index']['values']
+
+class DungeonExplosiveEntity(MovableBox, EntityHealthBar, Damager):
+
+    def __init__(self):
+        BigWorld.Entity.__init__(self)
+        EntityHealthBar.__init__(self)
+        if not self.is_self_movable:
+            self.filter = BigWorld.NoneFilter()
+        else:
+            self._filter = SimplySmoothFilter(self)
+        self.model = None
+        self.callback_id = None
+        self.targetCaps = []
+        self._model_path = ''
+        self.model_sfx = None
+        self.model_for_sfx_status = None
+        self.exploded_effect_shown = False
+        self.detonated = False
+        self.current_sfx = None
+        self.current_sfx_name = None
+        self.stopped_sfx = None
+        self._model_path = next((model for index, model in CONFIG if index == self.model_index), None)
+        if self.displayName:
+            self.name = lc(self.displayName)
+        else:
+            self.name = lc('DroppedItem.client.LERATANK')
+        return
+
+    def set_is_self_movable(self, old_value):
+        if self.is_self_movable:
+            self._filter = SimplySmoothFilter(self)
+        else:
+            self.filter = BigWorld.NoneFilter()
+        self.update_animation()
+
+    def update_animation(self):
+        if not self.model:
+            return
+        else:
+            action_on = self.model.action(self.animation) if self.model and self.animation else None
+            if not action_on:
+                return
+            if not self.is_self_movable or self.dead or self.detonated:
+                action_on.stop()
+            else:
+                frame_rate = self.animation_speed * action_on.frameRate
+                action_on(0, None, 0, -1, -1, frame_rate)
+            return
+
+    def on_death(self):
+        pass
+
+    def set_dead(self, old_value):
+        self.update_targetCaps()
+        if not self.dead:
+            self.detonated = False
+            self.exploded_effect_shown = False
+
+    def set_visible(self, old_value):
+        MovableBox.set_visible(self, old_value)
+        self.update_sfx()
+
+    def get_mark_distance(self):
+        if not self.visible:
+            return 0
+        if self.is_health_visible:
+            return 20
+        return 0
+
+    def onEnterWorld(self, prereqs):
+        if self._model_path:
+            self.model = prereqs[self._model_path]
+            self.model.scale = self.get_scale()
+            self.model.newScaleTest = self.get_scale()
+        self.setObstacle(self.visible)
+        self.model.visible = self.visible
+        self.add_collider()
+        self.update_sfx()
+        self.update_targetCaps()
+        if not self.dead:
+            self.detonated = False
+        self.update_animation()
+
+    def update_targetCaps(self):
+        self.targetCaps = [CAP_INTERACT] if self.visible and not self.dead else []
+
+    def can_interact(self):
+        if not self.is_movable:
+            return False
+        if self.dead:
+            return False
+        return MovableBox.can_interact(self)
+
+    def set_health_ratio(self, old_value):
+        EntityHealthBar.set_health_ratio(self, old_value)
+        self.update_sfx()
+
+    def get_model_path(self):
+        return self._model_path
+
+    def update_sfx(self):
+        if not self.visible:
+            self.stop_sfx()
+            return
+        else:
+            low_percent = 100
+            low_sfx = None
+            for data in self.sfx_by_status:
+                if data.health_percent > self.health_ratio * 100 and data.health_percent < low_percent:
+                    low_percent = data.health_percent
+                    low_sfx = data.sfx_persistent
+
+            if low_sfx != self.current_sfx_name:
+                self.current_sfx_name = low_sfx
+                if self.stopped_sfx:
+                    self.stopped_sfx.detach()
+                    self.stopped_sfx = None
+                self.stopped_sfx = self.current_sfx
+                if self.stopped_sfx:
+                    self.stopped_sfx.stop()
+
+                def on_load(prereqs):
+                    self.current_sfx = FX.PersistentExt(self.current_sfx_name, prereqs)
+                    self.current_sfx.attach(self.model_for_sfx_status)
+                    self.current_sfx.go()
+
+                loadPersistentExtAsync([self.current_sfx_name], on_load)
+            return
+
+    def stop_sfx(self):
+        self.current_sfx_name = None
+        if self.stopped_sfx:
+            self.stopped_sfx.stop()
+            self.stopped_sfx.detach()
+            self.stopped_sfx = None
+        if self.current_sfx:
+            self.current_sfx.stop()
+            self.current_sfx.detach()
+            self.current_sfx = None
+        return
+
+    def get_interaction_dist(self):
+        return 2
+
+    def onBoarHit(self, damager):
+        pass
+
+    def bleedFromShoot(self, pos, blood_orientation, collider_name, ammo_type, damager_id):
+        pass
+
+    def add_collider(self):
+        self.canBeHurtByBullets = True
+        self.canTakeDamage = True
+        self.respawned_recently = False
+        self.skeletonCollider = BigWorld.SkeletonCollider()
+        self.model_for_sfx_status = BigWorld.Model('')
+        min_bounds, max_bounds = self.model.getMinMaxbounds
+        box = BigWorld.BoxAttachment()
+        box.name = 'box'
+        box.minBounds = min_bounds
+        box.maxBounds = max_bounds
+        x = (min_bounds[0] + max_bounds[0]) / 2
+        y = max(min_bounds[1], max_bounds[1])
+        z = (min_bounds[2] + max_bounds[2]) / 2
+        self.model_for_sfx_status.position = self.position + (x, y, z)
+        self.addModel(self.model_for_sfx_status)
+        self.model.root.attach(box)
+        self.model.isCalcBoundBoxFromNodes = 1
+        self.colliderNames = {'box': BODY_ZONES.TORSO}
+        self.skeletonCollider.addCollider(box)
+
+    def clearColliders(self):
+        if getattr(self, 'skeletonCollider', None):
+            self.skeletonCollider.clearColliders()
+            self.skeletonCollider = None
+        return
+
+    def override_client_damage_calculation(self, *args, **kargs):
+        return False
+
+    def get_contact_data(self):
+        top_pos = self.position + Vector3(0, 0.2, 0)
+        bottom_pos = self.position + Vector3(0, -0.2, 0)
+        collision = BigWorld.collide(self.spaceID, top_pos, bottom_pos)
+        if collision:
+            mat_id = collision[2]
+        else:
+            mat_id = 0
+        return (self.position,
+         Vector3(UP_VECTOR),
+         None,
+         0,
+         None,
+         mat_id)
+
+    def detonate(self):
+        if self.isDestroyed:
+            return
+        else:
+            self._detonate_timer_id = None
+            if self.detonated:
+                return
+            self.detonated = True
+            pos, direction, vel, target_id, body_zone, mat_id = self.get_contact_data()
+            water_collision = BigWorld.waterCollide(pos, pos - (0, 10, 0))
+            water_dist = pos.y - water_collision[0].y if water_collision else 1000
+            collision_data = {'target_id': 0 if ItemsUtils.is_entity_client(target_id) else target_id,
+             'mat_id': mat_id,
+             'position': pos,
+             'direction': direction,
+             'water_dist': water_dist}
+            player = BigWorld.player()
+            if player:
+                is_player = player.id == self.ownerID
+                if is_player and player._is_connection_activite:
+                    try:
+                        if not player.checkPVPZoneForKill():
+                            player.cell.grenade_exploded(self.ownerID, self.grenade_effect, collision_data)
+                    except Exception as e:
+                        print collision_data
+                        raise e
+
+            else:
+                self.cell.grenade_exploded(self.ownerID, collision_data)
+            self.explode_effect(pos, mat_id, direction)
+            return
+
+    def show_model_sfx(self, show, override_model = None):
+        if show:
+            if self.model_sfx:
+                return
+            modelSFX = self.params.get('modelSFX')
+            if modelSFX is not None:
+
+                def on_load(prereqs):
+                    if self.isDestroyed:
+                        return
+                    self.model_sfx = FX.PersistentSFX(modelSFX, override_model or self.model, prereqs)
+                    self.model_sfx.play()
+                    if self.grenade_type == ItemsCatalog.JELLY_SPORE_GRENADE['TypeID']:
+                        self.model.pushBoundingBox((-1, -50, -200), (1, 1, 50))
+
+                loadPersistentExtAsync([modelSFX], on_load)
+        elif self.model_sfx:
+            self.model_sfx.destroy(True)
+            self.model_sfx = None
+        return
+
+    def explode_effect(self, position, mat_id, direction):
+        if self.exploded_effect_shown:
+            return
+        else:
+            self.exploded_effect_shown = True
+            params = ItemsCatalog.get(self.grenade_effect)
+            self.model.visible = False
+            self.model_for_sfx_status.visible = False
+            if params.get('hideModelSfxAfterExplode'):
+                self.show_model_sfx(False)
+            elif getattr(self, 'model_sfx', None):
+                self.model.visibleAttachments = True
+            under_water_sfx = params.get('explodeSFX_underwater')
+            explode_sfxes = []
+            hit_category = params.get('HitSfxCategory')
+            main_explode_sfx = params.get('explodeSFX')
+            if hit_category:
+                explode_sfxes.append(SFX_HIT_CATALOG[hit_category].get(mat_id) or SFX_HIT_CATALOG[hit_category]['default'])
+            if main_explode_sfx:
+                explode_sfxes.append(main_explode_sfx)
+            if explode_sfxes:
+                explosion_model = BigWorld.Model('')
+                m = Matrix()
+                m.setRotateYPR(Vector3(direction.yaw, direction.pitch + math.pi * 0.5, 0))
+                m_translation = Matrix()
+                m_translation.setTranslate(position + direction * 0.1)
+                m.postMultiply(m_translation)
+                explosion_model.setWorldTransform(m)
+                explosion_model.pushBoundingBox((-5, -2, -5), (5, 4, 5))
+                BigWorld.addModel(explosion_model)
+                kw = {}
+                kw['maxDuration'] = params.get('explodeSFXDuration', 31.0)
+                kw['DecalInfo'] = [position + direction, position - direction]
+                kw['forceDecal'] = True
+                kw['useSoundSpeed'] = True
+                for explode_sfx in explode_sfxes:
+                    FX.bufferedOneShotEffect(explode_sfx, explosion_model, **kw)
+
+                def clearExplModels():
+                    BigWorld.delModel(explosion_model)
+
+                BigWorld.callback(kw['maxDuration'], clearExplModels)
+            radius = params.get('DamageRadius')
+            if radius:
+                draw_ratio = 0.1
+                attempts = int(params.get('NumPieces', 0) * draw_ratio / 0.5235987755982988)
+                attempts = min(attempts, 30)
+                if self.ownerID:
+                    owner = BigWorld.entity(self.ownerID)
+                    if owner and getattr(owner, 'active_transform', None):
+                        attempts = 0
+                if attempts:
+                    player = BigWorld.player()
+                    for _ in xrange(attempts):
+                        vec = Vector3(random.uniform(-1, 1), random.uniform(-1, 1), random.uniform(-1, 1))
+                        if vec.lengthSquared > 1.0:
+                            continue
+                        vec.normalise()
+                        trace = player.traceBullet(position, vec * radius)
+                        hitKind = trace['hitKind']
+                        hitPoint = trace['hitPoint']
+                        if hitKind == player.traceBullet.HitKindVictim:
+                            if not hitPoint:
+                                print 'position:', position
+                                print 'vec:', vec
+                                print 'radius:', radius
+                                print 'trace:', trace
+                                return
+                        if hitKind == player.traceBullet.HitKindVictim:
+                            e = trace['entity']
+                            if e.canTakeDamage:
+                                if hasattr(e, 'pre_bleed'):
+                                    e.pre_bleed(hitPoint, trace['bodyZone'], position, hitPoint - direction, self.grenade_effect)
+                            else:
+                                SFXer.ArmorNotBroken(hitPoint, e, reflection=trace['reflection'])
+                        elif hitKind == player.traceBullet.HitKindWorld:
+                            SFXer.Ricochet(player, position, hitPoint, trace['triangle'], trace['material'], self.grenade_effect)
+
+            return

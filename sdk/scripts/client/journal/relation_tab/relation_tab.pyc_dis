@@ -1,0 +1,339 @@
+# Embedded file name: ./client/journal/relation_tab/relation_tab.py
+from Localization import lc
+from journal.tab import Tab
+from journal.fav_button import FavButton, FavState
+import soGUI
+import GUI
+from soGUI.soList_optimized import soList_optimized, SORT_NORMAL, SORT_NORMAL_REV
+import AdditionalNPCParameters as AP
+from NPCs import NPCs
+import BigWorld
+from functools import partial
+from rel_sort_filter import RelSortFilter
+import traceback
+from card import Card
+from journal.sort_filter import EventType as SfET
+from Quest import SortMode as SM
+from knowledge import knowledge_parser
+NpcEventType = knowledge_parser.NpcEventType
+import colorCodes as cc
+from soGUI.soTextField import soTextField3
+
+class ListOptimized(soList_optimized):
+
+    def apply_single_element(self, i, elem):
+        style = 'soGUI/elements/listRelElement.xml'
+        npc_id = self.attachments[self.indexes[elem]].get('npc_id')
+        if npc_id is not None:
+            element = self.elemComps[i].component.script
+            if element and BigWorld.player().is_npc_favorite(npc_id):
+                style = 'soGUI/elements/listRelElementFav.xml'
+        element.initVSC(style)
+        soList_optimized.apply_single_element(self, i, elem)
+        return
+
+
+class RelationsTab(Tab):
+
+    def __init__(self, component):
+        Tab.__init__(self, lc('GUI.QuestLog.REL_QUESTS_TAB_LABEL'), component)
+        self._component = self.component
+        self._hide_filter_on_select_change = True
+        self._pending = False
+        self._setup()
+        self._npc_data = []
+        self._card.disable()
+        self._loaded_name = None
+        self._sort_filter = RelSortFilter(self.component, self)
+        self.on_quest_click = lambda q_id: None
+        self.on_group_click = lambda gr_id: None
+        self._card.on_need_spec = self._on_need_spec
+        self._card.on_radio_click = lambda npc_id: self._data_provider.on_radio_click(npc_id)
+        self._card.on_group_click = lambda gr_id: self.on_group_click(gr_id)
+        return
+
+    def _setup(self):
+        comp = GUI.Frame2('soGUI/frame/con_frame_2.dds')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor = 'LEFT'
+        comp.verticalAnchor = 'TOP'
+        comp.colour = (255, 255, 255, 255)
+        comp.materialFX = 'BLEND'
+        comp.width, comp.height = (854, 526)
+        comp.position = (3, 3, 1.1)
+        self.component.addChild(comp)
+        comp = GUI.Frame2('soGUI/frame/con_frame_rounded.dds')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = (559, 518)
+        comp.materialFX = 'SOLID'
+        comp.horizontalAnchor, comp.verticalAnchor = ('RIGHT', 'TOP')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.position = (self.component.width - 7, 7, 1)
+        self.component.addChild(comp, 'frame')
+        comp = GUI.Window('soGUI/frame/paint/black.dds')
+        comp.materialFX = 'SOLID'
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.width, comp.height = (269, 519)
+        comp.position = (6, 6, 1)
+        self.component.addChild(comp, 'background')
+        rel_list = ListOptimized(GUI.Window(), soGUI.ListPropsStructure(width=291, height=536, elemStyle='soGUI/elements/listRelElement.xml', isMultiSel=False, selectCallBack=self._on_selected, sorted=False), buttons_is_options=False)
+        rel_list.component.horizontalPositionMode = rel_list.component.verticalPositionMode = 'PIXEL'
+        rel_list.component.widthMode = rel_list.component.heightMode = 'PIXEL'
+        rel_list.component.visible = True
+        rel_list.component.verticalAnchor = 'TOP'
+        rel_list.component.horizontalAnchor = 'LEFT'
+        rel_list.component.position = (6, 1, 0.1)
+        rel_list.component.listFrame.textureName = ''
+        rel_list.component.mouseButtonFocus = 0
+        self._component.addChild(rel_list.component, 'rellist')
+        self._rel_list = rel_list
+        rel_list.onBound()
+        comp = GUI.Window()
+        comp.isClip = False
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = (559, 518)
+        comp.materialFX = 'SOLID'
+        comp.horizontalAnchor, comp.verticalAnchor = ('RIGHT', 'TOP')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.position = (self.component.width - 7, 7, 1)
+        self._component.addChild(comp, 'card_hoder')
+        comp = GUI.Window()
+        tf = soTextField3(comp, 300, 200, textWidth=-1, hScroll=False, vScroll=False, hideScroll=True, borderWidth=0, vOffset=0, hOffset=0, textureless=1)
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+        comp.position = (0, -0.2, 0.9)
+        comp.visible = False
+        self.component.card_hoder.addChild(comp)
+        self._intro_comp = comp
+        tf.setText(cc.inactive_xml + u'<font=RobotoCondensedRegular_20.font><alignment=center>' + lc('GUI.QuestLog.REL_INTRO'), immidiate=True)
+        comp = GUI.Window()
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = self._component.card_hoder.width, self._component.card_hoder.height
+        comp.materialFX = 'SOLID'
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.position = (0, 0, 1)
+        self._component.card_hoder.addChild(comp, 'card')
+        self._card = Card(comp, self._quest_click_callback)
+        self._fav_button = FavButton(self._get_fav_state)
+        self._fav_button.component.position = (0, self._component.card_hoder.height + 37, 1)
+        self._fav_button.click_callback = self._on_fav_click
+        self._component.card_hoder.addChild(self._fav_button.component, 'fav_button')
+
+    def _get_fav_state(self):
+        npc_id = self._get_selected_npc_id()
+        if npc_id is None:
+            return FavState.Disable
+        elif self._data_provider.is_npc_favorite(npc_id):
+            return FavState.Defav
+        elif self._data_provider.is_fav_npc_limit():
+            return FavState.Disable
+        else:
+            return FavState.Fav
+            return
+
+    def _on_fav_click(self):
+        npc_id = self._get_selected_npc_id()
+        if npc_id is not None:
+            fav = self._data_provider.is_npc_favorite(npc_id)
+            self._data_provider.mark_npc_fav(npc_id, not fav)
+        self._update_elements()
+        return
+
+    def _quest_click_callback(self, q_id):
+        self.on_quest_click(q_id)
+
+    def force_npc(self, npc_name):
+        local_npc_name = NPCs.getName(npc_name)
+        self.set_selection(local_npc_name)
+
+    def _got_relation_spec(self, rel_specs):
+        npc_name = AP.get_npc_name_by_id(rel_specs['npc_id'])
+        npc_local_name = NPCs.getName(npc_name)
+        self._rel_list.attachments[npc_local_name]['spec_data'] = rel_specs
+        self._card.set_data(rel_specs['npc_id'], rel_specs)
+
+    def _on_need_spec(self, npc_id):
+        self._data_provider.request_relation_spec(npc_id, self._got_relation_spec)
+
+    def on_hide(self):
+        self._card.on_hide()
+
+    def on_show(self):
+        pending = False
+        if self._loaded_name != self._data_provider.name:
+            self._rel_list.clear()
+            self._npc_data = []
+            self._card.disable()
+            self._loaded_name = self._data_provider.name
+            self._data_provider.request_acquaintances(self._got_acquaintances)
+            pending = True
+        self._card.on_show()
+        self._update_content_filter_visibility()
+        self._intro_comp.visible = False
+        if not pending and not self._card.npc_id:
+            if self._rel_list.elements:
+                self._rel_list.toggleElement(0)
+            else:
+                self._intro_comp.visible = True
+        self._fav_button.update()
+
+    def _got_acquaintances(self, data):
+        npc_data = []
+        for int64_index, d in enumerate(data):
+            for bit_index in xrange(0, 64):
+                if not data[int64_index] & 1 << bit_index:
+                    continue
+                npc_index = int64_index * 64 + bit_index
+                try:
+                    npc_id = AP.get_npc_id_by_bin_index(npc_index)
+                    npc_name = AP.get_npc_name_by_id(npc_id)
+                    npc_local_name = NPCs.getName(npc_name)
+                except:
+                    print 'RelationQuestTab (ERROR):', npc_index
+                    print traceback.format_exc()
+                else:
+                    npc_data.append((npc_local_name, npc_id))
+
+        self._npc_data = npc_data
+        self._update_elements()
+        self._pending = False
+        if not self._card.npc_id:
+            if self._rel_list.elements:
+                self._rel_list.toggleElement(0)
+            else:
+                self._intro_comp.visible = True
+        self._fav_button.update()
+
+    def _update_elements(self):
+
+        def filter_npc(npc_data):
+            space_name = AP.get_npc_space_from_data(npc_data[1])
+            return space_name in sort_filter['filter']
+
+        def sort_key_up(nd):
+            nd_name, nd_id = nd
+            is_fav = self._data_provider.is_npc_favorite(nd_id)
+            return (is_fav, nd_name)
+
+        def sort_key_down(nd):
+            nd_name, nd_id = nd
+            is_fav = self._data_provider.is_npc_favorite(nd_id)
+            return (not is_fav, nd_name)
+
+        sort_filter = self._sort_filter.mode
+        npc_data = filter(filter_npc, self._npc_data)
+        if sort_filter['sort'] == SM.TitleUp:
+            npc_data.sort(key=sort_key_up, reverse=True)
+        elif sort_filter['sort'] == SM.TitleDown:
+            npc_data.sort(key=sort_key_down)
+        else:
+            raise NotImplementedError
+        if self.get_selection():
+            prev_selection = self.get_selection()[0]
+            self._rel_list.clear()
+            self._rel_list.type_sort = SORT_NORMAL
+            for npc_local_name, npc_id in npc_data:
+                attachment = {'npc_id': npc_id}
+                self._rel_list.addElement(npc_local_name, attachment=attachment, delayedRender=True)
+
+            prev_selection and self._rel_list.toggleByCaption(prev_selection)
+        self._rel_list.applyElements()
+        self._fav_button.update()
+
+    def on_sortfilter_event(self, event_type):
+        if event_type == SfET.OnModeChanged:
+            self._hide_filter_on_select_change = False
+            self._update_elements()
+            self._hide_filter_on_select_change = True
+        elif event_type == SfET.OnVisibleChanged:
+            self._update_content_filter_visibility()
+
+    def _update_content_filter_visibility(self):
+        self.component.frame.visible = not self._sort_filter.visible
+        self.component.card_hoder.visible = not self._sort_filter.visible
+
+    def on_knowledge_npc_event4(self, event_type, npc_id):
+        if event_type == NpcEventType.KnowledgeWiped:
+            self._knowledge_wiped()
+        elif event_type == NpcEventType.OnGotKnowledge:
+            name = AP.get_npc_name_by_id(npc_id)
+            name = lc(NPCs.names_by_npcName[name])
+            if name not in self._rel_list.attachments:
+                self._new_npc_visited(npc_id)
+            self._relation_specs_changed(npc_id)
+
+    def _knowledge_wiped(self):
+        self._rel_list.clear()
+        self._npc_data = []
+        self._card.disable()
+        self._intro_comp.visible = True
+
+    def _relation_specs_changed(self, npc_id):
+        name = AP.get_npc_name_by_id(npc_id)
+        name = lc(NPCs.names_by_npcName[name])
+        if name in self._rel_list.attachments:
+            if 'spec_data' in self._rel_list.attachments[name]:
+                del self._rel_list.attachments[name]['spec_data']
+                if self.get_selection():
+                    selection = self.get_selection()[0]
+                    selection == name and self._card.set_data(npc_id, None)
+        return
+
+    def _new_npc_visited(self, npc_id):
+        self._intro_comp.visible = False
+        name = AP.get_npc_name_by_id(npc_id)
+        name = lc(NPCs.names_by_npcName[name])
+        attachment = {'npc_id': npc_id}
+        self._rel_list.type_sort = SORT_NORMAL_REV
+        if not self._rel_list.addElement(name, attachment=attachment):
+            print 'Relation (ERROR):', name.encode('utf-8'), npc_id
+            print self._rel_list.attachments[name]['npc_id']
+            raise RuntimeError('name dumplication')
+        self._npc_data.insert(0, (name, npc_id))
+        if not self._card.npc_id:
+            self._rel_list.toggleElement(0)
+
+    def _on_selected(self):
+        selection = self._rel_list.getSelection()
+        if not selection:
+            self._card.disable()
+            return
+        value = selection[0]
+        attachment = self._rel_list.getAttachment(value)
+        self._card.set_data(attachment['npc_id'], attachment.get('spec_data'))
+        if self._hide_filter_on_select_change:
+            self._sort_filter.switch_off()
+            self._fav_button.update()
+
+    @property
+    def _data_provider(self):
+        return BigWorld.player()
+
+    def get_selection(self):
+        return self._rel_list.getSelection()
+
+    def _get_selected_npc_id(self):
+        selection = self._rel_list.getSelection()
+        if not selection:
+            return None
+        else:
+            value = selection[0]
+            attachment = self._rel_list.getAttachment(value)
+            return attachment['npc_id']
+
+    def set_selection(self, value):
+
+        def _set_selection(time):
+            if time <= 0:
+                print 'RelationQuestTab (WARNING): data wait timeout', repr(value)
+                return
+            if value not in self._rel_list.elements:
+                BigWorld.callback(0, partial(_set_selection, time - BigWorld.getTimeDelta()))
+                return
+            self._rel_list.toggleByCaption(value)
+
+        _set_selection(3.0)

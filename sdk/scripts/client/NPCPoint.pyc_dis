@@ -1,0 +1,133 @@
+# Embedded file name: ./client/NPCPoint.py
+import BigWorld
+from HideModelUDO import HideModelUDO
+from SoundNode import SoundNode
+import itertools
+from FX.persistent_ext_bg import PersistentWrapper
+
+class NPCPoint(BigWorld.Entity):
+
+    def __init__(self):
+        BigWorld.Entity.__init__(self)
+        self.spawn_entities = []
+        self.soundnode_list = []
+        self.particles_list = []
+
+    def onEnterWorld(self, prereqs):
+        try:
+            self._spawnClientItems()
+        except:
+            print 'ERROR FOR:', self, self.position
+            raise
+
+    def onLeaveWorld(self):
+        self.revealed = False
+        self.set_revealed(None)
+        for soundnode in self.soundnode_list:
+            soundnode.destroyFromTrigger()
+
+        self.soundnode_list = []
+        for particle in self.particles_list:
+            if particle['sfx']:
+                particle['sfx'].release()
+            self.delModel(particle['model'])
+
+        self.particles_list = []
+        return
+
+    def _resources_loaded(self):
+        self.set_revealed(None)
+        return
+
+    def set_revealed(self, old_state):
+        """ \xd0\xbf\xd1\x80\xd0\xbe\xd1\x8f\xd0\xb2\xd0\xb8\xd1\x82\xd1\x8c \xd1\x81\xd0\xb5\xd0\xb1\xd1\x8f (\xd0\xb8\xd0\xbb\xd0\xb8 \xd1\x81\xd0\xba\xd1\x80\xd1\x8b\xd1\x82\xd1\x8c) """
+        if self.revealed:
+            for model in self.models_list:
+                if not model.attached:
+                    self.addModel(model)
+
+            for soundnode in self.soundnode_list:
+                soundnode.activateFromTrigger()
+
+            for particle in self.particles_list:
+                if not particle['sfx']:
+                    particle['sfx'] = PersistentWrapper(particle['sfx_name'], particle['model'])
+                particle['sfx'].run()
+
+            for item in self.udo_questobjects:
+                properties = {'modelSelect': item.modelSelect,
+                 'questID': item.questID,
+                 'show_if': item.show_if}
+                questobject_id = BigWorld.createEntity('QuestObject', self.spaceID, 0, item.position, (0, 0, 0), properties)
+                self.spawn_entities.append(questobject_id)
+
+        else:
+            for model in self.models_list:
+                if model.attached:
+                    self.delModel(model)
+
+            for soundnode in self.soundnode_list:
+                soundnode.deactivateFromTrigger()
+
+            for entity_id in self.spawn_entities:
+                BigWorld.destroyEntity(entity_id)
+
+            for particle in self.particles_list:
+                if particle['sfx']:
+                    particle['sfx'].stop()
+
+            self.spawn_entities = []
+
+    def _asyncLoadModelCallback(self, model, item, model_path):
+        if self.isDestroyed:
+            return
+        if not model:
+            print 'ERROR LOAD MODEL', self, self.position, item, repr(model_path)
+            return
+        self.models_list.append(model)
+        if self.revealed and not model.attached:
+            self.addModel(model)
+
+    def _spawnClientItems(self):
+        if self.isDestroyed:
+            return
+        else:
+            self.models_list = []
+            self.soundnode_list = []
+            self.particles_list = []
+            for item in itertools.chain(self.udo_models, self.udo_sounds, self.udo_particles, self.udo_questobjects):
+                try:
+                    if not item:
+                        continue
+                    item.position
+                except BigWorld.UnresolvedUDORefException:
+                    BigWorld.callback(5.0, self._spawnClientItems)
+                    return
+                except Exception as err:
+                    import BWPersonality
+                    print 'Error for', self, BWPersonality.spaceName(self.spaceID), self.position, item
+                    raise err
+
+            for item in self.udo_models:
+                if not item:
+                    continue
+                HideModelUDO.parse_model(item, self._asyncLoadModelCallback)
+
+            for item in self.udo_sounds:
+                if not item:
+                    continue
+                sound_node_id = SoundNode.create_from_udo(item, self.spaceID)
+                self.soundnode_list.append(BigWorld.entities[sound_node_id])
+
+            for item in self.udo_particles:
+                if not item:
+                    continue
+                model = BigWorld.Model('')
+                model.position = item.position
+                self.addModel(model)
+                self.particles_list.append({'model': model,
+                 'sfx_name': item.sfxName,
+                 'sfx': None})
+
+            self._resources_loaded()
+            return

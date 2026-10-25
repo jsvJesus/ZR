@@ -1,0 +1,164 @@
+# Embedded file name: ./client/ClientTrigger.py
+import BigWorld
+from ClientFiguredTrapInterface import ClientFiguredTrapInterface
+from collections import defaultdict
+from functools import partial
+import BWPersonality
+from sounds_manager import playSound
+from Localization import lc
+import DialogsLocalization
+from NPCs import NPCs
+import MapNotes
+from Constants import MESSAGE_TYPES as MT
+ON_ENTER, ON_LEAVE = xrange(2)
+
+class TriggersManager:
+    """ \xd0\xb4\xd0\xb5\xd1\x80\xd0\xb6\xd0\xb8\xd1\x82 \xd1\x81\xd1\x81\xd1\x8b\xd0\xbb\xd0\xba\xd0\xb8 \xd0\xbd\xd0\xb0 \xd0\xb2\xd1\x81\xd0\xb5 \xd1\x81\xd1\x83\xd1\x89\xd0\xb5\xd1\x81\xd1\x82\xd0\xb2\xd1\x83\xd1\x8e\xd1\x89\xd0\xb8\xd0\xb5 \xd1\x82\xd1\x80\xd0\xb8\xd0\xb3\xd0\xb3\xd0\xb5\xd1\x80\xd1\x8b,
+            \xd1\x87\xd1\x82\xd0\xbe\xd0\xb1\xd1\x8b \xd1\x83\xd0\xbd\xd0\xb8\xd1\x87\xd1\x82\xd0\xbe\xd0\xb6\xd0\xb0\xd1\x82\xd1\x8c \xd0\xb8\xd1\x85, \xd0\xb5\xd1\x81\xd0\xbb\xd0\xb8 \xd0\xbf\xd0\xbe\xd0\xbd\xd0\xb0\xd0\xb4\xd0\xbe\xd0\xb1\xd0\xb8\xd1\x82\xd1\x81\xd1\x8f \xd0\xba\xd0\xbe\xd0\xbc\xd1\x83-\xd0\xbb\xd0\xb8\xd0\xb1\xd0\xbe
+    """
+
+    def __init__(self):
+        self._triggers = defaultdict(list)
+        self._need_destroy = defaultdict(set)
+
+    def _lock_triggers(self, trigger_ids, lock_key):
+        self._need_destroy[lock_key] |= set(trigger_ids)
+        for trigger_id, triggers in self._triggers.items():
+            for tr_ids in self._need_destroy.values():
+                if trigger_id in tr_ids:
+                    for t in triggers:
+                        if t.isDestroyed:
+                            continue
+                        t._mark_to_destroy()
+
+    def _unlock_triggers(self, lock_key):
+        if lock_key in self._need_destroy:
+            del self._need_destroy[lock_key]
+
+    def _trigger_ready_to_spawn(self, trigger):
+        trigger_id = trigger.trigger_id
+        if not trigger_id:
+            return
+        self._triggers[trigger_id].append(trigger)
+        for tr_ids in self._need_destroy.values():
+            if trigger_id in tr_ids:
+                trigger._mark_to_destroy()
+
+    def _trigger_despawned(self, trigger):
+        if not trigger.trigger_id:
+            return
+        self._triggers[trigger.trigger_id].remove(trigger)
+        if not self._triggers[trigger.trigger_id]:
+            del self._triggers[trigger.trigger_id]
+
+
+class ClientTrigger(BigWorld.Entity, ClientFiguredTrapInterface):
+    _triggers_manager = TriggersManager()
+
+    @staticmethod
+    def lock_triggers(trigger_ids, lock_key):
+        ClientTrigger._triggers_manager._lock_triggers(trigger_ids, lock_key)
+
+    @staticmethod
+    def unlock_triggers(lock_key):
+        ClientTrigger._triggers_manager._unlock_triggers(lock_key)
+
+    def __init__(self):
+        BigWorld.Entity.__init__(self)
+        ClientFiguredTrapInterface.__init__(self)
+        self._enabled = True
+        self._marked_to_destroy = False
+        self._is_in_world = False
+
+    def prerequisites(self):
+        ClientTrigger._triggers_manager._trigger_ready_to_spawn(self)
+        if self.trigger_model and not self._marked_to_destroy:
+            return [self.trigger_model]
+        return []
+
+    def _mark_to_destroy(self):
+        if self.isDestroyed:
+            return
+        self._marked_to_destroy = True
+        if self._is_in_world:
+            BigWorld.callback(0, partial(BigWorld.destroyEntity, self.id))
+
+    def onEnterWorld(self, prereqs):
+        if self.trigger_model and not self._marked_to_destroy:
+            self.model = prereqs[self.trigger_model]
+            scale = (self.model_scale_x, self.model_scale_y, self.model_scale_z)
+            self.model.scale = scale
+            self.model.newScaleTest = scale
+            self.model.visible = self._enabled
+            self.model.isObstacle = self._enabled
+        if self._marked_to_destroy:
+            BigWorld.callback(0, partial(BigWorld.destroyEntity, self.id))
+        else:
+            self._is_in_world = True
+
+    def onPlayerInside(self):
+        player = BigWorld.player()
+        if player:
+            player.on_player_client_trigger(True, self)
+        if self.activate_type == ON_ENTER:
+            self.event_activate()
+
+    def onPlayerOutside(self):
+        player = BigWorld.player()
+        if player:
+            player.on_player_client_trigger(False, self)
+        if self.activate_type == ON_LEAVE:
+            self.event_activate()
+
+    def event_activate(self):
+        player = BigWorld.player()
+        if player:
+            if self.need_quest:
+                raise NotImplementedError
+            if self.notify_on_enter:
+                BWPersonality.gpd.sendHightMessage(lc(self.notify_on_enter), MT.LOCATION)
+            if self.sound_on_enter:
+                playSound(self.sound_on_enter, model=self.model)
+            if self.open_help:
+                BWPersonality.GUICore.showFlashHelp(self, help_type=self.open_help)
+            if self.show_by_knowledge:
+                player.request_knowledge_from_ctrigger0(self.unique_id)
+        if self.destroy_on_enter:
+            BigWorld.callback(0, partial(BigWorld.destroyEntity, self.id))
+
+    def onLeaveWorld(self):
+        ClientTrigger._triggers_manager._trigger_despawned(self)
+        ClientFiguredTrapInterface.onLeaveWorld(self)
+        self.model = None
+        return
+
+    def can_talk(self):
+        return bool(self.run_dialog_on_enter)
+
+    @property
+    def name(self):
+        if not self.run_dialog_on_enter:
+            return None
+        else:
+            dialog_holder = DialogsLocalization.get_holder(self.run_dialog_on_enter)
+            return NPCs.getName(dialog_holder)
+
+    def set_enabled(self, enabled):
+        self._enabled = enabled
+        if self._enabled:
+            self.enable_pot()
+            if self.model:
+                self.model.visible = True
+                self.model.isObstacle = True
+        else:
+            self.disable_pot()
+            if self.model:
+                self.model.visible = False
+                self.model.isObstacle = False
+
+    @property
+    def unique_id(self):
+        if not hasattr(self, '_uniqe_id'):
+            space_name = BWPersonality.game.get_space_name_advanced(self.spaceID)
+            self._unique_id = MapNotes.find_ctrigger_id_frop_position(space_name, self.position)
+        return self._unique_id

@@ -1,0 +1,225 @@
+# Embedded file name: ./client/soGUI/gifts_gui/data.py
+from utils import Listenable
+from GiftBankUtils import SortMode, SortDir
+
+class ItemEventType:
+    OnLoaded, SelectionChanged = ((r, 'Gift.ItemDataET') for r in range(2))
+
+
+class EventType:
+    OnLoaded, OnCleared, OnDeleted, OnDeletedMultiple, OnInserted, OnSelectedChanged, OnStartReplace, OnStopReplace, TotalChanged = ((r, 'Gift.DataET') for r in range(9))
+
+
+class Item(Listenable):
+
+    def __init__(self):
+        Listenable.__init__(self)
+        self._data = None
+        self.selected = False
+        return
+
+    def set_data(self, data):
+        self._data = data
+        self.notify_listeners(ItemEventType.OnLoaded)
+
+    def set_selected(self, selected):
+        if self.selected != selected:
+            self.selected = selected
+            self.notify_listeners(ItemEventType.SelectionChanged)
+
+    @property
+    def loaded(self):
+        return self._data is not None
+
+    @property
+    def sender(self):
+        return self._data and self._data['sender'] or None
+
+    @property
+    def bank(self):
+        return self._data and self._data['bank'] or None
+
+    @property
+    def stat(self):
+        return self._data and self._data['stat'] or None
+
+    @property
+    def time(self):
+        return self._data and self._data['time'] or None
+
+    @property
+    def gift_id(self):
+        return self._data and self._data['gift_id'] or None
+
+
+class Data(Listenable):
+
+    def __init__(self):
+        Listenable.__init__(self)
+        self.items = None
+        self._selected_item = None
+        self._total = 0
+        self.total = 0
+        self._lock_selection_notification = False
+        return
+
+    def set_data(self, total, index, items):
+        if self.items is None:
+            self.items = []
+        while len(self.items) < total:
+            self.items.append(Item())
+
+        while len(self.items) > total:
+            del self.items[-1]
+
+        for i, item_data in enumerate(items):
+            self.items[i + index].set_data(item_data)
+
+        self.notify_listeners(EventType.OnLoaded)
+        self.total = total
+        return
+
+    def select_gift(self, gift_id):
+        if self._selected_item:
+            self._selected_item.set_selected(False)
+        self._selected_item = None
+        if gift_id:
+            gift_index = self._find_index(gift_id)
+            if gift_index is not None:
+                self._selected_item = self.items[gift_index]
+        if self._selected_item:
+            self._selected_item.set_selected(True)
+        if not self._lock_selection_notification:
+            self.notify_listeners(EventType.OnSelectedChanged)
+        return
+
+    def update_gift(self, gift, sort_mode, sort_dir):
+        if not self.items:
+            return
+        gift_id = gift['gift_id']
+        self._lock_selection_notification = True
+        restore_selection = gift_id == self.selected_id
+        self.notify_listeners(EventType.OnStartReplace)
+        self.remove_gifts([gift_id])
+        self.insert_gift(gift, sort_mode, sort_dir)
+        self.notify_listeners(EventType.OnStopReplace)
+        if restore_selection:
+            self.select_gift(gift_id)
+        self._lock_selection_notification = False
+
+    def insert_gift(self, gift, sort_mode, sort_dir):
+        if self.items is None:
+            return
+        else:
+            if sort_dir == SortDir.Up:
+                reverse = True
+            elif sort_dir == SortDir.Down:
+                reverse = False
+            if sort_mode == SortMode.Name:
+
+                def get_key(it):
+                    return (it.bank, it.gift_id)
+
+            elif sort_mode == SortMode.Time:
+
+                def get_key(it):
+                    return (it.time, it.gift_id)
+
+            elif sort_mode == SortMode.Stat:
+
+                def get_key(it):
+                    return (it.stat, it.gift_id)
+
+            insert_index = None
+            gift_npc_name = get_key(gift)
+            self.total += 1
+            for i, item in enumerate(self.items):
+                if not item.loaded:
+                    break
+                item_npc_name = get_key(item)
+                if reverse:
+                    if gift_npc_name > item_npc_name:
+                        insert_index = i
+                        break
+                elif gift_npc_name < item_npc_name:
+                    insert_index = i
+                    break
+            else:
+                insert_index = len(self.items)
+
+            if insert_index is not None:
+                item = Item()
+                self.items.insert(insert_index, item)
+                item.set_data(gift)
+                data = {'index': insert_index}
+                self.notify_listeners(EventType.OnInserted, data)
+            return
+
+    def _find_index(self, gift_id):
+        return next((i for i, item in enumerate(self.items) if item.gift_id == gift_id), None)
+
+    def remove_indices(self, indices):
+        indices = sorted(indices, reverse=True)
+        for del_index in indices:
+            item = self.items[del_index]
+            if item == self._selected_item:
+                self.select_gift(None)
+            item.release()
+            del self.items[del_index]
+            data = {'index': del_index}
+
+        data = {'indices': indices}
+        self.notify_listeners(EventType.OnDeletedMultiple, data)
+        self.total -= len(indices)
+        return
+
+    def remove_gifts(self, gift_ids):
+        gift_ids = set(gift_ids)
+        indices = []
+        for i, gift in enumerate(self.items):
+            gift_id = gift.gift_id
+            if gift_id in gift_ids:
+                indices.append((i, gift_id))
+                if self._selected_item and gift == self._selected_item:
+                    self.select_gift(None)
+
+        if not indices:
+            return
+        else:
+            indices.sort(reverse=True)
+            for del_index, _ in indices:
+                gift = self.items[del_index]
+                gift.release()
+                del self.items[del_index]
+
+            data = {'sorted_indices': indices}
+            self.notify_listeners(EventType.OnDeleted, data)
+            self.total -= len(gift_ids)
+            return
+
+    def clear(self):
+        if self.items is not None:
+            for item in self.items:
+                item.release()
+
+            self.items = None
+        self.select_gift(None)
+        self.total = 0
+        self.notify_listeners(EventType.OnCleared)
+        return
+
+    @property
+    def total(self):
+        return self._total
+
+    @total.setter
+    def total(self, value):
+        if self._total == value:
+            return
+        self._total = value
+        if not self._lock_selection_notification:
+            self.notify_listeners(EventType.TotalChanged)
+
+    @property
+    def selected_id(self):
+        return self._selected_item and self._selected_item.gift_id or None

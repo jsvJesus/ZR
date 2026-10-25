@@ -1,0 +1,1726 @@
+# Embedded file name: ./client/soGUI/LoginScreenFlash.py
+import collections
+import functools
+import json
+import os
+import re
+import subprocess
+import sys
+import webbrowser
+from time import time
+from Localization import lc
+import BigWorld
+import BWPersonality
+import flash_utils
+import ResMgr
+import Settings
+import VersionSO
+from copy import copy
+import sounds_manager as sounds
+import Constants
+import steam_client_api
+from soGUI.soButton import soButton
+import GUI
+import BoosterConfigParser
+import _BWSound
+from space_utils import getLokalizedSpaceNameByName
+from DummyRotating import DummyRotating
+from DummyCameraFlyer import DummyCameraFlyer
+from FlashGUIBase import FlashGUIBase
+from gui_const import LOGIN, CHAR_PICKER, CHAR_MAKER, VIDEO_QUALITIES
+from Helpers import BWKeyBindings
+from Keys import *
+from PremiumAccountConfigs import ClientPremiumConfigs
+from utils_bw import isinstance_ext, MAIL_REGEX
+import DyeConstant
+from utils import log_methods
+from ordereddict import OrderedDict
+from Helpers.BWCoroutine import BWCoroutine, BWWaitForPeriod, BWWaitForCondition, BWCoroutineTimeoutException, BWMemberCoroutine
+from utils import groupNumber
+import psutil
+import steam_client_api
+from Music import Music
+from survey_players import surveys
+PATTERN = re.compile('=(\\d+)\xac\xe1')
+CONFIG_FILE = 'scripts/common/data/charMakerCfg.json'
+FACE_CONFIG_FILE = 'scripts/common/data/charMakerFaceCfg.json'
+EULA_KEY = 'eula_version'
+EULA_VERSION = 20180201
+
+class EULAFlash(flash_utils.FlashInteractor):
+
+    @flash_utils.send_to_flashscript
+    def getEulaAccepted(self):
+        """\xd0\x92\xd0\xbe\xd0\xb7\xd0\xb2\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xbe\xd1\x82\xd0\xb2\xd0\xb5\xd1\x82 \xd0\xb4\xd0\xbb\xd1\x8f \xd1\x84\xd0\xbb\xd1\x8d\xd1\x88"""
+        state = Settings.Settings().getSetting(EULA_KEY, 0) == EULA_VERSION or steam_client_api.STEAM_MODE
+        return {'eula': int(state)}
+
+    def setEulaAccepted(self, eula):
+        """\xd0\x9f\xd1\x80\xd0\xb8\xd0\xbd\xd0\xb8\xd0\xbc\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xbe\xd1\x82\xd0\xb2\xd0\xb5\xd1\x82 \xd0\xbe \xd1\x81\xd1\x82\xd0\xb0\xd1\x82\xd1\x83\xd1\x81\xd0\xb5 EULA."""
+        eula_accepted_state = eula
+        if eula_accepted_state:
+            BWPersonality.GUICore.on_eula_accpeted()
+            Settings.Settings().setSetting(EULA_KEY, EULA_VERSION, flush=True)
+        else:
+            BWPersonality.game.close()
+
+
+class ActionsWithSounds():
+
+    def __init__(self, receiver):
+        return None
+
+    def start_play_sound(self, sound):
+        sounds.playSound('ui/' + sound)
+        return None
+
+
+class ActionsWithOptions():
+    """\xd0\x9a\xd0\xbb\xd0\xb0\xd1\x81\xd1\x81 \xd0\xbe\xd0\xb1\xd1\x80\xd0\xb0\xd0\xb1\xd0\xb0\xd1\x82\xd1\x8b\xd0\xb2\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xb7\xd0\xb0\xd0\xbf\xd1\x80\xd0\xbe\xd1\x81\xd1\x8b \xd0\xbe\xd1\x82 \xd1\x84\xd0\xbb\xd1\x8d\xd1\x88 \xd0\xba\xd0\xbe\xd0\xbc\xd0\xbf\xd0\xbe\xd0\xbd\xd0\xb5\xd0\xbd\xd1\x82\xd0\xb0 \xd1\x81\xd0\xb2\xd1\x8f\xd0\xb7\xd0\xb0\xd0\xbd\xd0\xbd\xd1\x8b\xd0\xb5 \xd1\x81 \xd0\xbd\xd0\xb0\xd1\x81\xd1\x82\xd1\x80\xd0\xbe\xd0\xb9\xd0\xba\xd0\xb0\xd0\xbc\xd0\xb8."""
+    SETTINGS_LIST = ['TEXTURE_QUALITY',
+     'WATER_QUALITY',
+     'SSAO',
+     'soakable',
+     'megalod',
+     'DepthFarPlane',
+     'TEXTURE_FILTERING',
+     'FAR_PLANE',
+     'god_rays',
+     'SPEEDTREE_QUALITY',
+     'FXAA',
+     'WATER_SIMULATION',
+     'FLORA_DENSITY',
+     'OBJECT_LOD',
+     'TERRAIN_LOD',
+     'BLOOM',
+     'DYNAMIC_SHADOW',
+     'VSYNC',
+     'TRIPLE_BUFFERING',
+     'pixie_quality',
+     'WATER_REFLECTION']
+    VIDEO_QUALITIES = {VIDEO_QUALITIES.VIDEO_QUALITY_CUSTOM: 'soOptionsGUI.soGUI.STRING_369_26',
+     VIDEO_QUALITIES.VIDEO_QUALITY_LOW: 'soOptionsGUI.soGUI.STRING_1038_29',
+     VIDEO_QUALITIES.VIDEO_QUALITY_NORMAL: 'soOptionsGUI.soGUI.STRING_1039_32',
+     VIDEO_QUALITIES.VIDEO_QUALITY_HIGH: 'soOptionsGUI.soGUI.STRING_1040_30',
+     VIDEO_QUALITIES.VIDEO_QUALITY_ULTRA: 'soOptionsGUI.soGUI.STRING_1041_31'}
+
+    def __init__(self, receiver):
+        self._receiver = receiver
+        self.key_bind_action = None
+        self.need_restart = False
+        self.graphic_resolutions = None
+        self.video_functions = {'additional_settings': BWPersonality.settings.apply_additional_video_settings,
+         'main_settings': BWPersonality.settings.apply_main_video_settings}
+        self.audio_functions = {'environment': lambda value: BWPersonality.settings.setEnvironmentVolume(value * 0.01),
+         'music': lambda value: BWPersonality.settings.setMusicVolume(value * 0.01),
+         'voice': lambda value: BWPersonality.settings.setVoiceVolume(value * 0.01),
+         'all': lambda value: BWPersonality.settings.setMainVolume(value * 0.01),
+         'sound_device': lambda guid: BWPersonality.settings.setSoundDevice(guid)}
+        self.mouse_functions = {'sensivity': lambda value: BWPersonality.settings.set_and_apply_mouse_sensitive(float(value) / 100, Settings.MOUSE_NORMAL),
+         'scope_sensivity': lambda value: BWPersonality.settings.set_and_apply_mouse_sensitive(float(value) / 100, Settings.MOUSE_SCOPE),
+         'invert': BWPersonality.settings.set_and_apply_mouse_invert}
+        self.gui_functions = {'inventory_size': lambda value: BWPersonality.settings.setGUISettings('inventory_size', int(value)),
+         'item_cache_size': lambda value: BWPersonality.settings.setGUISettings('item_cache_size', int(value)),
+         'map_size': lambda value: BWPersonality.settings.setGUISettings('map_size', int(value)),
+         'gui_highlight': lambda value: BWPersonality.settings.setGUISettings('gui_highlight', int(value)),
+         'fps_visible': lambda value: BWPersonality.settings.setGUISettings('fps_visible', int(value)),
+         'weightwin_visible': lambda value: BWPersonality.settings.setGUISettings('weightwin_visible', int(value)),
+         'actbar_type': lambda value: BWPersonality.settings.setGUISettings('actbar_type', int(value)),
+         'castbar_type': lambda value: BWPersonality.settings.setGUISettings('castbar_type', int(value)),
+         'compas_visible': lambda value: BWPersonality.settings.setGUISettings('compas_visible', int(value)),
+         'dialog_not_close_by_interact_object': lambda value: BWPersonality.settings.setGUISettings('dialog_not_close_by_interact_object', int(value)),
+         'reset_position': lambda value: None}
+        self.default_data_functions = {'video': {'additional_settings': self._default_additional_video_options,
+                   'main_settings': self._default_main_video_options},
+         'mouse': self._default_mouse_options,
+         'audio': self._default_audio_options,
+         'keybinds': self._default_keybindings_options,
+         'gui': self._default_interface_options}
+        return
+
+    def set_contrast_brightness(self, contrast, brightness):
+        BWPersonality.settings.setTMPContrastBrightness(contrast, brightness)
+
+    def set_max_framerate(self, value):
+        BWPersonality.settings.setMaxFrameRate(value)
+
+    def default_key_bindings(self, *_ign):
+        """\xd0\x92\xd1\x8b\xd1\x81\xd1\x82\xd0\xb0\xd0\xb2\xd0\xbb\xd1\x8f\xd0\xb5\xd1\x82 \xd0\xbd\xd0\xb0\xd1\x81\xd1\x82\xd1\x80\xd0\xbe\xd0\xb9\xd0\xba\xd0\xb8 \xd0\xbf\xd0\xbe \xd1\x83\xd0\xbc\xd0\xbe\xd0\xbb\xd1\x87\xd0\xb0\xd0\xbd\xd0\xb8\xd1\x8e \xd0\xb4\xd0\xbb\xd1\x8f \xd0\xba\xd0\xbb\xd0\xb0\xd0\xb2\xd0\xb8\xd0\xb0\xd1\x82\xd1\x83\xd1\x80\xd1\x8b."""
+        BWPersonality.settings._resetKeyBindings()
+
+    def default_options(self, options = None):
+        """\xd0\x92\xd0\xbe\xd0\xb7\xd0\xb2\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xbd\xd0\xb0\xd1\x81\xd1\x82\xd1\x80\xd0\xbe\xd0\xb9\xd0\xba\xd0\xb8 \xd0\xbf\xd0\xbe \xd1\x83\xd0\xbc\xd0\xbe\xd0\xbb\xd1\x87\xd0\xb0\xd0\xbd\xd0\xb8\xd1\x8e \xd0\xb4\xd0\xbb\xd1\x8f \xd0\xb8\xd0\xb3\xd1\x80\xd1\x8b.
+        
+        options - \xd0\xbf\xd1\x83\xd0\xbd\xd0\xba\xd1\x82, \xd0\xb4\xd0\xbb\xd1\x8f \xd0\xba\xd0\xbe\xd1\x82\xd0\xbe\xd1\x80\xd0\xbe\xd0\xb3\xd0\xbe \xd0\xbd\xd1\x83\xd0\xb6\xd0\xbd\xd1\x8b \xd0\xbd\xd0\xb0\xd1\x81\xd1\x82\xd1\x80\xd0\xbe\xd0\xb9\xd0\xba\xd0\xb8,
+        \xd0\xb5\xd1\x81\xd0\xbb\xd0\xb8 \xd0\xbd\xd0\xb5 \xd0\xb7\xd0\xb0\xd0\xb4\xd0\xb0\xd0\xbd, \xd0\xbf\xd1\x80\xd0\xb8\xd1\x88\xd0\xbb\xd1\x91\xd1\x82 \xd0\xb2\xd1\x81\xd0\xb5 \xd0\xbd\xd0\xb0\xd1\x81\xd1\x82\xd1\x80\xd0\xbe\xd0\xb9\xd0\xba\xd0\xb8.
+        """
+        if options is not None:
+            option = options['option']
+            if option.startswith('video'):
+                answer = {}
+                answer['video'] = {}
+                video, sub_opt = option.split('.')
+                result = self.default_data_functions[video][sub_opt]()
+                answer['video'][sub_opt] = result
+            else:
+                result = self.default_data_functions[option]()
+                answer = {option: result}
+        else:
+            answer = {}
+            for option, function in self.default_data_functions.items():
+                if option == 'video':
+                    answer['video'] = {}
+                    for sub_opt, func in function.items():
+                        result = func()
+                        answer['video'][sub_opt] = result
+
+                else:
+                    result = function()
+                    answer[option] = result
+
+        return answer
+
+    def get_current_language(self):
+        """\xd0\x92\xd0\xbe\xd0\xb7\xd0\xb2\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd1\x8f\xd0\xb7\xd1\x8b\xd0\xba \xd1\x82\xd0\xb5\xd0\xba\xd1\x83\xd1\x89\xd0\xb5\xd0\xb9 \xd1\x81\xd1\x81\xd0\xb5\xd1\x81\xd0\xb8\xd0\xb8."""
+        language = BWPersonality.settings.getLanguage()
+        self.language = language
+        return {'locale': language}
+
+    def get_new_keyname(self):
+        """\xd0\x92\xd1\x8b\xd1\x81\xd1\x82\xd0\xb0\xd0\xb2\xd0\xbb\xd1\x8f\xd0\xb5\xd1\x82 \xd0\xbd\xd0\xbe\xd0\xb2\xd1\x83\xd1\x8e \xd0\xbf\xd1\x80\xd0\xb8\xd0\xb2\xd1\x8f\xd0\xb7\xd0\xba\xd1\x83 \xd0\xba\xd0\xbb\xd0\xb0\xd0\xb2\xd0\xb8\xd1\x88\xd1\x8b \xd0\xba \xd0\xb4\xd0\xb5\xd0\xb9\xd1\x81\xd1\x82\xd0\xb2\xd0\xb8\xd1\x8e."""
+        self._register_key_hook(True)
+
+    def resetGUIPos(self):
+        """\xd0\xa1\xd0\xb1\xd1\x80\xd0\xb0\xd1\x81\xd1\x8b\xd0\xb2\xd0\xb0\xd0\xb5\xd1\x82 \xd1\x81\xd0\xbe\xd1\x85\xd1\x80\xd0\xb0\xd0\xbd\xd1\x91\xd0\xbd\xd0\xbd\xd1\x8b\xd0\xb5 \xd0\xbf\xd0\xbe\xd0\xbb\xd0\xbe\xd0\xb6\xd0\xb5\xd0\xbd\xd0\xb8\xd1\x8f \xd0\xbe\xd0\xba\xd0\xbe\xd0\xbd"""
+        BWPersonality.GUICore.resetGUIPos()
+
+    def get_settings(self):
+        """\xd0\x92\xd0\xbe\xd0\xb7\xd0\xb2\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xbd\xd0\xb0\xd1\x81\xd1\x82\xd1\x80\xd0\xbe\xd0\xb9\xd0\xba\xd0\xb8 \xd0\xb8\xd0\xb3\xd1\x80\xd1\x8b."""
+
+        def keybind_value_to_list(keybind_data):
+            dct = {}
+            for keybind, value in keybind_data.items():
+                result = ''
+                for index, key in enumerate(value.split()):
+                    if index:
+                        result += ' + '
+                    result += BWKeyBindings.key_names.get(key, key)
+
+                dct[keybind] = [result]
+                if keybind.endswith('Weapon'):
+                    dct[keybind + '_long_'] = [result + ' ' + lc('KeyBinds.Names.long_key')]
+
+            return dct
+
+        graphic_additional_settings = OrderedDict()
+        setttings = BWPersonality.settings.getSetting('settings')
+        graphic_additional_settings = self._default_additional_video_options()
+        if setttings is not None:
+            for label, value in setttings.items():
+                graphic_additional_settings[label] = value
+
+        data = {'video': {'main_settings': {'resolution': BWPersonality.settings.getResolution()['id'],
+                                     'quality': BWPersonality.settings.getGraphicsPresetIndex(),
+                                     'screen_mode': BWPersonality.settings.screen_mode,
+                                     'contrast': BWPersonality.settings.getContrast(),
+                                     'brightness': BWPersonality.settings.getBrightness(),
+                                     'maxFrameRate': BWPersonality.settings.getMaxFrameRate(),
+                                     'ASYNC_TASK_ENABLED': BWPersonality.settings.getAsyncTask(),
+                                     'DEFERRED_RENDER': BWPersonality.settings.getDeferredRender(),
+                                     'taskbar_visible': BWPersonality.settings.getTaskbarVisible()},
+                   'additional_settings': graphic_additional_settings},
+         'audio': {'environment': BWPersonality.settings.getEnvironmentVolume() * 100.0,
+                   'music': BWPersonality.settings.getMusicVolume() * 100.0,
+                   'voice': BWPersonality.settings.getVoiceVolume() * 100.0,
+                   'all': BWPersonality.settings.getMainVolume() * 100.0,
+                   'sound_device': BWPersonality.settings.getCurrentSoundDeviceGuid()},
+         'mouse': {'sensivity': BWPersonality.settings.getMouseSensitivity() * 100,
+                   'invert': int(BWPersonality.settings.getMouseInvert()),
+                   'scope_sensivity': BWPersonality.settings.getMouseSensitivity(Settings.MOUSE_SCOPE) * 100},
+         'keybinds': keybind_value_to_list(BWPersonality.settings.getKeybindingsDict()),
+         'gui': {'inventory_size': BWPersonality.settings.GUISettings.inventory_size,
+                 'item_cache_size': BWPersonality.settings.GUISettings.item_cache_size,
+                 'reset_position': 'btn',
+                 'map_size': BWPersonality.settings.GUISettings.map_size,
+                 'gui_highlight': BWPersonality.settings.GUISettings.gui_highlight,
+                 'fps_visible': BWPersonality.settings.GUISettings.fps_visible,
+                 'weightwin_visible': BWPersonality.settings.GUISettings.weightwin_visible,
+                 'actbar_type': BWPersonality.settings.GUISettings.actbar_type,
+                 'castbar_type': BWPersonality.settings.GUISettings.castbar_type,
+                 'compas_visible': BWPersonality.settings.GUISettings.compas_visible,
+                 'dialog_not_close_by_interact_object': BWPersonality.settings.GUISettings.dialog_not_close_by_interact_object}}
+        return data
+
+    def keybind_localize_table(self):
+        """\xd0\x92\xd0\xbe\xd0\xb7\xd0\xb2\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd1\x82\xd0\xb0\xd0\xb1\xd0\xbb\xd0\xb8\xd1\x86\xd1\x83 \xd0\xbd\xd0\xb0\xd0\xb7\xd0\xb2\xd0\xb0\xd0\xbd\xd0\xb8\xd0\xb9 \xd0\xb4\xd0\xb5\xd0\xb9\xd1\x81\xd1\x82\xd0\xb2\xd0\xb8\xd0\xb9 \xd0\xb4\xd0\xbb\xd1\x8f \xd0\xba\xd0\xbb\xd0\xb0\xd0\xb2\xd0\xb8\xd1\x88 \xd0\xba \xd0\xbb\xd0\xbe\xd0\xba\xd0\xb0\xd0\xbb\xd0\xb8\xd0\xb7\xd0\xb0\xd1\x86\xd0\xb8\xd0\xb8."""
+        keybind_table_path = 'scripts/client/data/actions_display_names.xml'
+        py_data_section = ResMgr.openSection(keybind_table_path)
+        result = {}
+        for action in py_data_section.values():
+            internal_name = action.readString('internal_name')
+            display_name = action.readString('display_name')
+            result[internal_name] = display_name
+
+        return result
+
+    def range_of_settings(self):
+        """\xd0\x92\xd0\xbe\xd0\xb7\xd0\xb2\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xb2\xd0\xbe\xd0\xb7\xd0\xbc\xd0\xbe\xd0\xb6\xd0\xbd\xd1\x8b\xd0\xb5 \xd0\xb7\xd0\xbd\xd0\xb0\xd1\x87\xd0\xb5\xd0\xbd\xd0\xb8\xd1\x8f \xd0\xb2\xd1\x81\xd0\xb5\xd1\x85 \xd0\xbd\xd0\xb0\xd1\x81\xd1\x82\xd1\x80\xd0\xbe\xd0\xb5\xd0\xba."""
+        self.graphic_resolutions = dict(((dct['id'], dct['name']) for dct in BWPersonality.settings.getResolutionList()))
+        graphic_additional_settings = collections.defaultdict(dict)
+        others_settings = collections.defaultdict(dict)
+        for label, _index, options, _desc in BigWorld.graphicsSettings():
+            if label in self.SETTINGS_LIST:
+                for i, opts in enumerate(options):
+                    if not opts[1]:
+                        continue
+                    graphic_additional_settings[label][str(i)] = Settings.lc_setting_value(opts[2])
+
+            else:
+                if not opts[1]:
+                    continue
+                others_settings[label][str(i)] = Settings.lc_setting_value(opts[2])
+
+        additionals_settings = collections.defaultdict(dict)
+        for key, value in BWPersonality.settings.getAdditionOptionValue().items():
+            for name, bool_ in zip(value[1], value[2]):
+                additionals_settings[str(key)][str(int(bool_))] = name
+
+        graphic_additional_settings.update(additionals_settings)
+        data = {'video': {'main_settings': {'resolution': dict(((str(key), v) for key, v in self.graphic_resolutions.items())),
+                                     'quality': dict(((str(key), v) for key, v in self.VIDEO_QUALITIES.items())),
+                                     'screen_mode': dict(((str(key), Settings.lc_setting_value(v)) for key, v in Settings.SCREEN_MODE_CODE_TO_NAME.items())),
+                                     'contrast': [0, 100.0],
+                                     'brightness': [0, 100.0],
+                                     'maxFrameRate': [60, 999.0],
+                                     'ASYNC_TASK_ENABLED': {'1': lc('Settings.client.On'),
+                                                            '0': lc('Settings.client.Off')},
+                                     'DEFERRED_RENDER': {'1': lc('Settings.client.On'),
+                                                         '0': lc('Settings.client.Off')},
+                                     'taskbar_visible': {'1': lc('Settings.client.On'),
+                                                         '0': lc('Settings.client.Off')}},
+                   'additional_settings': OrderedDict(sorted(graphic_additional_settings.items()))},
+         'audio': {'environment': [0, 100.0],
+                   'music': [0, 100.0],
+                   'voice': [0, 100.0],
+                   'all': [0, 100.0],
+                   'sound_device': BWPersonality.settings.getSoundDeviceNamesDict() or {'': '--'}},
+         'mouse': {'sensivity': [1, 100],
+                   'scope_sensivity': [1, 100],
+                   'invert': {'1': lc('Settings.client.On'),
+                              '0': lc('Settings.client.Off')}},
+         'gui': {'inventory_size': dict(((str(key), v) for key, v in BWPersonality.settings.GUISettings.getAllSizes().items())),
+                 'item_cache_size': dict(((str(key), v) for key, v in BWPersonality.settings.GUISettings.getAllSizes().items())),
+                 'map_size': BWPersonality.settings.GUISettings.getMapSizes(),
+                 'reset_position': 'btn',
+                 'gui_highlight': {'1': lc('Settings.client.On'),
+                                   '0': lc('Settings.client.Off')},
+                 'fps_visible': {'1': lc('Settings.client.On'),
+                                 '0': lc('Settings.client.Off')},
+                 'weightwin_visible': {'1': lc('Settings.client.On'),
+                                       '0': lc('Settings.client.Off')},
+                 'castbar_type': {str(Settings.CASTBAR_TYPE.CIRCLE): lc('Settings.client.CastbarCircle'),
+                                  str(Settings.CASTBAR_TYPE.BAR): lc('Settings.client.CastbarBar')},
+                 'actbar_type': {str(Settings.ACTIONBAR_TYPE.CLASSIC): lc('Settings.client.ActbarClassic'),
+                                 str(Settings.ACTIONBAR_TYPE.CIRCLE): lc('Settings.client.ActbarCircle'),
+                                 str(Settings.ACTIONBAR_TYPE.BOTH): lc('Settings.client.ActbarBoth')},
+                 'dialog_not_close_by_interact_object': {'1': lc('Settings.client.Off'),
+                                                         '0': lc('Settings.client.On')},
+                 'compas_visible': {'1': lc('Settings.client.On'),
+                                    '0': lc('Settings.client.Off')}}}
+        return data
+
+    def set_language(self, args):
+        """\xd0\xa3\xd1\x81\xd1\x82\xd0\xb0\xd0\xbd\xd0\xb0\xd0\xb2\xd0\xbb\xd0\xb8\xd0\xb2\xd0\xb0\xd0\xb5\xd1\x82 \xd1\x8f\xd0\xb7\xd1\x8b\xd0\xba \xd0\xb2 \xd0\xb8\xd0\xb3\xd1\x80\xd0\xb5."""
+        self.language = args['id']
+        BWPersonality.settings.applyLanguage(self.language)
+        self._receiver.game_restart()
+
+    def settings_update(self, data):
+        """\xd0\xa1\xd1\x80\xd0\xb0\xd0\xb1\xd0\xb0\xd1\x82\xd1\x8b\xd0\xb2\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xbf\xd1\x80\xd0\xb8 \xd0\xbe\xd0\xb1\xd0\xbd\xd0\xbe\xd0\xb2\xd0\xbb\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb8 \xd0\xb4\xd0\xb0\xd0\xbd\xd0\xbd\xd1\x8b\xd1\x85."""
+        self._rotation(data)
+        self._check_need_restart()
+
+    def show_options_menu(self):
+        """\xd0\x9e\xd1\x82\xd0\xba\xd1\x80\xd1\x8b\xd1\x82\xd1\x8c \xd0\xbe\xd0\xba\xd0\xbd\xd0\xbe \xd0\xbe\xd0\xbf\xd1\x86\xd0\xb8\xd0\xb9 \xd0\xb8\xd0\xb7 \xd0\xb8\xd0\xb3\xd1\x80\xd1\x8b."""
+        self._receiver.send_to_flashscript('showOptionsMenu')
+
+    def _check_need_restart(self):
+        """\xd0\x9f\xd1\x80\xd0\xbe\xd0\xb2\xd0\xb5\xd1\x80\xd1\x8f\xd0\xb5\xd1\x82 \xd0\xbd\xd1\x83\xd0\xb6\xd0\xbd\xd0\xbe \xd0\xbb\xd0\xb8 \xd0\xb4\xd0\xb5\xd0\xbb\xd0\xb0\xd1\x82\xd1\x8c \xd0\xbf\xd0\xb5\xd1\x80\xd0\xb5\xd0\xb7\xd0\xb0\xd0\xb3\xd1\x80\xd1\x83\xd0\xb7\xd0\xba\xd1\x83 \xd0\xb8\xd0\xb3\xd1\x80\xd1\x8b \xd0\xbf\xd0\xbe\xd1\x81\xd0\xbb\xd0\xb5 \xd0\xb8\xd0\xb7\xd0\xbc\xd0\xb5\xd0\xbd\xd0\xb5\xd0\xbd\xd0\xb8\xd1\x8f \xd0\xbd\xd0\xb0\xd1\x81\xd1\x82\xd1\x80\xd0\xbe\xd0\xb5\xd0\xba."""
+        self.need_restart = False
+
+    def _default_additional_video_options(self):
+        """\xd0\x92\xd0\xbe\xd0\xb7\xd0\xb2\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xb4\xd0\xbe\xd0\xbf\xd0\xbe\xd0\xbb\xd0\xbd\xd0\xb8\xd1\x82\xd0\xb5\xd0\xbb\xd1\x8c\xd0\xbd\xd1\x8b\xd0\xb5 \xd0\xbd\xd0\xb0\xd1\x81\xd1\x82\xd1\x80\xd0\xbe\xd0\xb9\xd0\xba\xd0\xb8 \xd1\x83\xd0\xbc\xd0\xbe\xd0\xbb\xd1\x87\xd0\xb0\xd0\xbd\xd0\xb8\xd1\x8e \xd0\xb4\xd0\xbb\xd1\x8f \xd0\xb2\xd0\xb8\xd0\xb4\xd0\xb5\xd0\xbe."""
+        preference = BigWorld.prefs
+        dct_pref = OrderedDict()
+        for key, option in preference.items():
+            if key != 'graphicsPreferences':
+                continue
+            for key, entry in option.items():
+                if key != 'entry':
+                    continue
+                label = entry['label'].asString
+                activeOption = entry['activeOption'].asInt
+                dct_pref[label] = activeOption
+
+        return dct_pref
+
+    def _default_audio_options(self):
+        """\xd0\x92\xd0\xbe\xd0\xb7\xd0\xb2\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xbd\xd0\xb0\xd1\x81\xd1\x82\xd1\x80\xd0\xbe\xd0\xb9\xd0\xba\xd0\xb8 \xd1\x83\xd0\xbc\xd0\xbe\xd0\xbb\xd1\x87\xd0\xb0\xd0\xbd\xd0\xb8\xd1\x8e \xd0\xb4\xd0\xbb\xd1\x8f \xd0\xb0\xd1\x83\xd0\xb4\xd0\xb8\xd0\xbe."""
+        data_section = ResMgr.openSection('scripts/client/data/audio_and_mouse_default.xml')
+        pref = data_section['audioPreferences']
+        all_ = pref['all'].asFloat * 100
+        music = pref['music'].asFloat * 100
+        enviroment = pref['environment'].asFloat * 100
+        voice = pref['voice'].asFloat * 100
+        return {'all': all_,
+         'music': music,
+         'environment': enviroment,
+         'voice': voice,
+         'sound_device': BWPersonality.settings.getCurrentSoundDeviceGuid()}
+
+    def _default_keybindings_options(self):
+        """\xd0\x92\xd0\xbe\xd0\xb7\xd0\xb2\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xbd\xd0\xb0\xd1\x81\xd1\x82\xd1\x80\xd0\xbe\xd0\xb9\xd0\xba\xd0\xb8 \xd1\x83\xd0\xbc\xd0\xbe\xd0\xbb\xd1\x87\xd0\xb0\xd0\xbd\xd0\xb8\xd1\x8e \xd0\xb4\xd0\xbb\xd1\x8f \xd0\xba\xd0\xbb\xd0\xb0\xd0\xb2\xd0\xb8\xd0\xb0\xd1\x82\xd1\x83\xd1\x80\xd1\x8b."""
+        path = 'scripts/client/data/default_key_bindings.xml'
+        default_binds = ResMgr.openSection(path)
+        keybinds = {}
+        patt = re.compile('\t+')
+        i = 0
+        for value in default_binds.values():
+            name = value['name'].asString
+            keys = value.readStrings('keys')[:1]
+            actions = [ self.check_key(patt.sub(' ', key).strip()) for key in keys ]
+            alt_actions = [ action.replace(' ', ' + ') for action in actions if action.startswith('ALT ') or action.startswith('SHIFT ') ]
+            if alt_actions:
+                actions[:] = alt_actions
+            keybinds[name] = {'actions': actions,
+             'id': i}
+            if name.endswith('Weapon'):
+                copy_actions = copy(actions)
+                i += 1
+                for index, act in enumerate(copy_actions):
+                    copy_actions[index] += ' ' + lc('KeyBinds.Names.long_key')
+
+                keybinds[name + '_long_'] = {'actions': copy_actions,
+                 'id': i}
+            i += 1
+
+        return keybinds
+
+    def _default_main_video_options(self):
+        """\xd0\x92\xd0\xbe\xd0\xb7\xd0\xb2\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xb3\xd0\xbb\xd0\xb0\xd0\xb2\xd0\xbd\xd1\x8b\xd0\xb5 \xd0\xbd\xd0\xb0\xd1\x81\xd1\x82\xd1\x80\xd0\xbe\xd0\xb9\xd0\xba\xd0\xb8 \xd1\x83\xd0\xbc\xd0\xbe\xd0\xbb\xd1\x87\xd0\xb0\xd0\xbd\xd0\xb8\xd1\x8e \xd0\xb4\xd0\xbb\xd1\x8f \xd0\xb2\xd0\xb8\xd0\xb4\xd0\xb5\xd0\xbe."""
+        resolution = min(self.graphic_resolutions, key=lambda key: self.graphic_resolutions[key])
+        preference = BigWorld.prefs
+        full_screen = not preference['devicePreferences']['windowed'].asBool
+        quality = VIDEO_QUALITIES.VIDEO_QUALITY_NORMAL
+        scrn_mode = Settings.SCREEN_MODE_NAME_TO_CODE
+        return {'quality': quality,
+         'resolution': resolution,
+         'screen_mode': scrn_mode['fullScreen'] if full_screen else scrn_mode['windowed'],
+         'contrast': Settings.DEFAULT_CONTRAST,
+         'brightness': Settings.DEFAULT_BRIGHTNESS,
+         'maxFrameRate': Settings.DEFAULT_MAX_FRAMERATE}
+
+    def _default_mouse_options(self):
+        """\xd0\x92\xd0\xbe\xd0\xb7\xd0\xb2\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xbd\xd0\xb0\xd1\x81\xd1\x82\xd1\x80\xd0\xbe\xd0\xb9\xd0\xba\xd0\xb8 \xd0\xbf\xd0\xbe \xd1\x83\xd0\xbc\xd0\xbe\xd0\xbb\xd1\x87\xd0\xb0\xd0\xbd\xd0\xb8\xd1\x8e \xd0\xb4\xd0\xbb\xd1\x8f \xd0\xbc\xd1\x8b\xd1\x88\xd0\xb8."""
+        data_section = ResMgr.openSection('scripts/client/data/audio_and_mouse_default.xml')
+        pref = data_section['mousePreferences']
+        sensivity = pref['sensivity'].asFloat * 100
+        invert = pref['invert'].asInt
+        return {'sensivity': sensivity,
+         'invert': invert,
+         'scope_sensivity': sensivity}
+
+    def _default_interface_options(self):
+        """\xd0\x92\xd0\xbe\xd0\xb7\xd0\xb2\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xbd\xd0\xb0\xd1\x81\xd1\x82\xd1\x80\xd0\xbe\xd0\xb9\xd0\xba\xd0\xb8 \xd0\xbf\xd0\xbe \xd1\x83\xd0\xbc\xd0\xbe\xd0\xbb\xd1\x87\xd0\xb0\xd0\xbd\xd0\xb8\xd1\x8e \xd0\xb4\xd0\xbb\xd1\x8f \xd0\xb8\xd0\xbd\xd1\x82\xd0\xb5\xd1\x80\xd1\x84\xd0\xb5\xd0\xb9\xd1\x81\xd0\xb0."""
+        inv_size = BWPersonality.settings.default_settings['inventory_size']
+        item_size = BWPersonality.settings.default_settings['item_cache_size']
+        map_size = BWPersonality.settings.default_settings['map_size']
+        return {'inventory_size': inv_size,
+         'item_cache_size': item_size,
+         'map_size': map_size,
+         'reset_position': 'btn',
+         'dialog_not_close_by_interact_object': False,
+         'gui_highlight': True,
+         'fps_visible': False,
+         'weightwin_visible': True,
+         'actbar_type': Settings.ACTIONBAR_TYPE.CLASSIC,
+         'castbar_type': Settings.CASTBAR_TYPE.CIRCLE,
+         'compas_visible': True}
+
+    def _key_hook(self, event):
+        """\xd0\x92\xd1\x8b\xd0\xb7\xd1\x8b\xd0\xb2\xd0\xb0\xd0\xb5\xd1\x82\xd1\x81\xd1\x8f \xd0\xb8\xd0\xb7 GUICore, \xd0\xba\xd0\xbe\xd0\xb3\xd0\xb4\xd0\xb0 \xd0\xbd\xd1\x83\xd0\xb6\xd0\xbd\xd0\xbe \xd0\xbe\xd1\x82\xd0\xbb\xd0\xb0\xd0\xb2\xd0\xbb\xd0\xb8\xd0\xb2\xd0\xb0\xd1\x82\xd1\x8c \xd0\xbd\xd0\xb0\xd0\xb6\xd0\xb0\xd1\x82\xd1\x83\xd1\x8e \xd0\xba\xd0\xbb\xd0\xb0\xd0\xb2\xd0\xb8\xd1\x88\xd1\x83."""
+        key_codes = (event.key,)
+
+        def isAltKey(key):
+            return key in [KEY_RSHIFT,
+             KEY_LSHIFT,
+             KEY_RCONTROL,
+             KEY_LCONTROL,
+             KEY_RALT,
+             KEY_LALT]
+
+        if event.key == KEY_NUMPADENTER:
+            return
+        if isAltKey(event.key):
+            if event.isKeyDown():
+                return
+        else:
+            if event.isShiftDown():
+                key_codes = (KEY_RSHIFT,) + key_codes
+            if event.isCtrlDown():
+                key_codes = (KEY_RCONTROL,) + key_codes
+            if event.isAltDown():
+                key_codes = (KEY_RALT,) + key_codes
+        self._register_key_hook(False)
+        self._new_action_key(key_codes)
+        return True
+
+    def check_key(self, key_name):
+        return BWKeyBindings.key_names.get(key_name, key_name)
+
+    def _new_action_key(self, key_codes):
+        """\xd0\xa1\xd0\xbe\xd0\xbe\xd0\xb1\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd1\x84\xd0\xbb\xd1\x8d\xd1\x88 \xd0\xbe \xd0\xbf\xd1\x80\xd0\xb8\xd1\x81\xd0\xb2\xd0\xbe\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb8 \xd0\xb4\xd0\xb5\xd0\xb9\xd1\x81\xd1\x82\xd0\xb2\xd0\xb8\xd1\x8e \xd0\xbd\xd0\xbe\xd0\xb2\xd0\xbe\xd0\xb9 \xd0\xba\xd0\xbb\xd0\xb0\xd0\xb2\xd0\xb8\xd1\x88\xd0\xb8."""
+        key_code_strings = ['']
+        for index, key_code in enumerate(key_codes):
+            key_code_string = BigWorld.keyToString(key_code)
+            key_code_string = self.check_key(key_code_string)
+            if index:
+                key_code_strings[0] += ' + '
+            key_code_strings[0] += key_code_string
+
+        key_code_strings[0] = key_code_strings[0].strip()
+        self._receiver.send_to_flashscript('getNewKeybind', {'key_names': key_code_strings})
+
+    def _register_key_hook(self, register):
+        """\xd0\xa0\xd0\xb5\xd0\xb3\xd0\xb5\xd1\x81\xd1\x82\xd1\x80\xd0\xb8\xd1\x80\xd1\x83\xd0\xb5\xd1\x82 \xd0\xb8\xd0\xbb\xd0\xb8 \xd0\xbe\xd1\x82\xd0\xbc\xd0\xb5\xd0\xbd\xd1\x8f\xd0\xb5\xd1\x82 \xd1\x84\xd1\x83\xd0\xbd\xd0\xba\xd1\x86\xd0\xb8\xd1\x8e, \xd0\xba\xd0\xbe\xd1\x82\xd0\xbe\xd1\x80\xd0\xb0\xd1\x8f \xd0\xbf\xd0\xb5\xd1\x80\xd0\xb5\xd0\xb7\xd0\xb0\xd0\xbf\xd0\xb8\xd1\x81\xd1\x8b\xd0\xb2\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xbf\xd1\x80\xd0\xb8\xd0\xb2\xd1\x8f\xd0\xb7\xd0\xba\xd1\x83 \xd0\xba\xd0\xbd\xd0\xbe\xd0\xbf\xd0\xba\xd0\xb8 \xd0\xba \xd0\xb4\xd0\xb5\xd0\xb9\xd1\x81\xd1\x82\xd0\xb2\xd0\xb8\xd1\x8e."""
+        if register:
+            BWPersonality.GUICore.registerKeyHook(self._key_hook)
+        else:
+            BWPersonality.GUICore.registerKeyHook(None)
+        return
+
+    def _set_key_bindings(self, data):
+        print '_set_key_bindings'
+        for action_name, key_names in data.items():
+            key_name = key_names[0]
+            print '\t', key_name
+            keys = tuple()
+            for index, key in enumerate(key_name.split(' + ')):
+                if key in BWKeyBindings.keyAliases:
+                    key_code = BWKeyBindings.keyAliases[key][0]
+                else:
+                    key_code = BigWorld.stringToKey(key)
+                keys += (key_code,)
+
+            BWPersonality.settings.keyBindingsOptionsHandler(action_name, 0, keys)
+
+        BWPersonality.GUICore.key_binding_changed(data)
+        if BigWorld.player().__class__.__name__ == 'PlayerAvatar':
+            BigWorld.player().UpdateQuickBar()
+            BigWorld.player().UpdateWeaponIcon()
+
+    def _rotation(self, data):
+        """\xd0\x9a\xd0\xb0\xd0\xb6\xd0\xb4\xd0\xbe\xd0\xb9 \xd0\xbd\xd0\xbe\xd0\xb2\xd0\xbe\xd0\xb9 \xd0\xbd\xd0\xb0\xd1\x81\xd1\x82\xd1\x80\xd0\xbe\xd0\xb9\xd0\xba\xd0\xb5 \xd0\xb2\xd1\x8b\xd0\xb7\xd1\x8b\xd0\xb2\xd0\xb0\xd0\xb5\xd1\x82 \xd1\x81\xd0\xbe\xd0\xbe\xd1\x82\xd0\xb2\xd0\xb5\xd1\x82\xd1\x81\xd1\x82\xd0\xb2\xd1\x83\xd1\x8e\xd1\x89\xd1\x83\xd1\x8e \xd1\x84\xd1\x83\xd0\xbd\xd0\xba\xd1\x86\xd0\xb8\xd1\x8e."""
+
+        def dct_value_to_int(dct):
+            """\xd0\x9c\xd0\xb5\xd0\xbd\xd1\x8f\xd0\xb5\xd1\x82 \xd1\x81\xd1\x82\xd1\x80\xd0\xbe\xd0\xba\xd1\x83 \xd0\xbd\xd0\xb0 \xd1\x87\xd0\xb8\xd1\x81\xd0\xbb\xd0\xbe \xd0\xb2 \xd0\xb7\xd0\xbd\xd0\xb0\xd1\x87\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb8."""
+            for key in dct:
+                value = int(dct[key])
+                dct[key] = value
+
+            return dct
+
+        for key, value in data.items():
+            if key == 'video':
+                self.need_restart = True
+                for key, value in data['video'].items():
+                    value = dct_value_to_int(value)
+                    self.video_functions[key](value)
+
+            elif key == 'audio':
+                for key, value in data['audio'].items():
+                    self.audio_functions[key](value)
+
+            elif key == 'keybinds':
+                self._set_key_bindings(value)
+            elif key == 'mouse':
+                for key, value in data['mouse'].items():
+                    if key == 'invert':
+                        value = int(value)
+                    self.mouse_functions[key](value)
+
+            elif key == 'gui':
+                for key, value in data['gui'].items():
+                    self.gui_functions[key](value)
+
+
+class ActionsWithAccount(object):
+    """\xd0\xa4\xd1\x83\xd0\xbd\xd0\xba\xd1\x86\xd0\xb8\xd0\xbe\xd0\xbd\xd0\xb0\xd0\xbb \xd0\xb4\xd0\xbb\xd1\x8f \xd1\x81\xd0\xbe\xd0\xb2\xd0\xb5\xd1\x80\xd1\x88\xd0\xb5\xd0\xbd\xd0\xb8\xd1\x8f \xd0\xbe\xd0\xbf\xd0\xb5\xd1\x80\xd0\xb0\xd1\x86\xd0\xb8\xd0\xb9 \xd1\x81 \xd0\xb0\xd0\xba\xd0\xba\xd0\xb0\xd1\x83\xd0\xbd\xd1\x82\xd0\xbe\xd0\xbc."""
+
+    def __init__(self, receiver):
+        self._receiver = receiver
+        self._play_game_coroutine = None
+        self._full_update_data = {}
+        self._char_menu_mode = 'main'
+        return
+
+    def all_characters_info(self):
+        """\xd0\x98\xd0\xbd\xd1\x84\xd0\xbe\xd1\x80\xd0\xbc\xd0\xb0\xd1\x86\xd0\xb8\xd1\x8f \xd0\xbe \xd0\xb2\xd1\x81\xd0\xb5\xd1\x85 \xd0\xbf\xd0\xb5\xd1\x80\xd1\x81\xd0\xbe\xd0\xbd\xd0\xb0\xd0\xb6\xd0\xb0\xd1\x85."""
+        player = BigWorld.player()
+        if not player:
+            return
+        elif isinstance_ext(player, 'PlayerAvatar'):
+            return
+        else:
+            chars = player.characterList
+            lst = []
+            for i, char in enumerate(chars):
+                dct = {'name': char['name'],
+                 'id': i,
+                 'is_old': char['version'] < Constants.LEVEL1,
+                 'last_space': getLokalizedSpaceNameByName(char['last_space']),
+                 'last_money': char['last_money']}
+                additional_keys = ('deletion_remaining_time',)
+                for key in additional_keys:
+                    dct[key] = char[key]
+
+                lst.append(dct)
+
+            current_id = BWPersonality.game.char_select_mgr.selected_id
+            if current_id is None:
+                last_name = player.lastCharacterName
+                for i, char in enumerate(chars):
+                    if char['name'] == last_name:
+                        current_id = i
+                        break
+                else:
+                    current_id = 0
+
+            return {'list': lst,
+             'currentId': current_id}
+
+    def get_characters_count(self):
+        player = BigWorld.player()
+        if isinstance_ext(player, 'PlayerAvatar'):
+            return 0
+        return len(player.characterList)
+
+    def create_new_character(self):
+        """\xd0\x9e\xd1\x82\xd0\xbf\xd1\x80\xd0\xb0\xd0\xb2\xd0\xbb\xd1\x8f\xd0\xb5\xd1\x82 \xd0\xbd\xd0\xb0 \xd1\x81\xd0\xb5\xd1\x80\xd0\xb2\xd0\xb5\xd1\x80 \xd0\xbd\xd0\xbe\xd0\xb2\xd0\xbe\xd1\x81\xd0\xbe\xd0\xb7\xd0\xb4\xd0\xb0\xd0\xbd\xd0\xbd\xd1\x8b\xd0\xb9 \xd0\xbf\xd0\xb5\xd1\x80\xd1\x81\xd0\xbe\xd0\xbd\xd0\xb0\xd0\xb6."""
+        BWPersonality.GUICore.charMakerEvent(CHAR_MAKER.EVENT_FINISH, {})
+
+    def update_old_chatacter(self):
+        """\xd0\xa8\xd0\xbb\xd1\x91\xd1\x82 \xd0\xbd\xd0\xb0 \xd1\x81\xd0\xb5\xd1\x80\xd0\xb2\xd0\xb5\xd1\x80 \xd0\xbf\xd0\xb5\xd1\x80\xd0\xb5\xd1\x81\xd0\xbe\xd0\xb7\xd0\xb4\xd0\xb0\xd0\xbd\xd0\xb8\xd0\xb5 \xd1\x81\xd1\x82\xd0\xb0\xd1\x80\xd0\xbe\xd0\xb3\xd0\xbe \xd0\xbf\xd0\xb5\xd1\x80\xd1\x81\xd0\xb0 \xd0\xb2 \xd0\xbd\xd0\xbe\xd0\xb2\xd0\xbe\xd0\xb3\xd0\xbe"""
+        BWPersonality.GUICore.charMakerEvent(CHAR_MAKER.EVENT_MIGRATE, {})
+
+    def donate_face_change(self):
+        """\xd0\x97\xd0\xb0\xd0\xba\xd0\xbe\xd0\xbd\xd1\x87\xd0\xb8\xd0\xbb \xd0\xb8\xd0\xb7\xd0\xbc\xd0\xb5\xd0\xbd\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5 \xd0\xbb\xd0\xb8\xd1\x86\xd0\xb0"""
+        BWPersonality.GUICore.charMakerEvent(CHAR_MAKER.EVENT_DONATE_FACE_EDIT, {})
+
+    def donate_paint_change(self):
+        if BigWorld.player().is_admin_and_f2():
+            BWPersonality.GUICore.menu_paint_screen.show()
+        else:
+            BWPersonality.GUICore.show_equip_paint_screen()
+
+    def open_survey(self):
+        surveys.open_surv()
+
+    def hide_survey(self):
+        self._receiver.send_to_flashscript('hideSurvey')
+
+    def show_survey(self, title, description, end_time, icon_path = '../soGUI/maps/Login/test.dds'):
+        data = {}
+        data['title'] = title
+        data['description'] = description
+        data['icon_path'] = icon_path
+        data['end_time'] = end_time
+        self._receiver.send_to_flashscript('callSurvey', data)
+
+    def cancel(self):
+        """\xd0\x9e\xd1\x82\xd0\xbc\xd0\xb5\xd0\xbd\xd1\x8f\xd0\xb5\xd1\x82 \xd1\x81\xd0\xbe\xd0\xb7\xd0\xb4\xd0\xb0\xd0\xbd\xd0\xb8\xd0\xb5 \xd0\xbf\xd0\xb5\xd1\x80\xd1\x81\xd0\xbe\xd0\xbd\xd0\xb0\xd0\xb6\xd0\xb0"""
+        BWPersonality.GUICore.charMakerEvent(CHAR_MAKER.EVENT_CANCEL, {})
+
+    def check_valid_nickname(self, nick):
+        """\xd0\x9f\xd1\x80\xd0\xbe\xd0\xb2\xd0\xb5\xd1\x80\xd1\x8f\xd0\xb5\xd1\x82 \xd0\xbf\xd0\xbe\xd0\xbb\xd1\x83\xd1\x87\xd0\xb5\xd0\xbd\xd0\xbd\xd1\x8b\xd0\xb9 \xd0\xbd\xd0\xb8\xd0\xba \xd0\xbd\xd0\xb0 \xd0\xb2\xd0\xb0\xd0\xbb\xd0\xb8\xd0\xb4\xd0\xbd\xd0\xbe\xd1\x81\xd1\x82\xd1\x8c."""
+        data = {'nick': nick['nick'].decode('utf-8')}
+        BWPersonality.GUICore.charMakerEvent(CHAR_MAKER.EVENT_NICKNAME, data)
+
+    def set_face_mode(self, value):
+        BigWorld.player().dummy.set_face_mode(value)
+
+    def show_need_pay_window(self):
+        self._receiver.send_to_flashscript('show_need_pay_window')
+
+    def try_pay(self):
+        raise Exception
+
+    def generate_random_face_in_flash(self):
+        self._receiver.send_to_flashscript('get_random_personality')
+
+    def get_access_level(self):
+        if not BigWorld.player():
+            return 0
+        access_level = BigWorld.player().accessLevel
+        self._receiver.send_to_flashscript('get_access_level', {'access_level': access_level})
+        return access_level
+
+    def open_storage(self):
+        if BigWorld.player():
+            BWPersonality.GUICore.storehouse_screen.show_store()
+
+    def set_storage_notification_count(self, value):
+        self._receiver.send_to_flashscript('storage_notification_count', {'count': value})
+
+    def open_shop(self):
+        if BigWorld.player():
+            BWPersonality.GUICore.storehouse_screen.show_shop()
+
+    def shop_opened(self):
+        self._receiver.send_to_flashscript('shop_opened')
+
+    def set_shop_notification_count(self, value):
+        self._receiver.send_to_flashscript('shop_notification_count', {'count': value})
+
+    def pbt_pay_result(self, result):
+        data = {'result': result,
+         'title': lc('Account.client.ERROR'),
+         'message': lc('Account.client.PAY_ERROR')}
+        raise Exception
+        self._receiver.send_to_flashscript('pbt_pay_result', data)
+
+    def get_face_config(self):
+        py_data_section = ResMgr.openSection(FACE_CONFIG_FILE)
+        dct = json.loads(py_data_section.asBinary)
+        self._receiver.send_to_flashscript('get_face_config', dct)
+
+    def creating_new_character(self):
+        """\xd0\x97\xd0\xb0\xd0\xbf\xd1\x83\xd1\x81\xd0\xba\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xb2\xd1\x8b\xd0\xb1\xd0\xbe\xd1\x80 \xd0\xb8\xd0\xbc\xd0\xb5\xd0\xbd\xd0\xb8 \xd0\xb8 \xd0\xb2\xd0\xbd\xd0\xb5\xd1\x88\xd0\xbd\xd0\xb5\xd0\xb3\xd0\xbe \xd0\xb2\xd0\xb8\xd0\xb4\xd0\xb0 \xd0\xbd\xd0\xbe\xd0\xb2\xd0\xbe\xd0\xb3\xd0\xbe \xd0\xbf\xd0\xb5\xd1\x80\xd1\x81\xd0\xbe\xd0\xbd\xd0\xb0\xd0\xb6\xd0\xb0."""
+        BWPersonality.GUICore.charPickerEvent(CHAR_PICKER.EVENT_NEW, {})
+        dct = self._character_parts()
+        self._receiver.send_to_flashscript('creatingChar', dct)
+
+    def updating_old_character(self):
+        BWPersonality.GUICore.charPickerEvent(CHAR_PICKER.EVENT_MIGRATE, {})
+        dct = self._character_parts()
+        self._receiver.send_to_flashscript('updatingChar', dct)
+
+    def donate_face_changing(self):
+        """\xd0\x9d\xd0\xb0\xd1\x87\xd0\xb0\xd0\xbb \xd0\xb8\xd0\xb7\xd0\xbc\xd0\xb5\xd0\xbd\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5 \xd0\xbb\xd0\xb8\xd1\x86\xd0\xb0"""
+        if BigWorld.player().dummy.is_loaded():
+            face_data = BigWorld.player().dummy.get_face_for_flash()
+            face_data['save'] = True
+            self._receiver.send_to_flashscript('set_face_values', face_data)
+            self._receiver.send_to_flashscript('set_face_form', {'data': map(str, BigWorld.player().dummy.personality['face']),
+             'save': True})
+        self._receiver.send_to_flashscript('donateFaceChanging', {'value': lc('extendedGUI.CharWindow.editMessage').format(groupNumber(Constants.CHANGE_FACE_COST))})
+        BWPersonality.GUICore.charPickerEvent(CHAR_PICKER.EVENT_DONATE_FACE_EDIT, {})
+
+    def create_new_character_response(self, success, errcode, msg):
+        """\xd0\x9f\xd0\xbe\xd0\xbb\xd1\x83\xd1\x87\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xbe\xd1\x82\xd0\xb2\xd0\xb5\xd1\x82 \xd0\xbe\xd1\x82 \xd1\x81\xd0\xb5\xd1\x80\xd0\xb2\xd0\xb5\xd1\x80\xd0\xb0 \xd0\xbf\xd1\x80\xd0\xb8 \xd0\xbf\xd1\x80\xd0\xb8 \xd1\x81\xd0\xbe\xd0\xb7\xd0\xb4\xd0\xb0\xd0\xbd\xd0\xb8\xd0\xb8 \xd0\xbf\xd0\xb5\xd1\x80\xd1\x81\xd0\xbe\xd0\xbd\xd0\xb0\xd0\xb6\xd0\xb0."""
+        message = {'errcode': errcode,
+         'msg': msg,
+         'success': success}
+        self._receiver.send_to_flashscript('createChar', message)
+
+    def migrate_old_character_response(self):
+        self._receiver.send_to_flashscript('updateChar')
+
+    def update_donate_response(self, success):
+        message = {'errcode': 0,
+         'msg': lc('Account.client.NOT_ENOUGH_MONEY'),
+         'success': success}
+        self._receiver.send_to_flashscript('donateFaceChange', message)
+
+    def delete_character(self):
+        """\xd0\xa3\xd0\xb4\xd0\xb0\xd0\xbb\xd1\x8f\xd0\xb5\xd1\x82 \xd0\xbf\xd0\xb5\xd1\x80\xd1\x81\xd0\xbe\xd0\xbd\xd0\xb0\xd0\xb6\xd0\xb0."""
+        BWPersonality.GUICore.charPickerEvent(CHAR_PICKER.EVENT_DELETE, {})
+
+    def update_premium_account_data(self, account = None):
+        """\xd0\x9e\xd1\x82\xd0\xbf\xd1\x80\xd0\xb0\xd0\xb2\xd0\xbb\xd1\x8f\xd0\xb5\xd1\x82 \xd0\xb2\xd0\xbe \xd1\x84\xd0\xbb\xd1\x8d\xd1\x88 \xd0\xb8\xd0\xbd\xd1\x84\xd0\xbe\xd1\x80\xd0\xbc\xd0\xb0\xd1\x86\xd0\xb8\xd1\x8e \xd0\xbe \xd0\xbf\xd1\x80\xd0\xb5\xd0\xbc\xd0\xb8\xd0\xb0\xd0\xbb\xd1\x8c\xd0\xbd\xd0\xbe\xd0\xbc \xd0\xb0\xd0\xba\xd0\xba\xd0\xb0\xd1\x83\xd0\xbd\xd1\x82\xd0\xb5."""
+        account = account or BigWorld.player()
+        premium_id = account.premium_data['premium_id']
+        frize_id = account.premium_frozen['premium_id']
+        premium_configs = ClientPremiumConfigs(premium_id, [])
+        configs_list = premium_configs.all_order_configs()
+        data = {}
+        data['premiums'] = configs_list
+        data['boosters'] = BoosterConfigParser.get_all_icons()
+        premium_time = round(account.premium_data['end_time'] - (time() - account.time_diff))
+        data['current'] = premium_id if premium_time > 0 else -1
+        data['remaining_time'] = premium_time if premium_time > 0 else -1
+        data['frize'] = frize_id
+        data['no_premium_icon_path'] = premium_configs.no_premium_icon_path
+        data['booster_id'] = account.get_boost_id()
+        config = BoosterConfigParser.get_config(data['booster_id'])
+        remaining_time = int(account.boost_data['end_time'] - (time() - account.time_diff))
+        data['booster_time'] = remaining_time if remaining_time > 0 else -1
+        data['booster_name'] = lc(config['name']) if data['booster_id'] else ''
+        self._receiver.send_to_flashscript('premiumAccountData', data)
+
+    def not_enough_money(self, title, text):
+        """\xd0\xa1\xd0\xbe\xd0\xbe\xd0\xb1\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd1\x84\xd0\xbb\xd1\x8d\xd1\x88, \xd0\xbe \xd1\x82\xd0\xbe\xd0\xbc, \xd1\x87\xd1\x82\xd0\xbe \xd0\xb4\xd0\xbb\xd1\x8f \xd0\xb0\xd0\xba\xd1\x82\xd0\xb8\xd0\xb2\xd0\xb0\xd1\x82\xd1\x86\xd0\xb8\xd0\xb8 \xd0\xbf\xd1\x80\xd0\xb5\xd0\xbc\xd0\xb8\xd1\x83\xd0\xbc \xd0\xb0\xd0\xba\xd0\xba\xd0\xb0\xd1\x83\xd0\xbd\xd1\x82\xd0\xb0 \xd0\xbd\xd0\xb5 \xd1\x85\xd0\xb2\xd0\xb0\xd1\x82\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xb4\xd0\xb5\xd0\xbd\xd0\xb5\xd0\xb3."""
+        message = {'result': 0,
+         'info': {'message': {'title': title,
+                              'text': text}}}
+        self._receiver.send_to_flashscript('updatePremium', message)
+
+    def on_premium_account(self, data):
+        """\xd0\x9f\xd0\xbe\xd0\xb4\xd0\xba\xd0\xbb\xd1\x8e\xd1\x87\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xbf\xd1\x80\xd0\xb5\xd0\xbc\xd0\xb8\xd1\x83\xd0\xbc \xd0\xb0\xd0\xba\xd0\xba\xd0\xb0\xd1\x83\xd0\xbd\xd1\x82."""
+        BWPersonality.GUICore.charPickerEvent(CHAR_PICKER.EVENT_PREMIUM, data)
+
+    def play_game(self, data):
+        """\xd0\x97\xd0\xb0\xd0\xbf\xd1\x83\xd1\x81\xd0\xba\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xb8\xd0\xb3\xd1\x80\xd1\x83."""
+        if self._play_game_coroutine:
+            return
+        BWPersonality.music.stopAllMusic()
+        sounds.playSound('ui/start_game')
+        print "play_game, sounds.playSound('ui/start_game')"
+
+        @BWCoroutine
+        def play_game_coroutine():
+            account = BigWorld.player()
+            if not account.can_play:
+                print 'can_play false'
+                self._play_game_coroutine = None
+                return
+            else:
+                if account.dummy:
+                    account.dummy.on_play_game()
+                yield BWWaitForPeriod(0)
+                BWPersonality.game.showDummyLoadingGUI()
+                char_select_mgr = BWPersonality.game.char_select_mgr
+                try:
+                    yield BWWaitForCondition(lambda : char_select_mgr.selected_id is not None, 5.0, 0)
+                except BWCoroutineTimeoutException:
+                    print 'char_select_mgr.selected_id is None'
+                    self._play_game_coroutine = None
+                    BigWorld.disconnect()
+                    return
+
+                char_name = char_select_mgr.chars[char_select_mgr.selected_id]
+                account.base.beginPlay(char_name)
+                BWPersonality.GUICore.showLoginFlash(False)
+                print 'account.base.beginPlay', [char_name]
+                yield BWWaitForPeriod(2.0)
+                self._play_game_coroutine = None
+                return
+
+        BWPersonality.GUICore.on_play_game_click()
+        self._play_game_coroutine = play_game_coroutine()
+        self._play_game_coroutine.run()
+
+    def restore_character(self):
+        """\xd0\x92\xd0\xbe\xd1\x81\xd1\x82\xd0\xb0\xd0\xbd\xd0\xb0\xd0\xb2\xd0\xbb\xd0\xb8\xd0\xb2\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xbf\xd0\xb5\xd1\x80\xd1\x81\xd0\xbe\xd0\xbd\xd0\xb0\xd0\xb6\xd0\xb0 \xd0\xbe\xd0\xb6\xd0\xb8\xd0\xb4\xd0\xb0\xd1\x8e\xd1\x89\xd0\xb5\xd0\xb3\xd0\xbe \xd1\x83\xd0\xb4\xd0\xb0\xd0\xbb\xd0\xb5\xd0\xbd\xd0\xb8\xd1\x8f."""
+        BWPersonality.GUICore.charPickerEvent(CHAR_PICKER.EVENT_RESTORE, {})
+
+    def select_character(self, data):
+        """\xd0\x9f\xd0\xb5\xd1\x80\xd0\xb5\xd0\xba\xd0\xbb\xd1\x8e\xd1\x87\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xbf\xd0\xb5\xd1\x80\xd1\x81\xd0\xbe\xd0\xbd\xd0\xb0\xd0\xb6\xd0\xb0."""
+        BWPersonality.GUICore.loginFlash.send_to_flashscript('change_face_btn_enabled', {'value': False})
+        BWPersonality.GUICore.charPickerEvent(CHAR_PICKER.EVENT_SELECT, data)
+
+    def send_checked_nickname(self, nick, result, message):
+        """\xd0\x92\xd0\xbe\xd0\xb7\xd0\xb2\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd1\x80\xd0\xb5\xd0\xb7\xd1\x83\xd0\xbb\xd1\x8c\xd1\x82\xd0\xb0\xd1\x82 \xd0\xbf\xd1\x80\xd0\xbe\xd0\xb2\xd0\xb5\xd1\x80\xd0\xba\xd0\xb8 \xd0\xb8\xd0\xbc\xd0\xb5\xd0\xbd\xd0\xb8 \xd0\xbf\xd0\xb5\xd1\x80\xd1\x81\xd0\xbe\xd0\xbd\xd0\xb0\xd0\xb6\xd0\xb0."""
+        data = {'nick': nick,
+         'message': message,
+         'result': result}
+        self._receiver.send_to_flashscript('checkAvatarName', data)
+
+    def update_character_view(self, data):
+        """\xd0\x9f\xd0\xbe\xd0\xbb\xd1\x83\xd1\x87\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xb8\xd0\xb7\xd0\xbc\xd0\xb5\xd0\xbd\xd1\x91\xd0\xbd\xd0\xbd\xd1\x8b\xd0\xb5 \xd0\xba\xd0\xbe\xd0\xbc\xd0\xbf\xd0\xbe\xd0\xbd\xd0\xb5\xd0\xbd\xd1\x82\xd1\x8b \xd0\xbf\xd0\xb5\xd1\x80\xd1\x81\xd0\xbe\xd0\xbd\xd0\xb0\xd0\xb6\xd0\xb0 \xd0\xb8 \xd0\xbe\xd0\xb1\xd0\xbd\xd0\xbe\xd0\xb2\xd0\xbb\xd1\x8f\xd0\xb5\xd1\x82 \xd0\xb5\xd0\xb3\xd0\xbe \xd0\xb2\xd0\xbd\xd0\xb5\xd1\x88\xd0\xbd\xd0\xb8\xd0\xb9 \xd0\xb2\xd0\xb8\xd0\xb4"""
+        BWPersonality.GUICore.charMakerEvent(CHAR_MAKER.EVENT_CLOTH_APPEARANCE, data)
+
+    def on_face_save_click(self):
+        if BigWorld.player().dummy is None:
+            return
+        else:
+            BigWorld.player().dummy.on_face_save_click()
+            return
+
+    def on_face_load_click(self):
+        if BigWorld.player().dummy is None:
+            return
+        else:
+            BigWorld.player().dummy.on_face_load_click()
+            return
+
+    def remember_pass_check(self, login, password, remember):
+        if not remember:
+            dummy_password = BWPersonality.settings.getDummyStoredPassword(login)
+            if dummy_password == password:
+                self._receiver.send_password_text('')
+            BWPersonality.settings.saveStoredPassword('')
+
+    def set_steam_trusted(self, value):
+        data = {'value': value}
+        self._receiver.send_to_flashscript('set_steam_trusted', data)
+
+    def receive_random_personality(self, data, first, force_face):
+        """ \xd0\xbc\xd0\xb5\xd1\x82\xd0\xbe\xd0\xb4 \xd0\xb4\xd1\x91\xd1\x80\xd0\xb3\xd0\xb0\xd0\xb5\xd1\x82\xd1\x81\xd1\x8f \xd1\x87\xd0\xb5\xd1\x80\xd0\xb5\xd0\xb7 BWPersonality.GUICore.loginFlash.send_to_flashscript('generate_random_personality')
+                \xd0\xb8\xd0\xb7 \xd1\x8d\xd0\xba\xd1\x80\xd0\xb0\xd0\xbd\xd0\xb0 \xd1\x81\xd0\xbe\xd0\xb7\xd0\xb4\xd0\xb0\xd0\xbd\xd0\xb8\xd1\x8f \xd0\xbf\xd0\xb5\xd1\x80\xd1\x81\xd0\xbe\xd0\xbd\xd0\xb0\xd0\xb6\xd0\xb0
+                \xd0\xbb\xd0\xbe\xd0\xbc\xd0\xb0\xd0\xb5\xd1\x82 dummy, \xd0\xbd\xd0\xbe \xd0\xbf\xd1\x80\xd0\xb8 \xd1\x8d\xd1\x82\xd0\xbe\xd0\xbc \xd1\x81\xd0\xbe\xd1\x85\xd1\x80\xd0\xb0\xd0\xbd\xd1\x8f\xd0\xb5\xd1\x82 \xd1\x84\xd0\xb0\xd0\xb9\xd0\xbb \xd1\x81 \xd0\xbf\xd1\x80\xd0\xb5\xd1\x81\xd0\xb5\xd1\x82\xd0\xbe\xd0\xbc
+                \xd1\x81\xd0\xb4\xd0\xb5\xd0\xbb\xd0\xb0\xd0\xbd\xd0\xbe \xd0\xba\xd1\x80\xd0\xb8\xd0\xb2\xd0\xbe - \xd0\xb2\xd1\x81\xd1\x91 \xd1\x80\xd0\xb0\xd0\xb2\xd0\xbd\xd0\xbe \xd0\xb7\xd0\xb0\xd0\xbf\xd1\x83\xd1\x81\xd0\xba\xd0\xb0\xd0\xb5\xd1\x82\xd1\x81\xd1\x8f \xd1\x82\xd0\xbe\xd0\xbb\xd1\x8c\xd0\xba\xd0\xbe \xd0\xbe\xd0\xb4\xd0\xb8\xd0\xbd \xd1\x80\xd0\xb0\xd0\xb7
+        """
+        from EquipSlotsConfigs import EquipSlotTypes as EST
+
+        def npc_name_iterator():
+            from NPCByName import npc_list
+            for name in npc_list().names_by_npcName.keys():
+                yield name
+
+        if not hasattr(self, '_npc_names'):
+            self._npc_names = npc_name_iterator()
+        dummy = BigWorld.player().dummy
+
+        def file_save(file_name):
+            path = os.path.join('D:\\SO_GIT\\res\\headpresets', file_name)
+            with open(path, 'w+') as f:
+                personality = dummy.read_personality()
+                face_parts = {}
+                for slot_type in EST.get_face_slots():
+                    face_parts[slot_type] = EST.get_slot_data(dummy, slot_type)
+
+                json.dump((personality, face_parts), f)
+
+        BigWorld.player().dummy.full_update_face_from_GUI(data)
+        try:
+            file_save(self._npc_names.next() + '.fcd')
+        except StopIteration:
+            return False
+
+        return True
+
+    def on_char_menu_mode(self, mode):
+        if mode == 'main' and self._char_menu_mode not in ('face', 'cloth'):
+            self._receiver.send_to_flashscript('lock_char_buttons', {'value': True})
+        if self._char_menu_mode != mode:
+            self._char_menu_mode = mode
+            DummyCameraFlyer().center(mode == 'face')
+            BigWorld.player().dummy.on_char_menu_mode(mode)
+
+    def on_select_clothgroup(self, cloth):
+        if self._char_menu_mode == 'cloth':
+            BigWorld.player().dummy.on_group_chosen(cloth)
+
+    def update_full_character_view(self, data, init = False):
+        """ \xd0\x9f\xd0\xbe\xd0\xbb\xd0\xbd\xd0\xbe\xd0\xb5 \xd0\xb8\xd0\xb7\xd0\xbc\xd0\xb5\xd0\xbd\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5 \xd0\xbe\xd0\xb4\xd0\xb5\xd0\xb6\xd0\xb4\xd1\x8b \xd0\xbf\xd0\xb5\xd1\x80\xd1\x81\xd0\xbe\xd0\xbd\xd0\xb0\xd0\xb6\xd0\xb0 """
+        if self._char_menu_mode == 'main':
+            self._full_update_data['char_data'] = data
+            if 'face_data' in self._full_update_data:
+                self.update_full_view(init)
+        else:
+            BWPersonality.GUICore.charMakerEvent(CHAR_MAKER.EVENT_CREATE_FULL_CHAR_MODEL, data)
+
+    def update_full_face_character_view(self, data, init = False, force_face = False):
+        """ \xd0\x9f\xd0\xbe\xd0\xbb\xd0\xbd\xd0\xbe\xd0\xb5 \xd0\xb8\xd0\xb7\xd0\xbc\xd0\xb5\xd0\xbd\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5 \xd0\xbb\xd0\xb8\xd1\x86\xd0\xb0 \xd0\xbf\xd0\xb5\xd1\x80\xd1\x81\xd0\xbe\xd0\xbd\xd0\xb0\xd0\xb6\xd0\xb0
+                data = [{"choiceGroup": <String>, "value": <String or Number>}]
+        """
+        if self._char_menu_mode == 'main' and not force_face:
+            self._full_update_data['face_data'] = data
+            if 'char_data' in self._full_update_data:
+                self.update_full_view(init)
+        else:
+            BWPersonality.GUICore.charMakerEvent(CHAR_MAKER.EVENT_CREATE_FULL_FACE_MODEL, data)
+
+    def update_full_view(self, init = False):
+        """ \xd0\x9f\xd0\xbe\xd0\xbb\xd0\xbd\xd0\xbe\xd0\xb5 \xd0\xb8\xd0\xb7\xd0\xbc\xd0\xb5\xd0\xbd\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5 \xd0\xb2\xd1\x81\xd0\xb5\xd0\xb3\xd0\xbe \xd0\xbf\xd0\xb5\xd1\x80\xd1\x81\xd0\xbe\xd0\xbd\xd0\xb0\xd0\xb6\xd0\xb0 """
+        self._full_update_data['init'] = init
+        BWPersonality.GUICore.charMakerEvent(CHAR_MAKER.EVENT_CREATE_FULL_MODEL, self._full_update_data)
+        self._full_update_data.clear()
+
+    def update_face_character_view(self, data):
+        """ \xd0\x9f\xd0\xbe\xd0\xbb\xd1\x83\xd1\x87\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xb8\xd0\xb7\xd0\xbc\xd0\xb5\xd0\xbd\xd0\xb5\xd0\xbd\xd0\xb8\xd1\x8f \xd0\xb8\xd0\xb7 \xd0\xbd\xd0\xb0\xd1\x81\xd1\x82\xd1\x80\xd0\xbe\xd0\xb5\xd0\xba \xd0\xb2\xd0\xbd\xd0\xb5\xd1\x88\xd0\xbd\xd0\xbe\xd1\x81\xd1\x82\xd0\xb8 \xd0\xbf\xd0\xb5\xd1\x80\xd1\x81\xd0\xbe\xd0\xbd\xd0\xb0\xd0\xb6\xd0\xb0
+                data = {"choiceGroup": <String>, "value": <String or Number>}
+        """
+        BWPersonality.GUICore.charMakerEvent(CHAR_MAKER.EVENT_FACE_APPEARANCE, data)
+
+    def update_gold(self, gold):
+        """\xd0\x9e\xd0\xb1\xd0\xbd\xd0\xbe\xd0\xb2\xd0\xb8\xd1\x82\xd1\x8c \xd0\xbd\xd0\xbe\xd0\xb2\xd0\xbe\xd0\xb5 \xd0\xb7\xd0\xbd\xd0\xb0\xd1\x87\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5 \xd0\xb7\xd0\xbe\xd0\xbb\xd0\xbe\xd1\x82\xd0\xb0  \xd0\xbf\xd0\xb5\xd1\x80\xd1\x81\xd0\xbe\xd0\xbd\xd0\xb0\xd0\xb6\xd0\xb5\xd0\xb9."""
+        self._receiver.send_to_flashscript('updateGold', {'new_gold': gold})
+
+    def update_platinum(self, platinum):
+        self._receiver.send_to_flashscript('updatePlatinum', {'value': platinum})
+
+    def update_partner_id(self, partner_id):
+        self._receiver.send_to_flashscript('partner_id_change', {'value': partner_id})
+
+    def update_premium(self):
+        """\xd0\xa1\xd1\x80\xd0\xb0\xd0\xb1\xd0\xb0\xd1\x82\xd1\x8b\xd0\xb2\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xbf\xd1\x80\xd0\xb8 \xd0\xb8\xd0\xb7\xd0\xbc\xd0\xb5\xd0\xbd\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb8 \xd1\x81\xd1\x82\xd0\xb0\xd1\x82\xd1\x83\xd1\x81\xd0\xb0 \xd0\xbf\xd1\x80\xd0\xb5\xd0\xbc\xd0\xb8\xd1\x83\xd0\xbc \xd0\xb0\xd0\xba\xd0\xba\xd0\xb0\xd1\x83\xd0\xbd\xd1\x82\xd0\xb0."""
+        account = BigWorld.player()
+        remaining_time = int(account.premium_data['end_time'] - (time() - account.time_diff))
+        remaining_time = remaining_time if remaining_time > 0 else -1
+        message = {'result': 1,
+         'info': {'current': account.premium_data['premium_id'],
+                  'remaining_time': remaining_time}}
+        self._receiver.send_to_flashscript('updatePremium', message)
+
+    def update_booster(self):
+        """\xd0\xa1\xd1\x80\xd0\xb0\xd0\xb1\xd0\xb0\xd1\x82\xd1\x8b\xd0\xb2\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xbf\xd1\x80\xd0\xb8 \xd0\xb8\xd0\xb7\xd0\xbc\xd0\xb5\xd0\xbd\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb8 \xd1\x81\xd1\x82\xd0\xb0\xd1\x82\xd1\x83\xd1\x81\xd0\xb0 \xd0\xb1\xd1\x83\xd1\x81\xd1\x82\xd0\xb5\xd1\x80\xd0\xb0 \xd0\xb4\xd0\xbb\xd1\x8f \xd0\xb0\xd0\xba\xd0\xba\xd0\xb0\xd1\x83\xd0\xbd\xd1\x82\xd0\xb0."""
+        account = BigWorld.player()
+        booster_id = account.get_boost_id()
+        remaining_time = int(account.boost_data['end_time'] - (time() - account.time_diff))
+        remaining_time = remaining_time if remaining_time > 0 else -1
+        config = BoosterConfigParser.get_config(booster_id)
+        message = {'current': booster_id,
+         'name': lc(config['name']),
+         'remaining_time': remaining_time}
+        self._receiver.send_to_flashscript('updateBooster', message)
+
+    def _character_parts(self):
+        """\xd0\x9e\xd1\x82\xd0\xbf\xd1\x80\xd0\xb0\xd0\xb2\xd0\xbb\xd1\x8f\xd0\xb5\xd1\x82 json \xd1\x81 \xd1\x80\xd0\xb0\xd0\xb7\xd0\xbb\xd0\xb8\xd1\x87\xd0\xbd\xd1\x8b\xd0\xbc\xd0\xb8 \xd1\x87\xd0\xb0\xd1\x81\xd1\x82\xd1\x8f\xd0\xbc\xd0\xb8 \xd0\xbc\xd0\xbe\xd0\xb4\xd0\xb5\xd0\xbb\xd0\xb8 \xd0\xbf\xd0\xb5\xd1\x80\xd1\x81\xd0\xbe\xd0\xbd\xd0\xb0\xd0\xb6\xd0\xb5\xd0\xb9."""
+        import ItemsUtils
+        py_data_section = ResMgr.openSection(CONFIG_FILE)
+        dct = json.loads(py_data_section.asBinary)
+        for key, part in dct.items():
+            for index, item in enumerate(part):
+                item_type = item['item_id']
+                item['caption'] = ItemsUtils.GetItemName(item_type)
+                item['description'] = ItemsUtils.GetItemDescription(item_type)
+                camo_id = DyeConstant.get_item_default_cammo(item_type)
+                colors = []
+                for r, g, b in DyeConstant.get_camo_colors(item_type, camo_id)['R']:
+                    colors.append('{0:02x}{1:02x}{2:02x}:100'.format(r, g, b))
+
+                item['colors'] = colors
+
+        return dct
+
+    def show_news(self):
+        """\xd0\x9e\xd1\x82\xd0\xbf\xd1\x80\xd0\xb0\xd0\xb2\xd0\xbb\xd1\x8f\xd0\xb5\xd1\x82 \xd0\xb2\xd0\xbe \xd1\x84\xd0\xbb\xd1\x8d\xd1\x88 \xd0\xbd\xd0\xbe\xd0\xb2\xd0\xbe\xd1\x81\xd1\x82\xd0\xb8 \xd0\xbf\xd0\xbe \xd0\xb8\xd0\xbd\xd0\xb8\xd1\x86\xd0\xb8\xd0\xb0\xd1\x82\xd0\xb8\xd0\xb2\xd0\xb5 \xd1\x84\xd0\xbb\xd1\x8d\xd1\x88."""
+        self._receiver.onShowNewsForFlash()
+
+    def get_mini_news(self):
+        """\xd0\x9e\xd1\x82\xd0\xbf\xd1\x80\xd0\xb0\xd0\xb2\xd0\xbb\xd1\x8f\xd0\xb5\xd1\x82 \xd0\xb2\xd0\xbe \xd1\x84\xd0\xbb\xd0\xb5\xd1\x88 \xd0\xbf\xd0\xbe\xd1\x81\xd0\xbb\xd0\xb5\xd0\xb4\xd0\xbd\xd0\xb5\xd0\xb5 \xd1\x83\xd0\xb2\xd0\xb5\xd0\xb4\xd0\xbe\xd0\xbc\xd0\xbb\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5 \xd0\xb2 \xd0\xb3\xd0\xbb\xd0\xb0\xd0\xb2\xd0\xbd\xd0\xbe\xd0\xbc \xd0\xbc\xd0\xb5\xd0\xbd\xd1\x8e"""
+        news = {}
+        news['text'] = 'extendedGUI.RootWindow.charOldUpdateDialog'
+        news['button'] = 'extendedGUI.RootWindow.charOldUpdateButton'
+        news['title'] = 'extendedGUI.RootWindow.charOldUpdateTitle'
+        self._receiver.send_to_flashscript('get_mini_news', news)
+
+    def reject_premium(self):
+        """\xd0\x9e\xd1\x82\xd0\xbf\xd1\x80\xd0\xb0\xd0\xb2\xd0\xbb\xd1\x8f\xd0\xb5\xd1\x82 \xd0\xbd\xd0\xb0 \xd1\x81\xd0\xb5\xd1\x80\xd0\xb2\xd0\xb5\xd1\x80, \xd1\x87\xd1\x82\xd0\xbe \xd0\xbe\xd1\x82\xd0\xba\xd0\xb0\xd0\xb7\xd1\x8b\xd0\xb2\xd0\xb0\xd0\xb5\xd1\x82\xd1\x81\xd1\x8f \xd0\xbe\xd1\x82 \xd0\xbf\xd1\x80\xd0\xb0\xd0\xb7\xd0\xb4\xd0\xbd\xd0\xb8\xd1\x87\xd0\xbd\xd0\xbe\xd0\xb3\xd0\xbe \xd0\xbf\xd1\x80\xd0\xb5\xd0\xbc\xd0\xb8\xd1\x83\xd0\xbc\xd0\xb0."""
+        account = BigWorld.player()
+        account.base.rejecting_premium()
+
+
+class ActionsWithLogin(flash_utils.FlashInteractor):
+    """\xd0\x9a\xd0\xbb\xd0\xb0\xd1\x81\xd1\x81 \xd0\xb4\xd0\xbb\xd1\x8f \xd0\xbe\xd0\xb1\xd1\x80\xd0\xb0\xd0\xb1\xd0\xbe\xd1\x82\xd0\xba\xd0\xb8 \xd0\xb7\xd0\xb0\xd0\xbf\xd1\x80\xd0\xbe\xd1\x81\xd0\xbe\xd0\xb2 \xd1\x81\xd0\xb2\xd1\x8f\xd0\xb7\xd0\xb0\xd0\xbd\xd0\xbd\xd1\x8b\xd1\x85 \xd1\x81 \xd0\xbb\xd0\xbe\xd0\xb3\xd0\xb8\xd0\xbd\xd0\xbe\xd0\xbc."""
+
+    def __init__(self, receiver):
+        super(ActionsWithLogin, self).__init__(receiver)
+        self.servers_by_id = {}
+        self.servers_by_addr = {}
+        self.connected = False
+        self.servers_list_path = 'scripts/client/data/servers_config.json'
+        self.EMAIL_REGEX = re.compile(MAIL_REGEX)
+
+    def authenticateUser(self, login, password, rememberMe, serverID):
+        """\xd0\x9c\xd0\xb5\xd1\x82\xd0\xbe\xd0\xb4 \xd0\xb0\xd1\x83\xd1\x82\xd0\xb5\xd0\xbd\xd1\x82\xd0\xb8\xd1\x84\xd0\xb8\xd0\xba\xd0\xb0\xd1\x86\xd0\xb8\xd0\xb8 \xd0\xbf\xd0\xbe\xd0\xbb\xd1\x8c\xd0\xb7\xd0\xbe\xd0\xb2\xd0\xb0\xd1\x82\xd0\xb5\xd0\xbb\xd1\x8f."""
+        cluster_name, addr, SERVTAG, uid = self.servers_by_id[str(serverID)]
+
+        def check_email(text):
+            if not self.EMAIL_REGEX.match(text):
+                return text
+            return text.lower()
+
+        self._try_connect(login, password, addr, rememberMe, cluster_name=cluster_name, SERVTAG=SERVTAG, uid=uid)
+
+    @flash_utils.send_to_flashscript
+    def getLogin(self):
+        """\xd0\x92\xd0\xbe\xd0\xb7\xd0\xb2\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xbb\xd0\xbe\xd0\xb3\xd0\xb8\xd0\xbd \xd0\xbf\xd0\xbe\xd0\xbb\xd1\x8c\xd0\xb7\xd0\xbe\xd0\xb2\xd0\xb0\xd1\x82\xd0\xb5\xd0\xbb\xd1\x8f."""
+        if steam_client_api.STEAM_MODE:
+            return {'login': ''}
+        else:
+            default_value = BWPersonality.settings.getSetting('username', default=None)
+
+            def setStoredPassw():
+                dummy_password = BWPersonality.settings.getDummyStoredPassword(default_value)
+                if dummy_password:
+                    self._receiver.send_password_text(dummy_password)
+                self.get_remember_pass(bool(dummy_password))
+
+            BigWorld.callback(0, setStoredPassw)
+            return {'login': default_value if default_value else ''}
+
+    @flash_utils.send_to_flashscript
+    def get_remember_pass(self, value):
+        """\xd0\xa3\xd1\x81\xd1\x82\xd0\xb0\xd0\xbd\xd0\xb0\xd0\xb2\xd0\xbb\xd0\xb8\xd0\xb2\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xb2\xd0\xbe \xd1\x84\xd0\xbb\xd0\xb5\xd1\x88\xd0\xba\xd0\xb5 \xd0\xb7\xd0\xbd\xd0\xb0\xd1\x87\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5 '\xd0\xb7\xd0\xb0\xd0\xbf\xd0\xbe\xd0\xbc\xd0\xbd\xd0\xb8\xd1\x82\xd1\x8c \xd0\xbf\xd0\xb0\xd1\x80\xd0\xbe\xd0\xbb\xd1\x8c'"""
+        return {'value': value}
+
+    def getServerTunnel(self, servaddr):
+        return str(self.servers_by_addr.get(servaddr, {}).get('tunnel', ''))
+
+    @flash_utils.send_to_flashscript
+    def getServerList(self):
+        """\xd0\xa7\xd0\xb8\xd1\x82\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xb8 \xd0\xbe\xd0\xb1\xd1\x80\xd0\xb0\xd0\xb1\xd0\xb0\xd1\x82\xd1\x8b\xd0\xb2\xd0\xb0\xd0\xb5\xd1\x82 \xd1\x81\xd0\xbf\xd0\xb8\xd1\x81\xd0\xbe\xd0\xba \xd1\x81\xd0\xb5\xd1\x80\xd0\xb2\xd0\xb5\xd1\x80\xd0\xbe\xd0\xb2"""
+        servers = self._get_servers()
+        default_server = BWPersonality.settings.getSetting('server_name', default=None)
+        if default_server is not None:
+            default_server = default_server.decode()
+        default_server_id = u''
+        servs = []
+        unique_uids = set()
+        for i, (name, addr, dev, SERVTAG, uid, tunnel) in enumerate(self._analyze_data_about_servers(servers)):
+            server_id = str(i)
+            server_data = {'id': server_id,
+             'label': name,
+             'address': addr,
+             'tunnel': tunnel,
+             'ping': self._ping(addr),
+             'using': self._serv_fullness(addr),
+             'is_dev_serv': int(dev)}
+            servs.append(server_data)
+            unique_uids.add(uid)
+            self.servers_by_id[server_id] = (name,
+             addr,
+             SERVTAG,
+             uid)
+            self.servers_by_addr[addr] = server_data
+            if addr == default_server:
+                default_server_id = server_data['id']
+
+        answer = {'list': servs,
+         'defaultServerId': default_server_id}
+        return answer
+
+    def doLogOut(self):
+        """\xd0\xa0\xd0\xb0\xd0\xb7\xd0\xbb\xd0\xbe\xd0\xb3\xd0\xb8\xd0\xbd\xd0\xb8\xd0\xb2\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xbf\xd0\xbe\xd0\xbb\xd1\x8c\xd0\xb7\xd0\xbe\xd0\xb2\xd0\xb0\xd1\x82\xd0\xb5\xd0\xbb\xd1\x8f"""
+        BWPersonality.game.disconnect(reason='LoginScreenFlash doLogOut')
+
+    @flash_utils.send_to_flashscript
+    def showDeveloperServer(self):
+        """\xd0\x9e\xd1\x82\xd0\xbf\xd1\x80\xd0\xb0\xd0\xb2\xd0\xbb\xd1\x8f\xd0\xb5\xd1\x82 \xd0\xb2\xd0\xbe \xd0\xb2\xd0\xbb\xd1\x8d\xd1\x88 \xd0\xba\xd0\xbe\xd0\xbc\xd0\xb0\xd0\xbd\xd0\xb4\xd1\x83 \xd0\xbe \xd0\xbf\xd0\xbe\xd0\xba\xd0\xb0\xd0\xb7\xd0\xb5 \xd1\x81\xd0\xb5\xd1\x80\xd0\xb2\xd0\xb5\xd1\x80\xd0\xbe\xd0\xb2 \xd1\x80\xd0\xb0\xd0\xb7\xd1\x80\xd0\xb0\xd0\xb1\xd0\xbe\xd1\x82\xd1\x87\xd0\xb8\xd0\xba\xd0\xbe\xd0\xb2."""
+        pass
+
+    def state_of_connect(self, state, msg = ''):
+        """\xd0\x9f\xd0\xbe\xd0\xbb\xd1\x83\xd1\x87\xd0\xb0\xd0\xb5\xd1\x82 \xd1\x81\xd0\xbe\xd0\xbe\xd0\xb1\xd1\x89\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5 \xd1\x81\xd0\xbe\xd0\xb5\xd0\xb4\xd0\xb8\xd0\xbd\xd0\xb5\xd0\xbd\xd0\xb8\xd1\x8f \xd0\xbe\xd0\xb1 \xd0\xbe\xd1\x88\xd0\xb8\xd0\xb1\xd0\xba\xd0\xb5 \xd0\xb8 \xd0\xbe\xd1\x82\xd0\xbf\xd1\x80\xd0\xb0\xd0\xb2\xd0\xbb\xd1\x8f\xd0\xb5\xd1\x82 \xd0\xb5\xd0\xb3\xd0\xbe \xd0\xb2\xd0\xbe \xd1\x84\xd0\xbb\xd1\x8d\xd1\x88."""
+        error = None
+        if state == 'ERROR':
+            self.connected = False
+            error = {'message': msg}
+        elif state == 'DISCONNECT':
+            if self.connected:
+                error = {'message': msg}
+            self.connected = False
+        if not self.connected:
+            BWPersonality.GUICore.loginFlash.send_to_flashscript('change_face_btn_enabled', {'value': False})
+        return error
+
+    def _analyze_data_about_servers(self, servers_data):
+        """\xd0\x93\xd0\xb5\xd0\xbd\xd0\xb5\xd1\x80\xd0\xb0\xd1\x82\xd0\xbe\xd1\x80; \xd0\xb0\xd0\xbd\xd0\xb0\xd0\xbb\xd0\xb8\xd0\xb7\xd0\xb8\xd1\x80\xd1\x83\xd0\xb5\xd1\x82 \xd0\xb8 \xd0\xb2\xd0\xbe\xd0\xb7\xd0\xb2\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82  \xd0\xb8\xd0\xbd\xd1\x84\xd0\xbe\xd1\x80\xd0\xbc\xd0\xb0\xd1\x86\xd0\xb8\xd1\x8e \xd0\xbe \xd0\xba\xd0\xb0\xd0\xb6\xd0\xb4\xd0\xbe\xd0\xbc \xd1\x81\xd0\xb5\xd1\x80\xd0\xb2\xd0\xb5\xd1\x80\xd0\xb5."""
+        servers_rank = ('customers_servers', 'developers_servers')
+        if steam_client_api.STEAM_MODE:
+            servers_rank = ('customers_servers_steam', 'developers_servers')
+        is_developer_server = (False, True)
+        for rank, is_dev_serv in zip(servers_rank, is_developer_server):
+            for serv_info in servers_data[rank]:
+                name = serv_info['name']
+                addr = serv_info['host']
+                SERVTAG = serv_info['SERVTAG']
+                uid = serv_info['uid']
+                tunnel = serv_info.get('tunnel', '')
+                yield (name,
+                 addr,
+                 is_dev_serv,
+                 SERVTAG,
+                 uid,
+                 tunnel)
+
+    def _get_servers(self):
+        """\xd0\xa7\xd0\xb8\xd1\x82\xd0\xb0\xd0\xb5\xd1\x82 \xd1\x81\xd0\xb5\xd1\x80\xd0\xb2\xd0\xb5\xd1\x80\xd1\x8b \xd0\xb4\xd0\xbb\xd1\x8f \xd0\xbf\xd0\xbe\xd0\xb4\xd0\xba\xd0\xbb\xd1\x8e\xd1\x87\xd0\xb5\xd0\xbd\xd0\xb8\xd1\x8f."""
+        pds = ResMgr.openSection(self.servers_list_path)
+        dct = json.loads(pds.asBinary)
+        return dct
+
+    def _ping(self, addr):
+        """\xd0\x9f\xd0\xb8\xd0\xbd\xd0\xb3\xd1\x83\xd0\xb5\xd1\x82 \xd1\x81\xd0\xb5\xd1\x80\xd0\xb2\xd0\xb5\xd1\x80, \xd0\xb2\xd0\xbe\xd0\xb7\xd0\xb2\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd1\x81\xd0\xba\xd0\xbe\xd1\x80\xd0\xbe\xd1\x81\xd1\x82\xd1\x8c \xd0\xbf\xd0\xb8\xd0\xbd\xd0\xb3\xd0\xb0 (\xd0\xb2 \xd0\xbc\xd0\xb8\xd0\xbb\xd0\xb8\xd1\x81\xd0\xb5\xd0\xba\xd1\x83\xd0\xbd\xd0\xb4\xd0\xb0\xd1\x85)."""
+        return ''
+        print 'subprocess+  lsf'
+        response = subprocess.Popen(['_ping.exe',
+         '-n',
+         '4',
+         addr], stdout=subprocess.PIPE).communicate()[0]
+        echos = PATTERN.findall(response)
+        answer = ''
+        if echos:
+            average = sum((int(i) for i in echos)) / len(echos)
+            answer = str(average)
+        return answer
+
+    def _serv_fullness(self, addr):
+        """\xd0\x9f\xd0\xbe\xd0\xbb\xd1\x83\xd1\x87\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xb4\xd0\xb0\xd0\xbd\xd0\xbd\xd1\x8b\xd0\xb5 \xd0\xbe \xd0\xb7\xd0\xb0\xd0\xb3\xd1\x80\xd1\x83\xd0\xb6\xd0\xb5\xd0\xbd\xd0\xbd\xd0\xbe\xd1\x81\xd1\x82\xd0\xb8 \xd1\x81\xd0\xb5\xd1\x80\xd0\xb2\xd0\xb5\xd1\x80\xd0\xb0."""
+        return -1
+
+    def _try_connect(self, login, password, server, auto_save = False, cluster_name = '', SERVTAG = '', uid = None):
+        """\xd0\x9e\xd1\x82\xd0\xbf\xd1\x80\xd0\xb0\xd0\xb2\xd0\xbb\xd1\x8f\xd0\xb5\xd1\x82 \xd0\xb4\xd0\xb0\xd0\xbd\xd0\xbd\xd1\x8b\xd0\xb5 \xd0\xb0\xd1\x83\xd1\x82\xd0\xb5\xd0\xbd\xd1\x82\xd0\xb8\xd1\x84\xd0\xb8\xd0\xba\xd0\xb0\xd1\x86\xd0\xb8\xd0\xb8 \xd0\xbd\xd0\xb0 \xd0\xb2\xd1\x8b\xd0\xb1\xd1\x80\xd0\xb0\xd0\xbd\xd0\xbd\xd1\x8b\xd0\xb9 \xd1\x81\xd0\xb5\xd1\x80\xd0\xb2\xd0\xb5\xd1\x80."""
+        BWPersonality.GUICore.loginEvent(LOGIN.EVENT_LOGIN, (login, password, auto_save))
+
+
+@log_methods(('__init__',))
+
+class LoginScreenFlash(FlashGUIBase):
+
+    def __init__(self, component):
+        """API \xd0\xb4\xd0\xbb\xd1\x8f \xd1\x84\xd0\xbb\xd1\x8d\xd1\x88 \xd1\x8d\xd0\xba\xd1\x80\xd0\xb0\xd0\xbd\xd0\xb0 \xd0\xbd\xd0\xb0 \xd0\xb2\xd1\x85\xd0\xbe\xd0\xb4\xd0\xb5 \xd0\xb2 \xd0\xb8\xd0\xb3\xd1\x80\xd1\x83."""
+        super(LoginScreenFlash, self).__init__(component)
+        self.class_name = self.__class__.__name__
+        BWPersonality.GUICore.generalLayer.addChild(component, self.class_name)
+        _BWSound.Manager().registerOnChangedDeviceCallback(self.on_change_sound_devices)
+        self.login_actions = ActionsWithLogin(self)
+        self.account_actions = ActionsWithAccount(self)
+        self.options_actions = ActionsWithOptions(self)
+        self.sound_actions = ActionsWithSounds(self)
+        self.eula = EULAFlash(self)
+        self.left_mouse_down = False
+        self.right_mouse_down = False
+        self.default_char_config = None
+        self.settingsInGame = False
+        self.localization_config = None
+        self._loadConfig()
+        self.commands = {'getClientVersion': self.get_client_version,
+         'isInGame': self.get_game_state,
+         'getLocalizedResource': self.getLocalizedResource,
+         'quitGame': self.close,
+         'doRestartGame': self.game_restart,
+         'openURL': self.open_url,
+         'on_promo_click': self.on_promo_click,
+         'on_cutscene_click': self.on_cutscene_click,
+         'on_affiliate_program_click': self.on_affiliate_program_click,
+         'add_gold_in_browser': self.add_gold_in_browser,
+         'getLocalesList': self.all_language,
+         'show_dummy': self.show_dummy,
+         'hide_dummy': self.hide_dummy,
+         'onMouseRightDrag': self.onMouseRightDrag,
+         'onMouseLeftDrag': self.onMouseLeftDrag,
+         'show_premium_shop': self.show_premium_shop}
+        sound_commands = {'play_sound': self.sound_actions.start_play_sound}
+        settings_commands = {'getSettingsRange': self.options_actions.range_of_settings,
+         'getSettings': self.options_actions.get_settings,
+         'setDefaultKeyBindings': self.options_actions.default_key_bindings,
+         'setSettings': self.options_actions.settings_update,
+         'setContrastBrightness': self.options_actions.set_contrast_brightness,
+         'setMaxFrameRate': self.options_actions.set_max_framerate,
+         'showOptionsMenu': self.options_actions.show_options_menu,
+         'getDefaultOption': self.options_actions.default_options,
+         'getKeybindLocalizeTable': self.options_actions.keybind_localize_table,
+         'getCurrentLocale': self.options_actions.get_current_language,
+         'setCurrentLocale': self.options_actions.set_language,
+         'getNewKeybind': self.options_actions.get_new_keyname,
+         'gui_reset_position': self.options_actions.resetGUIPos}
+        account_commands = {'allCharactersInfo': self.account_actions.all_characters_info,
+         'get_face_config': self.account_actions.get_face_config,
+         'selectChar': self.account_actions.select_character,
+         'creatingChar': self.account_actions.creating_new_character,
+         'updatingChar': self.account_actions.updating_old_character,
+         'donateFaceChanging': self.account_actions.donate_face_changing,
+         'deleteCharacter': self.account_actions.delete_character,
+         'goToGame': self.account_actions.play_game,
+         'restoreCharacter': self.account_actions.restore_character,
+         'updatePremium': self.account_actions.on_premium_account,
+         'checkAvatarName': self.account_actions.check_valid_nickname,
+         'newCharView': self.account_actions.update_character_view,
+         'on_select_clothgroup': self.account_actions.on_select_clothgroup,
+         'newFullCharView': self.account_actions.update_full_character_view,
+         'faceCharView': self.account_actions.update_face_character_view,
+         'fullFaceCharView': self.account_actions.update_full_face_character_view,
+         'updateChar': self.account_actions.update_old_chatacter,
+         'donateFaceChange': self.account_actions.donate_face_change,
+         'donatePaintChange': self.account_actions.donate_paint_change,
+         'callSurvey': self.account_actions.open_survey,
+         'createChar': self.account_actions.create_new_character,
+         'cancelCreateChar': self.account_actions.cancel,
+         'showNews': self.show_news,
+         'tryShowNews': self.onShowNewsForFlash,
+         'reject_prem': self.account_actions.reject_premium,
+         'get_mini_news': self.account_actions.get_mini_news,
+         'set_face_mode': self.account_actions.set_face_mode,
+         'try_pay': self.account_actions.try_pay,
+         'get_access_level': self.account_actions.get_access_level,
+         'open_storage': self.account_actions.open_storage,
+         'open_shop': self.account_actions.open_shop,
+         'pbt_pay_result': self.account_actions.pbt_pay_result,
+         'on_char_menu_mode': self.account_actions.on_char_menu_mode,
+         'face_save_click': self.account_actions.on_face_save_click,
+         'face_load_click': self.account_actions.on_face_load_click,
+         'receive_random_personality': self.account_actions.receive_random_personality,
+         'remember_pass_check': self.account_actions.remember_pass_check}
+        ingame_menu = {'return_in_game': self.return_in_game}
+        all_commands = (settings_commands,
+         account_commands,
+         ingame_menu,
+         sound_commands)
+        for commands in all_commands:
+            self.commands.update(commands)
+
+        if not BigWorld.isConsumer() and not BWPersonality.is_user_awesome():
+            self._add_debug_btns()
+        return
+
+    def _add_debug_btns(self):
+        x = 20
+        btn = soButton(GUI.Window())
+        cmp = btn.component
+        btn.initVSC('soGUI/elements/button_1.xml')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.label.font = 'RobotoCondensedRegular_14.font'
+        cmp.label.text = 'OFFLINE'
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.width = 64
+        cmp.height = 30
+        cmp.position = (x, 20, 0.1)
+        cmp.script.setDisabledState(False)
+        cmp.script.onClick = BWPersonality.offline_show_menu
+        self.component.addChild(cmp, 'debug_offline')
+        btn.onBound()
+        x += 68
+        btn = soButton(GUI.Window())
+        cmp = btn.component
+        btn.initVSC('soGUI/elements/button_1.xml')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.label.font = 'RobotoCondensedRegular_14.font'
+        cmp.label.text = 'M'
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.width = 30
+        cmp.height = 30
+        cmp.position = (x, 20, 0.1)
+        cmp.script.setDisabledState(False)
+        cmp.script.onClick = BWPersonality.megatest_show
+        self.component.addChild(cmp, 'debug_megatest')
+        btn.onBound()
+        x += 34
+
+        def run_save_fmod_sounds():
+            import __debug.ingame_test_tool.save_fmod_sounds
+            __debug.ingame_test_tool.save_fmod_sounds.run()
+
+        btn = soButton(GUI.Window())
+        cmp = btn.component
+        btn.initVSC('soGUI/elements/button_1.xml')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.label.font = 'RobotoCondensedRegular_14.font'
+        cmp.label.text = 'update fmod_sounds'
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.width = 140
+        cmp.height = 30
+        cmp.position = (x, 20, 0.1)
+        cmp.script.setDisabledState(False)
+        cmp.script.onClick = run_save_fmod_sounds
+        self.component.addChild(cmp, 'update_fmod_sounds')
+        btn.onBound()
+
+    def _loadConfig(self):
+        dataSection = ResMgr.openSection(CONFIG_FILE)
+        self.default_char_config = json.loads(dataSection.asBinary)
+
+    def on_change_sound_devices(self):
+        devices = BWPersonality.settings.getSoundDeviceNamesDict()
+        current_device_guid = BWPersonality.settings.getCurrentSoundDeviceGuid()
+        data = {'data': devices}
+        data['setting'] = 'audio'
+        data['type'] = 'sound_device'
+        data['value'] = current_device_guid
+        self.send_to_flashscript('update_one_setting', data)
+        if current_device_guid == '':
+            BWPersonality.settings.setSoundDevice(current_device_guid)
+            return
+        for value, name in devices.items():
+            if current_device_guid == value:
+                break
+        else:
+            current_device_guid = ''
+
+        BWPersonality.settings.setSoundDevice(current_device_guid)
+
+    def activate_account_window(self):
+        """\xd0\x9f\xd0\xbe\xd0\xba\xd0\xb0\xd0\xb7\xd0\xb0\xd1\x82\xd1\x8c \xd0\xb2\xd0\xbe \xd1\x84\xd0\xbb\xd1\x8d\xd1\x88 \xd0\xbe\xd0\xba\xd0\xbd\xd0\xbe \xd0\xb0\xd0\xba\xd0\xba\xd0\xb0\xd1\x83\xd0\xbd\xd1\x82\xd0\xb0."""
+        BWPersonality.GUICore.showLoginFlash(True)
+        self.login_actions.connected = True
+        self.send_to_flashscript('activateAccountWindow')
+
+    def update_current_event_data(self, caption, description, picture_path, end_time):
+        data = {}
+        data['caption'] = caption
+        data['decription'] = description
+        data['picture_path'] = picture_path
+        data['end_time'] = end_time
+        self.send_to_flashscript('updateEvent', data)
+
+    def alert(self, title, text):
+        result = {'message': {'title': title,
+                     'text': text}}
+        self.send_to_flashscript('alert', result)
+
+    def close(self):
+        super(LoginScreenFlash, self).close()
+        BWPersonality.GUICore.loginEvent(LOGIN.EVENT_QUITGAME, None)
+        return
+
+    @classmethod
+    def create(cls, movie_path = 'extendedGUI/MainMenuGUI.swf', backgroundAlpha = 0):
+        """\xd0\x9c\xd0\xb5\xd1\x82\xd0\xbe\xd0\xb4 \xd0\xb4\xd0\xbb\xd1\x8f \xd1\x81\xd0\xbe\xd0\xb7\xd0\xb4\xd0\xb0\xd0\xbd\xd0\xb8\xd1\x8f \xd0\xba\xd0\xbe\xd0\xbc\xd0\xbf\xd0\xbe\xd0\xbd\xd0\xb5\xd0\xbd\xd1\x82\xd0\xb0.
+        
+        movie_path - \xd0\xbf\xd1\x83\xd1\x82\xd1\x8c \xd0\xba \xd1\x84\xd0\xbb\xd1\x8d\xd1\x88-\xd1\x84\xd0\xb0\xd0\xb9\xd0\xbb\xd1\x83
+        backgroundAlpha - \xd0\xbf\xd1\x80\xd0\xbe\xd0\xb7\xd1\x80\xd0\xb0\xd1\x87\xd0\xbd\xd0\xbe\xd1\x81\xd1\x82\xd1\x8c \xd1\x84\xd0\xbe\xd0\xbd\xd0\xb0
+        
+        \xd0\x90\xd1\x82\xd1\x80\xd0\xb8\xd0\xb1\xd1\x83\xd1\x82 \xd0\xba\xd0\xbe\xd0\xbc\xd0\xbf\xd0\xbe\xd0\xbd\xd0\xb5\xd0\xbd\xd1\x82\xd0\xb0 - sqript - \xd1\x81\xd1\x81\xd1\x8b\xd0\xbb\xd0\xba\xd0\xb0 \xd0\xbd\xd0\xb0 \xd1\x8d\xd0\xba\xd0\xb7\xd0\xb5\xd0\xbc\xd0\xbf\xd0\xbb\xd1\x8f\xd1\x80 LoginScreenFlash
+        """
+        return super(LoginScreenFlash, cls).create(movie_path, backgroundAlpha)
+
+    def create_new_character_response(self, success, errcode, msg):
+        self.account_actions.create_new_character_response(success, errcode, msg)
+
+    def migrate_old_character_response(self):
+        self.account_actions.migrate_old_character_response()
+
+    def update_donate_response(self, success):
+        self.account_actions.update_donate_response(success)
+
+    def screen_mode_was_changed(self, screen_mode):
+        self.send_to_flashscript('screenMode', {'state': screen_mode})
+
+    def on_face_changed(self):
+        self.send_to_flashscript('on_face_changed')
+
+    def externalInterfaceHandler(self, func_name, args_in_tuple):
+        """\xd0\x9f\xd0\xbe\xd0\xbb\xd1\x83\xd1\x87\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xb8 \xd0\xb2\xd1\x8b\xd0\xbf\xd0\xbe\xd0\xbb\xd0\xbd\xd1\x8f\xd0\xb5\xd1\x82 \xd0\xb7\xd0\xb0\xd0\xbf\xd1\x80\xd0\xbe\xd1\x81\xd1\x8b \xd0\xbe\xd1\x82 \xd1\x84\xd0\xbb\xd0\xb5\xd1\x88-\xd0\xbe\xd0\xba\xd0\xbd\xd0\xb0."""
+        super(LoginScreenFlash, self).externalInterfaceHandler(func_name, args_in_tuple)
+
+    def on_closed_settings(self):
+        """\xd0\xa1\xd0\xba\xd1\x80\xd1\x8b\xd0\xb2\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xbd\xd0\xb0\xd1\x81\xd1\x82\xd1\x80\xd0\xbe\xd0\xb9\xd0\xba\xd0\xb8 \xd0\xbe\xd1\x82\xd0\xba\xd1\x80\xd1\x8b\xd1\x82\xd1\x8b\xd0\xb5 \xd0\xb8\xd0\xb7 \xd0\xb3\xd0\xbb\xd0\xb0\xd0\xb2\xd0\xbd\xd0\xbe\xd0\xb3\xd0\xbe \xd0\xbc\xd0\xb5\xd0\xbd\xd1\x8e."""
+        BWPersonality.GUICore._login_win.make_invisible(False, 'settings')
+
+    def on_open_settings(self):
+        """\xd0\x9e\xd1\x82\xd0\xba\xd1\x80\xd1\x8b\xd0\xbb \xd0\xbd\xd0\xb0\xd1\x81\xd1\x82\xd1\x80\xd0\xbe\xd0\xb9\xd0\xba\xd0\xb8 \xd0\xb8\xd0\xb7 \xd0\xb3\xd0\xbb\xd0\xb0\xd0\xb2\xd0\xbd\xd0\xbe\xd0\xb3\xd0\xbe \xd0\xbc\xd0\xb5\xd0\xbd\xd1\x8e"""
+        BWPersonality.GUICore._login_win.make_invisible(True, 'settings')
+
+    def on_show_guadrscreen(self):
+        BWPersonality.GUICore._login_win.make_invisible(True, 'guadrscreen')
+
+    def on_hide_guadrscreen(self):
+        BWPersonality.GUICore._login_win.make_invisible(False, 'guadrscreen')
+
+    def game_restart(self):
+        """\xd0\x9f\xd0\xb5\xd1\x80\xd0\xb5\xd0\xb7\xd0\xb0\xd0\xbf\xd1\x83\xd1\x81\xd0\xba\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xb8\xd0\xb3\xd1\x80\xd1\x83."""
+        BWPersonality.game.restartGame()
+
+    def get_client_version(self):
+        """ \xd0\xb2\xd0\xbe\xd0\xb7\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xb2\xd0\xb5\xd1\x80\xd1\x81\xd0\xb8\xd1\x8e \xd0\xba\xd0\xbb\xd0\xb8\xd0\xb5\xd0\xbd\xd1\x82\xd0\xb0"""
+        ver = VersionSO.stalkerVersion
+        return {'result': ver}
+
+    def get_game_state(self):
+        """\xd0\x9f\xd1\x80\xd0\xbe\xd0\xb2\xd0\xb5\xd1\x80\xd1\x8f\xd0\xb5\xd1\x82 \xd0\xb7\xd0\xb0\xd0\xbf\xd1\x83\xd1\x89\xd0\xb5\xd0\xbd\xd0\xb0 \xd0\xbb\xd0\xb8 \xd0\xb8\xd0\xb3\xd1\x80\xd0\xb0."""
+        state = BWPersonality.game.is_connected()
+        return {'result': int(state)}
+
+    def handleMouseButtonEvent(self, comp, event):
+        """\xd0\xa1\xd0\xbc. \xd0\xb4\xd0\xbe\xd0\xba\xd1\x83\xd0\xbc\xd0\xb5\xd0\xbd\xd1\x82\xd0\xb0\xd1\x86\xd0\xb8\xd1\x8e BigWorld."""
+        if event.key == KEY_LEFTMOUSE:
+            self.left_mouse_down = event.isKeyDown()
+        elif event.key == KEY_RIGHTMOUSE:
+            self.right_mouse_down = event.isKeyDown()
+        return self.component.movie.handleMouseButtonEvent(event)
+
+    def handleMouseEvent(self, comp, event):
+        """\xd0\xa1\xd0\xbc. \xd0\xb4\xd0\xbe\xd0\xba\xd1\x83\xd0\xbc\xd0\xb5\xd0\xbd\xd1\x82\xd0\xb0\xd1\x86\xd0\xb8\xd1\x8e BigWorld."""
+        if event.dz:
+            DummyCameraFlyer().zoom(event.dz)
+        return self.component.movie.handleMouseEvent(event)
+
+    def handleKeyEvent(self, event):
+        key = event.key
+        mods = event.modifiers
+        down = event.isKeyDown()
+        if key == KEY_V and mods == MODIFIER_CTRL and down:
+            text = BigWorld.clipboardGetPlainText()
+            self.send_to_flashscript('controlV', {'clipboard': text})
+        return self.component.movie.handleKeyEvent(event)
+
+    def rotate_dummy(self, dx, dy = 0):
+        """\xd0\x92\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd1\x82\xd1\x8c \xd0\xbc\xd0\xb0\xd0\xbd\xd0\xb5\xd0\xba\xd0\xb5\xd0\xbd\xd0\xb0 \xd0\xb0\xd0\xb2\xd0\xb0\xd1\x82\xd0\xb0\xd1\x80\xd0\xb0."""
+        DummyRotating().rotate(dx * 0.3)
+
+    def hide(self):
+        """\xd0\xa1\xd0\xba\xd1\x80\xd1\x8b\xd0\xb2\xd0\xb0\xd0\xb5\xd1\x82 \xd1\x84\xd0\xbb\xd1\x8d\xd1\x88-\xd0\xba\xd0\xbe\xd0\xbc\xd0\xbf\xd0\xbe\xd0\xbd\xd0\xb5\xd0\xbd\xd1\x82"""
+        super(LoginScreenFlash, self).hide()
+        self.component.visible = False
+        self.component.focus = False
+
+    def show(self):
+        super(LoginScreenFlash, self).show()
+        self.component.visible = True
+        self.component.focus = True
+
+    def update_gold(self, gold):
+        self.account_actions.update_gold(gold)
+
+    def update_platinum(self, value):
+        self.account_actions.update_platinum(value)
+
+    def update_partner_id(self, value):
+        self.account_actions.update_partner_id(value)
+
+    def update_premium(self):
+        self.account_actions.update_premium()
+
+    def update_booster(self):
+        self.account_actions.update_booster()
+
+    def update_premium_account_data(self, account = None):
+        self.account_actions.update_premium_account_data(account=account)
+
+    def all_language(self):
+        """\xd0\x92\xd0\xbe\xd0\xb7\xd0\xb2\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xb4\xd0\xbe\xd1\x81\xd1\x82\xd1\x83\xd0\xbf\xd0\xbd\xd1\x8b\xd0\xb5 \xd0\xbb\xd0\xbe\xd0\xba\xd0\xb0\xd0\xbb\xd0\xb8\xd0\xb7\xd0\xb0\xd1\x86\xd0\xb8\xd0\xb8."""
+        answer = None
+        localizations_path = 'local/localizations.json'
+        try:
+            py_data_section = ResMgr.openSection(localizations_path)
+            answer = json.loads(py_data_section.asBinary)
+        except Exception:
+            exepath = sys.executable
+            game_dir, _exe_game = os.path.split(exepath)
+            main_path = os.path.split(game_dir)[0]
+            localiz_path = os.path.join(main_path, 'res', localizations_path)
+            with open(localiz_path) as fh:
+                answer = json.load(fh)
+
+        self.localization_config = answer
+        return answer
+
+    def get_news_path(self):
+        language = BWPersonality.settings.getLanguage()
+        if not self.localization_config:
+            self.all_language()
+        return self.localization_config[language]['newsUrl']
+
+    def not_enough_money(self, title, text):
+        self.account_actions.not_enough_money(title, text)
+
+    def open_url(self, data):
+        """\xd0\x9e\xd1\x82\xd0\xba\xd1\x80\xd1\x8b\xd0\xb2\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xbf\xd0\xb5\xd1\x80\xd0\xb5\xd0\xb4\xd0\xb0\xd0\xbd\xd0\xbd\xd1\x83\xd1\x8e \xd1\x81\xd1\x82\xd1\x80\xd0\xb0\xd0\xbd\xd0\xb8\xd1\x86\xd1\x83 \xd0\xb2 \xd0\xb1\xd1\x80\xd0\xb0\xd1\x83\xd0\xb7\xd0\xb5\xd1\x80\xd0\xb5."""
+        url = data['url']
+        webbrowser.open(url)
+
+    def on_promo_click(self):
+        if not BWPersonality.GUICore.is_promo_gui_visible():
+            BWPersonality.GUICore.promo_gui.show_promo()
+
+    def on_cutscene_click(self):
+        BWPersonality.GUICore.show_cutscenelist()
+
+    def on_affiliate_program_click(self):
+        if not BWPersonality.GUICore.is_promo_gui_visible():
+            BWPersonality.GUICore.promo_gui.show_partnership()
+
+    def show_premium_shop(self):
+        BWPersonality.GUICore.storehouse_screen.show_shop()
+        BWPersonality.GUICore.storehouse_screen.set_premium_filter()
+
+    def add_gold_in_browser(self):
+        BigWorld.player().openWebPayment(0)
+
+    def prepare_answer(self, req_name, answer = None):
+        """\xd0\x92\xd0\xbe\xd0\xb7\xd0\xb2\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xbe\xd1\x82\xd0\xb2\xd0\xb5\xd1\x82 \xd0\xb2 \xd1\x82\xd0\xb0\xd0\xba\xd0\xbe\xd0\xbc \xd0\xb2\xd0\xb8\xd0\xb4\xd0\xb5, \xd0\xb2 \xd0\xba\xd0\xb0\xd0\xba\xd0\xbe\xd0\xbc \xd0\xb5\xd0\xb3\xd0\xbe \xd0\xbe\xd0\xb6\xd0\xb8\xd0\xb4\xd0\xb0\xd0\xb5\xd1\x82 \xd1\x84\xd0\xbb\xd1\x8d\xd1\x88."""
+        result = {'event_name': req_name,
+         'data': answer if answer is not None else dict()}
+        return result
+
+    def ready(self):
+        self.setLoginSteamMode(steam_client_api.STEAM_MODE)
+        self.showGoldBalance(False)
+        mem = psutil.virtual_memory()
+        if mem.total < BWPersonality.game.Constants.CRITICAL_MEMORY_LIMIT1:
+            BWPersonality.GUICore.loginFlash.show_dialog_message(lc('BWPersonality.client.LOW_MEMORY_HEADER'), lc('BWPersonality.client.LOW_MEMORY_CONTENT'))
+
+    @BWMemberCoroutine
+    def _autologin_and_run_debug(self):
+        print '  ZIM: autologin0'
+        authenticate_args = sys.argv[2:6]
+        authenticate_args[2] = int(authenticate_args[2])
+        bot_config = None
+        if len(sys.argv) > 6:
+            bot_config = sys.argv[6]
+        login_error = [False]
+        yield BWWaitForPeriod(0)
+        yield BWWaitForCondition(lambda : bool(self.login_actions.servers_by_id))
+        print '  ZIM: autologin1'
+        if BWPersonality.GUICore._web_browser:
+            BWPersonality.GUICore._web_browser.hide()
+        self.login_actions.authenticateUser(*authenticate_args)
+
+        def overridden_state_of_connect(state, msg):
+            if state == 'ERROR':
+                login_error[0] = True
+                print '  ZIM: autologin error'
+                return
+            state_of_connect(state, msg)
+
+        state_of_connect = BWPersonality.GUICore.loginFlash.state_of_connect
+        BWPersonality.GUICore.loginFlash.state_of_connect = overridden_state_of_connect
+        yield BWWaitForPeriod(0)
+        print '  ZIM: autologin2'
+        if BWPersonality.GUICore._web_browser:
+            BWPersonality.GUICore._web_browser.hide()
+        while True:
+            if hasattr(BigWorld, 'nologin_until'):
+                del BigWorld.nologin_until
+            if getattr(BigWorld.player(), 'dummy', None) and not BWPersonality.GUICore.connectionWindow and getattr(BigWorld.player(), 'characterList', None):
+                print '  ZIM: autologin dummy found', BigWorld.player().characterList
+                break
+            if login_error[0]:
+                BWPersonality.GUICore.loginFlash.state_of_connect = state_of_connect
+                yield BWWaitForPeriod(1)
+                self._autologin_and_run_debug().run()
+                return
+            yield BWWaitForPeriod(0)
+
+        self.account_actions.play_game(None)
+        if BWPersonality.GUICore._web_browser:
+            BWPersonality.GUICore._web_browser.hide()
+        print '  ZIM: autologin3'
+        if bot_config:
+
+            def wait_contition():
+                if BigWorld.player().__class__.__name__ != 'PlayerAvatar':
+                    return False
+                if not BigWorld.player().enteredWorld:
+                    return False
+                if BigWorld.spaceLoadStatus() < 1.0:
+                    return False
+                return True
+
+            yield BWWaitForCondition(wait_contition)
+            from test_bot import test_bot_main
+            test_bot_main.run()
+            bot_win = test_bot_main._instance._test_bot_win
+            bot_win.select_config(bot_config + '.txt')
+            bot_win._on_run_clicked()
+        BWPersonality.GUICore.loginFlash.state_of_connect = state_of_connect
+        return
+
+    def return_in_game(self):
+        """\xd0\x92\xd0\xb5\xd1\x80\xd0\xbd\xd1\x83\xd1\x82\xd1\x8c\xd1\x81\xd1\x8f \xd0\xb2 \xd0\xb8\xd0\xb3\xd1\x80\xd1\x83 \xd0\xb8\xd0\xb7 \xd0\xb8\xd0\xb3\xd1\x80\xd0\xbe\xd0\xb2\xd0\xbe\xd0\xb3\xd0\xbe \xd0\xbc\xd0\xb5\xd0\xbd\xd1\x8e."""
+        self.hide()
+
+    def onShowNewsForFlash(self):
+        """\xd0\x9e\xd1\x82\xd0\xbf\xd1\x80\xd0\xb0\xd0\xb2\xd0\xbb\xd1\x8f\xd0\xb5\xd1\x82 \xd0\xb2\xd0\xbe \xd1\x84\xd0\xbb\xd1\x8d\xd1\x88, \xd1\x87\xd1\x82\xd0\xbe \xd0\xbd\xd1\x83\xd0\xb6\xd0\xbd\xd0\xbe \xd0\xbf\xd0\xbe\xd0\xba\xd0\xb0\xd0\xb7\xd0\xb0\xd1\x82\xd1\x8c \xd0\xbd\xd0\xbe\xd0\xb2\xd0\xbe\xd1\x81\xd1\x82\xd0\xb8, \xd0\xbf\xd0\xbe \xd0\xb8\xd0\xbd\xd0\xb8\xd1\x86\xd0\xb8\xd0\xb0\xd1\x82\xd0\xb8\xd0\xb2\xd0\xb5 \xd1\x81\xd0\xb5\xd1\x80\xd0\xb2\xd0\xb5\xd1\x80\xd0\xb0."""
+        self.send_to_flashscript('showNews')
+
+    def show_news(self):
+        """\xd0\xb8\xd0\xb7 \xd1\x84\xd0\xbb\xd0\xb5\xd1\x88\xd0\xb0 \xd0\xbf\xd1\x80\xd0\xb8\xd1\x88\xd0\xbb\xd0\xbe, \xd1\x87\xd1\x82\xd0\xbe \xd0\xb3\xd0\xbe\xd1\x82\xd0\xbe\xd0\xb2 \xd0\xbf\xd0\xbe\xd0\xba\xd0\xb0\xd0\xb7\xd1\x8b\xd0\xb2\xd0\xb0\xd1\x82\xd1\x8c \xd0\xbd\xd0\xbe\xd0\xb2\xd0\xbe\xd1\x81\xd1\x82\xd0\xb8"""
+        url = self.get_news_path()
+        BWPersonality.GUICore.showWebEmbdeded(True, url, close_callback=self.close_news)
+
+    def close_news(self):
+        """\xd0\xb1\xd1\x80\xd0\xb0\xd1\x83\xd0\xb7\xd0\xb5\xd1\x80 \xd1\x81 \xd0\xbd\xd0\xbe\xd0\xb2\xd0\xbe\xd1\x81\xd1\x82\xd1\x8f\xd0\xbc\xd0\xb8 \xd0\xb1\xd1\x8b\xd0\xbb \xd0\xb7\xd0\xb0\xd0\xba\xd1\x80\xd1\x8b\xd1\x82, \xd1\x83\xd0\xb1\xd0\xb5\xd1\x80\xd0\xb8 '\xd0\xb7\xd0\xb0\xd1\x89\xd0\xb8\xd1\x82\xd1\x83' \xd0\xb2\xd0\xbe \xd1\x84\xd0\xbb\xd0\xb5\xd1\x88\xd0\xb5"""
+        self.send_to_flashscript('closeNews')
+
+    def send_to_flashscript(self, event, answer = None):
+        """\xd0\x92\xd0\xbe\xd0\xb7\xd0\xb2\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xbe\xd1\x82\xd0\xb2\xd0\xb5\xd1\x82 \xd0\xbd\xd0\xb0 \xd0\xb7\xd0\xb0\xd0\xbf\xd1\x80\xd0\xbe\xd1\x81\xd1\x8b \xd0\xb2\xd0\xbe \xd1\x84\xd0\xbb\xd0\xb5\xd1\x88."""
+        result = self.prepare_answer(event, answer)
+        callback = functools.partial(self.viewX.invoke, ('externalInterfaceTransmit', result))
+        BigWorld.callback(0.0, callback)
+
+    def send_checked_nickname(self, nick, result, message):
+        self.account_actions.send_checked_nickname(nick, result, message)
+
+    def set_steam_trusted(self, value):
+        self.account_actions.set_steam_trusted(value)
+
+    def send_password_text(self, text):
+        self.send_to_flashscript('send_password_text', {'text': text})
+
+    def all_characters_info(self):
+        """\xd0\x98\xd0\xbd\xd1\x84\xd0\xbe\xd1\x80\xd0\xbc\xd0\xb0\xd1\x86\xd0\xb8\xd1\x8f \xd0\xbe \xd0\xbf\xd0\xb5\xd1\x80\xd1\x81\xd0\xbe\xd0\xbd\xd0\xb0\xd0\xb6\xd0\xb0\xd1\x85."""
+        info = self.account_actions.all_characters_info()
+        self.send_to_flashscript('allCharactersInfo', info)
+        if self.account_actions.get_characters_count() == 0:
+            BWPersonality.game.show_char_maker()
+            self.send_to_flashscript('activateFirstCharWindow')
+            account = BigWorld.player()
+            if hasattr(account, 'onLoadDummyModelComplete'):
+                account.onLoadDummyModelComplete(None)
+        return
+
+    def showDeveloperServer(self):
+        self.login_actions.showDeveloperServer()
+
+    def show_ingame_menu(self):
+        """\xd0\xa1\xd0\xbe\xd0\xb1\xd1\x8b\xd1\x82\xd0\xb8\xd0\xb5 \xd0\xbf\xd0\xbe\xd0\xba\xd0\xb0\xd0\xb7\xd0\xb0\xd1\x82\xd1\x8c \xd0\xb8\xd0\xb3\xd1\x80\xd0\xbe\xd0\xb2\xd0\xbe\xd0\xb5 \xd0\xbc\xd0\xb5\xd0\xbd\xd1\x8e."""
+        self.send_to_flashscript('gameMenu')
+
+    def show_dialog_message(self, title, text):
+        """\xd0\xa1\xd0\xbe\xd0\xb1\xd1\x8b\xd1\x82\xd0\xb8\xd0\xb5 \xd0\xbf\xd0\xbe\xd0\xba\xd0\xb0\xd0\xb7\xd0\xb0\xd1\x82\xd1\x8c \xd0\xbf\xd1\x80\xd0\xbe\xd1\x81\xd1\x82\xd0\xbe\xd0\xb9 messagebox \xd0\xb2 \xd0\xbc\xd0\xb5\xd0\xbd\xd1\x8e."""
+        self.send_to_flashscript('show_dialog', {'title': title,
+         'text': text})
+
+    def show_dialog_shield(self):
+        """\xd0\x94\xd0\xbb\xd1\x8f \xd0\xb2\xd1\x8b\xd0\xb7\xd0\xbe\xd0\xb2\xd0\xb0 \xd1\x87\xd0\xb5\xd0\xb3\xd0\xbe-\xd1\x82\xd0\xbe \xd0\xbf\xd0\xbe\xd0\xb2\xd0\xb5\xd1\x80\xd1\x85 \xd0\xb3\xd0\xbb\xd0\xb0\xd0\xb2\xd0\xbd\xd0\xbe\xd0\xb3\xd0\xbe \xd0\xbc\xd0\xb5\xd0\xbd\xd1\x8e, \xd1\x84\xd0\xbb\xd0\xb5\xd1\x88 \xd0\xb1\xd0\xbb\xd0\xbe\xd0\xba\xd0\xb8\xd1\x80\xd1\x83\xd0\xb5\xd1\x82\xd1\x81\xd1\x8f"""
+        self.send_to_flashscript('show_dialog_shield')
+
+    def hide_dialog_shield(self):
+        """\xd0\x94\xd0\xbb\xd1\x8f \xd0\xb2\xd1\x8b\xd0\xb7\xd0\xbe\xd0\xb2\xd0\xb0 \xd1\x87\xd0\xb5\xd0\xb3\xd0\xbe-\xd1\x82\xd0\xbe \xd0\xbf\xd0\xbe\xd0\xb2\xd0\xb5\xd1\x80\xd1\x85 \xd0\xb3\xd0\xbb\xd0\xb0\xd0\xb2\xd0\xbd\xd0\xbe\xd0\xb3\xd0\xbe \xd0\xbc\xd0\xb5\xd0\xbd\xd1\x8e, \xd1\x84\xd0\xbb\xd0\xb5\xd1\x88 \xd0\xb1\xd0\xbb\xd0\xbe\xd0\xba\xd0\xb8\xd1\x80\xd1\x83\xd0\xb5\xd1\x82\xd1\x81\xd1\x8f"""
+        self.send_to_flashscript('hide_dialog_shield')
+
+    def on_disconnect(self):
+        self.send_to_flashscript('ActionsWithLogin.authenticateUser', error)
+
+    def state_of_connect(self, state, msg = ''):
+        error = self.login_actions.state_of_connect(state, msg)
+        print '\t\tstate_of_connect', error
+        if error is not None:
+            self.send_to_flashscript('ActionsWithLogin.authenticateUser', error)
+        return
+
+    def show_dummy(self):
+        dummy = getattr(BigWorld.player(), 'dummy', None)
+        if dummy:
+            dummy.show_dummy()
+        return
+
+    def hide_dummy(self):
+
+        def hide():
+            dummy = getattr(BigWorld.player(), 'dummy', None)
+            if dummy:
+                dummy.hide_dummy()
+            return
+
+        BigWorld.callback(0.5, hide)
+
+    def onMouseRightDrag(self, x, y):
+        DummyRotating().rotate_model(x, y)
+
+    def onMouseLeftDrag(self, x, y):
+        DummyRotating().rotate(x, y)
+
+    def open_settings(self):
+        """\xd0\x9e\xd1\x82\xd0\xba\xd1\x80\xd1\x8b\xd1\x82\xd1\x8c \xd0\xbe\xd0\xba\xd0\xbd\xd0\xbe \xd0\xb2\xd0\xbd\xd1\x83\xd1\x82\xd1\x80\xd0\xb8\xd0\xb8\xd0\xb3\xd1\x80\xd0\xbe\xd0\xb2\xd1\x8b\xd1\x85 \xd0\xbd\xd0\xb0\xd1\x81\xd1\x82\xd1\x80\xd0\xbe\xd0\xb5\xd0\xba."""
+        self.send_to_flashscript('open_settings')
+
+    def close_settings(self):
+        BWPersonality.GUICore.showIngameSettings(False)
+        self.send_to_flashscript('close_settings')
+
+    def setLoginSteamMode(self, value):
+        """\xd0\xb7\xd0\xb0\xd0\xbf\xd1\x83\xd1\x81\xd0\xba\xd0\xb0\xd1\x82\xd1\x8c \xd0\xba\xd0\xbb\xd0\xb8\xd0\xb5\xd0\xbd\xd1\x82 \xd0\xb2 \xd1\x80\xd0\xb5\xd0\xb6\xd0\xb8\xd0\xbc\xd0\xb5 \xd0\xb4\xd0\xbb\xd1\x8f Steam"""
+        self.send_to_flashscript('steam_mode', {'is_steam': value})
+
+    def setUserParams(self, login):
+        """\xd0\xb7\xd0\xb0\xd0\xbf\xd1\x83\xd1\x81\xd0\xba\xd0\xb0\xd1\x82\xd1\x8c \xd0\xb7\xd0\xb0\xd0\xb4\xd0\xb0\xd1\x82\xd1\x8c \xd0\xb8\xd0\xbc\xd1\x8f \xd0\xb0\xd0\xba\xd0\xba\xd0\xb0\xd1\x83\xd0\xbd\xd1\x82\xd0\xb0 \xd0\xb4\xd0\xbb\xd1\x8f \xd1\x81\xd1\x82\xd0\xb8\xd0\xbc\xd0\xb0"""
+        self.send_to_flashscript('user_params', {'login': login})
+
+    def showGoldBalance(self, value):
+        self.send_to_flashscript('gold_visible', {'visible': value})

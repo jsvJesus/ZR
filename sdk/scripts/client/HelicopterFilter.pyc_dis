@@ -1,0 +1,142 @@
+# Embedded file name: ./client/HelicopterFilter.py
+from Math import Vector3, Matrix
+from math import sin, cos, atan2
+import BigWorld
+from math_bw import inverse_lerpclam, move_towards
+from Tank import IGNORE_MATERIAL
+
+class HelicopterFilter(object):
+
+    def __init__(self, entity):
+        self._entity = entity
+        self._filter = BigWorld.PythonFilter()
+        self._entity.filter = self._filter
+        self._filter.resetFilter = self._reset
+        self._filter.inputFilter = self._input
+        self._filter.outputFilter = self._output
+        self._filter.lastInputFilter = self._last_input
+        self._filter.disableEngineOutput = True
+        self._last_values = []
+        owner = self._filter.owner
+        self._filter.inputFilter(BigWorld.time(), owner.spaceID, 0, owner.position, 0, Vector3(owner.yaw, owner.pitch, owner.roll))
+        self._sway_amplitude = 0.1
+        self._sway_frequency = 0.5
+        self._max_sway_height = 10.0
+        self._sway = 0
+        self.speed = 0
+        self._prev_height = None
+        BigWorld.callback(0, self._tick)
+        return
+
+    def _reset(self, time):
+        pass
+
+    def _tick(self):
+        if self._entity.isDestroyed:
+            return
+        dtime = BigWorld.getTimeDelta()
+        height_factor = 1.0
+        up = self._entity.position + Vector3(0, 1, 0)
+        down = self._entity.position - Vector3(0, 50, 0)
+        res = BigWorld.collideIgnoreFlags(BigWorld.player().spaceID, up, down, IGNORE_MATERIAL)
+        if res:
+            hit = res[0]
+            if hit:
+                height = self._entity.position[1] - hit[1]
+                touch_down_height = 0.25
+                if height <= touch_down_height and self._prev_height > touch_down_height:
+                    self._entity.on_touchdown()
+                if height < self._max_sway_height:
+                    height_factor = inverse_lerpclam(0, self._max_sway_height, height)
+                self._prev_height = height
+            desired_sway = self._sway_amplitude * sin(BigWorld.time() * self._sway_frequency) * height_factor * self._entity.preparation_factor
+            self._sway = move_towards(self._sway, desired_sway, dtime)
+            self._filter.forceOutput(dtime)
+            self._entity.model.tickDisable = self._entity.model and False
+            self._entity.model.forceTick(dtime)
+            self._entity.model.tickDisable = True
+            self._entity.model.forceDraw()
+        BigWorld.callback(0, self._tick)
+
+    def _input(self, time, space_id, vehicle_id, pos, pos_error, rotation):
+        self._time = time
+        self._space_id = space_id
+        self._vehicle_id = vehicle_id
+        self._pos = pos
+        self._pos_error = pos_error
+        self._rotation = rotation
+        self._last_values.append({'time': time,
+         'pos': pos,
+         'rot': rotation})
+        while self._last_values[0]['time'] < time - 2.0:
+            del self._last_values[0]
+
+    def _output(self, time):
+        return self._output_debug(time)
+
+    def _output_debug(self, time):
+        if not self._last_values:
+            return
+        time = BigWorld.time() - 1.0
+        pos = Vector3(0, 0, 0)
+        rot = Vector3(0, 0, 0)
+        total_weight = 0.0
+        fly_dist = 0.0
+        x, y = (0, 0)
+        for i, value in enumerate(self._last_values):
+            distance = abs(value['time'] - time)
+            weight = inverse_lerpclam(1, 0, distance)
+            if weight != 0:
+                angle = Vector3(value['rot'])
+                pos += Vector3(value['pos']) * weight
+                rot += angle * weight
+                x += cos(angle[0]) * weight
+                y += sin(angle[0]) * weight
+                total_weight += weight
+            if i > 0:
+                fly_dist += value['pos'].distTo(self._last_values[i - 1]['pos'])
+
+        if total_weight == 0:
+            return
+        pos /= total_weight
+        rot /= total_weight
+        mean_yaw = atan2(y, x)
+        rot[0] = mean_yaw
+        total_time = self._last_values[-1]['time'] - self._last_values[0]['time']
+        speed = fly_dist / total_time if total_time > 0 else 0.0
+        self.speed = move_towards(self.speed, speed, BigWorld.getTimeDelta())
+        pivot_height = 4.236558
+        t1 = Matrix()
+        t1.setTranslate((0, -pivot_height, 0))
+        t2 = Matrix()
+        t2.setRotateYPR((rot[0], rot[1], rot[2] + self._sway))
+        t1.postMultiply(t2)
+        t2.setTranslate((0, pivot_height, 0))
+        t1.postMultiply(t2)
+        t2.setTranslate(pos)
+        t2.preMultiply(t1)
+        pos = t2.translation
+        rot = Vector3(t2.yaw, t2.pitch, t2.roll)
+        return (pos, rot, Vector3())
+
+    def _last_input(self, unused_time, unused_space_id, unused_vehicle_id, unused_pos, unused_pos_error, unused_rotation):
+        return (True,
+         self._time,
+         self._space_id,
+         self._vehicle_id,
+         self._pos,
+         self._pos_error,
+         self._rotation)
+
+    @property
+    def speed(self):
+        return self._speed
+
+    @speed.setter
+    def speed(self, value):
+        if getattr(self, '_speed', None) == value:
+            return
+        else:
+            self._speed = value
+            self._entity.on_speed_changed()
+            return

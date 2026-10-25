@@ -1,0 +1,128 @@
+# Embedded file name: ./client/CueModel.py
+import FX
+import BigWorld
+import traceback
+import sounds_manager as sounds
+from functools import partial
+from CueModelUtills import CueModelUtills
+
+class CueModel(object):
+    avatarInWater = False
+
+    def __init__(self):
+        pass
+
+    def onLoadModel(self, model):
+        if model is None:
+            return
+        else:
+            model_name = model.sources[0]
+            cue_data = CueModelUtills().get_cue_data(model_name)
+            cue_list = []
+            if cue_data:
+                cue_list = cue_data.keys()
+            for cue_name in cue_list:
+                model.cue(cue_name, partial(self.cueTrigger, cue_name))
+
+            return
+
+    def cueTrigger(self, cue_name):
+        if self.isDestroyed or not self.model:
+            return
+        else:
+            model_name = self.model.sources[0]
+            cue_data = CueModelUtills().get_cue_data(model_name, cue_name)
+            if cue_data.get('ignore_in_water', False) and self.avatarInWater:
+                return
+            self._loadCueSFXByMaterialKind(cue_data.get('self_sfx_materkind', {}))
+            self._loadCueSFX(cue_data.get('sfx', {}))
+            self._loadSound(cue_data.get('sound', None))
+            self._loadCueModels(cue_data.get('models', {}), cue_data.has_key('use_item'), cue_data.has_key('hands'))
+            return
+
+    def _loadSound(self, sound_path):
+        if not sound_path:
+            return
+        if not self.model:
+            return
+        sounds.playSound(sound_path, self.model)
+
+    def _loadCueSFXByMaterialKind(self, sfxes):
+        if not sfxes:
+            return
+        else:
+            res = BigWorld.collide(self.spaceID, self.position + (0, 1, 0), self.position - (0, 1, 0))
+            if not res:
+                return
+            mat_id = str(res[-1])
+            sfx_path = sfxes.get('DEF', None)
+            sfx_path = sfxes.get(mat_id, sfx_path)
+            if sfx_path:
+                FX.bufferedOneShotEffect(str(sfx_path), self.model)
+            return
+
+    def _loadCueSFX(self, sfxes):
+        for target_name, sfx_path in sfxes.items():
+            if target_name == 'self':
+                target = self.model
+            else:
+                target = getattr(self.model, target_name, None)
+            if not target or not sfx_path:
+                continue
+            FX.bufferedOneShotEffect(sfx_path, target)
+
+        return
+
+    def _loadCueModels(self, cue_models, use_item = False, hands = False):
+        if use_item and (self._in_hand_model_left or self._in_hand_model_right):
+            self.model.ThrowLeft = self._in_hand_model_left
+            self.model.ThrowRight = self._in_hand_model_right
+            return
+        else:
+            if hands and (self._in_hand_model_left or self._in_hand_model_right):
+                self.model.Lhand = self._in_hand_model_left
+            for target_name, model_param in cue_models.items():
+                model_list_names = model_param.get('model', [])
+                if not model_list_names:
+                    continue
+                for i, model_name in enumerate(model_list_names):
+                    model_list_names[i] = str(model_name)
+
+                try:
+                    if model_list_names[0] == 'None':
+                        setattr(self.model, target_name, None)
+                        continue
+                except Exception as e:
+                    continue
+
+                saved_model = getattr(self, '_in_hand_model_' + target_name, None)
+                if use_item and saved_model:
+                    try:
+                        setattr(self.model, target_name, saved_model)
+                        continue
+                    except Exception as e:
+                        continue
+
+                def onLoadCueModel(node_name, tint_list, model):
+                    if self.isDestroyed:
+                        return
+                    try:
+                        setattr(self.model, str(node_name), model)
+                    except Exception as e:
+                        print 'ERROR:: CueModel::onLoadCueModel', self.model, node_name, model
+                        traceback.print_exc()
+
+                    for tint in tint_list:
+                        for tint_key, tint_val in tint.items():
+                            try:
+                                setattr(model, str(tint_key), str(tint_val))
+                            except Exception as e:
+                                print 'ERROR:: CueModel::onLoadCueModel::TintErr', model.sources, tint_key, tint_val
+                                traceback.print_exc()
+
+                model_list = []
+                model_list.extend(model_list_names)
+                model_list.append(partial(onLoadCueModel, target_name, model_param.get('tints', [])))
+                BigWorld.fetchModel(*model_list)
+
+            return

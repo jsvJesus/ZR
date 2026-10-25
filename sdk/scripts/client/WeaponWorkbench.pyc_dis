@@ -1,0 +1,150 @@
+# Embedded file name: ./client/WeaponWorkbench.py
+import Math
+import random
+import math_bw
+import clweapon
+import BigWorld
+import Constants
+import gui_jokes
+import ItemsUtils
+import BWPersonality
+import ChatChannelConfig
+import WeaponWorkbenchUtils
+from Localization import lc
+from rep_utils import Bonus
+from Items import ItemsCatalog
+from sounds_manager import playSound
+from Helpers.Caps import CAP_INTERACT
+from soGUI.soInworldMarkers import soInworldMarker
+from WorkbenchUtil import InteractionType as IT
+CHANNEL_CONSTS = ChatChannelConfig.ChannelConsts()
+
+class WeaponWorkbench(BigWorld.Entity):
+    """" client/WeaponWorkbench """
+    MODEL_NAME = 'models\\props\\furniture\\technical\\workbench_weapon.model'
+    MODEL_LEVEL_PATH = 'models/props/crafting_table/workbench_weapon/workbench_weapon_lvl{0}.model'
+
+    def __init__(self):
+        self.height = 1.0
+        BigWorld.Entity.__init__(self)
+        self.targetCaps = [CAP_INTERACT]
+        level = WeaponWorkbenchUtils.get_grade_level(self)
+        self.name = lc('Workbench.names.WEAPON').format(level)
+        self.current_item = None
+        self.gun_model = None
+        return
+
+    def onLoadModel(self, model):
+        if self.isDestroyed:
+            return
+        self.model = model
+        self.model.isObstacle = True
+        self.height = Math.Matrix(self.model.bounds).get(1, 1) if model else 1.0
+        if self.model:
+            self.model.weapon_placement = BigWorld.Model('')
+
+    def onEnterWorld(self, prereqs):
+        self._redraw_Model()
+        self.targetFullBounds = True
+
+    def onLeaveWorld(self):
+        pass
+
+    def clear(self):
+        self.model.effectorright = None
+        return
+
+    def clearModel(self):
+        if self.gun_model:
+            self.model.node('HP_weapon_placement').detach(self.gun_model)
+            self.gun_model = None
+        self.current_item = None
+        return
+
+    def interact(self, player, npc = None, interaction_type = IT.Personal):
+        interaction_dist = self.get_interaction_dist()
+        if npc:
+            interaction_dist *= 2
+        if player.position.distTo(self.position) > interaction_dist:
+            player.putMessage(CHANNEL_CONSTS.SYSTEM, lc('soGrades.messages.error_distance'))
+            return
+
+        def show():
+            BWPersonality.GUICore.show_grade_gui(workbench=self, npc=npc)
+            playSound('environment/workbenches/weapon', self.model)
+
+            def _close_wnd(enteredTrap, handle):
+                if not enteredTrap:
+                    BigWorld.delPot(handle)
+                    BWPersonality.GUICore.show_grade_gui(doShow=False)
+
+            player.manipulatePot = BigWorld.addPot(self.matrix, Constants.INTERACTION_DISTANCE, _close_wnd)
+
+        if self.group_id and interaction_type == IT.Personal:
+
+            def got_bonus(rep_id, bonus_id, result):
+                if result:
+                    show()
+                else:
+                    gui_jokes.askUserOk(u'', lc('PlayerAvatar.client.WORKBENCH_REP'))
+
+            BigWorld.player().get_repbonus_dynamic1 = got_bonus
+            BigWorld.player().base.get_repbonus_dynamic0(Bonus.Workbench, self.group_id)
+        else:
+            show()
+
+    def get_interaction_dist(self):
+        if not self.targetCaps:
+            return 0
+        return Constants.INTERACTION_DISTANCE
+
+    def get_mark_distance(self):
+        return Constants.INTERACTION_DISTANCE
+
+    def get_hightlight(self, distance):
+        if not self.targetCaps or distance > Constants.INTERACTION_DISTANCE:
+            return None
+        else:
+            return True
+
+    def get_target_mark(self, distance):
+        if CAP_INTERACT not in self.targetCaps:
+            return None
+        elif distance > Constants.INTERACTION_DISTANCE:
+            return None
+        else:
+            return soInworldMarker.MARKER_USE
+
+    def setItem(self, item):
+        player = BigWorld.player()
+        if not player or not self.model:
+            return
+        if not item:
+            self.clearModel()
+            return
+        if self.current_item and item['complexItemID'] == self.current_item['complexItemID']:
+            return
+        self.clearModel()
+        self.current_item = item
+
+        def onLoadGunModel(model):
+            self.gun_model = model
+            self.model.node('HP_weapon_placement').attach(self.gun_model)
+
+        if ItemsCatalog.GetItemClass(item['complexItemType']) == ItemsCatalog.WEAPON:
+            weapon = clweapon.ClWeapon(item)
+            model = weapon.getModel()
+            onLoadGunModel(model)
+        else:
+            gun_model_list = ItemsUtils.GetItemModelList(item)
+            if not gun_model_list:
+                return
+            gun_model_list.append(onLoadGunModel)
+            BigWorld.fetchModel(*gun_model_list)
+
+    def _redraw_Model(self):
+        level = WeaponWorkbenchUtils.get_grade_level(self)
+        path = self.MODEL_NAME
+        if level > 1:
+            path = self.MODEL_LEVEL_PATH.format(level)
+        BigWorld.fetchModel(path, self.onLoadModel)

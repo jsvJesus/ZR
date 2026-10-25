@@ -1,0 +1,56 @@
+# Embedded file name: ./common/Lib/PIL/MicImagePlugin.py
+from PIL import Image, TiffImagePlugin
+from PIL.OleFileIO import MAGIC, OleFileIO
+__version__ = '0.1'
+
+def _accept(prefix):
+    return prefix[:8] == MAGIC
+
+
+class MicImageFile(TiffImagePlugin.TiffImageFile):
+    format = 'MIC'
+    format_description = 'Microsoft Image Composer'
+
+    def _open(self):
+        try:
+            self.ole = OleFileIO(self.fp)
+        except IOError:
+            raise SyntaxError('not an MIC file; invalid OLE file')
+
+        self.images = []
+        for path in self.ole.listdir():
+            if path[1:] and path[0][-4:] == '.ACI' and path[1] == 'Image':
+                self.images.append(path)
+
+        if not self.images:
+            raise SyntaxError('not an MIC file; no image entries')
+        self.__fp = self.fp
+        self.frame = 0
+        if len(self.images) > 1:
+            self.category = Image.CONTAINER
+        self.seek(0)
+
+    @property
+    def n_frames(self):
+        return len(self.images)
+
+    @property
+    def is_animated(self):
+        return len(self.images) > 1
+
+    def seek(self, frame):
+        try:
+            filename = self.images[frame]
+        except IndexError:
+            raise EOFError('no such frame')
+
+        self.fp = self.ole.openstream(filename)
+        TiffImagePlugin.TiffImageFile._open(self)
+        self.frame = frame
+
+    def tell(self):
+        return self.frame
+
+
+Image.register_open(MicImageFile.format, MicImageFile, _accept)
+Image.register_extension(MicImageFile.format, '.mic')

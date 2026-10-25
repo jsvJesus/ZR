@@ -1,0 +1,378 @@
+# Embedded file name: ./client/soGUI/WorldMapGUI/Note.py
+import BigWorld
+from math import sqrt
+import GUI
+from Math import Vector3, Matrix, Vector4
+from Helpers.PyGUI.PyGUIBase import PyGUIBase
+import BWPersonality
+import colorCodes
+import Keys
+from Localization import lc
+import soGUI
+from soGUI.soTextField import soTextField3
+import QuestDispatcher as qd
+from MapNotes import MapNotes
+import sounds_manager
+
+class Note(PyGUIBase):
+
+    def __init__(self, text, component):
+        self._text = None
+        if text:
+            self._text = colorCodes.tf3_regular_text_color + text
+        self.component = component
+        component.script = self
+        PyGUIBase.__init__(self, component)
+        self.component.crossFocus = True
+        self._interface_id = 'WorldMapNote.' + self.__class__.__name__ + str(hash(self))
+        return
+
+    @property
+    def visible(self):
+        return self.component.visible
+
+    @visible.setter
+    def visible(self, value):
+        self.component.visible = value
+
+    def handleMouseEnterEvent(self, comp):
+        if self._text:
+            self._show_tool_tip()
+        return False
+
+    def handleMouseLeaveEvent(self, comp):
+        self._hide_tool_tip()
+        return False
+
+    def _show_tool_tip(self):
+        text = self._text
+        if BigWorld.isKeyDown(BigWorld.stringToKey('F2')) and BigWorld.player().isAdminAccess():
+            text += u'\n' + self._debug_info()
+        BWPersonality.GUICore.showToolTip(text, delay=0, tooltipID=id(self))
+
+    def _debug_info(self):
+        return u''
+
+    def _hide_tool_tip(self):
+        if BWPersonality.GUICore.toolTip:
+            BWPersonality.GUICore.toolTip.hide()
+
+    @property
+    def position(self):
+        return self._position
+
+    @property
+    def size(self):
+        return None
+
+
+class Mark(Note):
+
+    def __init__(self, text, position, texture_name, depth = 0.1):
+        self._position = Vector3(position)
+        self._texture_name = texture_name
+        self._depth = depth
+        comp = self._create_comp()
+        Note.__init__(self, text, comp)
+
+    def _create_comp(self):
+        comp = GUI.Simple(self._texture_name)
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+        comp.width, comp.height = comp.texture.width, comp.texture.height
+        comp.position = (0, 0, self._depth)
+        comp.materialFX = 'BLEND'
+        return comp
+
+    def set_position(self, world_position):
+        self._position = Vector3(world_position)
+
+
+class CompoundMark(Mark):
+    Radius = 80.0
+
+    def __init__(self, position):
+        Mark.__init__(self, lc('MapNotesHolder.COMPOUND'), position, None, depth=0.9)
+        return
+
+    def _create_comp(self):
+        g = GUI.CircleComponent('textures/default/alpha.dds')
+        g.horizontalPositionMode, g.verticalPositionMode = ('CLIP', 'CLIP')
+        g.horizontalAnchor, g.verticalAnchor = ('CENTER', 'CENTER')
+        g.widthMode, g.heightMode = ('CLIP', 'CLIP')
+        g.materialFX = 'BLEND'
+        g.width, g.height = (0.1, 0.1)
+        g.position = (0, 0, self._depth)
+        g.baseColor = (0.639, 0.996, 0.831, 0.3)
+        g.outlineColor = (0.639, 0.996, 0.831, 1)
+        g.radius = 1.0
+        g.outlineWidth = 0.03
+        g.minOutlinePixelWidth = 5
+        g.setShapes([((0, 0), (0, 0, 1, 1))])
+        g.setShapeActives([(0, 0)])
+        g.filterType = 'LINEAR'
+        return g
+
+    @property
+    def size(self):
+        return CompoundMark.Radius * 2
+
+
+class WorldplaceMark(Mark):
+
+    def __init__(self, position, radius):
+        self.radius = radius
+        Mark.__init__(self, lc('MapNotesHolder.EVENT'), position, None, depth=0.9)
+        return
+
+    def _create_comp(self):
+        g = GUI.CircleComponent('textures/default/alpha.dds')
+        g.horizontalPositionMode, g.verticalPositionMode = ('CLIP', 'CLIP')
+        g.horizontalAnchor, g.verticalAnchor = ('CENTER', 'CENTER')
+        g.widthMode, g.heightMode = ('CLIP', 'CLIP')
+        g.materialFX = 'BLEND'
+        g.width, g.height = (0.1, 0.1)
+        g.position = (0, 0, self._depth)
+        g.baseColor = (0.529, 0.809, 0.922, 0.3)
+        g.outlineColor = (0.255, 0.412, 0.882, 1)
+        g.radius = 1.0
+        g.outlineWidth = 0.03
+        g.minOutlinePixelWidth = 5
+        g.setShapes([((0, 0), (0, 0, 1, 1))])
+        g.setShapeActives([(0, 0)])
+        g.filterType = 'LINEAR'
+        return g
+
+    def calc_cursor(self):
+        local_pos = self.component.screenToLocal(BWPersonality.game.mcursor.position)
+        homo_dist = sqrt(local_pos.x * local_pos.x + local_pos.y * local_pos.y)
+        return homo_dist <= 1
+
+    @property
+    def size(self):
+        return self.radius and self.radius * 2
+
+
+class QuestMark(Mark):
+
+    def __init__(self, quest_id, position, radius):
+        self._title = qd.getQuestTitleByID(quest_id)
+        self.is_circle_type = bool(radius)
+        self.quest_id = quest_id
+        self.radius = None
+        if self.is_circle_type:
+            self.radius = radius
+            Mark.__init__(self, None, position, None, depth=0.9)
+            self.component.crossFocus = False
+        else:
+            Mark.__init__(self, self._title, position, 'soGUI/frame/minimap/mark.dds', depth=0.05)
+        return
+
+    def show_tooltip(self):
+        BWPersonality.GUICore.showToolTip(colorCodes.tf3_regular_text_color + self._title, delay=0, tooltipID=id(self))
+
+    def calc_cursor(self):
+        local_pos = self.component.screenToLocal(BWPersonality.game.mcursor.position)
+        homo_dist = sqrt(local_pos.x * local_pos.x + local_pos.y * local_pos.y)
+        return homo_dist <= 1
+
+    def _create_comp(self):
+        color = qd.get_priority_color(self.quest_id)
+        if self.is_circle_type:
+            color = Vector4(tuple((c / 255.0 for c in color)))
+            g = GUI.CircleComponent('textures/default/alpha.dds')
+            g.horizontalPositionMode, g.verticalPositionMode = ('CLIP', 'CLIP')
+            g.horizontalAnchor, g.verticalAnchor = ('CENTER', 'CENTER')
+            g.widthMode, g.heightMode = ('CLIP', 'CLIP')
+            g.materialFX = 'BLEND'
+            g.width, g.height = (0.1, 0.1)
+            g.position = (0, 0, self._depth)
+            g.outlineColor = color
+            color[3] = 0.3
+            g.baseColor = color
+            g.radius = 1.0
+            g.outlineWidth = 0.03
+            g.minOutlinePixelWidth = 5
+            g.setShapes([((0, 0), (0, 0, 1, 1))])
+            g.setShapeActives([(0, 0)])
+            g.filterType = 'LINEAR'
+            return g
+        else:
+            comp = Mark._create_comp(self)
+            comp.colour = color
+            return comp
+
+    @property
+    def size(self):
+        return self.radius and self.radius * 2
+
+
+class TargetMark(Mark):
+    CONTEXT_EVENT_DELETE_MARK, = xrange(1)
+
+    def __init__(self, position):
+        Mark.__init__(self, None, position, 'soGUI/frame/map/mark_target.dds', depth=0.05)
+        self.component.mouseButtonFocus = True
+        self.on_delege_callback = lambda : None
+        return
+
+    def handleMouseButtonEvent(self, comp, event):
+        if event.key == Keys.KEY_RIGHTMOUSE:
+            if event.isKeyDown():
+                sounds_manager.playSound('ui/map/rmb_click')
+                BWPersonality.GUICore.removeListener('contextMenuEvent', self._context_menu_event)
+                BWPersonality.GUICore.addListener('contextMenuEvent', self._context_menu_event)
+                actions = {TargetMark.CONTEXT_EVENT_DELETE_MARK: lc('Inventory.DELETE_MARK')}
+                if BigWorld.isKeyDown(BigWorld.stringToKey('F2')) and BigWorld.player().isAdminAccess(6):
+                    return False
+                BWPersonality.GUICore.showContextMenu(self._interface_id, actions, data=event.cursorPosition)
+            return True
+        return False
+
+    def _context_menu_event(self, interface_id, eventid, caption, event, data = None):
+        if event == soGUI.soContextMenuComponent.EVENT_SHOW and self._interface_id == interface_id:
+            return
+        BWPersonality.GUICore.removeListener('contextMenuEvent', self._context_menu_event)
+        if self._interface_id != interface_id:
+            return
+        if eventid == TargetMark.CONTEXT_EVENT_DELETE_MARK:
+            self.on_delege_callback()
+
+
+class PersonalMark(Mark):
+    CONTEXT_EVENT_DELETE_MARK, CONTEXT_EVENT_AMEND_MARK = xrange(2)
+
+    def __init__(self, note_data):
+        texture_path = MapNotes.get_path(note_data['flags'])
+        Mark.__init__(self, note_data['notes'], note_data['position'], texture_path)
+        self.component.mouseButtonFocus = True
+        self.component.ha, self.component.va = ('CENTER', 'CENTER')
+        self.component.colour = MapNotes.colors[note_data['color']]
+        self.on_delege_callback = lambda : None
+        self.on_amend_callback = lambda : None
+        self.note_data = note_data
+
+    def handleMouseButtonEvent(self, comp, event):
+        if event.key == Keys.KEY_RIGHTMOUSE:
+            if event.isKeyDown():
+                sounds_manager.playSound('ui/map/rmb_click')
+                BWPersonality.GUICore.removeListener('contextMenuEvent', self._context_menu_event)
+                BWPersonality.GUICore.addListener('contextMenuEvent', self._context_menu_event)
+                actions = {PersonalMark.CONTEXT_EVENT_DELETE_MARK: lc('Inventory.DELETE_MARK'),
+                 PersonalMark.CONTEXT_EVENT_AMEND_MARK: lc('Inventory.AMEND_MARK')}
+                if BigWorld.isKeyDown(BigWorld.stringToKey('F2')) and BigWorld.player().isAdminAccess(6):
+                    return False
+                BWPersonality.GUICore.showContextMenu(self._interface_id, actions, data=event.cursorPosition)
+            return True
+        return False
+
+    def _context_menu_event(self, interface_id, eventid, caption, event, data = None):
+        if event == soGUI.soContextMenuComponent.EVENT_SHOW and self._interface_id == interface_id:
+            return
+        BWPersonality.GUICore.removeListener('contextMenuEvent', self._context_menu_event)
+        if self._interface_id != interface_id:
+            return
+        if eventid == PersonalMark.CONTEXT_EVENT_DELETE_MARK:
+            self.on_delege_callback()
+        elif eventid == PersonalMark.CONTEXT_EVENT_AMEND_MARK:
+            self.on_amend_callback()
+
+    def _debug_info(self):
+        return 'uid: {0}\nserver uid: {1}'.format(self.note_data['uid'], self.note_data.get('servuid'))
+
+
+class CtriggerMark(Mark):
+
+    def __init__(self, data):
+        self._key = data['key']
+        Mark.__init__(self, None, data['position'], None)
+        self.component.crossFocus = False
+        return
+
+    def _create_comp(self):
+        comp = GUI.Window()
+        comp.colour = (255, 255, 255, 255)
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'BOTTOM')
+        comp.position = (0, 0, 0.9)
+        comp.materialFX = 'BLEND'
+        component = comp
+        comp = GUI.Frame2('soGUI/frame/map/frametext_map.dds')
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.width, comp.height = (2, 2)
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+        comp.position = (0, 0, 0.5)
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.materialFX = 'BLEND'
+        component.addChild(comp)
+        comp = GUI.Text(lc(self._key))
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.font = 'RobotoCondensedRegular_14.font'
+        comp.horizontalAnchor = 'LEFT'
+        comp.horizontalPositionMode = 'PIXEL'
+        comp.widthMode = 'PIXEL'
+        comp.multiline = True
+        width, height = map(float, comp.stringDimensions(comp.text))
+        width += 16
+        height += 8
+        comp = GUI.Window()
+        tf = soTextField3(comp, width=width, height=height, textWidth=width, hScroll=False, vScroll=False, borderWidth=0, vOffset=0, hOffset=0)
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'TOP')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'PIXEL')
+        component.addChild(comp)
+        comp.position = (0, 4, 0)
+        comp.moveFocus = False
+        comp.width, comp.height = width, height
+        tf.setText(u'<alignment=center>' + lc(self._key), immidiate=True)
+        component.width, component.height = width, height
+        return component
+
+
+class PlayerMark(Note):
+
+    def __init__(self, texture_name = 'soGUI/frame/minimap/avatar_icon.dds', size = None):
+        self._player_data = None
+        comp = GUI.Window()
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+        comp.position = (0, 0, 0.05)
+        Note.__init__(self, None, comp)
+        self.component.crossFocus = False
+        comp = GUI.Simple(texture_name)
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+        comp.width, comp.height = (2, 2)
+        comp.position = (0, 0, 0.1)
+        comp.materialFX = 'BLEND'
+        comp.filterType = 'LINEAR'
+        self.component.addChild(comp, 'arrow')
+        if size:
+            self.component.width, self.component.height = size
+        else:
+            self.component.width, self.component.height = comp.texture.width, comp.texture.height
+        comp = GUI.Minimap()
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+        comp.width, comp.height = (2, 2)
+        comp.position = (0, 0, 0.5)
+        self._matrix = Matrix()
+        comp.viewpoint = self._matrix
+        comp.add(self._matrix, self.component.arrow)
+        self.component.addChild(comp, 'map')
+        return
+
+    def update_rotation(self, player_data):
+        if player_data:
+            self._player_data = player_data
+        self._matrix.setRotateYPR((self._player_data['yaw'], 0, 0))
+        self.component.arrow.colour = self._player_data['color']
+
+    @property
+    def position(self):
+        return self._player_data and self._player_data['position']

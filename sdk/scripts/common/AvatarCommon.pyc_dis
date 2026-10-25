@@ -1,0 +1,242 @@
+# Embedded file name: ./common/AvatarCommon.py
+from Items import ItemsCatalog
+from bwdecorators import callableOnGhost
+import Constants
+import ItemsUtils
+from weapon import Weapon
+from Constants import PVP_FREE_TYPE
+from avatar_dead_animations import AvatarDeadAnimations
+
+class AvatarCommon(AvatarDeadAnimations):
+    _scopeModeDisable = False
+    DefModelHeightStanding = 1.7
+    DefModelHeightCrouched = 1.15
+    DefModelHeightCrawling = 0.7
+    DefModelScrambleHeight = 0.55
+    DefModelWidth = 0.5
+    DefModelDepthCrawling = 1.6
+    DefModelScrambleHeightCrawling = 0.35
+
+    def applyPutOnWeapon(self, item, slot_number, item_params = None):
+        if not item_params:
+            item_params = ItemsCatalog.GetItemParam(item['complexItemType'])
+        if ItemsUtils.CheckItemClan(self, item_params, self.GetHolderClanID):
+            print self, 'applyPutOnWeapon  CheckItemClan', item['complexItemID'], item['complexItemType'], slot_number
+            return
+        gun_priority = item_params.get('weaponSlot', ItemsCatalog.PRIMARY)
+        current_slot_name = ItemsUtils.getWeaponSlotNameByItemID(self, item['complexItemID'])
+        if gun_priority == ItemsCatalog.SECONDARY:
+            slot_name = 'SecondarySlot'
+        elif not slot_number:
+            if not self.ActiveWeaponSet2['Primary2Slot']['itemID']:
+                slot_name = 'Primary2Slot'
+            else:
+                slot_name = 'PrimarySlot'
+        else:
+            slot_name = ItemsUtils.getWeaponSlotByID(slot_number)
+            if slot_name == 'SecondarySlot':
+                if not self.ActiveWeaponSet2['Primary2Slot']['itemID']:
+                    slot_name = 'Primary2Slot'
+                else:
+                    slot_name = 'PrimarySlot'
+        if current_slot_name and current_slot_name == slot_name:
+            print 'current_slot_name == slot_name', current_slot_name, slot_name
+            return
+        slot = Weapon.makeWeaponSlot(item)
+        unequiped_slot = self.ActiveWeaponSet2[slot_name]
+        self.ActiveWeaponSet2[slot_name] = slot
+        if self.BellyItemID == item['complexItemID']:
+            self.BellyItemID = 0
+        if current_slot_name:
+            self.ActiveWeaponSet2[current_slot_name] = unequiped_slot
+        self.updateActiveWeaponPollutions(old_weapon_id=self.ActiveItemID, new_weapon_id=item['complexItemID'])
+        self.ActiveItemID = item['complexItemID']
+        if unequiped_slot['itemID']:
+            if unequiped_slot['itemID'] == self.BellyItemID:
+                self.BellyItemID = 0
+            return (item['complexItemType'], unequiped_slot['itemType'])
+        return (item['complexItemType'], 0)
+
+    def applyPutOffWeapon(self, item):
+        current_slot_name = ItemsUtils.getWeaponSlotNameByItemID(self, item['complexItemID'])
+        if not current_slot_name:
+            return None
+        else:
+            if item['complexItemID'] == self.ActiveItemID:
+                self.ActiveItemID = 0
+                self.updateActiveWeaponPollutions(old_weapon_id=item['complexItemID'])
+            if item['complexItemID'] == self.BellyItemID:
+                self.BellyItemID = 0
+            self.ActiveWeaponSet2[current_slot_name] = Weapon.getEmptySlot()
+            return True
+
+    def is_radio_working(self):
+        return bool(self.radio_working)
+
+    def get_equipped_radio_item_id(self):
+        import ClothAttachSlotsConfig as CASC
+        import ItemCategories as IC
+        for index, gadget in enumerate(self.ActiveGadgetList):
+            if IC.RADIO == ItemsCatalog.GetItemCategory(gadget['GadjetType']):
+                if not ItemsCatalog.GetItemParam(gadget['GadjetType']):
+                    item_subtype = {}.get('SubType')
+                    return item_subtype in [ItemsCatalog.RADIO, ItemsCatalog.RADIO_RECEIVER] and gadget['GadjetID']
+
+        if self.EquippedVisibleAttachesIDS[CASC.RADIO_SLOT] != 0:
+            if not ItemsCatalog.GetItemParam(self.EquippedVisibleAttaches[CASC.RADIO_SLOT]):
+                item_subtype = {}.get('SubType')
+                return item_subtype in [ItemsCatalog.RADIO, ItemsCatalog.RADIO_RECEIVER] and self.EquippedVisibleAttachesIDS[CASC.RADIO_SLOT]
+        return
+
+    def _get_sturdiness_on_body_zone(self, body_zone):
+        armor_item_type, armor_itemID = ItemsUtils.get_armor_on_body_zone(self, body_zone)
+        if armor_item_type:
+            item = ItemsUtils.GetComplexItemByID(self, armor_itemID)
+            param = ItemsCatalog.GetItemParam(armor_item_type)
+            cond_ratio = ItemsUtils.GetItemConditionRatio(self, item, item_param=param)
+            cond_ratio = min(1, cond_ratio / 0.7)
+            return param.get('bodyzone_sturdiness', {}).get(body_zone, 0) * cond_ratio
+        return 0
+
+    def GetFiringStandAccuracyMod(self, accuracy_mods):
+        if self.crouching_or_crawling:
+            if self.IsAvatarSniping():
+                if self._scopeModeDisable or self.GetEquippedItemSnipingAbility() == [ItemsCatalog.NONE_TYPE]:
+                    stand_mod = accuracy_mods[ItemsCatalog.WEAPON_ACCMOD_AIM_KNEES]
+                else:
+                    stand_mod = accuracy_mods[ItemsCatalog.WEAPON_ACCMOD_SNIPING_KNEES]
+            else:
+                stand_mod = accuracy_mods[ItemsCatalog.WEAPON_ACCMOD_KNEES]
+        elif self.IsAvatarSniping():
+            if self._scopeModeDisable or self.GetEquippedItemSnipingAbility() == [ItemsCatalog.NONE_TYPE]:
+                stand_mod = accuracy_mods[ItemsCatalog.WEAPON_ACCMOD_AIM_STAND]
+            else:
+                stand_mod = accuracy_mods[ItemsCatalog.WEAPON_ACCMOD_SNIPING_STAND]
+        else:
+            stand_mod = accuracy_mods[ItemsCatalog.WEAPON_ACCMOD_STAND]
+        return stand_mod
+
+    @staticmethod
+    def GetItemEffectId(item, key_str):
+        return ItemsUtils.GetItemTypeEffectId(item['complexItemType'], key_str)
+
+    @callableOnGhost
+    def get_repr_name(self):
+        return 'AVATAR:%s' % self.name.encode('utf-8')
+
+    @callableOnGhost
+    def get_height(self):
+        if self.dead or self.IsAvatarCrawling():
+            return 0.3
+        if self.IsAvatarCrouched():
+            return 1.35
+        return 1.8
+
+    @callableOnGhost
+    def IsAvatarStand(self):
+        return self.crouching_or_crawling == Constants.NO_CROUCHING_OR_CRAWLING
+
+    @callableOnGhost
+    def IsAvatarCrouched(self):
+        return self.crouching_or_crawling == Constants.CROUCHING
+
+    @callableOnGhost
+    def IsAvatarCrawling(self):
+        return self.crouching_or_crawling == Constants.CRAWLING
+
+    @callableOnGhost
+    def get_radius(self):
+        return 1
+
+    @callableOnGhost
+    def IsAvatarSniping(self):
+        return self.weaponStatus == Constants.WEAPON_SNIPING
+
+    @callableOnGhost
+    def IsAvatarBored(self):
+        return self.weaponStatus == Constants.WEAPON_BORED
+
+    @callableOnGhost
+    def IsAvatarIncombat(self):
+        return self.weaponStatus == Constants.WEAPON_INCOMABAT
+
+    @property
+    def ActiveItemType(self):
+        return self.getActiveItemType()
+
+    @callableOnGhost
+    def getActiveItemType(self):
+        if not self.ActiveItemID:
+            return 0
+        for entry in self.ActiveWeaponSet2.values():
+            if entry['itemID'] == self.ActiveItemID:
+                return entry['itemType']
+
+        return 0
+
+    def get_pickup_duration(self):
+        """
+                \xd0\xb2\xd1\x80\xd0\xb5\xd0\xbc\xd1\x8f \xd0\xbf\xd0\xbe\xd0\xb4\xd0\xbd\xd1\x8f\xd1\x82\xd0\xb8\xd1\x8f \xd0\xbf\xd1\x80\xd0\xb5\xd0\xb4\xd0\xbc\xd0\xb5\xd1\x82\xd0\xb0
+        """
+        duratuion = 1.2 if self.IsAvatarCrouched() else 1.5
+        pickup_coef = self.get_perk_action_val('PICKUP_COEF') or 0
+        duratuion *= 1 - pickup_coef
+        return duratuion
+
+    def get_weapon_grade_mult(self):
+        return 1 + self.get_perk_action_val('WEAPON_GRADE_CHANCE')
+
+    def getMaxInventorySlots(self):
+        """ \xd0\x9c\xd0\xb0\xd0\xba\xd1\x81 \xd0\xb2\xd0\xbc\xd0\xb5\xd1\x81\xd1\x82\xd0\xb8\xd0\xbc\xd0\xbe\xd1\x81\xd1\x82\xd1\x8c \xd0\xb8\xd0\xbd\xd0\xb2\xd0\xb5\xd0\xbd\xd1\x82\xd0\xb0\xd1\x80\xd1\x8f """
+        return ItemsUtils.GetMaxItemHolderInventorySlots(self)
+
+    def is_pvp_room_transformation(self):
+        return self.transformationID and self.inPVPinstance
+
+    def can_art_teleport(self):
+        import Config.DungeonsConfig as DC
+        import BWPersonality
+        import BigWorld
+        if BigWorld.component == 'client':
+            if BWPersonality.GUICore.baseToCaptureGUI is not None and BWPersonality.GUICore.baseToCaptureGUI.visible:
+                return False
+            if BWPersonality.GUICore.eventGUI is not None and BWPersonality.GUICore.eventGUI.component.visible:
+                return False
+            space_name = BWPersonality.spaceName(self.spaceID)
+            if space_name.startswith('spaces/donate_base'):
+                return False
+        else:
+            if self.current_event:
+                return False
+            if self.nameBaseToCapture:
+                return False
+            import GData
+            space_name = GData.getSpaceNameOnID(self.spaceID)
+            if not space_name.startswith('spaces/'):
+                space_name = 'spaces/' + space_name
+            if space_name.startswith('spaces/base_'):
+                return False
+        if self.pvpFree == PVP_FREE_TYPE.PVP_OK:
+            return False
+        elif self.transport_seat:
+            return False
+        elif DC.is_dungeon_space(space_name):
+            return False
+        elif space_name in ('spaces/pk_prison01', 'spaces/anomaly_event_shop', 'spaces/shop_portals_apartments'):
+            return False
+        elif space_name.startswith('spaces/inst') or space_name.startswith('spaces/dm_'):
+            return False
+        elif space_name.startswith('spaces/test_dm_') or space_name.startswith('spaces/weapon_test'):
+            return False
+        import pvp_inst_config
+        if pvp_inst_config.isPVPSpace(space_name):
+            return False
+        import funEventsCommon
+        if space_name in funEventsCommon.BUILD_SPACE_NAMES:
+            return False
+        else:
+            return True
+
+
+class WEIGHT_STATE():
+    NORMAL, HEAVY, STOP = xrange(3)

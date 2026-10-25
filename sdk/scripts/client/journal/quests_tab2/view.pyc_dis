@@ -1,0 +1,366 @@
+# Embedded file name: ./client/journal/quests_tab2/view.py
+import math_bw
+import GUI
+from data_provider import DpET
+from Helpers.PyGUI.PyGUIBase import Interceptor
+from view_comp import ViewComp, EventType as VcET
+from scroll_bar import ScrollBar, EventType as SbET
+from quests_tracker.quests_tracker import EventType as QuestTrackET
+
+class EventType:
+    OnEmptyItemVisible, OnEmptySubsVisible, OnExpandClick, OnCollapseClick, OnItemClick = xrange(5)
+
+
+class View(Interceptor):
+
+    def __init__(self, data_provider, callback_listener, component):
+        Interceptor.__init__(self, component)
+        self._dp = data_provider
+        self._callback_listener = callback_listener
+        self._top_visible_border = None
+        self._bottom_visible_border = None
+        self._visible_items = []
+        self._ratio = None
+        comp = GUI.Window('soGUI/frame/paint/black.dds')
+        comp.materialFX = 'SOLID'
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.width, comp.height = self.component.width - 17, self.component.height
+        comp.position = (0, 0, 1)
+        self.component.addChild(comp, 'background')
+        comp = GUI.Window()
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = ScrollBar.default_width, self.component.height + 2
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('RIGHT', 'TOP')
+        comp.position = (self.component.width, -1, 0.5)
+        self.component.addChild(comp, 'bar')
+        self._bar = ScrollBar(comp, self)
+        return
+
+    def on_show(self):
+        self._dp.set_callback_listener(self._on_dp_event)
+        self._recreate()
+
+    def on_hide(self):
+        self._dp.set_callback_listener(None)
+        return
+
+    def _delete_item_comp(self, index):
+        item_comp = self._visible_items.pop(index)
+        self.component.delChild(item_comp.component)
+        item_comp.on_destroy()
+        return item_comp
+
+    def _recreate(self):
+        self._top_visible_border = 0
+        for i in xrange(len(self._visible_items) - 1, -1, -1):
+            self._delete_item_comp(i)
+
+        self._bottom_visible_border = 0
+        for item_data in self._dp._data:
+            item_comp = self._create_item_comp(item_data)
+            item_comp.component.position = (-1, self._bottom_visible_border, 0.5)
+            self._bottom_visible_border += item_comp.component.height
+            self._visible_items.append(item_comp)
+            if self._bottom_visible_border > self.component.height:
+                break
+
+        self._check_ratio_changed()
+
+    def on_bar_event(self, event_type, data):
+        if event_type == SbET.OnMoveFactor:
+            factor = data
+            total_height = 0
+            position = 0
+            stop_position = False
+            for item in self._dp._data:
+                item_heith = ViewComp.evaluate_height(item)
+                if item._unique_id == self._visible_items[0]._item_data._unique_id:
+                    stop_position = True
+                if not stop_position:
+                    position += item_heith
+                total_height += item_heith
+
+            position -= self._top_visible_border
+            needed_position = factor * (total_height - self.component.height)
+            clamp_value = 100
+            delta = math_bw.clamp(position - needed_position, -clamp_value, clamp_value)
+            self._move_comp_items(delta)
+        elif event_type == SbET.OnMovePos:
+            delta = data
+            self._move_comp_items(delta)
+
+    def _check_ratio_changed(self):
+        self._ratio = None
+        if self._visible_items:
+            total_height = 0
+            position = 0
+            stop_position = False
+            for item in self._dp._data:
+                item_heith = ViewComp.evaluate_height(item)
+                if item._unique_id == self._visible_items[0]._item_data._unique_id:
+                    stop_position = True
+                if not stop_position:
+                    position += item_heith
+                total_height += item_heith
+
+            position -= self._top_visible_border
+            if total_height - self.component.height <= 0:
+                ratio = None
+            else:
+                ratio = position / (total_height - self.component.height)
+            if ratio != self._ratio:
+                self._ratio = ratio
+        self._bar.set_factor(self._ratio)
+        return
+
+    def _create_item_comp(self, item_data):
+        view_comp = ViewComp.get_component(self.component.width, item_data, self._on_itemcomp_event)
+        self.component.addChild(view_comp.component)
+        return view_comp
+
+    def _on_itemcomp_event(self, event_type, data):
+        if event_type == VcET.EmptyVisible:
+            item_comp = data
+            data = {'unique_id': item_comp._item_data._unique_id}
+            self._callback_listener(EventType.OnEmptyItemVisible, data)
+        elif event_type == VcET.EmptySubsVisible:
+            item_comp = data
+            data = {'unique_id': item_comp._item_data._unique_id,
+             'quest_id': item_comp._item_data._q_id}
+            self._callback_listener(EventType.OnEmptySubsVisible, data)
+        elif event_type == VcET.OnDownClick:
+            item_comp = data
+            data = {'unique_id': item_comp._item_data._unique_id}
+            self._callback_listener(EventType.OnExpandClick, data)
+        elif event_type == VcET.OnUpClick:
+            item_comp = data
+            data = {'unique_id': item_comp._item_data._unique_id}
+            self._callback_listener(EventType.OnCollapseClick, data)
+        elif event_type == VcET.HeightChanged:
+            self._realign_components()
+        elif event_type == VcET.OnClick:
+            item_comp = data
+            data = {'unique_id': item_comp._item_data._unique_id,
+             'quest_id': item_comp._item_data._q_id}
+            self._callback_listener(EventType.OnItemClick, data)
+        elif event_type == VcET.OnSubClick:
+            item_comp, sub_id = data['comp'], data['sub_id']
+            data = {'unique_id': item_comp._item_data._unique_id,
+             'quest_id': sub_id}
+            self._callback_listener(EventType.OnItemClick, data)
+
+    def _realign_components(self):
+        if not self._visible_items:
+            return
+        pos_y = self._top_visible_border
+        indices_to_delete = []
+        for i, item_comp in enumerate(self._visible_items):
+            if pos_y > self.component.height:
+                indices_to_delete.append(i)
+                continue
+            item_comp.component.position[1] = pos_y
+            pos_y += item_comp.component.height
+
+        self._bottom_visible_border = pos_y
+        indices_to_delete.reverse()
+        for index in indices_to_delete:
+            self._delete_item_comp(index)
+
+        while self.component.height - self._bottom_visible_border >= 0:
+            item_comp = self._visible_items[-1]
+            item_data = self._dp.get_next(item_comp._item_data._unique_id)
+            if not item_data:
+                break
+            next_comp = self._create_item_comp(item_data)
+            next_comp.component.position = (-1, self._bottom_visible_border, 0.5)
+            self._visible_items.append(next_comp)
+            self._bottom_visible_border += next_comp.component.height
+
+        space = self.component.height - self._bottom_visible_border
+        if space > 0:
+            self._move_comp_items(space)
+        self._check_ratio_changed()
+
+    def on_quests_tracker_event(self, event_type, data):
+        if event_type in (QuestTrackET.OnStartTrack, QuestTrackET.OnStopTrack):
+            quest_id = data['quest_id']
+            it = None
+            for it in self._visible_items:
+                item_data = it._item_data
+                if item_data._q_id == quest_id:
+                    break
+                if not item_data._subs:
+                    continue
+                if quest_id in item_data._subs:
+                    break
+
+            if it:
+                it._update_visual()
+        return
+
+    def _on_dp_event(self, event_type, data):
+        if event_type == DpET.OnClear:
+            self._recreate()
+        else:
+            if event_type == DpET.OnDataReplaced:
+                self._bar._stop_tick()
+                deleted_id = data['deleted_id']
+                replaced_ids = data['replaced_ids']
+                index = next((i for i, it in enumerate(self._visible_items) if it._item_data._unique_id == deleted_id), None)
+                return index is None and None
+            handled = False
+            if len(self._visible_items) == 1 and self._visible_items[0]._item_data._q_id is None and replaced_ids:
+                if self._dp.get_item(replaced_ids[0])._q_id is None:
+                    if not index == 0:
+                        raise AssertionError
+                        forward_number = 11
+                        evaluated_height = 0
+                        replaced_items = self._dp.get_items(replaced_ids[forward_number], len(replaced_ids) - forward_number)
+                        for item_data in replaced_items:
+                            evaluated_height += ViewComp.evaluate_height(item_data)
+
+                        if evaluated_height > self.component.height:
+                            self._delete_item_comp(0)
+                            self._top_visible_border, self._bottom_visible_border = (0, 0)
+                            for item_data in replaced_items:
+                                item_comp = self._create_item_comp(item_data)
+                                item_comp.component.position = (-1, self._bottom_visible_border, 0.5)
+                                self._bottom_visible_border += item_comp.component.height
+                                self._visible_items.append(item_comp)
+                                if self._bottom_visible_border > self.component.height:
+                                    break
+
+                            handled = True
+                if not handled:
+                    if index == len(self._visible_items) - 1:
+                        self._delete_item_comp(index)
+                        if self._visible_items:
+                            comp = self._visible_items[-1].component
+                            self._bottom_visible_border = comp.position[1] + comp.height
+                        else:
+                            self._bottom_visible_border = 0
+                        if replaced_ids:
+                            for item_data in self._dp.get_items(replaced_ids[0], len(replaced_ids)):
+                                item_comp = self._create_item_comp(item_data)
+                                item_comp.component.position = (-1, self._bottom_visible_border, 0.5)
+                                self._bottom_visible_border += item_comp.component.height
+                                self._visible_items.append(item_comp)
+                                if self._bottom_visible_border > self.component.height:
+                                    break
+
+                        space = self.component.height - self._bottom_visible_border
+                        if space > 0:
+                            self._move_comp_items(space)
+                    else:
+                        self._delete_item_comp(index)
+                        if self._visible_items:
+                            comp = self._visible_items[0].component
+                            self._top_visible_border = comp.position[1]
+                        else:
+                            self._top_visible_border, self._bottom_visible_border = (0, 0)
+                        if replaced_ids:
+                            for item_data in reversed(self._dp.get_items(replaced_ids[0], len(replaced_ids))):
+                                item_comp = self._create_item_comp(item_data)
+                                self._top_visible_border -= item_comp.component.height
+                                item_comp.component.position = (-1, self._top_visible_border, 0.5)
+                                self._visible_items.insert(0, item_comp)
+                                if self._top_visible_border < 0:
+                                    break
+
+                        if self._top_visible_border > 0:
+                            self._move_comp_items(-self._top_visible_border)
+            elif event_type == DpET.OnDataInserted:
+                global_index = data['index']
+                if self._visible_items:
+                    first_visible_index = self._dp._index_by_unique_id(self._visible_items[0]._item_data._unique_id)
+                    last_visible_index = first_visible_index + len(self._visible_items)
+                    space = self.component.height - self._bottom_visible_border
+                    if global_index < first_visible_index and space <= 0:
+                        return
+                    if global_index > last_visible_index and space < 0:
+                        return
+                    insert_index = global_index - first_visible_index
+                    if insert_index < 0:
+                        if global_index == 0 and first_visible_index == 1:
+                            insert_index = 0
+                        else:
+                            raise RuntimeError
+                else:
+                    insert_index = 0
+                item_data = self._dp._data[global_index]
+                item_comp = self._create_item_comp(item_data)
+                item_comp.component.position = (-1, 0, 0.5)
+                self._visible_items.insert(insert_index, item_comp)
+                self._realign_components()
+            elif event_type == DpET.OnDataRemoved:
+                unique_id = data['unique_id']
+                for i, item_comp in enumerate(self._visible_items):
+                    if item_comp._item_data._unique_id == unique_id:
+                        self._delete_item_comp(i)
+                        self._realign_components()
+                        break
+
+        self._check_ratio_changed()
+        return
+
+    def _move_comp_items(self, value):
+        if not self._visible_items:
+            return
+        else:
+            if value < 0:
+                pos_y = self._bottom_visible_border
+                while pos_y + value < self.component.height:
+                    unique_id = self._visible_items[-1]._item_data._unique_id
+                    next_item_data = self._dp.get_next(unique_id)
+                    if next_item_data is None:
+                        break
+                    item_comp = self._create_item_comp(next_item_data)
+                    item_comp.component.position = (-1, pos_y, 0.5)
+                    pos_y += item_comp.component.height
+                    self._visible_items.append(item_comp)
+
+                value = min(0, max(value, self.component.height - pos_y))
+                while True:
+                    item_comp = self._visible_items[0].component
+                    pos_y = item_comp.position[1] + item_comp.height + value
+                    if pos_y >= 0:
+                        break
+                    self._delete_item_comp(0)
+
+            elif value > 0:
+                pos_y = self._top_visible_border
+                while pos_y + value >= 0:
+                    unique_id = self._visible_items[0]._item_data._unique_id
+                    prev_item_data = self._dp.get_prev(unique_id)
+                    if prev_item_data is None:
+                        break
+                    item_comp = self._create_item_comp(prev_item_data)
+                    pos_y -= item_comp.component.height
+                    item_comp.component.position = (-1, pos_y, 0.5)
+                    self._visible_items.insert(0, item_comp)
+
+                value = min(value, -pos_y)
+                while True:
+                    item_comp = self._visible_items[-1].component
+                    pos_y = item_comp.position[1] + value
+                    if pos_y <= self.component.height:
+                        break
+                    self._delete_item_comp(-1)
+
+            if value:
+                for item_comp in self._visible_items:
+                    item_comp.component.position[1] += value
+
+            self._top_visible_border = self._visible_items[0].component.position[1]
+            comp = self._visible_items[-1].component
+            self._bottom_visible_border = comp.position[1] + comp.height
+            self._check_ratio_changed()
+            return
+
+    def handleMouseEvent(self, component, event):
+        if event.dz:
+            self._move_comp_items(event.dz * 0.1)
+        return Interceptor.handleMouseEvent(self, component, event)

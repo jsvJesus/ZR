@@ -1,0 +1,327 @@
+# Embedded file name: ./client/soGUI/emotions_gui/emotions_win.py
+import BWPersonality
+import BigWorld
+import math_bw
+import GUI
+from Helpers.PyGUI.PyGUIBase import DragWin
+from journal.quests_tab2.scroll_bar import ScrollBar, EventType as ScrollET
+from keys_data import keys_data, EventType as KeysDataET
+from Localization import lc
+from soGUI.soButton import soButton
+import colorCodes as cc
+from gear_toggle import GearToggle
+from emo_utils import Mode
+from emo_line import Line, EventType as LineET
+from soGUI.GUIPositions import GUIPositions
+from Helpers.PyGUI import Utils
+from run_pip import RunPip
+
+class Window(DragWin, GUIPositions):
+    factoryString = 'soFlashEmotionsGUI'
+
+    def __init__(self):
+        comp = GUI.Window('soGUI/frame/paint/black.dds')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = (320, 392)
+        comp.materialFX = 'SOLID'
+        comp.visible = False
+        DragWin.__init__(self, comp)
+        GUIPositions.__init__(self)
+        keys_data.add_listener(self._on_keydata_event)
+        comp = GUI.Text(u'', 'RobotoCondensedRegular_18.font')
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('LEFT', 'TOP')
+        comp.position = (22, 8, 0.5)
+        comp.colour = cc.active_rgba
+        self.component.addChild(comp, 'title')
+        comp = GUI.Window()
+        btn = soButton(comp)
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('RIGHT', 'TOP')
+        comp.materialFX = 'BLEND'
+        comp.width, comp.height = (18, 18)
+        comp.position = (self.component.width - 7, 7, 0.5)
+        btn.initVSC('soGUI/elements/closeBox.xml')
+        btn.onBound()
+        btn.setVisualState('normal')
+        self.component.addChild(comp)
+        btn.onClick = self.hide
+        self._gear_toggle = GearToggle(self._on_gear_toggle)
+        self._gear_toggle.component.position = (self.component.width - 32, 7, 0.5)
+        self.component.addChild(self._gear_toggle.component)
+        comp = GUI.Window()
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = (292, 310)
+        comp.position = (0, 44, 0.5)
+        self.component.addChild(comp, 'content')
+        comp = GUI.Window()
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width = self.component.content.width
+        comp.isClip = False
+        comp.position = (22, 0, 0.5)
+        self.component.content.addChild(comp, 'view')
+        self._view = comp
+        comp = GUI.Window()
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = ScrollBar.default_width, self.component.content.height + 20
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('RIGHT', 'TOP')
+        comp.position = (self.component.width - 7, self.component.content.position[1], 0.5)
+        self.component.addChild(comp, 'bar')
+        self._bar = ScrollBar(comp, self, handle_height=196)
+        pos_y = 0
+        space = 2
+        self._lines = []
+        for emotion_id in keys_data.get_emotion_ids_sorted():
+            line = Line(emotion_id)
+            line.component.position = (0, pos_y, 0.5)
+            line.add_listener(self._on_line_event)
+            self._view.addChild(line.component)
+            pos_y += line.component.height + space
+            self._lines.append(line)
+
+        self._view.height = pos_y - space
+        comp = GUI.Window()
+        btn = soButton(comp)
+        btn.initVSC('soGUI/elements/button_1.xml')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'PIXEL')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'BOTTOM')
+        comp.label.font = 'RobotoCondensedRegular_16.font'
+        comp.label.text = lc('EmotionsGUI.BtnRestore')
+        comp.width, comp.height = (120, 26)
+        comp.position = (0, self.component.height - 8, 0.1)
+        btn.onClick = keys_data.request_restore
+        self.component.addChild(comp, 'btnRestore')
+        btn.onBound()
+        self._run_pip = RunPip()
+        self._run_pip.set_parent(self._lines[0].component)
+        self._tick_handler = 0
+        self._scroll_factor = None
+        self.scroll_factor = 0
+        self._mode = None
+        self._hovered = None
+        self._selected = None
+        self._running_em_id = None
+        return
+
+    def _on_keydata_event(self, event_type, data):
+        if event_type == KeysDataET.OnBindChanged:
+            if self.mode == Mode.Settings:
+                self.component.btnRestore.script.setDisabledState(not keys_data.has_overrides())
+
+    def _on_line_event(self, event_type, line):
+        if event_type == LineET.OnLeft:
+            if line == self.hovered:
+                self.hovered = None
+        elif event_type == LineET.OnEnter:
+            self.hovered = line
+        elif event_type == LineET.OnClick:
+            if self.mode == Mode.Settings:
+                if self.selected == line:
+                    self.selected = None
+                else:
+                    self.selected = line
+            elif self.mode == Mode.Base:
+                self._play_animations(line.emotion_id)
+        return
+
+    def _play_animations(self, emotion_id):
+        gesture_id = keys_data.get_gesture_id(emotion_id)
+        BigWorld.player().playAvatarGesture(gesture_id)
+
+    def _on_gear_toggle(self):
+        if self.mode == Mode.Base:
+            self.mode = Mode.Settings
+        elif self.mode == Mode.Settings:
+            self.mode = Mode.Base
+
+    @property
+    def running_em_id(self):
+        return self._running_em_id
+
+    @running_em_id.setter
+    def running_em_id(self, value):
+        if value == self._running_em_id:
+            return
+        self._running_em_id = value
+        self._update_run_pip()
+
+    def _update_run_pip(self):
+        if self.running_em_id is not None:
+            line = next((l for l in self._lines if l.emotion_id == self.running_em_id))
+            self._run_pip.set_parent(line.component)
+            self._run_pip.run()
+        else:
+            self._run_pip.stop()
+        return
+
+    @property
+    def selected(self):
+        return self._selected
+
+    @selected.setter
+    def selected(self, value):
+        if self._selected == value:
+            return
+        if self._mode == Mode.Base:
+            return
+        if self._selected:
+            self._selected.set_selected(False)
+        self._selected = value
+        if self._selected:
+            self._selected.set_selected(True)
+
+    @property
+    def hovered(self):
+        return self._hovered
+
+    @hovered.setter
+    def hovered(self, value):
+        if self._hovered == value:
+            return
+        if self._hovered:
+            self._hovered.set_hovered(False)
+        self._hovered = value
+        if self._hovered:
+            self._hovered.set_hovered(True)
+
+    @property
+    def mode(self):
+        return self._mode
+
+    @mode.setter
+    def mode(self, value):
+        if self._mode == value:
+            return
+        self._mode = value
+        self._apply_mode()
+
+    def _apply_mode(self):
+        if self.mode == Mode.Base:
+            self._gear_toggle.set_highlighted(False)
+            self.component.btnRestore.visible = False
+        elif self.mode == Mode.Settings:
+            self._gear_toggle.set_highlighted(True)
+            self.component.btnRestore.visible = True
+            self.component.btnRestore.script.setDisabledState(not keys_data.has_overrides())
+        for line in self._lines:
+            line.set_mode(self.mode)
+
+    @property
+    def scroll_factor(self):
+        return self._scroll_factor
+
+    @scroll_factor.setter
+    def scroll_factor(self, value):
+        value = math_bw.clamp(value)
+        if value == self.scroll_factor:
+            return
+        self._scroll_factor = value
+        self._bar.set_factor(value)
+        free_space = self.component.content.height - self._view.height
+        self._view.position[1] = free_space * value
+
+    def on_bar_event(self, event_type, value):
+        if event_type == ScrollET.OnMovePos:
+            self.scroll_factor -= value * 0.01
+        elif event_type == ScrollET.OnMoveFactor:
+            self.scroll_factor = value
+
+    def show(self):
+        if not self.component.visible:
+            self.component.visible = True
+            self._on_show()
+
+    def hide(self):
+        if self.component.visible:
+            self.component.visible = False
+            self._on_hide()
+            BWPersonality.GUICore.mouseAltMode = False
+            BWPersonality.GUICore.setBestCursor()
+
+    def _stop_tick(self):
+        if self._tick_handler:
+            BigWorld.cancelCallback(self._tick_handler)
+            self._tick_handler = 0
+
+    def _tick(self):
+        if not Utils.is_visible_in_hierarchy(self.component):
+            self._stop_tick()
+            return
+        else:
+            gesture_id = BigWorld.player().usingGesture
+            current_em_id = None
+            if gesture_id:
+                current_em_id = keys_data.get_emotion_id_by_gesture_id(gesture_id)
+            self.running_em_id = current_em_id
+            self._run_pip.tick()
+            BigWorld.callback(0, self._tick)
+            return
+
+    def _on_show(self):
+        self.component.title.text = lc('EmotionsGUI.Title') + BWPersonality.get_action_key('ToggleEmotionGUI')
+        self.mode = Mode.Base
+        BWPersonality.register_key_event_interceptor(self._hook_key_event)
+        GUIPositions.show(self)
+        self._update_run_pip()
+        self._stop_tick()
+        self._tick()
+
+    def _hook_key_event(self, event):
+        if self.mode == Mode.Base:
+            emotion_id = keys_data.get_emotion_id_by_key(event.key)
+            if emotion_id is None:
+                return False
+            if not event.isRepeatedEvent() and event.isKeyDown():
+                self._play_animations(emotion_id)
+            return True
+        elif self.mode == Mode.Settings:
+            if self.selected:
+                if not event.isRepeatedEvent() and event.isKeyDown():
+                    keys_data.replace_key(self.selected.emotion_id, event.key)
+                    self.selected = None
+                return True
+            return False
+        else:
+            return False
+
+    def _on_hide(self):
+        self._stop_tick()
+        self.hovered = None
+        self.selected = None
+        BWPersonality.unregister_key_event_interceptor(self._hook_key_event)
+        self.running_em_id = None
+        self._run_pip.on_hide()
+        return
+
+    def on_ft_show(self):
+        self.show()
+
+    def on_ft_hide(self):
+        self.hide()
+
+    def handleMouseButtonEvent(self, comp, event):
+        DragWin.handleMouseButtonEvent(self, comp, event)
+        return True
+
+    def handleMouseEvent(self, component, event):
+        if event.dz:
+            self.scroll_factor -= event.dz * 0.002
+        return DragWin.handleMouseEvent(self, component, event)
+
+    def doReposition(self):
+        return True
+
+    def reset_position(self):
+        self.component.position = (0, 0, 0)
+        return True
+
+    def stopDragging(self):
+        DragWin.stopDragging(self)
+        GUIPositions.stopDragging(self)

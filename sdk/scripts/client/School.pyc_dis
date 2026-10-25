@@ -1,0 +1,211 @@
+# Embedded file name: ./client/School.py
+import BigWorld
+import math
+from Math import Vector3, Matrix
+from Helpers.BWCoroutine import BWMemberCoroutine, BWWaitForPeriod, BWWaitForCoroutine
+from functools import partial
+import math_bw
+from utils import lazyproperty
+from random import uniform
+import BWPersonality
+
+class DeltaTimeCalculator:
+    """ \xd0\xb2\xd0\xbe\xd0\xb7\xd0\xb2\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xb2\xd1\x80\xd0\xb5\xd0\xbc\xd1\x8f \xd0\xba\xd0\xb0\xd0\xb4\xd1\x80\xd0\xb0
+            \xd0\xb2\xd0\xba\xd0\xbb\xd1\x8e\xd1\x87\xd0\xb0\xd0\xb5\xd1\x82\xd1\x81\xd1\x8f \xd0\xb8 \xd0\xb2\xd1\x8b\xd0\xba\xd0\xbb\xd1\x8e\xd1\x87\xd0\xb0\xd0\xb5\xd1\x82\xd1\x81\xd1\x8f \xd0\xb0\xd0\xb2\xd1\x82\xd0\xbe\xd0\xbc\xd0\xb0\xd1\x82\xd0\xb8\xd1\x87\xd0\xb5\xd1\x81\xd0\xba\xd0\xb8 \xd1\x81\xd0\xb0\xd0\xbc
+    """
+
+    def __init__(self):
+        self.callback_id = None
+        return
+
+    def _tick(self):
+        self.request_counter += 1
+        self._delta_time = BigWorld.time() - self.cur_time
+        self.cur_time = BigWorld.time()
+        if self.request_counter < 5:
+            self.callback_id = BigWorld.callback(0, self._tick)
+        else:
+            self.callback_id = None
+        return
+
+    @property
+    def delta_time(self):
+        self.request_counter = 0
+        if not self.callback_id:
+            self.cur_time = BigWorld.time()
+            self._tick()
+        return self._delta_time
+
+
+class School(BigWorld.Entity, object):
+    MODEL_PATH = 'characters/creatures/fish/fish.model'
+    DEBUG = False
+
+    def __init__(self):
+        BigWorld.Entity.__init__(self)
+        if School.DEBUG:
+            import DrawPrimitivesUtils
+            DrawPrimitivesUtils.draw_sphere(self.position, self.radius)
+        self.original_position = Vector3(self.position)
+        self.inited = False
+        self.delta_time_calculator = DeltaTimeCalculator()
+        self.react_player_id = None
+        self.pot_id = None
+        if School.DEBUG:
+            self.model = BigWorld.Model('models/misc/signs/flag_anim_up.model')
+        return
+
+    def onEnterWorld(self, prereqs):
+        self.initialize()
+
+    def hit_pot(self, entered, pot_id):
+        if self.pot_id != pot_id:
+            return
+        else:
+            if entered:
+                if not self.react_player_id:
+                    self.react_player_id = BigWorld.callback(0, self.react_to_player)
+            elif self.react_player_id:
+                BigWorld.cancelCallback(self.react_player_id)
+                self.filter.teleportTo(self.original_position)
+                self.react_player_id = None
+            return
+
+    def react_to_player(self):
+        p = BigWorld.player()
+        if self.inited and p.avatarInWater and not self.coroutines:
+            pos = p.position
+            direction = self.original_position - pos
+            direction[1] = 0
+            direction.normalise()
+            direction *= self.radius
+            self.filter.teleportTo(pos + direction)
+        self.react_player_id = BigWorld.callback(0, self.react_to_player)
+
+    def onLeaveWorld(self):
+        if self.pot_id:
+            BigWorld.delPot(self.pot_id)
+
+    def initialize(self, attempts = 10):
+        if self.isDestroyed:
+            return
+        if not BigWorld.waterCollide(self.position + (0, 10, 0), self.position + (0, -10, 0)):
+            if attempts <= 0:
+                print "Shcool (ERROR): can't find water to swim", self.position
+                BigWorld.destroyEntity(self.id)
+                return
+            BigWorld.callback(10.0, partial(self.initialize, attempts - 1))
+            return
+        self.filter = BigWorld.BoidsFilter()
+        self.filter.underwater = True
+        self.filter.splashDisabled = True
+        self.filter.speed = self.velocity
+        self.filter.influenceRadius = self._influence_radius
+        self.filter.minDepth = self.min_depth
+        self.filter.maxDepth = self.max_depth
+
+        def on_load_completed(model):
+            if self.isDestroyed:
+                return
+            model.position = self.position
+            scale = uniform(self.min_scale, self.max_scale)
+            model.newScaleTest = Vector3(scale, scale, scale)
+            self.addModel(model)
+            model.swim()
+            model.splashDisabled = True
+
+        for _ in xrange(self.amount):
+            BigWorld.fetchModel(School.MODEL_PATH, on_load_completed)
+
+        self.coroutines = []
+        self.inited = True
+        self.pot_id = BigWorld.addPot(Matrix(self.matrix), self.radius, self.hit_pot)
+
+    def on_enter_water(self, position):
+        if not self.inited:
+            return
+        if School.DEBUG:
+            import DrawPrimitivesUtils
+            DrawPrimitivesUtils.draw_sphere(position, 0.5)
+        if self.filter.influenceRadius < self._influence_radius:
+            self.run_coroutine(self.burst_coroutine())
+        else:
+            self.run_coroutine(self.move_to_and_back_coroutine(position))
+
+    @lazyproperty
+    def _influence_radius(self):
+        return self.radius / self.velocity / math.sqrt(self.amount) * 0.3
+
+    @property
+    def delta_time(self):
+        return self.delta_time_calculator.delta_time
+
+    def stop_all_coroutines(self):
+        for coroutine in self.coroutines:
+            coroutine.stop()
+
+        self.coroutines = []
+
+    def run_coroutine(self, coroutine):
+        self.stop_all_coroutines()
+        self.coroutines.append(coroutine)
+        coroutine.run()
+
+    @BWMemberCoroutine
+    def move_to_and_back_coroutine(self, position):
+        """ \xd0\xbf\xd0\xbb\xd1\x8b\xd1\x82\xd1\x8c \xd0\xb2 \xd1\x82\xd0\xbe\xd1\x87\xd0\xba\xd1\x83 \xd0\xb8 \xd0\xb2\xd0\xb5\xd1\x80\xd0\xbd\xd1\x83\xd1\x82\xd1\x8c\xd1\x81\xd1\x8f \xd0\xbd\xd0\xb0 \xd1\x80\xd0\xbe\xd0\xb4\xd0\xb8\xd0\xbd\xd1\x83 """
+        move_to_coroutine = self.move_to_coroutine(position)
+        self.coroutines.append(move_to_coroutine)
+        yield BWWaitForCoroutine(move_to_coroutine)
+        self.filter.teleportTo(self.original_position)
+        self.coroutines = []
+
+    @BWMemberCoroutine
+    def burst_coroutine(self):
+        """ \xd1\x80\xd0\xb0\xd0\xb7\xd0\xb1\xd0\xb5\xd0\xb6\xd0\xb0\xd1\x82\xd1\x8c\xd1\x81\xd1\x8f \xd0\xb8 \xd0\xb2\xd0\xb5\xd1\x80\xd0\xbd\xd1\x83\xd1\x82\xd1\x8c\xd1\x81\xd1\x8f \xd0\xbd\xd0\xb0 \xd1\x80\xd0\xbe\xd0\xb4\xd0\xb8\xd0\xbd\xd1\x83 """
+        self.filter.influenceRadius = self._influence_radius * 2.0
+        burst_velocity = self.velocity * 1.5
+        self.filter.speed = burst_velocity
+        alpha = 1.0
+        while alpha > 0:
+            alpha -= self.delta_time
+            self.filter.speed = math_bw.lerp(self.velocity, burst_velocity, alpha)
+            yield BWWaitForPeriod(0)
+
+        self.filter.speed = self.velocity
+        self.filter.influenceRadius = self._influence_radius
+        self.filter.teleportTo(self.original_position)
+        self.coroutines = []
+
+    @BWMemberCoroutine
+    def move_to_coroutine(self, position):
+        """ \xd0\xb4\xd0\xb2\xd0\xb8\xd0\xb3\xd0\xb0\xd1\x82\xd1\x8c\xd1\x81\xd1\x8f \xd0\xb2 \xd1\x82\xd0\xbe\xd1\x87\xd0\xba\xd1\x83 """
+        max_filter_speed = self.velocity * 1.5
+        min_filter_speed = self.velocity * 0.5
+        direction = position - self.position
+        dist = direction.length
+        start_dist = dist
+        direction.normalise()
+        self.filter.influenceRadius = 2.0
+        self.filter.speed = max_filter_speed
+        while dist > 0:
+            velocity = self.velocity * 30
+            if dist < 2.0:
+                velocity = math_bw.lerp(self.velocity * 3, self.velocity * 30, dist / min(2.0, start_dist))
+                self.filter.speed = math_bw.lerp(min_filter_speed, max_filter_speed, dist / min(3.0, start_dist))
+            move_dist = self.delta_time * velocity
+            dist = max(0, dist - move_dist)
+            self.filter.teleportTo(self.position + direction * move_dist)
+            yield BWWaitForPeriod(0)
+
+        self.filter.speed = min_filter_speed
+        yield BWWaitForPeriod(2.0)
+        alpha = 0.0
+        while alpha < 3.0:
+            alpha += self.delta_time
+            self.filter.influenceRadius = math_bw.lerp(2.0, self._influence_radius, alpha)
+            self.filter.speed = math_bw.lerp(min_filter_speed, self.velocity, alpha)
+            yield BWWaitForPeriod(0)
+
+        self.filter.influenceRadius = self._influence_radius
+        self.filter.speed = self.velocity

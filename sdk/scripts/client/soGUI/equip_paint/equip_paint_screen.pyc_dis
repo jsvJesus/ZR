@@ -1,0 +1,595 @@
+# Embedded file name: ./client/soGUI/equip_paint/equip_paint_screen.py
+import ItemsUtils
+from functools import partial
+from collections import defaultdict
+import colorCodes as cc
+import BWPersonality
+from Localization import lc
+from utils import PY
+from Items import ItemsCatalog
+import BigWorld
+import GUI
+from math_bw import move_towards
+from tabview.tabview import TabViewET
+from equip_block.equip_tabview import EquipTabView, TabViewET as EquipET
+from paint_block.paint_tabview import PaintTabView
+from paint_block.emblem.emblem_view import EmblemViewET
+from Helpers.PyGUI.PyGUIBase import Interceptor
+from Helpers.BWCoroutine import BWMemberCoroutine, BWWaitForPeriod, BWWaitForCondition
+from ui.button import Button
+from soGUI.PaintGUI.PaintDummy import PaintDummy
+from equip_block.equip_tablegrid import ItemDataET as EquipItemET
+from soGUI.donat_shop.window.auxwins.auxwins import Auxwins, Mode as AuxMode
+from total import Total
+from soGUI.PaintGUI.ShopConfirm import ShopConfirm
+from cloth_paint_utils import PaintNotifyCode as PNC
+from soGUI.soCheckBox import soCheckBox, CheckBoxPropsStructure
+import ItemCategories as IC
+from soGUI.PaintGUI.PaintConfirm import PaintConfirm
+from sounds_manager import playSound
+import UCManager
+
+class EquipPaintScreen(Interceptor):
+    _ticket_type = ItemsCatalog.EVENT_TICKET['TypeID']
+
+    def __init__(self):
+        comp = GUI.Window()
+        comp.visible = False
+        comp.position = (0, 0, 0.3)
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.wm, comp.hm = ('CLIP', 'CLIP')
+        comp.width, comp.height = (2, 2)
+        Interceptor.__init__(self, comp, interscept_keys=True)
+        self._reposition_dirty = True
+        self._show_coroutine = None
+        self._repositions = []
+        self._load_paint_result = None
+        self._edit_item = None
+        comp = GUI.Window('soGUI/frame/paint/black.dds')
+        comp.materialFX = 'SOLID'
+        comp.wm, comp.hm = ('CLIP', 'CLIP')
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.width, comp.height = (2, 2)
+        comp.position = (0, 0, 0.5)
+        comp.visible = False
+        self.component.addChild(comp)
+        self._content = comp
+        comp = GUI.Window('soGUI/frame/paint/background.dds')
+        comp.materialFX = 'SOLID'
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.width, comp.height = (2, 2)
+        comp.position = (0, 0, 0.99)
+        self._content.addChild(comp, 'background')
+        comp = GUI.Window('soGUI/frame/paint/black.dds')
+        comp.materialFX = 'BLEND'
+        comp.wm, comp.hm = ('CLIP', 'CLIP')
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.width, comp.height = (2, 2)
+        comp.position = (0, 0, 0)
+        comp.visible = False
+        self.component.addChild(comp)
+        self._fader = comp
+        comp = GUI.Window()
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('LEFT', 'TOP')
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.position[2] = 0.5
+        self._equip_tabview = EquipTabView(comp)
+        self._equip_tabview.add_listener(self._on_equip_tabview_event)
+        self._content.addChild(comp)
+        self._shop_confirm = ShopConfirm()
+        self._content.addChild(self._shop_confirm.component)
+        comp = GUI.Window()
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('RIGHT', 'TOP')
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.position[2] = 0.5
+        self._paint_tabview = PaintTabView(comp, self._content)
+        self._paint_tabview.add_listener(self._on_painttabview_event)
+        self._content.addChild(comp)
+        comp = GUI.Window()
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('RIGHT', 'TOP')
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.position = (0, 0, 0.5)
+        self._total = Total(comp)
+        self._content.addChild(comp)
+        self._paint_tabview._emblem_view.feed_dependencies(self._total.txt_buy, self._total.btn_buy)
+        comp = GUI.Window()
+        comp.materialFX = 'SOLID'
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.wm, comp.hm = ('CLIP', 'CLIP')
+        comp.materialFX = 'BLEND'
+        comp.position = (0, 0, 0.9)
+        comp.width, comp.height = (2, 2)
+        self._content.addChild(comp)
+        self._paint_dummy = PaintDummy(comp)
+        btn = Button(self._content, 'btnclose', depth=0.1)
+        btn.set_visual('soGUI/frame/buttons/wincross.json')
+        btn.transform.set_pixel_mode((1, 0), (1, 0), (36, 36), pixel_pos=(-16, 16))
+        btn.component.frame.filterType = 'LINEAR'
+        btn.on_click = self.hide
+        self._repositions.append(btn)
+        btn = Button(self._content, 'btnreset')
+        btn.transform.set_base_resolution(None)
+        btn.set_visual('soGUI/frame/buttons/donatbutton.json')
+        btn.set_text(lc('PaintScreen.screen.RESET'))
+        btn.on_click = self._on_reset_click
+        btn.hover_sound = True
+        self._repositions.append(btn)
+        self._btn_reset = btn
+        btn = Button(self._content, 'btnallreset')
+        btn.transform.set_base_resolution(None)
+        btn.set_visual('soGUI/frame/buttons/donatbutton.json')
+        btn.set_text(lc('PaintScreen.screen.RESET_ALL'))
+        btn.on_click = self._on_resetall_click
+        btn.hover_sound = True
+        self._repositions.append(btn)
+        self._btn_resetall = btn
+        btn = Button(self._content, 'btnapply')
+        btn.transform.set_base_resolution(None)
+        btn.set_visual('soGUI/frame/buttons/donatbutton_red.json')
+        btn.set_text(lc('PaintScreen.screen.APPLY'))
+        btn.hover_sound = True
+        btn.on_click = self._on_apply_click
+        self._repositions.append(btn)
+        self._btn_apply = btn
+        comp = GUI.Window()
+        self._show_wpn_cb = soCheckBox(comp, CheckBoxPropsStructure())
+        self._show_wpn_cb.box.soundControlName = 'WeaponButton'
+        self._show_wpn_cb.onStateChange = self._show_wnp_click
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('LEFT', 'CENTER')
+        self._content.addChild(comp)
+        self._show_wpn_cb.onBound()
+        comp = GUI.Text(lc('EquipPaint.wpnshow'), 'RobotoCondensedRegular_16.font')
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.colour = cc.inactive_rgba
+        comp.ha, comp.va = ('LEFT', 'CENTER')
+        self._content.addChild(comp, 'wpnchecktext')
+        self._confirmation = PaintConfirm(self._content, self)
+        self._confirmation.on_cancel = self._confirmation.hide
+        self._auxwins = Auxwins(self._content, AuxMode.Paint)
+        self._auxwins.transform.set_clip_mode((0, 0, 1, 1))
+        self._repositions.append(self._auxwins)
+        self._update_buttons()
+        return
+
+    def update_consumables(self, consumables, inventory_consumables):
+        if not self.visible:
+            return
+        self._total.update_consumables(consumables, inventory_consumables)
+
+    def consumable_added(self, items):
+        if not self.visible:
+            return
+        self._total.consumable_added(items)
+
+    def show(self):
+        self.component.visible = True
+        if not self._show_coroutine:
+            self._show_coroutine = self._run_show_coroutine()
+            self._show_coroutine.run()
+
+    def _on_painttabview_event(self, event_type, data):
+        if event_type == TabViewET.OnHeightChanged:
+            comp = self._paint_tabview.component
+            self._total.component.position[1] = comp.position[1] + comp.height
+        elif event_type == EmblemViewET.OnUploadRequest:
+            needed_tickets = data['tickets']
+            if needed_tickets > self._total.tickets:
+                self._shop_confirm.show({EquipPaintScreen._ticket_type: needed_tickets - self._total.tickets})
+                return
+            self._on_emblem_buy_click(data['texture'])
+
+    def load_paint_result(self, db_id, data):
+        if not self._load_paint_result or self._load_paint_result[0] != db_id:
+            return
+        self._load_paint_result = (db_id, data)
+
+    def _on_equip_tabview_event(self, event_type, data):
+        if event_type == EquipET.OnSelectionChanged:
+            equip_item = self._equip_tabview.selected
+            self._paint_tabview.set_item(equip_item)
+            self._total.set_item(equip_item)
+            self.edit_item = self._equip_tabview.selected
+        elif event_type == EquipET.OnTabChanged:
+            check_visible = self._equip_tabview.is_weapon_tab_active()
+            self._show_wpn_cb.component.visible = check_visible
+            self._content.wpnchecktext.visible = check_visible
+            self._paint_dummy.reset_camera()
+
+    def _show_wnp_click(self):
+        self._update_dummyweapon()
+
+    def _update_dummyweapon(self):
+        show_weapon_only = False
+        if self.edit_item:
+            cat_id = ItemsCatalog.GetItemCategory(self.edit_item.item_type)
+            if IC.is_subcategory(cat_id, IC.WEAPON) or IC.is_subcategory(cat_id, IC.DEVICES):
+                if not self._show_wpn_cb.isChecked():
+                    show_weapon_only = True
+        self._paint_dummy.show_weapon_only_mode(show_weapon_only)
+
+    @BWMemberCoroutine
+    def _run_show_coroutine(self):
+        self._content.visible = False
+        self._fader.colour[3] = 0
+        self._fader.visible = True
+        cur_char = BigWorld.player().current_character()
+        db_id = cur_char['avatar_dbid']
+        self._load_paint_result = (db_id, None)
+        BigWorld.player().loadPaintData(db_id)
+        fade_speed = 500
+        while self._fader.colour[3] < 255:
+            self._fader.colour[3] = move_towards(self._fader.colour[3], 255, BigWorld.getTimeDelta() * fade_speed)
+            yield BWWaitForPeriod(0)
+
+        while not self._load_paint_result[1] or self._load_paint_result[0] != db_id:
+            yield BWWaitForPeriod(0)
+
+        self._content.visible = True
+        load_data = self._load_paint_result[1]
+        modify_items = load_data['modify_items']
+        equipped_armor = PY(cur_char['equippedArmor'])
+        equipped_ids = set([ item_data['itemID'] for item_data in equipped_armor.values() ])
+        equipped_weapon_ids = set([ w['itemID'] for w in cur_char['weapon'].values() if w['itemID'] > 0 ])
+        equipped_weapons = []
+        inventory_weapons = []
+        equipped_cloth = []
+        inventory_cloth = []
+        for item in modify_items:
+            item_id = item['complexItemID']
+            if item_id in equipped_ids:
+                equipped_cloth.append(PY(item))
+            elif item_id in equipped_weapon_ids:
+                equipped_weapons.append(PY(item))
+            else:
+                item_class = ItemsCatalog.GetItemClass(item['complexItemType'])
+                if item_class == ItemsCatalog.WEAPON:
+                    inventory_weapons.append(PY(item))
+                elif item_class == ItemsCatalog.CLOTH:
+                    inventory_cloth.append(PY(item))
+                elif item_class == ItemsCatalog.PART:
+                    item_category = ItemsCatalog.GetItemCategory(item['complexItemType'])
+                    if IC.is_subcategory(item_category, IC.WEAPON):
+                        inventory_weapons.append(PY(item))
+                    else:
+                        inventory_cloth.append(PY(item))
+
+        self._on_show(equipped_cloth, equipped_weapons, inventory_cloth, inventory_weapons, equipped_armor, PY(cur_char['equipModes']), PY(cur_char['personality']), modify_items, PY(load_data['personal_emblems']), PY(load_data['standard_emblems']), PY(load_data['equipped_cond']), PY(load_data['consumables']), PY(load_data['inventory_consumables']))
+        while self._fader.colour[3] > 0:
+            self._fader.colour[3] = move_towards(self._fader.colour[3], 0, BigWorld.getTimeDelta() * fade_speed)
+            yield BWWaitForPeriod(0)
+
+        self._fader.visible = False
+        self._show_coroutine = None
+        return
+
+    def _on_show(self, equipped_cloth, equipped_weapons, inventory_cloth, inventory_weapons, equipped_armor, equip_modes, personality, carrying_items, personal_emblems, standard_emblems, equipped_cond, consumables, inventory_consumables):
+        Auxwins.push_mode(AuxMode.Paint)
+        Auxwins.show_load(False)
+        BigWorld.worldDrawEnabled(False)
+        if self._reposition_dirty:
+            self._do_reposition()
+        self._load_paint_result = None
+        self._equip_tabview.on_show(equipped_cloth, equipped_weapons, inventory_cloth, inventory_weapons, equipped_cond)
+        self._paint_tabview.on_show(personal_emblems, standard_emblems)
+        self.edit_item = self._equip_tabview.selected
+        cur_char = BigWorld.player().current_character()
+        carrying_items = equipped_cloth + equipped_weapons + inventory_cloth + inventory_weapons
+        self._paint_dummy.do_reposition()
+        self._paint_dummy.set_look(cur_char['equippedArmor'], cur_char['equipModes'], cur_char['personality'], carrying_items)
+        self._paint_dummy.reset_camera()
+        self._update_dummyweapon()
+        self._update_buttons()
+        self._total.update_consumables(consumables, inventory_consumables)
+        return
+
+    def hide(self):
+        if self._show_coroutine:
+            self._show_coroutine.stop()
+            self._show_coroutine = None
+        if self.component.visible:
+            self.component.visible = False
+            self._on_hide()
+        return
+
+    def _on_hide(self):
+        self._equip_tabview.deselect()
+        self._paint_dummy.on_hide()
+        self._load_paint_result = None
+        self._total.reset_changes()
+        self._total.update_consumables([], [])
+        self._confirmation.hide()
+        BigWorld.worldDrawEnabled(True)
+        Auxwins.pop_mode(AuxMode.Paint)
+        return
+
+    def _on_equipitem_event(self, event_type, data):
+        if event_type == EquipItemET.OnChanged:
+            self._paint_dummy.on_item_painted(self.edit_item._item)
+            self._update_buttons()
+
+    def _update_buttons(self):
+        if not self._total.has_changes():
+            self._btn_resetall.component.visible = False
+            self._btn_reset.component.visible = False
+            self._btn_apply.component.visible = False
+            return
+        self._btn_resetall.component.visible = True
+        self._btn_apply.component.visible = True
+        self._btn_reset.component.visible = bool(self.edit_item and self.edit_item.changes)
+
+    @property
+    def edit_item(self):
+        return self._edit_item
+
+    @edit_item.setter
+    def edit_item(self, value):
+        if self._edit_item == value:
+            return
+        prev_hash = self._paint_dummy.compile_hash()
+        on_items, off_items = [], []
+        dummy_remove_result = (False, [])
+        if self._edit_item:
+            self._edit_item.remove_listener(self._on_equipitem_event)
+            if not value:
+                parent_item = self._equip_tabview.find_parent(self.edit_item.item_id)
+                dummy_remove_result = self._paint_dummy.put_item_off(parent_item._item)
+                if dummy_remove_result[0]:
+                    off_items = [self.edit_item._item] + dummy_remove_result[1]
+        self._edit_item = value
+        if self._edit_item:
+            self._edit_item.add_listener(self._on_equipitem_event)
+            parent_item = self._equip_tabview.find_parent(self.edit_item.item_id)
+            dummy_remove_result = self._paint_dummy.put_item_on(parent_item._item)
+            if dummy_remove_result[0]:
+                on_items = [self._edit_item._item]
+                off_items = dummy_remove_result[1]
+        if on_items or off_items:
+            self._equip_tabview.update_equipped(on_items, off_items)
+        if prev_hash and self.visible and prev_hash != self._paint_dummy.compile_hash():
+            playSound('ui/equip_modification/clothes')
+        self._update_buttons()
+        self._update_dummyweapon()
+
+    def _on_reset_click(self):
+        playSound('ui/inventory/item_drop')
+        self._paint_tabview.reset()
+        self.edit_item.reset()
+
+    def _on_resetall_click(self):
+        playSound('ui/equip_modification/clear_all')
+        self._equip_tabview.reset_items()
+        self._total.reset_changes()
+        self._update_buttons()
+        self._paint_dummy.on_item_painted(None)
+        return
+
+    def get_item_by_id(self, item_id):
+        items = self._equip_tabview.get_items([item_id])
+        return items and items[0]._item or None
+
+    def _on_apply_confirm(self, confirm_tickets, painted_items, emblemed_items, emblems):
+        if confirm_tickets > self._total.tickets:
+            needed = {EquipPaintScreen._ticket_type: confirm_tickets - self._total.tickets}
+            self._shop_confirm.show(needed)
+            self._confirmation.hide()
+            return
+        self._run_confirm_apply_coroutine(emblems, painted_items, emblemed_items).run()
+
+    @BWMemberCoroutine
+    def _run_confirm_apply_coroutine(self, emblems, painted_items, emblemed_items):
+        Auxwins.show_load(True)
+        self._confirmation.hide()
+        for texture, item_ids in emblems.iteritems():
+            equip_items = self._equip_tabview.get_items(item_ids)
+            emblem_item = self._paint_tabview._emblem_view._tm.find_item(texture)
+            loaded = [False]
+
+            def on_upload_image(img_id):
+                emblem_id = int(img_id)
+                for eitem in equip_items:
+                    eitem.emblem_id = emblem_id
+
+                emblem_item.load_emblem(emblem_id)
+                loaded[0] = True
+
+            UCManager.ucmanager.uploadImage(texture.name, callbackUnlock=lambda : None, onUploadImage=on_upload_image)
+            yield BWWaitForCondition(lambda : loaded[0])
+            yield BWWaitForPeriod(0)
+
+        item_ids = set(painted_items.keys() + emblemed_items.keys())
+        if not item_ids:
+            Auxwins.show_load(False)
+            return
+        cost = 0
+        paint_items = []
+        has_weapon = False
+        has_cloth = False
+        for item in self._equip_tabview.get_items(item_ids):
+            item_class = ItemsCatalog.GetItemClass(item.item_type)
+            if item_class == ItemsCatalog.WEAPON:
+                has_weapon = True
+            elif item_class == ItemsCatalog.CLOTH:
+                has_cloth = True
+            elif item_class == ItemsCatalog.PART:
+                item_category = ItemsCatalog.GetItemCategory(item.item_type)
+                if IC.is_subcategory(item_category, IC.WEAPON):
+                    has_weapon = True
+                else:
+                    has_cloth = True
+            pitem = {'item_id': item.item_id,
+             'colors': (0, 0),
+             'emblem_id': 0,
+             'new_colors': False,
+             'new_emblem': False}
+            emblem_data = item.changes.get('emblem')
+            if emblem_data:
+                pitem['new_emblem'] = True
+                if not emblem_data['new_emblem']:
+                    pitem['emblem_id'] = 0
+                cost += item.get_change_cost()
+                camo_data = item.changes.get('camo')
+                pitem['new_colors'] = camo_data and True
+                pitem['colors'] = item.colors_tuple
+            paint_items.append(pitem)
+
+        tickets, inv_tickets = self._total.get_tickets_count()
+        if cost <= tickets:
+            tickets = cost
+            inv_tickets = 0
+        else:
+            inv_tickets = cost - tickets
+        if not (tickets and [{'type_id': EquipPaintScreen._ticket_type,
+          'count': tickets}]):
+            tickets = []
+            if not (inv_tickets and [{'type_id': EquipPaintScreen._ticket_type,
+              'count': inv_tickets}]):
+                inv_tickets = []
+                data = {'avatar_dbid': BigWorld.player().current_character()['avatar_dbid'],
+                 'paint_items': paint_items,
+                 'consumables': tickets,
+                 'inventory_consumables': inv_tickets}
+                BigWorld.player().paintCloth(data)
+                if has_weapon:
+                    playSound('ui/equip_modification/painting')
+                has_cloth and playSound('ui/equip_modification/clothes_approve')
+            emblemed_items and playSound('ui/equip_modification/sewing')
+        Auxwins.show_load(False)
+
+    def _on_emblem_buy_click(self, texture):
+        self._confirmation.set_available(self._total.tickets)
+        self._confirmation.on_confirm = self._on_apply_confirm
+        item_ids = self._total.get_changed_items()
+        emblemed_item_ids = set()
+        for item in self._equip_tabview.get_items(item_ids):
+            emblem_data = item.changes.get('emblem')
+            if not emblem_data:
+                continue
+            if emblem_data['new_emblem'] == texture:
+                emblemed_item_ids.add(item.item_id)
+
+        emblems = {texture: emblemed_item_ids}
+        self._confirmation.show({}, {}, emblems, lc('PaintScreen.confirm.CONFIRM_HEADER1'))
+        self._confirmation.hide_dell_buttons()
+
+    def _on_apply_click(self):
+        playSound('ui/menu_click')
+        self._confirmation.set_available(self._total.tickets)
+        self._confirmation.on_confirm = self._on_apply_confirm
+        painted_items, emblemed_items, emblems = {}, {}, defaultdict(set)
+        item_ids = self._total.get_changed_items()
+        for item in self._equip_tabview.get_items(item_ids):
+            emblem_data = item.changes.get('emblem')
+            if emblem_data:
+                new_emblem = emblem_data['new_emblem']
+                if new_emblem:
+                    emblemed_items[item.item_id] = new_emblem
+                    if ItemsUtils.is_textured_emblem(new_emblem):
+                        emblems[new_emblem].add(item.item_id)
+                else:
+                    emblemed_items[item.item_id] = 0
+            camo_data = item.changes.get('camo')
+            if camo_data:
+                painted_items[item.item_id] = {'colors': item.colors12,
+                 'camo_id': item.camo_id}
+
+        self._confirmation.show(painted_items, emblemed_items, emblems, lc('PaintScreen.confirm.CONFIRM_HEADER1'))
+
+    def on_paint_event(self, event_id):
+        Auxwins.show_load(False)
+        if event_id == PNC.PAINT_OK:
+            BWPersonality.GUICore.loginFlash.show_dialog_message(lc('PaintScreen.screen.CONGRATULATIONS'), lc('PaintScreen.screen.MODIFICATION_SUCCESS'))
+            self.hide()
+        elif event_id == PNC.ERR_TUTOR_SPACE:
+            pass
+        else:
+            Auxwins.show_ok_message(PNC.textMsg(event_id))
+
+    def _do_reposition(self):
+        self._reposition_dirty = False
+        sw, sh = BigWorld.screenSize()
+        comp = self._content.background
+        ratio = float(comp.texture.width) / comp.texture.height
+        comp.width, comp.height = max(sh * ratio, sw), sh
+        cell_size = max(1, int(sh * 0.076))
+        scroll_width = 0.02 * sh
+        table_pos = int(0.1 * sh)
+        equip_cols = 6
+        eqiup_rows = 10
+        equip_table_width = cell_size * equip_cols + scroll_width
+        paint_cols = 5
+        paint_rows = 5
+        paint_table_width = cell_size * paint_cols + scroll_width
+        comp = self._equip_tabview.component
+        comp.position = (int(0.057 * sh), 0, comp.position[2])
+        comp.width, comp.height = equip_table_width, sh
+        equip_comp = comp
+        comp = self._paint_tabview.component
+        paint_table_pos_y = int(0.05 * sh)
+        comp.position = (int(sw - 0.057 * sh), paint_table_pos_y, comp.position[2])
+        comp.width, comp.height = paint_table_width, sh - paint_table_pos_y
+        paint_comp = comp
+        reposition_data = {'equip_header_height': table_pos,
+         'paint_header_height': table_pos - paint_table_pos_y,
+         'cell_size': cell_size,
+         'scroll_width': scroll_width,
+         'equip_cols': equip_cols,
+         'equip_rows': eqiup_rows,
+         'paint_cols': paint_cols,
+         'paint_rows': paint_rows}
+        btn_width = paint_comp.width * 0.8
+        right_pos = paint_comp.position[0]
+        bottom_pos = -sh * 0.03
+        btn_height = sh * 0.05
+        self._btn_reset.transform.set_pixel_mode((0, 1), (0, 1), (btn_width, btn_height), pixel_pos=(right_pos - btn_width, bottom_pos))
+        self._btn_resetall.transform.set_pixel_mode((0, 1), (0, 1), (btn_width, btn_height), pixel_pos=(equip_comp.position[0], bottom_pos))
+        self._btn_apply.transform.set_pixel_mode((0.5, 1), (0.5, 1), (btn_width, btn_height), pixel_pos=(0, bottom_pos))
+        res_comp = self._btn_resetall.component
+        comp = self._show_wpn_cb.component
+        comp.position = (res_comp.position[0], res_comp.position[1] - 20, 0.5)
+        check_comp = comp
+        comp = self._content.wpnchecktext
+        comp.position = (check_comp.position[0] + 28, check_comp.position[1], 0.5)
+        self._equip_tabview.do_reposition(reposition_data)
+        self._paint_tabview.do_reposition(reposition_data)
+        for r in self._repositions:
+            r.transform.apply_mode()
+
+        comp = self._total.component
+        comp.position[0] = paint_comp.position[0] - scroll_width
+        comp.position[1] = paint_comp.position[1] + paint_comp.height + sh * 0.03
+        comp.width = paint_comp.width - scroll_width
+        self._total.do_reposition(btn_width, btn_height)
+        self._paint_dummy.do_reposition()
+        self._confirmation.do_reposition()
+        self._shop_confirm.do_reposition()
+
+    def handle_esc(self):
+        if self._auxwins.handle_esc():
+            return
+        if self._confirmation.visible:
+            self._confirmation.hide()
+            return
+        if self._shop_confirm.component.visible:
+            self._shop_confirm.hide()
+            return
+        self.hide()
+
+    def do_reposition_request(self):
+        if self.visible:
+            self._do_reposition()
+        else:
+            self._reposition_dirty = True
+
+    @property
+    def visible(self):
+        return self.component.visible

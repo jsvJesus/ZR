@@ -1,0 +1,148 @@
+# Embedded file name: ./client/soGUI/login/notify_win.py
+import traceback
+import BWPersonality
+from utils import Listenable, force_unicode
+import GUI
+from Helpers.PyGUI.PyGUIBase import Interceptor
+from base_win import BaseWin, EventType as BaseWinET
+from Localization import lc
+import colorCodes as cc
+from soGUI.soTextField import soTextField3
+from soGUI.soHyperLinkComponent import soHyperLinkComponent as HyperLink
+from MessagesUtils import get_ban_utf_message
+
+class SimpleWin(BaseWin):
+    interface_id = 'LoginNotifyWinInterfaceID'
+
+    def __init__(self):
+        BaseWin.__init__(self, width=480)
+
+    def _create_content(self, margin, center_width):
+        pos_y = BaseWin._create_content(self, margin, center_width, lc('LoginWin.notify.attention'))
+        pos_y += 20
+        text_height = 128
+        comp = GUI.Window()
+        comp.materialFX = 'SOLID'
+        comp.hpm, comp.vpm = ('CLIP', 'PIXEL')
+        comp.ha, comp.va = ('CENTER', 'TOP')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = center_width, text_height
+        comp.position = (0, pos_y, 0.5)
+        self._text = soTextField3(comp, width=center_width, textWidth=center_width, height=text_height)
+        self._text.INTERFACE_ID = SimpleWin.interface_id
+        self.component.addChild(comp)
+        pos_y += text_height
+        btn, pos_y = self._create_button(pos_y, 300, lc('LoginWin.notify.ok'))
+        btn.on_click = self.hide
+        pos_y += 40
+        return pos_y
+
+    def show_text(self, text, show_support_link):
+        try:
+            text = force_unicode(text)
+            text = u'<font=RobotoCondensedRegular_18.font>{0}{1}'.format(cc.active_xml, text)
+            if show_support_link:
+                lintk_text = u'\n<hlink={0};>'.format(lc('LoginWin.notify.support'))
+                text += lintk_text
+            self._text.setText(text, immidiate=True)
+        except:
+            traceback.print_stack()
+            traceback.print_exc()
+
+        self.show()
+
+
+class EventType:
+    OnAny, OnNone = ((r, 'loginnotifywin') for r in range(2))
+
+
+class NotifyWin(Listenable):
+
+    def __init__(self):
+        Listenable.__init__(self)
+        comp = GUI.Window('soGUI/frame/paint/black.dds')
+        comp.materialFX = 'BLEND'
+        comp.colour = (255, 255, 255, 150)
+        comp.wm, comp.hm = ('CLIP', 'CLIP')
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.width, comp.height = (2, 2)
+        comp.position = (0, 0, 0.1)
+        comp.visible = False
+        Interceptor(comp)
+        self.component = comp
+        self._free_wins = []
+        self._visible_wins = []
+
+    def _hlink_event(self, event, data):
+        if event != HyperLink.EVENT_CLICK:
+            return
+        interface_id = data[1]
+        if interface_id == SimpleWin.interface_id:
+            BWPersonality.GUICore.showWebEmbdeded(True, 'https://stalkeronline.helpdeskeddy.com/')
+
+    def _on_basewin_event(self, event_type, data):
+        if event_type == BaseWinET.OnShow:
+            win = data['window']
+            min_depth = None
+            for w in self._visible_wins:
+                if w == win:
+                    continue
+                depth = w.component.position[2]
+                if min_depth is None:
+                    min_depth = depth
+                else:
+                    min_depth = min(min_depth, depth)
+
+            if min_depth is None:
+                needed_depth = 0.9
+            else:
+                needed_depth = min_depth * 0.5
+            if win.component.position[2] != needed_depth:
+                win.component.position[2] = needed_depth
+                self.component.reSort()
+            self._update_visibility()
+        elif event_type == BaseWinET.OnHide:
+            win = data['window']
+            self._visible_wins.remove(win)
+            self._free_wins.append(win)
+            self._update_visibility()
+        return
+
+    def _update_visibility(self):
+        was_visible = self.component.visible
+        self.component.visible = bool(self._visible_wins)
+        if self.component.visible != was_visible:
+            if self.component.visible:
+                BWPersonality.GUICore.addListener('hlinkEvent', self._hlink_event)
+                self.notify_listeners(EventType.OnAny)
+            else:
+                BWPersonality.GUICore.removeListener('hlinkEvent', self._hlink_event)
+                self.notify_listeners(EventType.OnNone)
+
+    def _pop_free_win(self):
+        if not self._free_wins:
+            win = SimpleWin()
+            win.add_listener(self._on_basewin_event)
+            win.component.position[2] = 0.9
+            self.component.addChild(win.component)
+            self._free_wins.append(win)
+        return self._free_wins.pop()
+
+    def close_all(self):
+        while self._visible_wins:
+            self._visible_wins[0].hide()
+
+    def has_any(self):
+        return bool(self._visible_wins)
+
+    def show_ok(self, text, show_support_link = False):
+        win = self._pop_free_win()
+        self._visible_wins.append(win)
+        win.show_text(text, show_support_link)
+
+    def show_ban(self, pub_reason, ban_time_left):
+        win = self._pop_free_win()
+        self._visible_wins.append(win)
+        message = get_ban_utf_message(ban_time_left, pub_reason)
+        win.show_text(message, True)

@@ -1,0 +1,87 @@
+# Embedded file name: ./client/ingame_mews.py
+import UCManager
+import zipfile
+import json
+import BWPersonality
+import BigWorld
+from time import time
+from Localization import get_lang_short
+try:
+    from cStringIO import StringIO
+except:
+    from StringIO import StringIO
+
+class IngameNews:
+
+    def __init__(self):
+        self._news = {}
+        self._tid = 0
+        self._last_req = 0
+
+    def bind_events(self):
+        BWPersonality.game.addListener('onPlayerAccount', self.request_news)
+        BWPersonality.game.addListener('onDisconnected', self.stop_update_news)
+        BWPersonality.game.addListener('onFini', self.stop_update_news)
+
+    def request_news(self):
+        if time() - self._last_req < 60.0:
+            return self.update_news()
+        self._last_req = time()
+        url = 'http://update-nl-release.stalker.so/ingame_news.zip'
+        UCManager.ucmanager.downloadFromUrl(url, self._on_load)
+
+    def stop_update_news(self):
+        if self._tid:
+            BigWorld.cancelCallback(self._tid)
+        self._tid = None
+        return
+
+    def hide_news(self):
+        BWPersonality.GUICore.loginFlash.send_to_flashscript('updateEvent', dict(caption=''))
+
+    def update_news(self):
+        self.stop_update_news()
+        if BigWorld.player().__class__.__name__ != 'PlayerAccount':
+            return self.hide_news()
+        if not self._news:
+            return self.hide_news()
+        SERVTAG = BWPersonality.game.SERVTAG
+        if not SERVTAG:
+            return self.hide_news()
+        LOC = get_lang_short()
+        cur_ts = time() - BWPersonality.gpd.time_diff
+        loc_data = self._news['loc'].get(SERVTAG, {}).get(LOC, {})
+        event_data = self._news['event'].get(SERVTAG, {})
+        data = {}
+        data['caption'] = loc_data.get('title', '') if loc_data.get('enable') else ''
+        data['decription'] = loc_data.get('text', '').replace('\r\n', '\n')
+        data['picture_path'] = '../soGUI/maps/premium/%s.tga' % event_data.get('img')
+        data['end_time'] = max(61, int(event_data['end'] - cur_ts))
+        if cur_ts > event_data['end'] or event_data['start'] > cur_ts:
+            data['caption'] = ''
+            data['end_time'] = 0
+        BWPersonality.GUICore.loginFlash.send_to_flashscript('updateEvent', data)
+        if cur_ts > event_data['end']:
+            delay = 0
+        elif event_data['start'] > cur_ts:
+            delay = event_data['start'] - cur_ts + 1
+        else:
+            delay = 60
+        if delay:
+            self._tid = BigWorld.callback(delay, self.update_news)
+
+    def _on_load(self, zp):
+        self.stop_update_news()
+        if not zp:
+            self._news = None
+            return
+        else:
+            self.zp = zp
+            zfp = zipfile.ZipFile(StringIO(zp), 'r')
+            j = zfp.open('ingame_news.json').read()
+            self._news = json.loads(j)
+            self.update_news()
+            return
+
+
+news = IngameNews()

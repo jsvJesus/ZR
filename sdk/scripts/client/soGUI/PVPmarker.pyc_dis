@@ -1,0 +1,144 @@
+# Embedded file name: ./client/soGUI/PVPmarker.py
+import BWPersonality
+import BigWorld
+import GUI
+from Math import Matrix
+from Helpers.PyGUI.PyGUIBase import PyGUIBase
+from matrix_providers import ShiftProvider
+
+class Marker:
+
+    def __init__(self, entity):
+        self.component = GUI.Simple('soGUI/maps/Icons/pvp/friend_marker.dds')
+        cmp = self.component
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'CLIP'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.horizontalAnchor = 'CENTER'
+        cmp.verticalAnchor = 'BOTTOM'
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.width = 30
+        cmp.height = 30
+        cmp.position = (0.0, 0.0, 0.6)
+        self.entity = entity
+        self.height = 0
+        self.scale = 0
+        self.clipMP = GUI.WorldToClipMP()
+        shader = GUI.MatrixShader()
+        shader.eta = 0
+        shader.blend = True
+        shader.target = self.clipMP
+        self.component.addShader(shader, 'mover')
+        self.update()
+
+    def _getHeight(self):
+        if self.entity.dead:
+            return 0.5
+        if self.entity.IsAvatarCrouched():
+            return 1.3
+        return 1.9
+
+    def _getScale(self):
+        cam_pos = BigWorld.camera().position
+        dist = cam_pos.distTo(self.entity.position)
+        if dist < 1:
+            return 50
+        scale = int(300 / dist)
+        return max(10, min(scale, 50))
+
+    def update(self):
+        success = True
+        if not self.entity:
+            return False
+        if self.entity.isDestroyed:
+            return False
+        height = self._getHeight()
+        if height != self.height:
+            self.height = height
+            self.clipMP.target = ShiftProvider(self.entity.matrix, (0, self.height, 0))
+        scale = self._getScale()
+        if self.scale != scale:
+            self.scale = scale
+            self.component.width = self.component.height = self.scale
+        return success
+
+    def destroy(self):
+        if not self.clipMP:
+            return
+        else:
+            self.clipMP.target = Matrix()
+            self.clipMP = None
+            self.component = None
+            self.entity = None
+            return
+
+
+class PVPmarker(PyGUIBase):
+
+    def __init__(self):
+        component = GUI.Window()
+        PyGUIBase.__init__(self, component)
+        component.script = self
+        self._marks = {}
+        self.setupRoot()
+
+    def setupRoot(self):
+        cmp = self.component
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'CLIP'
+        cmp.widthMode = cmp.heightMode = 'CLIP'
+        cmp.horizontalAnchor = cmp.verticalAnchor = 'CENTER'
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.width = 2.0
+        cmp.height = 2.0
+        cmp.position = (0.0, 0.0, 1.6)
+
+    def show(self):
+        if self.component.parent is None:
+            BWPersonality.GUICore.worldLayer.addChild(self.component, 'PVPmarker')
+        self.component.visible = True
+        self._stopupdate()
+        self._update()
+        return
+
+    def _stopupdate(self):
+        if getattr(self, '_tid', 0):
+            BigWorld.cancelCallback(self._tid)
+
+    def hide(self):
+        self.component.visible = False
+        self.clearAll()
+        self._stopupdate()
+        BWPersonality.GUICore.worldLayer.delChild('PVPmarker')
+
+    def addMarker(self, entity_id, head):
+        self.delMarker(entity_id)
+        entity = BigWorld.entity(entity_id)
+        if not entity:
+            return
+        icon = Marker(entity)
+        self.component.addChild(icon.component, 'icon_%s' % entity_id)
+        self._marks[entity_id] = icon
+
+    def delMarker(self, entity_id):
+        self.component.delChild('icon_%s' % entity_id)
+        icon = self._marks.pop(entity_id, None)
+        if icon:
+            icon.destroy()
+        return
+
+    def clearAll(self):
+        for entity_id, icon in self._marks.items():
+            self.component.delChild('icon_%s' % entity_id)
+            icon.destroy()
+
+        self._marks.clear()
+
+    def _update(self):
+        if not self.component.visible:
+            return
+        self._tid = BigWorld.callback(0.3, self._update)
+        for entity_id, icon in self._marks.items():
+            success = icon.update()
+            if not success:
+                self.delMarker(entity_id)

@@ -1,0 +1,100 @@
+# Embedded file name: ./client/ZoneEffects.py
+import BigWorld
+from EffectData import EffectsConfig
+from PostProcessZone import PostProcessZoneInterface
+from particle_spawner import ParticleSpawnerPartition
+from Helpers.Caps import CAP_EXCLUDE
+from Math import Matrix
+from client_utils import readable_space_pos
+
+class ZoneEffectsInterface:
+    PART_MIN_LENGHT_METR = 30
+
+    def __init__(self):
+        self._particle_spawner = ParticleSpawnerPartition(Matrix(self.matrix))
+        self._particle_system = None
+        self._prereqs = None
+        return
+
+    @property
+    def particles_path(self):
+        if not self.zoneEffectID:
+            return
+        eff = EffectsConfig.get(self.zoneEffectID)
+        return eff.get('zone_effect_particle', '')
+
+    def prerequisites(self):
+        if self.particles_path:
+            return [self.particles_path]
+        return []
+
+    def restore_particle(self):
+        if not self.particles_path:
+            return
+        if not self._prereqs:
+            return
+        if self.figure_type == 2:
+            radius = min(self.sizeX, self.sizeZ) / 2.0
+        else:
+            radius = self.radius
+        self._particle_spawner.start_spawn(self.particles_path, self._prereqs, self.position, radius, part_min_lenght_metr=self.PART_MIN_LENGHT_METR)
+
+    def stop_particle(self):
+        if not self.particles_path:
+            return
+        else:
+            self._particle_spawner.release()
+            self._particle_system = None
+            return
+
+    def debugReloadParticles(self):
+        if not self.particles_path:
+            return
+        self._particle_spawner.release()
+        import ResMgr
+        import Pixie
+        ResMgr.purge(self.particles_path, True)
+
+        class Preq:
+
+            def __getitem__(selfpreq, key):
+                return Pixie.create(self.particles_path)
+
+        self._particle_spawner.start_spawn(self.particles_path, Preq(), self.position, self.radius, debugprint=True, part_min_lenght_metr=self.PART_MIN_LENGHT_METR)
+
+
+class ZoneEffects(BigWorld.Entity, ZoneEffectsInterface, PostProcessZoneInterface):
+
+    def __init__(self):
+        BigWorld.Entity.__init__(self)
+        ZoneEffectsInterface.__init__(self)
+        self.config_name = self.pp_config_name
+        self.radius_max_effect = self.pp_radius_max or self.radius
+        self.targetCaps = [CAP_EXCLUDE]
+        PostProcessZoneInterface.__init__(self)
+
+    def __repr__(self):
+        if self.isDestroyed:
+            return 'ZoneEffects[%s]Destroyed' % self.id
+        return 'ZoneEffects[%s] at %s' % (self.id, readable_space_pos(self))
+
+    def onEnterWorld(self, prereqs):
+        PostProcessZoneInterface.onEnterWorld(self, prereqs)
+        if not self.particles_path:
+            return
+        self._prereqs = prereqs
+        if not self.activated:
+            return
+        self.restore_particle()
+
+    def onLeaveWorld(self):
+        self.stop_particle()
+        PostProcessZoneInterface.onLeaveWorld(self)
+        self._prereqs = None
+        return
+
+    def set_activated(self, old_value):
+        if self.activated:
+            self.restore_particle()
+        else:
+            self.stop_particle()

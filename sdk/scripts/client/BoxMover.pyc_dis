@@ -1,0 +1,240 @@
+# Embedded file name: ./client/BoxMover.py
+import Math
+import BigWorld
+import itertools
+import traceback
+import BWPersonality
+import ChatChannelConfig
+from Localization import lc
+from functools import partial
+from sounds_manager import playSound
+CHANNEL_CONSTS = ChatChannelConfig.ChannelConsts()
+
+class BoxMover:
+    __mover_model = None
+    __mover_scale = 1
+    __box_id = None
+    __box_phase_type = None
+    __can_put = False
+    __autopickup_time = 0
+
+    def ManipulateTarget(self):
+        target = BigWorld.target()
+        if self.waiting_autopickup():
+            return False
+        elif BWPersonality.GUICore.heliwin_visible():
+            return
+        elif target.__class__.__name__ == 'Tank' and self.ManipulateTarget():
+            if self.is_box_moving():
+                box = BigWorld.entities.get(self.__box_id)
+                if not box:
+                    return False
+                if box.__class__.__name__ != 'MovableBox':
+                    return False
+                self.cell.put_box_in_target(self.__box_id, target.id)
+            else:
+                BWPersonality.GUICore.createEntityContextMenu(target)
+            return
+        elif self.is_box_moving() and target.__class__.__name__ in ('CargoZone', 'Helicopter', 'Draisine') and self.ManipulateTarget():
+            if self.__box_phase_type is None:
+                return False
+            self.cell.put_box_in_target(self.__box_id, target.id)
+            return True
+        elif not self.__mover_model or not self.__mover_model.visible:
+            return False
+        else:
+            if self.__box_id:
+                box = BigWorld.entities.get(self.__box_id)
+                if not box or not self.__can_put:
+                    self.putMessage(CHANNEL_CONSTS.SYSTEM, lc('builder.error_put_box'))
+                    return True
+                self.cell.end_pickup_box(self.__box_id, self.__mover_model.position, self.__mover_model.yaw)
+            self.removeMoverModel()
+            return True
+
+    def on_death(self, source_data, item_type):
+        if not self.__box_id:
+            return
+        self.cell.end_pickup_box(self.__box_id, self.position, self.yaw)
+        self.removeMoverModel()
+
+    def is_box_moving(self):
+        return bool(self.__mover_model) or bool(self.__box_id)
+
+    def __set_box_tint(self, model, tint):
+        try:
+            model.box = tint
+        except Exception as e:
+            pass
+
+    def handleMouseEvent(self, event):
+        if not self.__mover_model:
+            return False
+        visible, position, can_put = self.get_box_mover_position()
+        if position is None:
+            return False
+        self.__mover_model.visible = visible
+        self.__mover_model.position = position
+        self.__can_put = can_put
+        if self.position.distTo(self.__mover_model.position) > 10:
+            return False
+        else:
+            return True
+
+    def fix_update_pos(self):
+        visible, position, can_put = self.get_box_mover_position()
+        self.__mover_model.visible = False
+        if position:
+            self.__mover_model.position = position
+        self.__can_put = can_put
+
+    def get_box_mover_position(self):
+        visible = False
+        position = None
+        can_put = False
+        if not self.__mover_model:
+            return (visible, position, can_put)
+        else:
+            scale = self.__mover_scale
+            self.__mover_model.scale = (scale, scale, scale)
+            self.__mover_model.newScaleTest = (scale, scale, scale)
+            t = BigWorld.target()
+            if t.__class__.__name__ in ('Helicopter', 'Draisine', 'Tank'):
+                if t.can_put_box_from_this_point(self.position):
+                    box_matrix = t.get_next_available_box_position()
+                    if box_matrix is None:
+                        return (False, Math.Vector3(), False)
+                    self.__set_box_tint(self.__mover_model, 'green')
+                    self.__mover_model.yaw = box_matrix.yaw
+                    scale = t.get_box_scale()
+                    scale = (scale, scale, scale)
+                    self.__mover_model.scale = scale
+                    self.__mover_model.newScaleTest = scale
+                    return (True, box_matrix.translation, True)
+            elif t.__class__.__name__ == 'CargoZone':
+                if self.__box_phase_type is None or self.__box_phase_type != (t.phase, t.box_type):
+                    return (visible, Math.Vector3(), False)
+                distance = t.position.distTo(self.position)
+                if distance <= t.get_interaction_dist():
+                    result, pos = t.can_put_box_and_get_position(self.position)
+                    if result:
+                        self.__mover_model.yaw = t.yaw
+                        self.__set_box_tint(self.__mover_model, 'green')
+                        return (True, pos, True)
+            grid = 0.0001
+
+            def togrid(pos):
+                if pos[1] < grid + 0.0001:
+                    pos[1] = 0.5
+                for x in xrange(3):
+                    delta = pos[x] % grid
+                    if delta > grid / 2.0:
+                        pos[x] += grid - delta
+                    else:
+                        pos[x] += -delta
+
+                return pos
+
+            def distPointToPlane(point_plane, norm_plane, point):
+                vec = point - point_plane
+                return norm_plane.dot(vec)
+
+            cam = BigWorld.camera()
+            normal = Math.Vector3(0, 0, 0)
+            pos = cam.position + (0, 0.5, 0)
+            startpos = pos + cam.direction * 0.2
+            endpos = cam.position + cam.direction * 6.5
+            endpos2 = cam.position + cam.direction * 10
+            cl = BigWorld.collide(self.spaceID, startpos, endpos)
+            cl2 = BigWorld.collide(self.spaceID, startpos, endpos2)
+            if cl:
+                visible = 1
+                point, (p0, p1, p2), material_type = cl
+                normal = (p1 - p0) * (p2 - p0)
+                normal.normalise()
+                endpos = togrid(Math.Vector3(point))
+                if self._checkFirePlacePossible(endpos, radius=0.25 * self.__mover_scale, maxAngle=12.0):
+                    position = endpos
+                    self.__mover_model.yaw = self.yaw
+                    bb = Math.Matrix(self.__mover_model.bounds)
+                    self.__set_box_tint(self.__mover_model, 'green')
+                    can_put = True
+                    min_dist = 10000
+                    for p_bb_local in itertools.product([0, 1], repeat=3):
+                        p_bb_world = bb.applyPoint(p_bb_local)
+                        dsit2plane = distPointToPlane(point, normal, p_bb_world)
+                        if dsit2plane < min_dist:
+                            min_dist = dsit2plane
+
+                    if min_dist < -1e-05:
+                        if abs(min_dist) < 50:
+                            endpos = endpos - normal * min_dist
+                else:
+                    self.__set_box_tint(self.__mover_model, 'red')
+                    self.__mover_model.yaw = self.yaw
+                    can_put = False
+                    position = endpos
+            elif cl2:
+                self.__mover_model.visible = 0
+                self.__set_box_tint(self.__mover_model, 'red')
+                self.__mover_model.yaw = self.yaw
+                can_put = False
+                point, (p0, p1, p2), material_type = cl2
+                normal = (p1 - p0) * (p2 - p0)
+                normal.normalise()
+                endpos = togrid(Math.Vector3(point))
+                position = endpos
+            else:
+                visible = 0
+                can_put = False
+            return (visible, position, can_put)
+
+    def addMoverModel(self, box, model):
+        print 'addMoverModel'
+        if self.__mover_model:
+            print 'ERROR BoxMover, logic error'
+            traceback.print_stack()
+            return
+        else:
+            scale = box.scale
+            self.__mover_model = model
+            self.__mover_model.scale = (scale, scale, scale)
+            self.__mover_model.newScaleTest = (scale, scale, scale)
+            self.__mover_model.position = self.position
+            self.__set_box_tint(self.__mover_model, 'Trans')
+            self.__box_id = box.id
+            self.__mover_scale = scale
+            self.addModel(model)
+            playSound('environment/events/box_take', model=model)
+            self.fix_update_pos()
+            self.__box_phase_type = (box.phase, box.box_type) if box.__class__.__name__ == 'AgroBox' else None
+            return
+
+    def removeMoverModel(self):
+        if not self.__mover_model:
+            return False
+        else:
+            playSound('environment/events/box_put', model=self.model)
+            self.delModel(self.__mover_model)
+            self.__mover_model = None
+            self.__box_id = None
+            self.__mover_scale = 1
+            return True
+
+    def waiting_autopickup(self):
+        return BigWorld.time() - self.__autopickup_time < 5
+
+    def on_start_autopick_box(self):
+        self.__autopickup_time = BigWorld.time()
+
+    def on_draw_box_pickup(self):
+        self.__autopickup_time = 0
+
+    def autopickup_box2(self, box_id, attempts = 20):
+        if attempts <= 0:
+            return
+        box = BigWorld.entities.get(box_id)
+        if not box:
+            BigWorld.callback(0.1, partial(self.autopickup_box2, box_id, attempts - 1))
+            return
+        self.pickup_box(box)

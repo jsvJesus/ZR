@@ -1,0 +1,306 @@
+# Embedded file name: ./client/soGUI/ItemIcon.py
+import BigWorld
+import BWPersonality
+from soInventorySlot2 import soInventorySlot2
+import GUI
+from Items import ItemsCatalog
+import ItemsUtils
+import Keys
+import UCManager
+import soGUI
+from Localization import lc
+from Helpers.PyGUI.PyGUIBase import PyGUIBase
+from gui_const import INV_CONST
+from gui_const import ITSLOT
+import traceback
+
+class ItemIconSlot(soInventorySlot2):
+    factoryString = 'soGUI.ItemIconSlot'
+
+
+class ItemIcon(PyGUIBase):
+    SLOTWIDTH = 59
+    SLOTHEIGHT = 59
+    SUBSLOTWIDTH = 32
+    SUBSLOTHEIGHT = 32
+    MAXSUBICONS_VISIBLE = 5
+    MAXSUBICONS = 11
+
+    def __init__(self, component, width = 400, height = 65, WID = 'WID_none', is_inventory_item = True):
+        component.script = self
+        PyGUIBase.__init__(self, component)
+        self.WID = WID
+        self.width = width
+        self.height = height
+        self._dw = 2
+        self._dh = 2
+        self._is_inventory_item = is_inventory_item
+        self._is_art_container = False
+        self.setupRoot()
+        self.setupContent()
+
+    def setupRoot(self):
+        cmp = self.component
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.width = self.width
+        cmp.height = self.height
+
+    def setupContent(self):
+        cmp = GUI.Simple('textures/default/white.dds')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.colour = (255, 21, 19, 200)
+        cmp.materialFX = 'BLEND'
+        cmp.position = (0, -2, 0.2)
+        cmp.visible = 0
+        self.component.addChild(cmp, 'marker')
+        cmp.width = ItemIconSlot.SLOTWIDTH + 4
+        cmp.height = ItemIconSlot.SLOTHEIGHT + 4
+        slot = ItemIconSlot(GUI.Window(), 0, None)
+        cmp = slot.component
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.position = (2, 0, 0)
+        self.component.addChild(cmp, 'slotitem')
+        slot._onDragStart = self._onDragStop
+        slot.equipItem = lambda *e: False
+        slot.wannaDrop = lambda *e: False
+        slot.toActionBar = lambda *e: False
+        slot.slotEvent = self.onSlotEvent
+        self.subItems = []
+        for subicon in xrange(self.MAXSUBICONS):
+            subpos = (7 + self.SLOTWIDTH + (self.SUBSLOTWIDTH + 2) * subicon + self._dw, self._dh - 2 + self.SLOTWIDTH, 0.9)
+            sub = SubIcon(GUI.Window(), self.onClickSubItem, self.OnRMB)
+            cmp = sub.component
+            cmp.verticalPositionMode = cmp.horizontalPositionMode = 'PIXEL'
+            cmp.horizontalAnchor = 'LEFT'
+            cmp.verticalAnchor = 'BOTTOM'
+            cmp.widthMode = cmp.heightMode = 'PIXEL'
+            cmp.width = self.SUBSLOTWIDTH
+            cmp.height = self.SUBSLOTHEIGHT
+            cmp.colour = (255, 255, 255, 255)
+            cmp.materialFX = 'BLEND'
+            cmp.position = subpos
+            self.component.addChild(cmp, 'subitem_%s' % subicon)
+            self.subItems.append(cmp.script)
+            cmp.visible = False
+
+        return
+
+    def onDragStop(self, *e):
+        return True
+
+    def _onDragStop(self, *e):
+        return True
+
+    def onSlotEvent(self, event, data):
+        if event == ITSLOT.SLOTEVENT_DRAGENTER:
+            if hasattr(data[0], 'itemData') and hasattr(data[1], 'itemData'):
+                self.markSlot(data[0].itemData, data[1].itemData)
+        if event in (ITSLOT.SLOTEVENT_MOUSELEAVE, ITSLOT.SLOTEVENT_MOUSEENTER, ITSLOT.SLOTEVENT_DRAGLEAVE):
+            self.clearMarkSlot()
+        if event == ITSLOT.SLOTEVENT_DROP:
+            self.clearMarkSlot()
+            if self.canAttach(data[0].itemData, data[1].itemData):
+                BWPersonality.GUICore.inventoryEvent(INV_CONST.A_MOVE, [data[0].itemData, [data[1].itemData]])
+        return True
+
+    def clearMarkSlot(self):
+        self.component.marker.visible = False
+
+    def markSlot(self, item1, item2):
+        self.component.marker.visible = True
+        if self.canAttach(item1, item2):
+            self.component.marker.colour = (10, 255, 10, 50)
+        else:
+            self.component.marker.colour = (200, 10, 10, 50)
+
+    def canAttach(self, item1, item2):
+        pl = BigWorld.player()
+        if pl.ItemLocked(item1):
+            return False
+        if pl.ItemLocked(item2):
+            return False
+        ItemID1 = item1['complexItemID']
+        ItemID2 = item1['complexItemID']
+        if not ItemsUtils.GetComplexItemByID(pl, ItemID1):
+            return False
+        if not ItemsUtils.GetComplexItemByID(pl, ItemID2):
+            return False
+        result, part_type, error_code = ItemsUtils.CanAttachItem(pl, item1, item2)
+        if result:
+            return True
+        return False
+
+    def setItem(self, itemData, isAttach = False):
+        self.itemData = itemData
+        self._isAttach = isAttach
+        self.main_item_class = None
+        self._is_art_container = False
+        for wind_id, subitemview in enumerate(self.subItems):
+            subitemview.setSubItem(None)
+            visible = True
+            if wind_id > self.MAXSUBICONS_VISIBLE:
+                visible = False
+            subitemview.component.visible = visible
+
+        self.component.slotitem.script.setContent(itemData)
+        if not itemData:
+            return
+        else:
+            item_type = itemData['complexItemType']
+            self.main_item_class = ItemsCatalog.GetItemClass(item_type)
+            item_params = ItemsCatalog.GetItemParam(item_type)
+            if item_params.get('IsArtefactContainer'):
+                self._is_art_container = True
+                max_art = item_params.get('MaxArtefact', 0)
+                for wind_id, subitemview in enumerate(self.subItems):
+                    subitemview.component.visible = wind_id < max_art
+
+            wind_id = 0
+            emblem = ItemsUtils.getItemEmblem(itemData)
+            if emblem:
+                self.subItems[wind_id].setEmblemIcon(emblem)
+                wind_id += 1
+            itemList = itemData['itemList']
+            for subiconI, subitem in enumerate(itemList, wind_id):
+                self.subItems[subiconI].setSubItem(subitem)
+
+            return
+
+    def OnRMB(self, subItem):
+        if not subItem:
+            return
+        self.startContextMenu(subItem)
+
+    def onClickSubItem(self, subItem):
+        if not subItem:
+            return
+        item = ItemsUtils.ConvertSubItemToItem(subItem, self._is_art_container, entity=BigWorld.player())
+        BWPersonality.GUICore.showItemInfo(item, isAttach=self.itemData['complexItemID'])
+
+    def startContextMenu(self, subItem):
+        try:
+            BWPersonality.GUICore.removeListener('contextMenuEvent', self.ContextMenuEvent)
+        except:
+            pass
+
+        self._lastsubItem = subItem
+        actions = {ItemsCatalog.CAN_INFO: lc('Inventory.client.INFO')}
+        if self.main_item_class == ItemsCatalog.BUFF:
+            actions[subItem['itemID']] = lc('Inventory.client.EXTRACT') + ' : ' + ItemsUtils.GetItemName(subItem['itemType'])
+        BWPersonality.GUICore.addListener('contextMenuEvent', self.ContextMenuEvent)
+        BWPersonality.GUICore.showContextMenu(self.WID, actions)
+
+    def ContextMenuEvent(self, interface_id, id, caption, event, data = None):
+        if interface_id != self.WID:
+            return
+        if event == soGUI.soContextMenuComponent.EVENT_SELECT:
+            BWPersonality.GUICore.removeListener('contextMenuEvent', self.ContextMenuEvent)
+            if id == ItemsCatalog.CAN_INFO:
+                item = ItemsUtils.ConvertSubItemToItem(self._lastsubItem, self._is_art_container, entity=BigWorld.player())
+                BWPersonality.GUICore.showItemInfo(item, isAttach=self.itemData['complexItemID'])
+            else:
+                BigWorld.player().DatachItem(self.itemData['complexItemID'], id)
+        elif event == soGUI.soContextMenuComponent.EVENT_SHOW:
+            pass
+        elif event == soGUI.soContextMenuComponent.EVENT_CANCEL:
+            try:
+                BWPersonality.GUICore.removeListener('contextMenuEvent', self.ContextMenuEvent)
+            except:
+                print self.id
+                traceback.print_exc()
+
+
+class SubIcon(PyGUIBase):
+    SUBSLOTWIDTH = 32
+    SUBSLOTHEIGHT = 32
+
+    def __init__(self, component, callbackOnLeft, callbackOnRMB):
+        component.script = self
+        PyGUIBase.__init__(self, component)
+        self.setupContent()
+        component.mouseButtonFocus = True
+        self.callbackOnLeft = callbackOnLeft
+        self.callbackOnRMB = callbackOnRMB
+        self._index = -2
+
+    def setupContent(self):
+        cmp = GUI.Frame2('soGUI/items/cell.dds')
+        cmp.verticalPositionMode = cmp.horizontalPositionMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.width = self.SUBSLOTWIDTH
+        cmp.height = self.SUBSLOTHEIGHT
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.position = (0, 0, 0)
+        self.component.addChild(cmp, 'subframeCmp')
+        cmp = GUI.Simple('')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.width = self.SUBSLOTWIDTH - 2
+        cmp.height = self.SUBSLOTHEIGHT - 2
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.position = (0, 0, 0)
+        self.component.addChild(cmp, 'subitemIcon')
+
+    def setEmblemIcon(self, emblem):
+        self.component.subframeCmp.visible = True
+        self.component.subitemIcon.visible = True
+        self.component.subframeCmp.colour = (255, 255, 255, 255)
+        self.component.subitemIcon.textureName = ''
+
+        def onloadEmblemIcon(imgID, feedName, texture):
+            if texture:
+                self.component.subitemIcon.texture = texture
+
+        feedName = UCManager.ucmanager.loadImg(emblem[0], onloadEmblemIcon)
+
+    def setSubItem(self, subItem):
+        self.subItem = subItem
+        if not subItem:
+            self.component.subitemIcon.visible = False
+            self.component.subframeCmp.colour = (255, 255, 255, 90)
+            return
+        else:
+            self.component.visible = True
+            sub_item_type = subItem['itemType']
+            sub_itemParam = ItemsCatalog.GetItemParam(sub_item_type)
+            self.component.subframeCmp.visible = True
+            self.component.subitemIcon.visible = True
+            self.component.subframeCmp.colour = (255, 255, 255, 255)
+            iconName = sub_itemParam.get('IconName', 'nottexture.dds')
+            if BWPersonality.GUICore.iconTextures is not None:
+                if iconName not in BWPersonality.GUICore.iconTextures.failedIDs:
+                    if BWPersonality.GUICore.iconTextures.has_key(iconName):
+                        self.component.subitemIcon.texture = BWPersonality.GUICore.iconTextures[iconName]
+                    else:
+                        self.component.subitemIcon.textureName = iconName
+            else:
+                self.component.subitemIcon.textureName = iconName
+            return
+
+    def handleMouseButtonEvent(self, comp, event):
+        key = event.key
+        down = event.isKeyDown()
+        if down:
+            if key == Keys.KEY_LEFTMOUSE and self.subItem:
+                self.callbackOnLeft(self.subItem)
+                return True
+            if key == Keys.KEY_RIGHTMOUSE and self.subItem:
+                self.callbackOnRMB(self.subItem)
+                return True
+        return False

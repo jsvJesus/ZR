@@ -1,0 +1,159 @@
+# Embedded file name: ./client/soGUI/TradeGUI/RecieveItemBox.py
+import BigWorld
+from ItemBox import GoldMoneyItemBox
+import GUI
+from TradeSlot import TradeSlot
+from Localization import lc
+import ItemsUtils
+from utils import pyFixedToNativePythonType as deepcopy
+import Constants
+from soGUI.soButton import soButton
+BLINK_TIME = 0.6
+
+class RecieveTradeSlot(TradeSlot):
+    factoryString = 'soGUI.RecieveTradeSlot'
+
+    def has_remove_context_action(self):
+        return True
+
+    def setupRoot(self):
+        TradeSlot.setupRoot(self)
+        cmp = GUI.Simple('soGUI/white.dds')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'CLIP'
+        cmp.horizontalAnchor = cmp.verticalAnchor = 'CENTER'
+        cmp.widthMode = cmp.heightMode = 'CLIP'
+        cmp.width = cmp.height = 2
+        cmp.colour = (255, 0, 0, 150)
+        cmp.materialFX = 'BLEND'
+        cmp.position = (0, 0, 0.1)
+        self.component.addChild(cmp, 'bg_blink')
+        shad = GUI.AlphaShader()
+        shad.alpha = 0
+        cmp.addShader(shad, 'blink')
+
+    def get_count_text(self):
+        if ItemsUtils.isStackedItemType(self.itemData['complexItemType']):
+            return str(self.itemData['count'])
+        else:
+            return ''
+
+
+class RecieveItemBox(GoldMoneyItemBox):
+    factoryString = 'soGUI.RecieveItemBox'
+
+    def __init__(self, trade_screen, component):
+        GoldMoneyItemBox.__init__(self, component, Constants.RECIEVE_SIZE[0], Constants.RECIEVE_SIZE[1], trade_screen, lc('soTradeInterface.tradescreen.RECIEVEBOX_TITLE'))
+        comp = GUI.Window('')
+        comp.vpm, comp.hpm = ('PIXEL', 'PIXEL')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('LEFT', 'BOTTOM')
+        comp.width, comp.height = (120, 29)
+        comp.position = (8, component.height - 4, 0.4)
+        clear_btn = soButton(comp)
+        clear_btn.initVSC('soGUI/elements/button_1.xml')
+        clear_btn.onBound()
+        clear_btn.onClick = self._on_clear_all_click
+        comp.label.text = lc('GUI.InterPlayerTrade.CLEAR_BUTTON')
+        self.component.addChild(comp)
+
+    def _on_clear_all_click(self):
+        self._tradescreen.request_clear_all()
+
+    def on_drop_items(self, source_factory_string, items_data):
+        if source_factory_string == 'soGUI.SellTradeSlot':
+            for item_data in items_data:
+                item_data = deepcopy(item_data)
+                if item_data['selltype'] == 'unexhausted':
+                    item_data['count'] = 1
+                if ItemsUtils.isStackedItemType(item_data['complexItemType']):
+                    ItemsUtils.SetItemNumber(item_data, item_data['count'])
+                self.add_item(item_data)
+
+    def on_items_updated(self):
+        self._tradescreen.on_reciving_items_updated(self.items)
+
+    def on_slot_remove_count(self, slot, count):
+        self.decrease_count(slot.itemData['complexItemID'], count, slot.itemData.get('artic'))
+
+    def get_slot_class(self):
+        return RecieveTradeSlot
+
+    def on_dbl_click(self, item_data):
+        self.remove_item_by_item_data(item_data)
+
+    def remove_item_by_item_data(self, item_data):
+        for i in xrange(len(self.items)):
+            if self.items[i].get('complexItemID') != item_data.get('complexItemID'):
+                continue
+            if self.items[i].get('artic') != item_data.get('artic'):
+                continue
+            del self.items[i]
+            self.update_items()
+            break
+
+    def on_assortment_updated(self, available_items, callback):
+        """ \xd0\xb0\xd1\x81\xd1\x81\xd0\xbe\xd1\x80\xd1\x82\xd0\xb8\xd0\xbc\xd0\xb5\xd0\xbd\xd0\xbe \xd0\xbe\xd0\xb1\xd0\xbd\xd0\xbe\xd0\xb2\xd0\xb8\xd0\xbb\xd1\x81\xd1\x8f, \xd0\xb4\xd0\xb0\xd0\xbd\xd0\xbd\xd1\x8b\xd0\xb5 \xd0\xb0\xd0\xb2\xd1\x82\xd0\xbe\xd0\xbc\xd0\xb0\xd1\x82\xd0\xb8\xd1\x87\xd0\xb5\xd1\x81\xd0\xba\xd0\xb8 \xd0\xbf\xd0\xb5\xd1\x80\xd0\xb5\xd1\x81\xd0\xbe\xd0\xb1\xd0\xb8\xd1\x80\xd0\xb0\xd1\x8e\xd1\x82\xd1\x81\xd1\x8f """
+        if not self.items:
+            callback(False)
+            return
+        else:
+            delete_items = []
+            update_items = []
+            for i, item in enumerate(self.items):
+                if item['selltype'] == 'unique':
+                    new_item = next((i for i in available_items if i['selltype'] == 'unique' and i['complexItemID'] == item['complexItemID']), None)
+                    if not new_item:
+                        delete_items.append(item['complexItemID'])
+                elif item['selltype'] == 'unexhausted':
+                    new_item = next((i for i in available_items if i['selltype'] == 'unexhausted' and i['complexItemType'] == item['complexItemType']), None)
+                    if not new_item:
+                        delete_items.append(item['complexItemID'])
+                    else:
+                        item['complexItemID'] = new_item['complexItemID']
+                        item['price'] = new_item['price']
+                        update_items.append(item['complexItemID'])
+                elif item['selltype'] == 'exhausted':
+                    new_item = next((i for i in available_items if i['selltype'] == 'exhausted' and i['complexItemType'] == item['complexItemType']), None)
+                    if not new_item:
+                        delete_items.append(item['complexItemID'])
+                    else:
+                        item['complexItemID'] = new_item['complexItemID']
+                        item['price'] = new_item['price']
+                        if item['count'] > new_item['count']:
+                            item['count'] = new_item['count']
+                        update_items.append(item['complexItemID'])
+
+            if delete_items or update_items:
+
+                def after_blink():
+                    for item_id in delete_items:
+                        self.remove_item(item_id)
+
+                    if update_items:
+                        self.set_items(self.items)
+                    callback(True)
+
+                for item_id in delete_items + update_items:
+                    self._blink_item(item_id)
+
+                BigWorld.callback(BLINK_TIME, after_blink)
+            else:
+                callback(False)
+            return
+
+    def _blink_item(self, item_id):
+        for i, item in enumerate(self.items):
+            if item['complexItemID'] == item_id:
+                break
+        else:
+            return
+
+        shad = getattr(self._item_view.component, 'slot' + str(i)).bg_blink.blink
+        shad.value = 1.0
+        shad.reset()
+        shad.mode = 'ALL'
+        shad.start = 1.0
+        shad.stop = 0.0
+        shad.alpha = 1
+        shad.speed = BLINK_TIME
+        shad.value = 0.0

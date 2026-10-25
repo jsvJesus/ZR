@@ -1,0 +1,167 @@
+# Embedded file name: ./client/soGUI/craft_gui/recipes_block.py
+from Items import ItemsCatalog
+from WorkbenchUtil import WorkbenchTypes as WT
+import ItemsUtils
+from soGUI.soList_optimized import soList_optimized, soListElement
+import GUI
+import soGUI
+import colorCodes as CC
+from Helpers.PyGUI import PyGUIBase
+from Localization import lc
+from filter_line import FilterLine
+
+class Element(soListElement):
+
+    def __init__(self, *args, **kargs):
+        self._recipe_id = None
+        self._workbench_type = WT.NONE
+        soListElement.__init__(self, *args, **kargs)
+        return
+
+    def set_params(self, recipe_id, workbench_type):
+        self._recipe_id = recipe_id
+        self._workbench_type = workbench_type
+
+    def setVisualState(self, state_name):
+        soListElement.setVisualState(self, state_name)
+        if self._recipe_id is None:
+            return
+        else:
+            recipe_params = ItemsCatalog.GetItemParam(self._recipe_id)
+            recipe_wt = recipe_params.get('WorkbenchType', WT.NONE)
+            if recipe_wt == self._workbench_type:
+                self.component.label.colour = CC.buttons_rgba
+            else:
+                self.component.label.colour = CC.inactive_rgba
+            return
+
+
+class RecipesBlock(PyGUIBase):
+
+    def __init__(self, parent_component):
+        comp = GUI.Window()
+        PyGUIBase.__init__(self, comp)
+        comp.script = self
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = 349, self._calc_height(parent_component)
+        comp.position = (12, 36, 0.5)
+        parent_component.addChild(comp, 'recipesblock')
+        self._setup_content()
+
+    def _setup_content(self):
+        top_space = 48
+        self._rlist = RecipesList(self.component, top_space)
+        self._rlist.on_selected_callback = self._on_recipe_selected
+        self.on_selected_callback = lambda recipe_id: None
+        comp = GUI.Text(lc('CraftWin.ui.listcaption'))
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.font = 'RobotoCondensedRegular_16.font'
+        comp.position = (0, 0, 0.5)
+        comp.colour = CC.inactive_rgba
+        self.component.addChild(comp, 'listcaption')
+        self._filterline = FilterLine(self.component, top_space - 18)
+        self._filterline.on_filter_changed_callback = self._on_filter_changed
+
+    def on_hide(self):
+        self._filterline.on_hide()
+
+    def _on_filter_changed(self):
+        self._rlist.clear_and_initialize(self._recipes, self._workbench_type, self._filterline.filter_data)
+
+    def _on_recipe_selected(self, recipe_id):
+        self.on_selected_callback(recipe_id)
+
+    def clear_and_initialize(self, recipes, workbench_type):
+        self._recipes, self._workbench_type = recipes, workbench_type
+        self._filterline.clear_and_initialize(workbench_type)
+        self._rlist.clear_and_initialize(recipes, workbench_type, self._filterline.filter_data)
+        if self._rlist.size:
+            self._rlist.select_first_found()
+        self.onBound()
+
+    def on_size_changed(self):
+        self.component.height = self._calc_height(self.component.parent)
+        self._rlist.on_size_changed()
+        self.onBound()
+
+    def _calc_height(self, parent_component):
+        return parent_component.height - 48
+
+    @property
+    def recipe_id(self):
+        return self._rlist.recipe_id
+
+
+class RecipesList(soList_optimized):
+
+    def __init__(self, parent_component, top_margin):
+        self._top_margin = top_margin
+        self.component = GUI.Window()
+        comp = self.component
+        parent_component.addChild(comp, 'rlist')
+        init_struct = soGUI.ListPropsStructure(width=parent_component.width, height=self._calc_height(parent_component), isMultiSel=False, sorted=False)
+        soList_optimized.__init__(self, comp, init_struct, buttons_is_options=False)
+        self.on_selected_callback = lambda recipe_id: None
+        self._workbench_type = WT.NONE
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.position = (0, self._top_margin, 0.5)
+        self.onBound()
+
+    def _calc_height(self, parent_comp):
+        return parent_comp.height - self._top_margin
+
+    def on_size_changed(self):
+        self.set_height(self._calc_height(self.component.parent))
+
+    def select_first_found(self):
+        self.toggleElement(0)
+
+    def onSelected(self):
+        soList_optimized.onSelected(self)
+        self.on_selected_callback(self.recipe_id)
+
+    def clear_and_initialize(self, recipes, workbench_type, filter_data):
+        self.clear()
+
+        def filter_recipe(recipe_id):
+            if filter_data['text']:
+                resipe_name = ItemsUtils.GetItemName(recipe_id).lower()
+                if filter_data['text'] not in resipe_name:
+                    return False
+            recipe_params = ItemsCatalog.GetItemParam(recipe_id)
+            recipe_wt = recipe_params.get('WorkbenchType', WT.NONE)
+            if recipe_wt in filter_data['wtypes']:
+                return True
+            craft_result = recipe_params['CraftResult']
+            raise len(craft_result) == 1 or AssertionError
+            return False
+
+        for recipe_id in recipes:
+            if not filter_recipe(recipe_id):
+                continue
+            recipe_name = ItemsUtils.GetItemName(recipe_id)
+            self.addElement(recipe_name, attachment=recipe_id, delayedRender=True)
+
+        self._workbench_type = workbench_type
+        self.applyElements(False)
+
+    def apply_single_element(self, i, elem):
+        recipe_id = self.attachments[self.indexes[elem]]
+        element = self.elemComps[i]
+        element.set_params(recipe_id, self._workbench_type)
+        soList_optimized.apply_single_element(self, i, elem)
+
+    def get_elem_class(self):
+        return Element
+
+    @property
+    def recipe_id(self):
+        selection = self.getSelection()
+        if not selection:
+            return None
+        else:
+            return self.getAttachment(selection[0])

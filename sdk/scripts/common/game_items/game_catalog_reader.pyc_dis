@@ -1,0 +1,464 @@
+# Embedded file name: ./common/game_items/game_catalog_reader.py
+ITEMS_FILES_PATH = 'scripts/common/data/items_pyson/'
+if __name__ == '__main__':
+    import sys, os
+    sys.path.append('../')
+    sys.path.append('../../../../sys/tools/ResMgrEmulator')
+    sys.path.append('../../../../sys/res/scripts/common/Lib')
+    import ResMgr
+    ResMgr.set_res_path(os.path.abspath('../../..'))
+import traceback
+from bisect import bisect_left
+import time
+import ResMgr
+import pyson
+import json
+import copy
+import os
+_SORT_IDS_PATH = 'scripts/common/data/sortids.json'
+ITEMS_CL = [dict(cl='WEAPON', cont='WEAPONS', clid=1, lim=[(0, 99), (2000, 10499)]),
+ dict(cl='CLOTH', cont='CLOTHS', clid=2, lim=[(100, 199), (10500, 201999)]),
+ dict(cl='ARTIFACT', cont='ARTIFACTS', clid=3, lim=[(200, 299), (210000, 301999)]),
+ dict(cl='GADGET', cont='GADGETS', clid=4, lim=[(300, 398), (310000, 401999)]),
+ dict(cl='BUFF', cont='BUFFS', clid=5, lim=[(399, 499), (402000, 501999)]),
+ dict(cl='PART', cont='PARTS', clid=6, lim=[(500, 599), (510000, 601999)]),
+ dict(cl='AMMO', cont='AMMOS', clid=7, lim=[(600, 699), (602000, 701999)]),
+ dict(cl='EXPLOSION', cont='EXPLOSIONS', clid=8, lim=[(700, 799), (710000, 801999)]),
+ dict(cl='LOOT', cont='LOOTS', clid=9, lim=[(800, 1999), (802000, 901999)])]
+clid_2_cl = {}
+cl_2_clid = {}
+cl_2_conf = {}
+for e in ITEMS_CL:
+    clid_2_cl[e['clid']] = e['cl']
+    cl_2_clid[e['cl']] = e['clid']
+    cl_2_conf[e['cl']] = e
+
+def dumps_sorted(data):
+    data = sorted(data, key=lambda e: e['TypeID'])
+    return pyson.dumps(data)
+
+
+class GameItemCatalog(dict):
+    instance = None
+
+    def __new__(cls):
+        if cls.instance is None:
+            cls.instance = dict.__new__(cls)
+            cls.instance.init()
+        return cls.instance
+
+    MAX_ITEM_NUMBER = 901999
+
+    def init(self):
+        self.class_config = {}
+        ranges = []
+        for entry in ITEMS_CL:
+            cl = entry['cl']
+            clid = entry['clid']
+            setattr(self, cl, clid)
+            self.class_config[clid] = entry
+            self.validateLimits(entry)
+            for min_, max_ in entry['lim']:
+                ranges.append((max_, clid))
+
+        ranges.sort(key=lambda e: e[0])
+        self.ITEM_TYPE_VALUES = [ e[1] for e in ranges ] + [None]
+        self.ITEM_TYPE_RANGES = [ e[0] for e in ranges ]
+        self.load()
+        return
+
+    def load(self, validate = True, purge = False):
+        for entry in ITEMS_CL:
+            self._loadClass(entry['cl'], validate=validate, purge=purge)
+
+        self._loadDeleted(validate=validate)
+        self.loadTrackerGlobal(purge=purge)
+        self._updateArtID()
+
+    def reloadItems(self):
+        t = time.time()
+        self.clear()
+        self.load(validate=False, purge=True)
+        self._resetFileTimeChange()
+        print 'reloadItems: %.3f sec' % (time.time() - t)
+
+    def _updateArtID(self):
+        self._max_art_id = 0
+        self._art_id2typeID = {}
+        self._typeID2art_id = {}
+        dirty_art_id = 0
+        for typeID, item_param in self.ARTIFACTS.items():
+            art_id = item_param.get('art_id', None)
+            if art_id is None:
+                dirty_art_id += 1
+                continue
+            if art_id in self._art_id2typeID:
+                raise Exception('Duplicate art_id  %s items: %s, %s' % (art_id, typeID, self._art_id2typeID[art_id]))
+            self._art_id2typeID[art_id] = typeID
+            self._typeID2art_id[typeID] = art_id
+            self._max_art_id = max(self._max_art_id, art_id)
+
+        for item_param in self.DELETED.values():
+            art_id = item_param.get('art_id', 0)
+            self._max_art_id = max(self._max_art_id, art_id)
+
+        if dirty_art_id:
+            print 'WARNING not found art_id for %s ARTIFACTS' % dirty_art_id
+        return
+
+    def _update_sort_ids(self):
+        default_sort_id = -1
+        section = ResMgr.openSection(_SORT_IDS_PATH)
+        if section is not None:
+            sort_ids = json.loads(section.asBinary)
+            default_index = sort_ids.index(default_sort_id)
+            for i, type_id in enumerate(sort_ids):
+                if type_id == default_sort_id:
+                    continue
+                try:
+                    self[type_id]['SortID'] = i - default_index
+                except KeyError:
+                    print "game items (ERROR): can't find item with id", type_id
+                    traceback.print_exc()
+                    traceback.print_stack()
+
+            self.sort_ids_number = len(sort_ids)
+        return
+
+    def getItemTypeByArtID(self, art_id):
+        return self._art_id2typeID.get(art_id)
+
+    def getArtIDByItemType(self, typeID):
+        return self._typeID2art_id.get(typeID)
+
+    def validateLimits(self, entry):
+        for other_entry in ITEMS_CL:
+            if other_entry == entry:
+                continue
+            for min_, max_ in entry['lim']:
+                for omin_, omax_ in other_entry['lim']:
+                    if min_ == omin_:
+                        raise Exception('lim error (%s) \n%s \n%s' % (min_, entry, other_entry))
+                    if min_ == omax_:
+                        raise Exception('lim error (%s) \n%s \n%s' % (min_, entry, other_entry))
+                    if max_ == omin_:
+                        raise Exception('lim error (%s) \n%s \n%s' % (max_, entry, other_entry))
+                    if max_ == omax_:
+                        raise Exception('lim error (%s) \n%s \n%s' % (max_, entry, other_entry))
+                    if min_ < omin_ and max_ > omin_:
+                        print 'min_(%s) < omin_(%s) and max_(%s) > omin_(%s)' % (min_,
+                         omin_,
+                         max_,
+                         omin_)
+                        raise Exception('lim error (%s) \n%s \n%s' % (min_, entry, other_entry))
+                    if max_ > omax_ and min_ < omax_:
+                        print 'max_(%s) > omax_(%s) and min_(%s) < omax_(%s)' % (max_,
+                         omax_,
+                         min_,
+                         omax_)
+                        raise Exception('lim error (%s) \n%s \n%s' % (min_, entry, other_entry))
+
+    def loadTrackerGlobal(self, purge = False):
+        path = ITEMS_FILES_PATH + 'tracker_global.pyson'
+        if purge:
+            ResMgr.purge(path, True)
+        binary = ResMgr.openSection(path).asBinary
+        self.tracker_global_data = pyson.loads(binary)
+
+    def _loadClass(self, cl, validate = True, purge = False):
+        entry = cl_2_conf[cl]
+        cont = entry['cont']
+        path = self._getClassPath(entry['clid'])
+        if purge:
+            ResMgr.purge(path, True)
+        try:
+            binary = ResMgr.openSection(path).asBinary
+            data = pyson.loads(binary)
+        except Exception as e:
+            print 'ERROR FOR', repr(path)
+            raise e
+
+        data_dict = {}
+        changed = False
+        if validate:
+            if hasattr(self, cont):
+                raise ValueError('container %s already exist! (%r)' % (cont, entry))
+        for item_param in data:
+            typeID = item_param['TypeID']
+            if validate and typeID in self:
+                raise KeyError('Duplicate item %s' % typeID)
+            if self.GetItemClass(typeID) != entry['clid']:
+                raise ValueError('%s  clid(%s)!=calc clid(%s)' % (typeID, entry['clid'], self.GetItemClass(typeID)))
+            self[typeID] = item_param
+            script_name = item_param.get('_script_name_')
+            if script_name:
+                if validate and hasattr(self, script_name):
+                    raise KeyError('Duplicate script_name %s, %r' % (typeID, script_name))
+                setattr(self, script_name, item_param)
+            data_dict[typeID] = item_param
+
+        setattr(self, cont, data_dict)
+        if changed:
+            with open('../res/' + path, 'w') as f:
+                f.write(pyson.dumps(data))
+
+    def _loadDeleted(self, validate = True):
+        self.DELETED = {}
+        binary = ResMgr.openSection(ITEMS_FILES_PATH + 'removed.pyson').asBinary
+        deleted_list = pyson.loads(binary)
+        for item_param in deleted_list:
+            typeID = item_param['TypeID']
+            self.DELETED[typeID] = item_param
+            if validate and typeID in self:
+                raise KeyError('Duplicate deleted item %s' % typeID)
+            self[typeID] = item_param
+
+    def getClassConfigByName(self, class_name):
+        return cl_2_conf[class_name]
+
+    def GetItemClassName(self, typeID):
+        """ \xd0\xb2\xd0\xbe\xd0\xb7\xd0\xb2\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xb8\xd0\xbc\xd1\x8f \xd0\xba\xd0\xbb\xd0\xb0\xd1\x81\xd1\x81\xd0\xb0"""
+        clid = self.GetItemClass(typeID)
+        return clid_2_cl[clid]
+
+    def isDeletedItem(self, typeID):
+        return typeID in self.DELETED
+
+    def _getClassContainerFromItemType(self, typeID):
+        clid = self.GetItemClass(typeID)
+        cont = self.class_config[clid]['cont']
+        return getattr(self, cont)
+
+    def _getClassContainerByClassID(self, clid):
+        cont = self.class_config[clid]['cont']
+        return getattr(self, cont)
+
+    def _getClassPath(self, class_id, abspath = False):
+        res_dir = ''
+        if abspath:
+            res_dir = self.getAbsResDir()
+        if class_id is None:
+            return res_dir + ITEMS_FILES_PATH + 'removed.pyson'
+        else:
+            cl = self.class_config[class_id]['cl']
+            return res_dir + ITEMS_FILES_PATH + '%s.pyson' % cl
+
+    def _getClassPathFromItemType(self, typeID, abspath = True):
+        class_id = self.GetItemClass(typeID)
+        return self._getClassPath(class_id, abspath=abspath)
+
+    def itemTypeIsStacable(self, itemID):
+        item_class = self.GetItemClass(itemID)
+        if item_class in (self.AMMO, self.EXPLOSION, self.LOOT):
+            return True
+
+    def GetMaxItemNumber(self):
+        return self.MAX_ITEM_NUMBER
+
+    def GetClassLC(self, item_class):
+        return clid_2_cl.get(item_class, '?')
+
+    def GetItemClassLC(self, typeID):
+        item_class = self.GetItemClass(typeID)
+        return '%s(%s)' % (self.GetClassLC(item_class), item_class)
+
+    def GetItemClass(self, typeID):
+        """ \xd0\xb2\xd0\xbe\xd0\xb7\xd0\xb2\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xba\xd0\xbb\xd0\xb0\xd1\x81\xd1\x81 \xd0\xbf\xd1\x80\xd0\xb5\xd0\xb4\xd0\xbc\xd0\xb5\xd1\x82\xd0\xb0 (\xd0\xb1\xd0\xb8\xd0\xbd\xd0\xb0\xd1\x80\xd0\xbd\xd1\x8b\xd0\xb9 \xd0\xbf\xd0\xbe\xd0\xb8\xd1\x81\xd0\xba) """
+        return self.ITEM_TYPE_VALUES[bisect_left(self.ITEM_TYPE_RANGES, typeID)]
+
+    def GetUnarmedParam(self):
+        return self[0]
+
+    def GetItemParam(self, ID):
+        """ \xd0\xb2\xd0\xbe\xd0\xb7\xd0\xb2\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xbf\xd0\xb0\xd1\x80\xd0\xb0\xd0\xbc\xd0\xb5\xd1\x82\xd1\x80\xd1\x8b \xd0\xbf\xd1\x80\xd0\xb5\xd0\xb4\xd0\xbc\xd0\xb5\xd1\x82\xd0\xb0 """
+        if not ID:
+            return None
+        elif ID in self:
+            return self[ID]
+        else:
+            print '\n!!!!!!WARNING GetItemParam unknown itemID:', repr(ID)
+            traceback.print_stack()
+            return None
+
+    def GetItemVarName(self, typeID):
+        item = self.get(typeID)
+        if item:
+            return item.get('_script_name_')
+
+    ABS_RES_PATH = '../res/'
+
+    def getAbsResDir(self):
+        return self.ABS_RES_PATH
+
+    def deleteItemsDict(self, items_dict, author = '', comment = ''):
+        self.load(validate=False)
+        clid_set = set()
+        for typeID, item_param in items_dict.items():
+            container = self._getClassContainerFromItemType(typeID)
+            container.pop(typeID, None)
+            item_param['DELETE_ME'] = True
+            if '_meta_' not in item_param:
+                item_param['_meta_'] = {}
+            item_param['_meta_']['delete_time'] = int(time.time())
+            item_param['_meta_']['delete_author'] = author
+            item_param['_meta_']['delete_comment'] = comment
+            self.DELETED[typeID] = item_param
+            clid = self.GetItemClass(typeID)
+            clid_set.add(clid)
+
+        for clid in clid_set:
+            container = self._getClassContainerByClassID(clid)
+            with open(self._getClassPath(clid, abspath=True), 'w') as f:
+                f.write(dumps_sorted(container.values()))
+
+        with open(self._getClassPath(None, abspath=True), 'w') as f:
+            f.write(dumps_sorted(self.DELETED.values()))
+        self._resetFileTimeChange()
+        return
+
+    def getFreeId(self, class_name):
+        conf = self.getClassConfigByName(class_name)
+        min_, max_ = conf['lim'][-1]
+        for typeID in xrange(min_ + 1, max_ - 1):
+            if typeID in self:
+                continue
+            if typeID in self.DELETED:
+                continue
+            yield typeID
+
+    def createItemParam(self, typeID, from_item_dict, author = ''):
+        if typeID in self:
+            raise KeyError('Duplicate %s' % typeID)
+        item_param = copy.deepcopy(from_item_dict)
+        item_param['TypeID'] = typeID
+        item_param.pop('_var_key_', None)
+        item_param.pop('_var_name_', None)
+        item_param.pop('_script_name_', None)
+        item_param.pop('DELETE_ME', None)
+        item_param['_meta_'] = {}
+        item_param['_meta_']['create_time'] = int(time.time())
+        item_param['_meta_']['create_author'] = author
+        data = self._getClassContainerFromItemType(typeID)
+        if 'ARTIFACT' == self.GetItemClassName(typeID):
+            self._max_art_id += 1
+            item_param['art_id'] = self._max_art_id
+        data[typeID] = item_param
+        self[typeID] = item_param
+        self.saveItem(typeID)
+        return
+
+    def saveItem(self, typeID, author = None):
+        print 'saveItem', typeID
+        item = copy.deepcopy(self[typeID])
+        self.load(validate=False)
+        self[typeID] = item
+        data = self._getClassContainerFromItemType(typeID)
+        data[typeID] = item
+        if '_meta_' not in self[typeID]:
+            self[typeID]['_meta_'] = {}
+        self[typeID]['_meta_']['modif_time'] = int(time.time())
+        self[typeID]['_meta_']['modif_author'] = author
+        with open(self._getClassPathFromItemType(typeID, abspath=True), 'w') as f:
+            f.write(dumps_sorted(data.values()))
+        self._resetFileTimeChange(self._getClassPathFromItemType(typeID, abspath=True))
+
+    def saveAllWeapons(self):
+        class_id = cl_2_clid['WEAPON']
+        cont = self.class_config[class_id]['cont']
+        data = getattr(self, cont)
+        path = self._getClassPath(class_id, abspath=True)
+        with open(path, 'w') as f:
+            f.write(dumps_sorted(data.values()))
+        self._resetFileTimeChange(path)
+
+    def saveMultiItems(self, item_type_list, author = None):
+        changes = {}
+        for typeID in item_type_list:
+            changes[typeID] = copy.deepcopy(self[typeID])
+
+        self.load(validate=False)
+        for typeID, item in changes.items():
+            data = self._getClassContainerFromItemType(typeID)
+            data[typeID] = item
+            self[typeID] = item
+            if '_meta_' not in self[typeID]:
+                self[typeID]['_meta_'] = {}
+            self[typeID]['_meta_']['modif_time'] = int(time.time())
+            self[typeID]['_meta_']['modif_author'] = author
+
+        class_ids_set = set()
+        for typeID in item_type_list:
+            class_id = self.GetItemClass(typeID)
+            class_ids_set.add(class_id)
+
+        for class_id in class_ids_set:
+            cont = self.class_config[class_id]['cont']
+            data = getattr(self, cont)
+            path = self._getClassPath(class_id, abspath=True)
+            with open(path, 'w') as f:
+                f.write(dumps_sorted(data.values()))
+            self._resetFileTimeChange(path)
+
+    def saveAllItems(self):
+        for entry in ITEMS_CL:
+            clid = entry['clid']
+            container = self._getClassContainerByClassID(clid)
+            with open(self._getClassPath(clid, abspath=True), 'w') as f:
+                f.write(dumps_sorted(container.values()))
+
+        with open(self._getClassPath(None, abspath=True), 'w') as f:
+            f.write(dumps_sorted(self.DELETED.values()))
+        self._resetFileTimeChange()
+        return
+
+    def saveTrackerGlobal(self, data):
+        self.tracker_global_data = data
+        path = self.getAbsResDir() + ITEMS_FILES_PATH + 'tracker_global.pyson'
+        with open(path, 'w') as f:
+            f.write(pyson.dumps(data))
+        self._resetFileTimeChange()
+
+    def _resetFileTimeChange(self, path = None):
+        if not path:
+            self._files_time.clear()
+        self._files_time.pop(path, None)
+        return
+
+    _files_time = {}
+
+    def tickFileChange(self, autoreload = True):
+        """ \xd0\xb2\xd1\x8b\xd0\xb7\xd1\x8b\xd0\xb2\xd0\xb0\xd1\x82\xd1\x8c \xd0\xb8\xd0\xbd\xd0\xbe\xd0\xb3\xd0\xb4\xd0\xb0 \xd1\x82\xd0\xb0\xd0\xb9\xd0\xbc\xd0\xb5\xd1\x80\xd0\xbe\xd0\xbc. \xd0\x95\xd1\x81\xd0\xbb\xd0\xb8 \xd0\xba\xd1\x82\xd0\xbe\xd1\x82\xd0\xbe \xd0\xb8\xd0\xb7\xd0\xbc\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xbb \xd1\x84\xd0\xb0\xd0\xb9\xd0\xbb\xd1\x8b.
+        """
+        classdata_list = []
+        for entry in ITEMS_CL:
+            path = self._getClassPath(entry['clid'], abspath=True)
+            if not os.path.isfile(path):
+                continue
+            stat = os.stat(path)
+            mtime = stat.st_mtime - stat.st_ctime
+            if path not in self._files_time:
+                self._files_time[path] = mtime
+            elif self._files_time[path] != mtime:
+                self._files_time[path] = mtime
+                classdata_list.append(entry)
+
+        if classdata_list and autoreload:
+            self.load(validate=False)
+            self.onClassFileDataChange(classdata_list)
+        return classdata_list
+
+    def onClassFileDataChange(self, cl_data):
+        pass
+
+    def __repr__(self):
+        return '<ItemCatalog>'
+
+    def __str__(self):
+        return repr(self)
+
+
+if __name__ == '__main__':
+    t = time.time()
+    ItemsCatalog = GameItemCatalog()
+    ItemsCatalog = GameItemCatalog()
+    print 'load time:', time.time() - t

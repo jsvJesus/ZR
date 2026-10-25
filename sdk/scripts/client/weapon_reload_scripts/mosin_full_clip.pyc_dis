@@ -1,0 +1,127 @@
+# Embedded file name: ./client/weapon_reload_scripts/mosin_full_clip.py
+import BigWorld
+import traceback
+from reload_base_script import BaseWeaponReloader, BaseWeaponManualReloader
+from reload_base_script import _set_visible_magazine_from_model
+from Items import ItemsCatalog
+
+class ReloadMosinFullClip(BaseWeaponManualReloader):
+    anim_name = 'reload_MOSIN_clip'
+
+    def play(self, e = None):
+        player = self.player
+        to_anim_interval = 0.5
+        player.nodeInfoL.AttachedProviders = (None, to_anim_interval)
+        player.nodeInfoR.AttachedProviders = (None, to_anim_interval)
+        copy_model = self.player.active_weapon.createCopyModelWeapon()
+        player.model.Rhand = copy_model
+        copy_model.node('HP_Rhand').attach(BigWorld.Model(''))
+        copy_model.node('HP_Lhand').attach(BigWorld.Model(''))
+        self.player.blendHandOffset(copy_model, self.player.right_weapon_prov, 1, 0, to_anim_interval)
+
+        def BoltOpen(*e):
+            self.playSfxOrSound('BoltOpen')
+
+        def BoltClose(*e):
+            self.playSfxOrSound('BoltClose')
+
+        self.player.model.cue('BoltOpen', BoltOpen)
+        self.player.model.cue('BoltClose', BoltClose)
+        self.player.model.cue('MagazineGunToHandSYS', self._cueMagazineGunToHand)
+        self.player.model.cue('MagazineHandToPocketSYS', self._cueMagazineHandToPocket)
+        self.player.model.cue('MagazinePocketToHandSYS', self._cueMagazinePocketToHand)
+        self.player.model.cue('MagazineHandToGunSYS', self._cueMagazineHandToGun)
+        fake_Lhand_provider = copy_model.node('HP_Lhand')
+        fake_Lhand_provider.blend_factor_hand = 1.0
+        fake_Lhand_provider.disableDrawInReflection = True
+
+        def onInsertMagaz():
+            if self._onInsetAmmoCallback:
+                self._onInsetAmmoCallback(self.ammo_or_magazine_item)
+
+        def onMoveComplete(isBreak):
+            if isBreak:
+                return
+            elif not player or player.isDestroyed:
+                return
+            elif self._canceled:
+                return
+            else:
+                player.active_weapon.setVisibleModel(player.active_weapon_model)
+                player.model.Rmanipulator = None
+                self.onFini()
+
+                def endR(isBreak):
+                    if isBreak:
+                        return
+                    else:
+                        player.model.Rhand = None
+                        player.model.Lhand = None
+                        return
+
+                player.nodeInfoL.AttachedProviders = (player.left_weapon_prov, 0.3, endR)
+                return
+
+        def _returnHand():
+            if not player or player.isDestroyed:
+                return
+            if self._canceled:
+                return
+            to_tr_interval = 0.3
+            onInsertMagaz()
+            player.nodeInfoR.AttachedProviders = (player.right_weapon_prov, to_tr_interval, onMoveComplete)
+
+        def _LeftToFake():
+            if not player or player.isDestroyed:
+                return
+            if self._canceled:
+                return
+            player.nodeInfoL.AttachedProviders = (fake_Lhand_provider, 0.2)
+
+        magazine_params = ItemsCatalog.GetItemParam(self.ammo_or_magazine_item['complexItemType'])
+        new_magazine_model = BigWorld.Model(magazine_params['ModelPath'])
+        self._new_magazine_model = new_magazine_model
+        self.player.active_weapon.setVisibleModel(copy_model)
+        action_pl = player.model.action(self.anim_name)
+        new_frame_rate = action_pl.frameRate * self.reload_speed
+        action_pl(0, None, 0, action_pl.firstFrame, action_pl.lastFrame, new_frame_rate)
+        try:
+            weapon_action = copy_model.action('reload_clip')
+            new_frame_rate_weapon = weapon_action.frameRate * self.reload_speed
+            weapon_action(0, None, 0, weapon_action.firstFrame, weapon_action.lastFrame, new_frame_rate_weapon)
+        except Exception as err:
+            print 'ERROR WEAPON ANIMATION  reload_clip', self.player.active_weapon
+            print 'copy_model', copy_model.sources if copy_model else None
+            print 'err:', err
+            traceback.print_stack()
+
+        dur_pl = abs(action_pl.lastFrame - action_pl.firstFrame) / new_frame_rate
+        BigWorld.callback(dur_pl - 0.31, _returnHand)
+        BigWorld.callback(dur_pl - 0.31 - 0.2, _LeftToFake)
+        return
+
+    def _cueMagazineGunToHand(self):
+        if self._canceled:
+            return
+        if self.player.model.ThrowRight:
+            self.player.model.ThrowRight.visible = True
+        self.playSfxOrSound('MagazineGunToHandSYS')
+
+    def _cueMagazineHandToPocket(self):
+        if self._canceled:
+            return
+        self.playSfxOrSound('MagazineHandToPocketSYS')
+
+    def _cueMagazinePocketToHand(self):
+        if self._canceled:
+            return
+        self.player.model.ThrowRight = self._new_magazine_model
+        self.player.model.ThrowRight.visible = True
+        self.playSfxOrSound('MagazinePocketToHandSYS')
+
+    def _cueMagazineHandToGun(self):
+        if self._canceled:
+            return
+        if self.player.model.ThrowRight:
+            self.player.model.ThrowRight.clip()
+        self.playSfxOrSound('MagazineHandToGunSYS')

@@ -1,0 +1,640 @@
+# Embedded file name: ./client/devil_utils/monitor.py
+import pyson
+import ResMgr
+from Math import Vector3
+import colorCodes as cc
+import BigWorld
+from functools import partial
+import soGUI
+import GUI
+from Helpers.PyGUI.PyGUIBase import DragWin
+import BWPersonality
+from soGUI.soEditField import soEditBox2
+from soGUI.soButton import soButton
+from soGUI.soCheckBox import soCheckBox
+from soGUI.soTextField import soTextField3
+from Config.Damage import BODY_ZONES
+from collections import defaultdict
+from utils import Listenable
+from cdevil_utils.dutils import DungeonEventType as DungET, Flags, strike_params, MAX_MUSHROOM_HEALTH
+import Keys
+import client_utils
+import cPickle
+from soGUI.soDropDownList import soDropDownList2
+
+def get_entity_name(entity_id):
+    entity = BigWorld.entities.get(entity_id)
+    if not entity:
+        return str(entity_id)
+    return getattr(entity, 'name', str(entity_id))
+
+
+class EventType:
+    OnDamageBodyRequest, OnNextStageRequest, OnFinalStageRequest = range(3)
+
+
+class AdditionalWin(Listenable):
+
+    def __init__(self, entity, pos_x, pos_y = 0, width = 200, height = 200):
+        Listenable.__init__(self)
+        self.entity = entity
+        self._edits = []
+        comp = GUI.Window('soGUI/frame/paint/black.dds')
+        comp.materialFX = 'SOLID'
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.width, comp.height = width, height
+        comp.position = (pos_x, pos_y, 0)
+        comp.visible = False
+        comp.isClip = False
+        self.component = comp
+        comp = GUI.Window()
+        btn = soButton(comp)
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('RIGHT', 'TOP')
+        comp.colour = (255, 255, 255, 255)
+        comp.materialFX = 'BLEND'
+        comp.width, comp.height = (15, 15)
+        comp.position = (self.component.width - 8, 8, 0.5)
+        self.component.addChild(comp)
+        btn.initVSC('soGUI/elements/closeBox.xml')
+        btn.onBound()
+        btn.setVisualState('normal')
+        btn.onClick = self.hide
+        self._wins = []
+        self._create_pos = defaultdict(lambda : Vector3(4.0, 8.0, 0.5))
+
+    def set_margin(self, value, pos_index = 0):
+        self._create_pos[pos_index][0] = value
+
+    def create_space(self, value, pos_index = 0):
+        self._create_pos[pos_index][1] += value
+
+    def create_win(self, win_class):
+        win = win_class(self.entity, self.component.width + 4)
+        self.component.addChild(win.component)
+        self._wins.append(win)
+        return win
+
+    def hide(self):
+        if self.component.visible:
+            for win in self._wins:
+                win.hide()
+
+            self.component.visible = False
+            self.on_hide()
+
+    def show(self):
+        if not self.component.visible:
+            self.component.visible = True
+            self.on_show()
+
+    def toggle_win(self, win):
+        for w in self._wins:
+            if w == win and not w.component.visible:
+                w.show()
+            else:
+                w.hide()
+
+    def on_show(self):
+        pass
+
+    def on_hide(self):
+        for edit in self._edits:
+            edit.activate(False)
+
+    def on_mouse_event(self, event):
+        for w in self._wins:
+            w.on_mouse_event(event)
+
+    def create_edit(self, pos_index = 0, space_height = 18):
+        comp = GUI.Window()
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = self.component.width - 16, self.component.height - 16
+        comp.position = self._create_pos[pos_index]
+        self.component.addChild(comp)
+        self._create_pos[pos_index][1] += space_height
+        edit = soEditBox2(comp, height=space_height, width=40)
+        self._edits.append(edit)
+        return edit
+
+    def create_text(self, text = u'', pos_index = 0, space_height = 18):
+        comp = GUI.Text(text, 'RobotoCondensedRegular_14.font')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = self.component.width - 16, self.component.height - 16
+        comp.multiline = True
+        comp.colour = cc.inactive_rgba
+        comp.position = self._create_pos[pos_index]
+        self.component.addChild(comp)
+        self._create_pos[pos_index][1] += space_height
+        return comp
+
+    def create_text_field3(self, height, pos_index = 0):
+        comp = GUI.Window()
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = self.component.width - 16, self.component.height - 16
+        comp.position = self._create_pos[pos_index]
+        self.component.addChild(comp)
+        self._create_pos[pos_index][1] += height + 4
+        return soTextField3(comp, width=self.component.width - 16, height=height)
+
+    def create_ddl(self, pos_index = 0):
+        height = 25
+        comp = GUI.Window()
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = 110, height
+        comp.position = self._create_pos[pos_index]
+        self._create_pos[pos_index][1] += height + 4
+        ddl = soDropDownList2(comp, comp.width, height)
+        self.component.addChild(comp)
+        return ddl
+
+    def create_button(self, text, callback, pos_index = 0, width = 110):
+        comp = GUI.Window()
+        btn = soButton(comp)
+        btn.initVSC('soGUI/elements/button_1.xml')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.label.font = 'RobotoCondensedRegular_16.font'
+        comp.label.text = text
+        comp.width, comp.height = width, 25
+        comp.position = self._create_pos[pos_index]
+        comp.script.onClick = callback
+        self.component.addChild(comp)
+        btn.onBound()
+        self._create_pos[pos_index][1] += 27
+        return btn
+
+    def create_check(self, text, callback, pos_index = 0):
+        cb = soCheckBox(GUI.Window(), soGUI.CheckBoxPropsStructure())
+        comp = cb.component
+        comp.horizontalPositionMode = comp.verticalPositionMode = 'PIXEL'
+        comp.horizontalAnchor = 'LEFT'
+        comp.verticalAnchor = 'TOP'
+        comp.position = self._create_pos[pos_index]
+        self.component.addChild(comp)
+        cb.onStateChange = lambda : callback(cb.isChecked())
+        cb.onBound()
+        comp = GUI.Text(text, 'RobotoCondensedRegular_14.font')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.position = (32, cb.component.position[1] + 3, 0.5)
+        comp.colour = cc.inactive_rgba
+        self.component.addChild(comp)
+        self._create_pos[pos_index][1] += 18
+        return cb
+
+    def _run_debug(self, command, data):
+        data = cPickle.dumps(data)
+        self.entity.cell.run_debug(command, data)
+
+
+class TargetsWin(AdditionalWin):
+
+    def __init__(self, entity, pos_x):
+        AdditionalWin.__init__(self, entity, pos_x, height=160)
+        self._targets_text = self.create_text(space_height=84)
+        self._priorities_text = self.create_text()
+
+    def set_targets(self, data):
+        if data:
+            target_id, visible_count, trapped_count, priotities = data
+            self._targets_text.text = u'\u0426\u0435\u043b\u044c: {0}\n\u0412\u0438\u0434\u043d\u043e: {1}\n\u0412\u0441\u0435\u0433\u043e: {2}\n\n\u041f\u0440\u0438\u043e\u0440\u0438\u0442\u0435\u0442\u044b:\n'.format(get_entity_name(target_id), visible_count, trapped_count)
+            sorted_data = []
+            for entity_id, value in priotities.items():
+                sorted_data.append((entity_id, value))
+
+            sorted_data.sort()
+            text = u''
+            for entity_id, value in sorted_data:
+                text += u'{0} - {1:.1f}\n'.format(get_entity_name(entity_id), value)
+
+            self._priorities_text.text = text
+
+
+class NavigationWin(AdditionalWin):
+
+    def __init__(self, entity, pos_x):
+        AdditionalWin.__init__(self, entity, pos_x)
+        self.create_space(140, pos_index=2)
+        self._cb_idle = self.create_check(u'\u0421\u0442\u043e\u044f\u0442\u044c', self._on_idle_change, pos_index=2)
+        self.create_text(u'\u0421\u043a\u043e\u0440\u043e\u0441\u0442\u044c:')
+        self.create_text(u'\u041c\u0430\u043a\u0441. \u0441\u043a\u043e\u0440.:')
+        self.create_text(u'\u0423\u0441\u043a\u043e\u0440\u0435\u043d\u0438\u0435:')
+        self.create_space(8)
+        self.create_text(u'\u0423\u0433. \u0441\u043a\u043e\u0440\u043e\u0441\u0442\u044c:')
+        self.create_text(u'\u041c\u0430\u043a\u0441. \u0443\u0433. \u0441\u043a\u043e\u0440.:')
+        self.create_text(u'\u0423\u0433. \u0443\u0441\u043a\u043e\u0440\u0435\u043d\u0438\u0435:')
+        self.set_margin(120, pos_index=1)
+        self._speed_text = self.create_text(pos_index=1)
+        self._max_speed_text = self.create_text(pos_index=1)
+        self._accel_text = self.create_text(pos_index=1)
+        self.create_space(8, pos_index=1)
+        self._ang_speed_text = self.create_text(pos_index=1)
+        self._ang_max_speed_text = self.create_text(pos_index=1)
+        self._ang_accel_text = self.create_text(pos_index=1)
+
+    def update_data(self, debug_mode, nav_data):
+        self._cb_idle.set_active(debug_mode & 1 << Flags.OnPlace)
+        if not nav_data:
+            return
+        (max_speed, move_acceleration), (max_rotation_speed, rotation_acceleration) = nav_data
+        self._speed_text.text = u'{0:.1f}'.format(self.entity.velocity.length)
+        self._max_speed_text.text = u'{0:.1f}'.format(max_speed)
+        self._accel_text.text = u'{0:.1f}'.format(move_acceleration)
+        self._ang_speed_text.text = u'{0:.1f}'.format(self.entity.rot_speed)
+        self._ang_max_speed_text.text = u'{0:.1f}'.format(max_rotation_speed)
+        self._ang_accel_text.text = u'{0:.1f}'.format(rotation_acceleration)
+
+    def _on_idle_change(self, is_checked):
+        self._run_debug('debug_mode', 0)
+
+
+class VisualisationWin(AdditionalWin):
+
+    def __init__(self, entity, pos_x):
+        AdditionalWin.__init__(self, entity, pos_x, height=108)
+        self._cb_trapper = self.create_check(u'\u041f\u043e\u043a\u0430\u0437\u0430\u0442\u044c \u0441\u0435\u043d\u0441\u043e\u0440\u044b', self._on_trapper_change, pos_index=2)
+        self._cb_strike = self.create_check(u'\u041f\u043e\u043a\u0430\u0437\u044b\u0432\u0430\u0442\u044c \u0443\u0434\u0430\u0440\u044b', self._on_strikes_change, pos_index=2)
+        self._cb_servpos = self.create_check(u'\u0421\u0435\u0440\u0432. \u043f\u043e\u0437.', self._on_serv_pos_change, pos_index=2)
+        self._cb_clientpos = self.create_check(u'\u041a\u043b\u0438\u0435\u043d\u0442. \u043f\u043e\u0437.', self._on_client_pos_change, pos_index=2)
+        self._cb_aq = self.create_check(u'Debug AQ.', self._on_client_aq_change, pos_index=2)
+
+    def on_show(self):
+        self._cb_clientpos.set_active(self.entity._filter._debug_client_pos)
+        self._cb_servpos.set_active(self.entity._filter._debug_server_pos)
+
+    def update_data(self, debug_mode):
+        trapper_active = False
+        if self.entity._debugger:
+            if self.entity._debugger._trapper_ranges:
+                trapper_active = True
+        self._cb_trapper.set_active(trapper_active)
+        self._cb_strike.set_active(debug_mode & 2)
+
+    def _on_client_aq_change(self, is_checked):
+        BigWorld.debugAQ(self.entity.model if is_checked else None)
+        return
+
+    def _on_client_pos_change(self, is_checked):
+        self.entity._filter.debug_client_pos(is_checked)
+
+    def _on_serv_pos_change(self, is_checked):
+        self.entity._filter.debug_server_pos(is_checked)
+
+    def _on_strikes_change(self, is_checked):
+        self._run_debug('debug_mode', 1)
+
+    def _on_trapper_change(self, is_checked):
+        if is_checked:
+            self._run_debug('debug_trapper', None)
+        elif self.entity._debugger:
+            self.entity._debugger._trapper_ranges = None
+        return
+
+
+class BodyWin(AdditionalWin):
+
+    def __init__(self, entity, pos_x):
+        AdditionalWin.__init__(self, entity, pos_x, width=280, height=180)
+        self.create_text(u'\u041e\u0417 \u0433\u0440\u0438\u0431\u043e\u0432:')
+        self.create_text(u'\u041e\u0417 \u043f\u044b\u043b\u0435\u0441\u043e\u0441\u0430:')
+        self.create_text(u'\u041e\u0417 \u0441\u0435\u0440\u0434\u0446\u0430:')
+        self.set_margin(100, pos_index=1)
+        self._health_text = self.create_text(pos_index=1)
+        self._belly_text = self.create_text(pos_index=1)
+        self._heart_text = self.create_text(pos_index=1)
+        self._regen_text = self.create_text()
+        self._open_belly_text = self.create_text()
+        self._open_heart_text = self.create_text()
+        self._invincible_text = self.create_text()
+        self._protection_text = self.create_text()
+        self._stones_text = self.create_text()
+        self.set_margin(140, pos_index=2)
+        self.create_space(80, pos_index=2)
+        self.create_button(u'-30% \u0432 \u0433\u0440\u0438\u0431\u044b', partial(self._on_damage_click, BODY_ZONES.ZONE1), pos_index=2)
+        self.create_button(u'-30% \u0432 \u043f\u0443\u0437\u043e', partial(self._on_damage_click, BODY_ZONES.BELLY), pos_index=2)
+        self.create_button(u'-30% \u0432 \u0441\u0435\u0440\u0434\u0446\u0435', partial(self._on_damage_click, BODY_ZONES.HEART), pos_index=2)
+
+    def _on_damage_click(self, body_zone):
+        self.notify_listeners(EventType.OnDamageBodyRequest, body_zone)
+
+    def set_data(self, data, regen_rate, mushroom_health, belly_open, heart_open, invincible, protection_mode, stone_back):
+        if data:
+            belly_health, heart_health = data
+            health = mushroom_health
+            self._health_text.text = '{0:.0f}/{1:.0f} ({2:.1f}%)'.format(health[0], health[1], health[0] / health[1] * 100)
+            health = belly_health
+            self._belly_text.text = '{0:.0f}/{1:.0f} ({2:.1f}%)'.format(health[0], health[1], health[0] / health[1] * 100)
+            health = heart_health
+            self._heart_text.text = '{0:.0f}/{1:.0f} ({2:.1f}%)'.format(health[0], health[1], health[0] / health[1] * 100)
+            self._open_belly_text.text = u'\u041f\u0443\u0437\u043e \u043e\u0442\u043a\u0440\u044b\u0442\u043e' if belly_open else u'\u041f\u0443\u0437\u043e \u0437\u0430\u043a\u0440\u044b\u0442\u043e'
+            self._open_heart_text.text = u'\u0421\u0435\u0440\u0434\u0446\u0435 \u043e\u0442\u043a\u0440\u044b\u0442\u043e' if heart_open else u'\u0421\u0435\u0440\u0434\u0446\u0435 \u0437\u0430\u043a\u0440\u044b\u0442\u043e'
+            self._invincible_text.text = u'\u041d\u0435\u0443\u044f\u0437\u0432\u0438\u043c\u043e\u0441\u0442\u044c: \u0415\u0421\u0422\u042c' if invincible else u'\u041d\u0435\u0443\u044f\u0437\u0432\u0438\u043c\u043e\u0441\u0442\u044c: \u043d\u0435\u0442'
+            self._protection_text.text = u'\u0417\u0430\u0449\u0438\u0442\u0430: \u0415\u0421\u0422\u042c' if protection_mode else u'\u0417\u0430\u0449\u0438\u0442\u0430: \u043d\u0435\u0442'
+            self._regen_text.text = u'\u0420\u0435\u0433\u0435\u043d: {0:.0f} \u0432 \u0441\u0435\u043a.'.format(regen_rate)
+            self._stones_text.text = u'\u041a\u0430\u043c\u0435\u043d\u043d\u043e\u0441\u0442\u044c: {0:.2f}'.format(stone_back)
+
+
+class LogsWin(AdditionalWin):
+
+    def __init__(self, entity, pos_x):
+        AdditionalWin.__init__(self, entity, pos_x)
+        self._text = self.create_text_field3(self.component.height - 16)
+
+    def log(self, data):
+        self._text.setText(repr(data), immidiate=True)
+
+
+class DungWin(AdditionalWin):
+
+    def __init__(self, entity, pos_x):
+        AdditionalWin.__init__(self, entity, pos_x)
+        self.create_button(u'\u041f\u0440\u043e\u0438\u0433\u0440\u0430\u0442\u044c \u0444\u0430\u0437\u0443', self._on_reset_click)
+        self.create_button(u'\u041f\u043e\u0431\u0435\u0434\u0438\u0442\u044c \u0444\u0430\u0437\u0443', self._on_next_click)
+        self.create_button(u'\u0421\u043f\u0435\u0446. \u0430\u0442\u0430\u043a\u0430', self._on_spec_click)
+
+    def _on_spec_click(self):
+        self._run_debug('dungrequest', DungET.OnFlowerPain)
+
+    def _on_next_click(self):
+        self._run_debug('dungrequest', DungET.OnNextPhase)
+
+    def _on_reset_click(self):
+        self._run_debug('dungrequest', DungET.OnFlowerLose)
+
+
+class Phase4Win(AdditionalWin):
+
+    def __init__(self, entity, pos_x):
+        AdditionalWin.__init__(self, entity, pos_x)
+        self._lose_button = self.create_button(u'\u041a\u043e\u043d\u0447\u0438\u0442\u044c \u0432\u0440\u0435\u043c\u044f', self._on_lose_click)
+        self._text = self.create_text()
+
+    def _on_lose_click(self):
+        self._run_debug('phase4endTimeRequest', None)
+        return
+
+    def set_data(self, active, time_remain):
+        if active:
+            self._text.text = u'\u0412\u0440\u0435\u043c\u044f \u043e\u0441\u0442\u0430\u043b\u043e\u0441\u044c: {0:.0f}'.format(time_remain)
+        else:
+            self._text.text = u'\u041d\u0435 \u0430\u043a\u0442\u0438\u0432\u043d\u043e'
+        self._lose_button.setDisabledState(not active)
+
+
+class ObjectWin(AdditionalWin):
+
+    def __init__(self, entity, pos_x):
+        AdditionalWin.__init__(self, entity, pos_x, height=100)
+        self.create_button(u'\u0423\u0434\u0430\u043b\u0438\u0442\u044c', self._on_del_click)
+        self.create_button(u'\u041a\u043b\u043e\u043d\u0438\u0440\u043e\u0432\u0430\u0442\u044c', self._on_clone_click)
+        self.create_button(u'\u041f\u0435\u0440\u0435\u0441\u043f\u0430\u0443\u043d\u0438\u0442\u044c', self._on_respawn_click)
+
+    def _on_del_click(self):
+        self._run_debug('obj', 0)
+
+    def _on_clone_click(self):
+        self._run_debug('obj', 1)
+
+    def _on_respawn_click(self):
+        self._run_debug('obj', 2)
+
+
+class ManualWin(AdditionalWin):
+
+    def __init__(self, entity, pos_x):
+        AdditionalWin.__init__(self, entity, pos_x, height=240)
+        self._is_active = False
+        self._cb = self.create_check(u'\u0420\u0443\u0447\u043d\u043e\u0439 \u0440\u0435\u0436\u0438\u043c', self._on_manual_change)
+        self._buttons = []
+        for sp in strike_params.values():
+            action_name = sp.get('action')
+            if action_name:
+                foo = partial(self._on_click, action_name)
+                self._buttons.append(self.create_button(action_name, foo, width=120))
+
+        foo = partial(self._on_click, 'boss_pain')
+        self._buttons.append(self.create_button('pain', foo, width=120))
+        self._update_buttons()
+
+    def _on_click(self, action_name):
+        self.entity.debug_animation(action_name)
+
+    def _update_buttons(self):
+        for button in self._buttons:
+            button.setDisabledState(not self._is_active)
+
+    def _on_manual_change(self, is_checked):
+        self._run_debug('debug_mode', Flags.ManualMode)
+        self._is_active = is_checked
+        self._update_buttons()
+
+    def _mark_place(self, position):
+        path = 'models/bolvan/box_trigger_05x05x05.model'
+        model = BigWorld.Model(path)
+        BigWorld.addModel(model)
+        model.position = Vector3(position)
+        BigWorld.callback(0.5, partial(BigWorld.delModel, model))
+
+    def on_mouse_event(self, event):
+        if event.key == Keys.KEY_RIGHTMOUSE:
+            if self._is_active:
+                from_pos, direction = client_utils.getMousePosDir()
+                direction.normalise()
+                direction *= 500
+                to_pos = from_pos + direction
+                res = BigWorld.collideIgnoreFlags(BigWorld.player().spaceID, from_pos, to_pos)
+                if res:
+                    hit = Vector3(res[0])
+                    hit and self._mark_place(hit)
+                    self._run_debug('manual', tuple(hit))
+
+    def set_data(self, debug_mode):
+        self._cb.set_active(debug_mode & 1 << Flags.ManualMode)
+
+
+class BrainWin(AdditionalWin):
+
+    def __init__(self, entity, pos_x):
+        AdditionalWin.__init__(self, entity, pos_x, height=176)
+        self.create_text(text=u'\u0421\u043e\u0441\u0442\u043e\u044f\u043d\u0438\u0435:')
+        self._states_text = self.create_text()
+        self._phase_text = self.create_text()
+        self._phase4_win = self.create_win(Phase4Win)
+        self._manual_win = self.create_win(ManualWin)
+        self.create_button(u'\u0421\u043f\u0438\u043d\u043e\u0424\u0430\u0437\u0430 4', partial(self.toggle_win, self._phase4_win))
+        self.create_button(u'\u0420\u0443\u0447\u043d\u043e\u0439 \u0440\u0435\u0436\u0438\u043c', partial(self.toggle_win, self._manual_win))
+        self.create_button(u'next stage', self._on_next_stage_click)
+        self.create_button(u'final stage', self._on_final_stage_click)
+
+    def _on_next_stage_click(self):
+        self.notify_listeners(EventType.OnNextStageRequest)
+
+    def _on_final_stage_click(self):
+        self.notify_listeners(EventType.OnFinalStageRequest)
+
+    def set_data(self, brain_data, debug_mode, nav_data):
+        self._manual_win.set_data(debug_mode)
+        if brain_data:
+            states_path, (phase_index, state_data) = brain_data
+            self._states_text.text = '/'.join(states_path)
+            self._phase_text.text = u'\u0424\u0430\u0437\u0430: ' + str(phase_index)
+            if self._phase4_win.component.visible:
+                if phase_index == 4:
+                    self._phase4_win.set_data(True, state_data)
+                else:
+                    self._phase4_win.set_data(False, None)
+        return
+
+
+class AnimWin(AdditionalWin):
+
+    def __init__(self, entity, pos_x):
+        AdditionalWin.__init__(self, entity, pos_x, height=100)
+        self._filters = {0: ('Python', BigWorld.PythonFilter),
+         1: ('AvatarDrop', BigWorld.AvatarDropFilter),
+         2: ('AvatarSpline', BigWorld.AvatarSplineFilter)}
+        self.create_button(u'reload model', partial(self._on_reload_click))
+        self._ddl = self.create_ddl()
+        self._ddl.onSelectedElement = self._on_filter_selected
+        elements = []
+        for key_index in sorted(self._filters.keys()):
+            elements.append((key_index, self._filters[key_index][0]))
+
+        self._ddl.addElements(elements)
+        for index, (_, filter_delegate) in self._filters.items():
+            if isinstance(self.entity.filter, filter_delegate):
+                self._ddl.setSelectionByValue(index, silent=True)
+                break
+
+    def _on_filter_selected(self, index):
+        self.entity._filter.set_filter(self._filters[index][1])
+
+    def _on_reload_click(self):
+        for model_name in self.entity.model.sources:
+            ResMgr.purge(model_name)
+
+        self.entity.model = BigWorld.Model('characters/creatures/brutor_musroom/brutor_musroom_boss.model')
+        self.entity.model.reloadModel()
+        for model_name in self.entity.model.sources:
+            self.entity.model.motors[0].debugRelaodActtion(model_name)
+
+
+class Monitor(AdditionalWin, DragWin):
+
+    def __init__(self, entity):
+        AdditionalWin.__init__(self, entity, pos_x=50, pos_y=100, width=232, height=208)
+        DragWin.__init__(self, self.component)
+        self._request_threads = 0
+        self.create_text(text=u'\u0427\u0435\u0440\u0442\u044f\u043a\u0430 id:' + str(entity.id))
+        self._wins_counter = self.create_text()
+        self._distance_text = self.create_text()
+        BWPersonality.GUICore.worldLayer.addChild(self.component, 'Devilbdebug.GUI.' + str(entity.id))
+        self._targets_win = self.create_win(TargetsWin)
+        self._logs_win = self.create_win(LogsWin)
+        self._body_win = self.create_win(BodyWin)
+        self._body_win.add_listener(self._on_win_event)
+        self._brains_win = self.create_win(BrainWin)
+        self._brains_win.add_listener(self._on_win_event)
+        self._obj_win = self.create_win(ObjectWin)
+        self._vis_win = self.create_win(VisualisationWin)
+        self._nav_win = self.create_win(NavigationWin)
+        self._dung_win = self.create_win(DungWin)
+        self._anim_win = self.create_win(AnimWin)
+        self.set_margin(120, pos_index=1)
+        self.create_space(60, pos_index=1)
+        self.create_button(u'\u0426\u0435\u043b\u0438', partial(self.toggle_win, self._targets_win), pos_index=1)
+        self.create_button(u'\u041b\u043e\u0433\u0438', partial(self.toggle_win, self._logs_win), pos_index=1)
+        self.create_button(u'\u0422\u0435\u043b\u043e', partial(self.toggle_win, self._body_win), pos_index=1)
+        self.create_button(u'\u0414\u0430\u043d\u0436', partial(self.toggle_win, self._dung_win), pos_index=1)
+        self.create_button(u'reload conf', self._reload_conf, pos_index=1)
+        self.create_space(60, pos_index=2)
+        self.create_button(u'\u041c\u043e\u0437\u0433\u0438', partial(self.toggle_win, self._brains_win), pos_index=2)
+        self.create_button(u'\u041e\u0431\u044a\u0435\u043a\u0442', partial(self.toggle_win, self._obj_win), pos_index=2)
+        self.create_button(u'\u0412\u0438\u0437\u0443\u0430\u043b\u0438\u0437\u0430\u0446\u0438\u044f', partial(self.toggle_win, self._vis_win), pos_index=2)
+        self.create_button(u'\u041d\u0430\u0432\u0438\u0433\u0430\u0446\u0438\u044f', partial(self.toggle_win, self._nav_win), pos_index=2)
+        self.create_button(u'\u0410\u043d\u0438\u043c\u0430\u0446\u0438\u044f', partial(self.toggle_win, self._anim_win), pos_index=2)
+
+    def _reload_conf(self):
+        config_path = 'scripts/common/cdevil_utils/d_config.pyson'
+        ResMgr.purge(config_path)
+        config_string = ResMgr.openSection(config_path).asBinary
+        self._run_debug('reload_conf', config_string)
+        config = pyson.loads(config_string)
+        self.entity.update_config(config)
+
+    def _on_win_event(self, event_type, data):
+        if event_type == EventType.OnDamageBodyRequest:
+            body_zone = data
+            self._run_debug('damage', body_zone)
+        elif event_type == EventType.OnNextStageRequest:
+            self._run_debug('debug_mode', Flags.NextState)
+        elif event_type == EventType.OnFinalStageRequest:
+            self._run_debug('debug_mode', Flags.FinalState)
+
+    def on_show(self):
+        self._request_data()
+        BWPersonality.register_key_event_interceptor(self.on_mouse_event)
+
+    def on_hide(self):
+        BWPersonality.unregister_key_event_interceptor(self.on_mouse_event)
+
+    def _request_data(self):
+        if self._request_threads != 0:
+            raise RuntimeError(self._request_threads)
+        debug_value = 0
+        if self._targets_win.component.visible:
+            debug_value |= 1
+        if self._body_win.component.visible:
+            debug_value |= 2
+        if self._brains_win.component.visible:
+            debug_value |= 4
+        if self._nav_win.component.visible:
+            debug_value |= 8
+        self._run_debug('request_debug_data', debug_value)
+        self._request_threads += 1
+
+    def log(self, data):
+        if self._logs_win.component.visible:
+            self._logs_win.log(data)
+
+    def set_data(self, data):
+        self._request_threads -= 1
+        if self.component.visible:
+            damagable_body_data, regen_rate, brain_data, targets_data, nav_data, damage_data, debug_mode, win_counter = data
+            self._distance_text.text = u'\u0420\u0430\u0441\u0441\u0442\u043e\u044f\u043d\u0438\u0435: {0:.1f}'.format(self.entity.position.distTo(BigWorld.player().position))
+            self._wins_counter.text = u'\u041f\u043e\u0431\u0435\u0434: ' + unicode(win_counter)
+            if self._targets_win.component.visible:
+                self._targets_win.set_targets(targets_data)
+            if self._body_win.component.visible:
+                mushroom_health = (self.entity.mushroom_health, MAX_MUSHROOM_HEALTH)
+                self._body_win.set_data(damagable_body_data, regen_rate, mushroom_health, self.entity.belly_open, self.entity.heart_open, self.entity.invincible, self.entity.protection_mode, self.entity.stone_back)
+            if self._brains_win.component.visible:
+                self._brains_win.set_data(brain_data, debug_mode, nav_data)
+            if self._vis_win.component.visible:
+                self._vis_win.update_data(debug_mode)
+            if self._nav_win.component.visible:
+                self._nav_win.update_data(debug_mode, nav_data)
+            if debug_mode & 1 << Flags.ShowStrikes:
+                self.entity.debugger.draw_stun(damage_data)
+            elif self.entity._debugger:
+                self.entity._debugger.draw_stun(None)
+            self._request_data()
+        return
+
+    def destroy(self):
+        self.hide()
+        self._body_win.release()
+        BWPersonality.GUICore.worldLayer.delChild(self.component)

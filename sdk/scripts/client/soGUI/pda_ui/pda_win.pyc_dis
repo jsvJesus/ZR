@@ -1,0 +1,160 @@
+# Embedded file name: ./client/soGUI/pda_ui/pda_win.py
+import ItemsUtils
+import Keys
+import GUI
+from Helpers.PyGUI.PyGUIBase import DragWin
+from play_block import PlayBlock, EventType as PlayET
+from noanomaly_block import NoAnomalyBlock, EventType as NoET, LockMode
+from anomaly_seeker import AnomalySeeker, EventType as SeekerET
+from Helpers.PyGUI import Utils
+import BigWorld
+import pda_constants as pc
+import sounds_manager
+from soGUI.GUIPositions import GUIPositions
+
+class Lamp:
+
+    def __init__(self, position):
+        comp = GUI.Window('soGUI/frame/pda/gray_lamp.dds')
+        comp.materialFX = 'BLEND'
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = comp.texture.width, comp.texture.height
+        comp.position = position
+        self.component = comp
+
+    def set_light(self, value):
+        self.component.textureName = 'soGUI/frame/pda/green_lamp.dds' if value else 'soGUI/frame/pda/gray_lamp.dds'
+
+
+class PdaWin(DragWin, GUIPositions):
+
+    def __init__(self):
+        comp = GUI.Window('soGUI/frame/pda/kpk.dds')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = comp.texture.width, comp.texture.height
+        comp.position = (100, 100, 0.5)
+        comp.visible = False
+        comp.materialFX = 'BLEND'
+        DragWin.__init__(self, comp)
+        GUIPositions.__init__(self)
+        self.component.script = self
+        comp = GUI.Window('soGUI/frame/pda/kpk.dds')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = self.component.width, self.component.height
+        comp.position = (0, 0, 0.5)
+        comp.materialFX = 'BLEND'
+        self.component.addChild(comp)
+        self._play_block = PlayBlock(comp)
+        comp = GUI.Window('soGUI/frame/pda/kpk.dds')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = self.component.width, self.component.height
+        comp.position = (0, 0, 0.1)
+        comp.materialFX = 'BLEND'
+        self.component.addChild(comp)
+        self._no_block = NoAnomalyBlock(comp)
+        self._lamps = []
+        for i in range(6):
+            lamp = Lamp((60 + i * 30, 200, 0.01))
+            self.component.addChild(lamp.component)
+            self._lamps.append(lamp)
+
+        self._anomaly_seeker = AnomalySeeker()
+        self._tick_handler = None
+        return
+
+    def _tick(self):
+        if not Utils.is_visible_in_hierarchy(self.component):
+            self._tick_handler = None
+            return
+        else:
+            self._anomaly_seeker.tick()
+            self._tick_handler = BigWorld.callback(0, self._tick)
+            return
+
+    def show(self):
+        if not ItemsUtils.has_entity_pda(BigWorld.player()):
+            raise AssertionError
+            return self.visible and None
+        self._anomaly_seeker.add_listener(self._on_seeker_event)
+        self._no_block.add_listener(self._on_noblock_event)
+        self._play_block.add_listener(self._on_play_event)
+        self.component.visible = True
+        self._on_show()
+        self._tick()
+
+    def _on_play_event(self, event_type, data):
+        if event_type == PlayET.OnWon:
+            anomaly = self._anomaly_seeker.anomaly
+            anomaly.give_item_to_avatar(BigWorld.player().id)
+        elif event_type == PlayET.OnTargetsChanged:
+            for i, lamp in enumerate(self._lamps):
+                lamp.set_light(i < self._play_block.targets)
+
+    def _on_seeker_event(self, event_type, data):
+        if event_type == SeekerET.OnAnomalyChanged:
+            self._no_block.fade(not bool(self._anomaly_seeker.anomaly))
+
+    def _on_noblock_event(self, event_type, data):
+        if event_type == NoET.OnLockChanged:
+            mode, prev_mode = data
+            if mode == LockMode.Locked:
+                self._play_block.reset()
+            elif mode == LockMode.Unlocked:
+                self._play_block.start()
+            elif mode == LockMode.Prepare:
+                self._play_block.stop()
+
+    def _on_show(self):
+        GUIPositions.show(self)
+        sounds_manager.playSound(pc.SOUND_ON)
+        self._anomaly_seeker.on_show()
+        self._play_block.on_show()
+
+    def got_scan_result(self, anomaly_ids, result):
+        if not result:
+            self.hide()
+        self._anomaly_seeker.got_scan_result(anomaly_ids)
+
+    def hide(self):
+        if not self.visible:
+            return
+        else:
+            self._anomaly_seeker.remove_listener(self._on_seeker_event)
+            self._no_block.remove_listener(self._on_noblock_event)
+            self._play_block.remove_listener(self._on_play_event)
+            self.component.visible = False
+            if self._tick_handler:
+                BigWorld.cancelCallback(self._tick_handler)
+                self._tick_handler = None
+            self._on_hide()
+            return
+
+    def _on_hide(self):
+        sounds_manager.playSound(pc.SOUND_OFF)
+        self._anomaly_seeker.on_hide()
+        self._no_block.on_hide()
+        self._play_block.on_hide()
+
+    @property
+    def visible(self):
+        return self.component.visible
+
+    def handleKeyEvent(self, event):
+        if event.key == Keys.KEY_SPACE and event.isKeyDown():
+            self._play_block.apply()
+        return DragWin.handleKeyEvent(self, event)
+
+    def handleMouseButtonEvent(self, comp, event):
+        return DragWin.handleMouseButtonEvent(self, comp, event)
+
+    def stopDragging(self):
+        DragWin.stopDragging(self)
+        GUIPositions.stopDragging(self)

@@ -1,0 +1,212 @@
+# Embedded file name: ./client/soGUI/craft_gui/main_window.py
+import BWPersonality
+import BigWorld
+import GUI
+from Helpers.PyGUI.PyGUIBase import DragWin
+import ui_creator
+from Items import ItemsCatalog
+from craft_user import EventType as ET
+import WorkbenchUtil
+from WorkbenchUtil import WorkbenchTypes as WT, calc_craft_chance
+from ChatChannelConfig import CHANNEL_CONSTS
+from Localization import lc
+import ItemCategories as IC
+import gui_jokes
+import ItemsUtils
+from soGUI.GUIPositions import GUIPositions
+KICKSTART_HEIGHT = 628
+SIMPLE_HEIGHT = 528
+
+class MainWindow(DragWin, GUIPositions):
+    factoryString = 'craft_gui_main_window'
+
+    def __init__(self):
+        self._last_click_time = 0
+        comp = GUI.Window()
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = 656, SIMPLE_HEIGHT
+        comp.position = (0, 0, 0.5)
+        comp.visible = False
+        DragWin.__init__(self, comp)
+        GUIPositions.__init__(self)
+        self.component.script = self
+        self._apply_handler = None
+        ui_creator.create_content(self.component)
+        self._result_block = self.component.resultblock.script
+        self._result_block.set_chance_provider(self._calc_craft_chance)
+        self._items_block = self.component.itemsblock.script
+        self._items_block.on_slots_fill_changed_callback = self._update_button
+        self._kickstart_block = self.component.kickstartblock.script
+        self._kickstart_block.on_content_changed = self._on_kickstart_content_changed
+        self.component.applybutton.script.onClick = self._on_apply_click
+        self._cancel_button = self.component.cancelbutton.script
+        self._cancel_button.onClick = self._on_cancel_click
+        self.component.closebutton.script.onClick = self.hide
+        self._recipes_block = self.component.recipesblock.script
+        self._recipes_block.on_selected_callback = self._on_recipe_selected
+        self._header = self.component.caption
+        self._workbench_type = WT.NONE
+        self._need_kickstart_set = False
+        self._update_visualization(True)
+        return
+
+    def show(self, workbench_type = WT.NONE, need_kickstart_set = False, payed = False):
+        if self.visible:
+            return
+        self._workbench_type = workbench_type
+        self._need_kickstart_set = need_kickstart_set
+        self._payed = payed
+        self._craft_user.add_craft_event_listener(self)
+        self._clear_and_initialize_blocks()
+        self._update_visualization(False)
+        self.component.visible = True
+        self.onBound()
+        BWPersonality.GUICore.setBestCursor()
+        GUIPositions.show(self)
+
+    def _update_visualization(self, force = False):
+        text = WorkbenchUtil.get_local_name(self._workbench_type)
+        if self._workbench_type == WT.NONE:
+            text += BWPersonality.get_action_key('showCraft')
+        self._header.text = text
+        cur_height = self.component.height
+        if self._workbench_type == WT.NONE:
+            needed_height = SIMPLE_HEIGHT
+            self._kickstart_block.hide()
+        else:
+            needed_height = KICKSTART_HEIGHT
+            self._kickstart_block.show(self._workbench_type, self._need_kickstart_set)
+        if cur_height != needed_height or force:
+            self.component.height = needed_height
+            self._recipes_block.on_size_changed()
+            self.component.applybutton.position[1] = self.component.height - 22
+            self.component.cancelbutton.position[1] = self.component.applybutton.position[1]
+
+    def _clear_and_initialize_blocks(self):
+        self._items_block.set_craft_recipe(None)
+        self._result_block.set_craft_recipe(None)
+        self._recipes_block.clear_and_initialize(self._craft_user.KnowingRecipes, self._workbench_type)
+        self._update_button()
+        return
+
+    def _on_kickstart_content_changed(self):
+        self._result_block.dependencies_changed()
+
+    def _calc_craft_chance(self):
+        recipe_param = ItemsCatalog.GetItemParam(self._recipes_block.recipe_id)
+        kickstart_types = self._kickstart_block.compile_item_types()
+        return calc_craft_chance(recipe_param, self._craft_user.perks, self._workbench_type, kickstart_types)
+
+    def _on_recipe_selected(self, recipe_id):
+        if recipe_id:
+            recipe_param = ItemsCatalog.GetItemParam(recipe_id)
+        self._result_block.set_craft_recipe(recipe_param)
+        self._items_block.set_craft_recipe(recipe_param)
+        self._update_button()
+
+    def on_craft_event(self, event_type, data, craft_user):
+        if event_type == ET.RecipesChanged:
+            self._clear_and_initialize_blocks()
+        elif event_type == ET.ItemsChanged:
+
+            def apply_update():
+                self._items_block.on_items_changed()
+                self._items_block._perform_autofill()
+                self._kickstart_block.on_items_changed()
+                self._apply_handler = None
+                return
+
+            if self._apply_handler:
+                BigWorld.cancelCallback(self._apply_handler)
+            self._apply_handler = BigWorld.callback(0, apply_update)
+        elif event_type == ET.IsCraftingChanged:
+            self._update_button()
+
+    def _update_button(self):
+        self._cancel_button.component.visible = self._craft_user.is_crafting
+        app_button = self.component.applybutton.script
+        app_button.component.visible = not self._cancel_button.component.visible
+        if not app_button.component.visible:
+            return
+        recipe_id = self._recipes_block.recipe_id
+        if not recipe_id:
+            app_button.setDisabledState(True)
+            return
+        recipe_param = ItemsCatalog.GetItemParam(recipe_id)
+        workbench_type = recipe_param.get('WorkbenchType', WT.NONE)
+        if self._workbench_type != workbench_type:
+            app_button.setDisabledState(True)
+            return
+        craft_result = recipe_param['CraftResult']
+        if not len(craft_result) == 1:
+            raise AssertionError
+            result_type = craft_result.keys()[0]
+            enabled = ItemsCatalog.GetItemCategory(result_type) == IC.AMULET and self._items_block.any_slots_filled
+        else:
+            enabled = self._items_block.all_slots_filled
+        self.component.applybutton.script.setDisabledState(not enabled)
+
+    def _on_apply_click(self):
+        if BigWorld.time() - self._last_click_time < 1:
+            return
+        self._last_click_time = BigWorld.time()
+        if self._need_kickstart_set and not self._kickstart_block.filled:
+            self._craft_user.putMessage(CHANNEL_CONSTS.ITEMS, lc('CraftWin.notification.no_kickstart_set'))
+            return
+
+        def apply_craft():
+            kickstart_item_ids = self._kickstart_block.compile_item_ids() or []
+            self._craft_user.startCraft(self._workbench_type, self._recipes_block.recipe_id, self._items_block.compile_item_ids(), kickstart_item_ids, self._payed)
+
+        if self._payed:
+
+            def callback(event):
+                if event == gui_jokes.askUserYesNo.YES:
+                    if BigWorld.player().CreditNumber < money:
+                        BigWorld.player().ReportFail(ItemsUtils.FAIL_NO_MONEY)
+                    else:
+                        apply_craft()
+
+            recipe_params = ItemsCatalog.GetItemParam(self._recipes_block.recipe_id)
+            money = int(recipe_params.get('Cost', 0) * WorkbenchUtil.CRAFT_COST_RATIO)
+            if money:
+                gui_jokes.askUserYesNo(u'', lc('CraftWin.notification.payed_craft').format(money), callback=callback)
+            else:
+                apply_craft()
+        else:
+            apply_craft()
+
+    def _on_cancel_click(self):
+        self._craft_user.on_cancel_craft()
+
+    def hide(self):
+        if not self.visible:
+            return
+        else:
+            self.component.visible = False
+            self._craft_user.remove_craft_event_listener(self)
+            self._result_block.set_craft_recipe(None)
+            self._items_block.set_craft_recipe(None)
+            self._items_block.on_hide()
+            self._result_block.on_hide()
+            self._recipes_block.on_hide()
+            self._kickstart_block.on_hide()
+            self._workbench_type = WT.NONE
+            BWPersonality.GUICore.setBestCursor()
+            return
+
+    @property
+    def visible(self):
+        return self.component.visible
+
+    @property
+    def _craft_user(self):
+        return BigWorld.player()
+
+    def stopDragging(self):
+        DragWin.stopDragging(self)
+        GUIPositions.stopDragging(self)
+
+    def reset_position(self):
+        """ \xd1\x81\xd0\xb1\xd1\x80\xd0\xb0\xd1\x81\xd1\x8b\xd0\xb2\xd0\xb0\xd0\xb5\xd1\x82 \xd1\x81\xd0\xbe\xd1\x85\xd1\x80\xd0\xb0\xd0\xbd\xd1\x91\xd0\xbd\xd0\xbd\xd1\x8b\xd0\xb5 \xd0\xbf\xd0\xbe\xd0\xbb\xd0\xbe\xd0\xb6\xd0\xb5\xd0\xbd\xd0\xb8\xd1\x8f \xd0\xbe\xd0\xba\xd0\xbe\xd0\xbd """
+        self.component.position = (0, 0, 0.5)

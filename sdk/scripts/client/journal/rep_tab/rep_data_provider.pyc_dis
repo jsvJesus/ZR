@@ -1,0 +1,283 @@
+# Embedded file name: ./client/journal/rep_tab/rep_data_provider.py
+import BigWorld
+import rep_utils
+import Quest
+import QuestDispatcher as qd
+from rep_utils import RepEventType
+from knowledge import knowledge_parser as kp
+from journal.common_view.data_provider import DataProvider, EventType as DpET
+
+class IdET:
+    OnSelectedChanged, OnQuestsChanged, OnMembersChanged, OnValuesChanged, OnKnowledgeChanged, OnAcquaintedChanged = xrange(6)
+
+
+class ItemData(object):
+    unique_id_counter = 0
+
+    def __init__(self, group_data = None):
+        self._group_data = None
+        if group_data:
+            self._group_data = dict(group_data)
+            if not kp.get_group_additionals(self.rep_id):
+                self._group_data['knowledge'] = 0
+        self._callback_listeners = []
+        ItemData.unique_id_counter += 1
+        self._selected = False
+        self._unique_id = ItemData.unique_id_counter
+        return
+
+    def on_destroy(self):
+        self._callback_listeners = []
+
+    def add_callback_listener(self, callback_listener):
+        self._callback_listeners.append(callback_listener)
+
+    def del_callback_listener(self, callback_listener):
+        if callback_listener in self._callback_listeners:
+            self._callback_listeners.remove(callback_listener)
+
+    def _notify_listeners(self, event_type, data):
+        for l in self._callback_listeners:
+            l(event_type, data)
+
+    def invalidate_quests(self):
+        handled = False
+        if 'cur_quests' in self._group_data:
+            del self._group_data['cur_quests']
+            handled = True
+        if 'available_quests' in self._group_data:
+            del self._group_data['available_quests']
+            handled = True
+        if handled:
+            data = {'item_data': self,
+             'mode': Quest.CUR_REP_QUESTS}
+            self._notify_listeners(IdET.OnQuestsChanged, data)
+            data = {'item_data': self,
+             'mode': Quest.AVAILABLE_REP_QUEST}
+            self._notify_listeners(IdET.OnQuestsChanged, data)
+
+    def set_knowledge(self, knowledge):
+        self._group_data['knowledge'] = knowledge
+        self._notify_listeners(IdET.OnKnowledgeChanged, self)
+
+    def set_acquainted(self, aqcuainted):
+        self._group_data['aquainted'] = aqcuainted
+        self._notify_listeners(IdET.OnAcquaintedChanged, self)
+
+    def set_members(self, npc_ids, mode):
+        if mode == Quest.MEMBERS_REP:
+            self._group_data['members'] = npc_ids
+            data = {'item_data': self,
+             'mode': mode}
+            self._notify_listeners(IdET.OnMembersChanged, data)
+        elif mode == Quest.ENEMIES_REP:
+            self._group_data['enemies'] = npc_ids
+            data = {'item_data': self,
+             'mode': mode}
+            self._notify_listeners(IdET.OnMembersChanged, data)
+        else:
+            raise RuntimeError
+
+    def set_quests(self, quest_ids, mode, data):
+        if mode == Quest.CUR_REP_QUESTS:
+            self._group_data['cur_quests'] = quest_ids
+            data = {'item_data': self,
+             'mode': mode}
+            self._notify_listeners(IdET.OnQuestsChanged, data)
+        elif mode == Quest.AVAILABLE_REP_QUEST:
+            time_data = data
+            self._group_data['available_quests'] = zip(quest_ids, time_data)
+            data = {'item_data': self,
+             'mode': mode}
+            self._notify_listeners(IdET.OnQuestsChanged, data)
+        else:
+            raise RuntimeError
+
+    def update_values(self, data):
+        self._group_data.update(data)
+        if 'available_quests' in self._group_data:
+            del self._group_data['available_quests']
+            data = {'item_data': self,
+             'mode': Quest.AVAILABLE_REP_QUEST}
+            self._notify_listeners(IdET.OnQuestsChanged, data)
+        self._notify_listeners(IdET.OnValuesChanged, self)
+
+    @property
+    def has_value(self):
+        return bool(self._group_data)
+
+    @property
+    def rep_id(self):
+        return self._group_data and self._group_data['id']
+
+    @property
+    def value(self):
+        return self._group_data and self._group_data['value']
+
+    @property
+    def points(self):
+        return self._group_data and self._group_data['points']
+
+    @property
+    def cur_quests(self):
+        return self._group_data and self._group_data.get('cur_quests')
+
+    @property
+    def available_quests(self):
+        return self._group_data and self._group_data.get('available_quests')
+
+    @property
+    def members(self):
+        return self._group_data and self._group_data.get('members')
+
+    @property
+    def enemies(self):
+        return self._group_data and self._group_data.get('enemies')
+
+    @property
+    def knowledge(self):
+        return self._group_data and self._group_data.get('knowledge')
+
+    @property
+    def acquainted(self):
+        return self._group_data and self._group_data.get('aquainted')
+
+    @property
+    def is_fav(self):
+        return self._group_data and self._group_data.get('is_fav')
+
+    @property
+    def selected(self):
+        return self._selected
+
+    @selected.setter
+    def selected(self, value):
+        self._selected = value
+        self._notify_listeners(IdET.OnSelectedChanged, self)
+
+
+class RepDataProvider(DataProvider):
+
+    def __init__(self):
+        DataProvider.__init__(self)
+        self._data = [ItemData()]
+
+    def clear(self):
+        for i in xrange(len(self._data) - 1, -1, -1):
+            self._delete_item_data(i)
+
+        self._data = [ItemData()]
+        if self._callback_listener:
+            self._callback_listener(DpET.OnClear, None)
+        return
+
+    def get_item_by_rep_id(self, rep_id):
+        return next((item_data for item_data in self._data if item_data.rep_id == rep_id), None)
+
+    def get_items(self, unique_id, length):
+        index = self._index_by_unique_id(unique_id)
+        return self._data[index:index + length]
+
+    def get_item_context(self, unique_id):
+        index = self._index_by_unique_id(unique_id)
+        pre_context, post_context = (0, 0)
+        if index > 0:
+            pre_context = self._data[index - 1].rep_id
+        if index < len(self._data) - 1:
+            post_context = self._data[index + 1].rep_id
+        return (pre_context, post_context)
+
+    def set_members(self, npc_ids, rep_id, mode):
+        item = self.get_item_by_rep_id(rep_id)
+        if item:
+            item.set_members(npc_ids, mode)
+
+    def set_knowledge(self, rep_id, knowledge):
+        item = self.get_item_by_rep_id(rep_id)
+        if item:
+            item.set_knowledge(knowledge)
+
+    def set_quests(self, quest_ids, rep_id, mode, data):
+        item = self.get_item_by_rep_id(rep_id)
+        if item:
+            item.set_quests(quest_ids, mode, data)
+
+    def set_acquainted(self, rep_id, acquainted):
+        item = self.get_item_by_rep_id(rep_id)
+        if item:
+            item.set_acquainted(acquainted)
+
+    def set_data(self, event_type, group_data, sortfilter):
+        if event_type == RepEventType.KnowledgeGot:
+            rep_id = group_data['id']
+            ids = [ d.rep_id for d in self._data ]
+            ids.append(rep_id)
+            space_filter = rep_utils.unpack_int_mask(sortfilter['space_filter'])
+            feature_filter = rep_utils.unpack_int_mask(sortfilter['feature_filter'])
+            fav_list = BigWorld.player().fav_users
+            ids = rep_utils.get_groups(ids, sortfilter['sort'], space_filter, feature_filter, fav_list)
+            if rep_id in ids:
+                index = ids.index(rep_id)
+                item_data = ItemData(group_data)
+                self._data.insert(index, item_data)
+                if self._callback_listener:
+                    prev_unique_id = self._data[index - 1]._unique_id if index > 0 else None
+                    next_unique_id = self._data[index + 1]._unique_id if index < len(self._data) - 1 else None
+                    data = {'prev_unique_id': prev_unique_id,
+                     'next_unique_id': next_unique_id,
+                     'unique_id': item_data._unique_id}
+                    self._callback_listener(DpET.OnItemInserted, data)
+            for item_data in self._data:
+                if item_data.enemies is None:
+                    continue
+                enemies = rep_utils.get_group_enemies(item_data.rep_id)
+                if rep_id in enemies and rep_id not in item_data.enemies:
+                    gr_ids = [ e for e in enemies if e in item_data.enemies or e == rep_id ]
+                    item_data.set_members(gr_ids, Quest.ENEMIES_REP)
+
+        elif event_type == RepEventType.RepChanged:
+            rep_id = group_data['id']
+            index = next((i for i, item_data in enumerate(self._data) if item_data.rep_id == rep_id), None)
+            if index is not None:
+                self._data[index].update_values(group_data)
+                data = {'unique_id': self._data[index]._unique_id}
+                self._callback_listener(DpET.OnItemChanged, data)
+        elif event_type == RepEventType.KnowledgeWiped:
+            while self._data:
+                deleted_item_data = self._delete_item_data(0)
+                if self._callback_listener:
+                    data = {'unique_id': deleted_item_data._unique_id}
+                    self._callback_listener(DpET.OnDataRemoved, data)
+
+        elif event_type == RepEventType.AcquaintanceGot:
+            rep_id = group_data['id']
+            index = next((i for i, item_data in enumerate(self._data) if item_data.rep_id == rep_id), None)
+            if index is not None:
+                self._data[index].update_values(group_data)
+                self._data[index].set_acquainted(True)
+                data = {'unique_id': self._data[index]._unique_id}
+                self._callback_listener(DpET.OnItemChanged, data)
+        return
+
+    def replace_empty_data(self, unique_id, group_data, preselect_group_id):
+        index = self._index_by_unique_id(unique_id)
+        deleted_item = self._delete_item_data(index)
+        replaced_items = []
+        for gr_data in group_data:
+            item_data = ItemData(gr_data)
+            if preselect_group_id and preselect_group_id == item_data.rep_id:
+                item_data.selected = True
+            replaced_items.append(item_data)
+
+        self._data[index:index] = replaced_items
+        if self._callback_listener:
+            data = {'deleted_id': deleted_item._unique_id,
+             'replaced_ids': [ it._unique_id for it in replaced_items ]}
+            self._callback_listener(DpET.OnDataReplaced, data)
+
+    def update_quest_state(self, quest_id, prev_state, state):
+        rep_group_ids = qd.get_reputation2_reward(quest_id).keys()
+        if rep_group_ids:
+            for item_data in self._data:
+                if item_data.rep_id in rep_group_ids:
+                    item_data.invalidate_quests()

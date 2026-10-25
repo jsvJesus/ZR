@@ -1,0 +1,150 @@
+# Embedded file name: ./client/soGUI/donat_shop/window/shop_tab/shop_items_block.py
+import colorCodes as cc
+from math_bw import clamp
+import GUI
+from soGUI.donat_shop.models.filter_model import FilterModel
+from soGUI.donat_shop.window.win_ui.items_block import ItemsBlock
+from soGUI.donat_shop.window.shop_tab.shop_item_view import ShopItemView
+from soGUI.donat_shop.window.win_ui.scroll_content import ScrollPart
+from utils import Listenable
+from donate_catalog_tags import TAGS_IDS, TAGS_LC, TAGS_NAME_IDS
+from soGUI.UtilsGUI.TextScaler import TextScaler
+from ui.transform import Transform
+
+class ItemsCategoryBlock(ItemsBlock):
+
+    def __init__(self, component, pool, shop_model, bin_model, filter_tag, slot_ratio):
+        self._bin_model = bin_model
+        self._shop_model = shop_model
+        self.tag = filter_tag
+        filter_model = FilterModel(shop_model, filter_tag)
+        ItemsBlock.__init__(self, component, pool, filter_model, slot_ratio)
+
+    def _create_item_view(self, component, name):
+        return ShopItemView(component, name, self._shop_model, self._bin_model)
+
+    def on_tick(self):
+        for item_view in self._itemviews:
+            item_view.on_tick()
+
+
+class ShopItemsBlock(ScrollPart, Listenable):
+
+    def __init__(self, component, shop_model, bin_model):
+        self.component = component
+        self.component.script = self
+        Listenable.__init__(self)
+        ScrollPart.__init__(self)
+
+        def create_block_component():
+            comp = GUI.Window()
+            comp.materialFX = 'BLEND'
+            comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+            comp.ha, comp.va = ('LEFT', 'TOP')
+            comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+            comp.position = (0, 0, 0.5)
+            self.component.addChild(comp)
+            return comp
+
+        self._pool = set()
+        self._blocks = []
+        self._captions = []
+        self._piplines = []
+        for tag_id in TAGS_IDS:
+            if tag_id == TAGS_NAME_IDS['TAG_UNDEFINED']:
+                continue
+            block = ItemsCategoryBlock(create_block_component(), self._pool, shop_model, bin_model, tag_id, 0.784)
+            self._blocks.append(block)
+            block.add_listener(self._on_block_event)
+            comp = GUI.Text(TAGS_LC[tag_id])
+            ts = TextScaler(comp, 'RobotoCondensedRegular_24_3')
+            comp.colour = cc.inactive_rgba
+            comp.materialFX = 'BLEND_MASKABLE'
+            comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+            comp.ha, comp.va = ('LEFT', 'TOP')
+            comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+            comp.position = (0, 0, 0.5)
+            self._captions.append(ts)
+            self.component.addChild(comp)
+            comp = GUI.Window('soGUI/frame/donatshop/dot.dds')
+            comp.materialFX = 'BLEND_MASKABLE'
+            comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+            comp.ha, comp.va = ('LEFT', 'TOP')
+            comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+            comp.width, comp.height = 0, comp.texture.height
+            comp.position = (0, 0, 0.5)
+            comp.tileHeight = comp.texture.height
+            comp.tileWidth = comp.texture.width
+            comp.tiled = True
+            self._piplines.append(comp)
+            self.component.addChild(comp)
+
+    def _on_block_event(self, event_type, data):
+        self.notify_listeners(event_type, data)
+
+    def set_params(self, visible, start_local, end_local, view_size):
+        for block in self._blocks:
+            if visible:
+                pos, height = block.component.position[1], block.component.height
+                start_block_local = clamp(start_local - pos, 0, height)
+                end_block_local = clamp(end_local - pos, 0, height)
+                block_visible = end_block_local > start_block_local and pos + height >= start_local and pos <= end_local
+                block.set_params(block_visible, start_block_local, end_block_local, view_size)
+            else:
+                block.set_params(visible, start_local, end_local, view_size)
+
+    def mark_align_content(self, slot_width, cols):
+        pixel_ratio = Transform.calc_pixel_ratio()
+        space = pixel_ratio * 96
+        stripe_pos = pixel_ratio * 32
+        text_pos = pixel_ratio * 24
+        align_data = {}
+        height = 0
+        tag_positions = {}
+        for i in range(len(self._blocks)):
+            block = self._blocks[i]
+            caption = self._captions[i]
+            line = self._piplines[i]
+            caption.component.position[1] = height + text_pos
+            height += space
+            line.position[1] = height - stripe_pos
+            block.component.width = self.component.width
+            line.width = self.component.width
+            block.component.position[1] = height
+            block_align_data = block.mark_align_content(slot_width, cols)
+            height += block_align_data['height']
+            align_data['slot_height'] = block_align_data['slot_height']
+            tag_positions[block.tag] = block.component.position[1] - space
+
+        self.component.height = height
+        align_data['height'] = height
+        align_data['tag_positions'] = tag_positions
+        return align_data
+
+    def on_tick(self):
+        max_potential_count = 0
+        existing_count = len(self._pool)
+        for block in self._blocks:
+            block.on_tick()
+            max_potential_count = max(max_potential_count, block.get_pool_potential_count())
+            existing_count += len(block._itemviews)
+
+        need_resort = False
+        for _ in range(existing_count, max_potential_count):
+            need_resort = True
+            self._blocks[0]._generate_item_in_pool()
+
+        if need_resort:
+            self._blocks[0].component.reSort()
+
+    def on_show(self):
+        for block in self._blocks:
+            block.on_show()
+
+    def on_hide(self):
+        for block in self._blocks:
+            block.on_hide()
+
+    def do_reposition(self):
+        for ts in self._captions:
+            ts.do_reposition()

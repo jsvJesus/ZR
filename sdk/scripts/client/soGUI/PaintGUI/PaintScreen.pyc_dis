@@ -1,0 +1,813 @@
+# Embedded file name: ./client/soGUI/PaintGUI/PaintScreen.py
+""" \xd0\xbc\xd0\xbe\xd0\xb4\xd1\x83\xd0\xbb\xd1\x8c \xd1\x81 \xd0\xb8\xd0\xbd\xd1\x82\xd0\xb5\xd1\x80\xd1\x84\xd0\xb5\xd0\xb9\xd1\x81\xd0\xbe\xd0\xbc \xd1\x80\xd0\xb0\xd1\x81\xd0\xba\xd1\x80\xd0\xb0\xd1\x81\xd0\xbe\xd0\xba
+"""
+import BigWorld
+import ItemsUtils
+import BWPersonality
+from Helpers.PyGUI.PyGUIBase import PyGUIBase
+import GUI
+from PaintDummy import PaintDummy
+from PaintInventory import PaintInventory
+from PaintCammo import PaintCammo
+from PaintEmblems import PaintEmblems
+from soGUI.UtilsGUI.PaintButton import PaintButton
+import itertools
+from Items import ItemsCatalog
+import functools
+import utils
+from Localization import lc
+from PaintConfirm import PaintConfirm
+from soGUI.StorehouseGUI.MessageWin import MessageWin
+import Keys
+from itertools import chain
+from collections import defaultdict
+import copy
+from soGUI.UtilsGUI.TextScaler import TextScaler
+from cloth_paint_utils import PaintNotifyCode as PNC
+from utils import PY
+import DyeConstant
+DEBUG = False
+
+class PaintScreen(PyGUIBase):
+    """ \xd1\x8d\xd0\xba\xd1\x80\xd0\xb0\xd0\xbd \xd1\x80\xd0\xb0\xd1\x81\xd0\xba\xd1\x80\xd0\xb0\xd1\x81\xd0\xbe\xd0\xba (\xd1\x81\xd0\xbe\xd0\xb2\xd0\xbe\xd0\xba\xd1\x83\xd0\xbf\xd0\xbd\xd0\xbe\xd1\x81\xd1\x82\xd1\x8c \xd0\xb2\xd1\x81\xd0\xb5\xd1\x85 \xd0\xbe\xd0\xba\xd0\xbe\xd0\xbd)
+            \xd0\xb2\xd1\x8b\xd0\xb7\xd1\x8b\xd0\xb2\xd0\xb0\xd1\x82\xd1\x8c do_reposition \xd1\x80\xd1\x83\xd0\xba\xd0\xb0\xd0\xbc\xd0\xb8
+    """
+    EMBLEM_MODE, MODIFY_MODE = xrange(2)
+    EQUIP_MODE, INVENTORY_MODE = xrange(2)
+
+    def __init__(self):
+        comp = GUI.Window()
+        comp.horizontalPositionMode = comp.verticalPositionMode = 'CLIP'
+        comp.horizontalAnchor = comp.verticalAnchor = 'CENTER'
+        comp.widthMode = comp.heightMode = 'CLIP'
+        comp.height = comp.width = 2.0
+        comp.position = (0, 0, 0.2)
+        comp.visible = False
+        comp.mouseButtonFocus = True
+        comp.crossFocus = True
+        comp.focus = True
+        PyGUIBase.__init__(self, comp)
+        comp.script = self
+        self._consumables = None
+        self._paint_mode = None
+        self.on_apply = lambda color_data, emblem_data, consumables, inventory_consumables: None
+        self.on_hide = lambda : None
+        self.__setup_content()
+        return
+
+    def __setup_content(self):
+        self._texts = []
+        comp = GUI.Simple('soGUI/frame/paint/background.dds')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.materialFX = 'SOLID'
+        comp.position = (0, 0, 1.0)
+        self.component.addChild(comp, 'background')
+        self._background_ratio = float(comp.texture.width) / comp.texture.height
+        comp = GUI.Window()
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.height = comp.width = 2.0
+        comp.position = (0, 0, 0.1)
+        self.component.addChild(comp, 'modify_parent')
+        comp = GUI.Window()
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.height = comp.width = 2.0
+        comp.position = (0, 0, 0.1)
+        self.component.addChild(comp, 'emblems_parent')
+        comp = GUI.Window()
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.height = comp.width = 2.0
+        comp.position = (0, 0, 0.2)
+        self.component.addChild(comp, 'inventory_parent')
+        comp = GUI.Window()
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.height = comp.width = 2.0
+        comp.position = (0, 0, 0.2)
+        self.component.addChild(comp, 'equip_parent')
+        comp = GUI.Simple('')
+        comp.horizontalPositionMode = comp.verticalPositionMode = 'CLIP'
+        comp.horizontalAnchor = comp.verticalAnchor = 'CENTER'
+        comp.widthMode = comp.heightMode = 'CLIP'
+        comp.materialFX = 'BLEND'
+        comp.position = (0, 0, 0.9)
+        comp.width = comp.height = 2
+        self.component.addChild(comp, 'paint_dummy')
+        self._paint_dummy = PaintDummy(comp)
+        comp = GUI.Window()
+        self.component.inventory_parent.addChild(comp, 'paint_inventory')
+        self._paint_inventory = PaintInventory(self.component.inventory_parent, comp, 5)
+        self._paint_inventory.on_item_click = self._on_item_click
+        self._paint_inventory.on_item_selected = self._on_inventory_item_selected
+        comp = GUI.Window()
+        self.component.equip_parent.addChild(comp, 'paint_equipment')
+        self._paint_equipment = PaintInventory(self.component, comp, 5)
+        self._paint_equipment.on_item_click = self._on_item_click
+        self._paint_equipment.on_item_selected = self._on_equip_item_selected
+        comp = GUI.Window('soGUI/frame/paint/black.dds')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.position = (0, 0.08, 0.1)
+        comp.materialFX = 'BLEND'
+        comp.colour = (255,
+         255,
+         255,
+         204.0)
+        self.component.emblems_parent.addChild(comp, 'file_browser')
+        file_browser_comp = comp
+        self._confirmation = PaintConfirm(self.component, self)
+        comp = GUI.Window('soGUI/frame/paint/black.dds')
+        comp.materialFX = 'BLEND'
+        comp.colour = (255, 255, 255, 80)
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.heightMode = 'CLIP'
+        self.component.modify_parent.addChild(comp, 'background')
+        colors_comp = comp
+        cammo_comp = GUI.Window()
+        cammo_comp.materialFX = 'SOLID'
+        self.component.modify_parent.addChild(cammo_comp, 'paint_cammo')
+        self._paint_cammo = PaintCammo(cammo_comp, colors_comp)
+        self._paint_cammo.on_item_painted = self._on_item_painted
+        self._paint_cammo.parent_changed_callback = self._on_colors_size_changed
+        comp = GUI.Window()
+        comp.visible = False
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.width, comp.height = (0.65, 0.12)
+        comp.verticalAnchor = 'BOTTOM'
+        comp.position = (0.015, -0.93, 0.8)
+        self.component.addChild(comp, 'button_apply')
+        self._apply_button = PaintButton(comp, visual_state='soGUI/frame/paint/paintButtonRed.xml')
+        self._apply_button.text = lc('PaintScreen.screen.APPLY')
+        self._apply_button.on_click = self._apply
+        self._texts.append(self._apply_button)
+        btn_height = 0.04
+        btn_right = 0.926
+        btn_width = 0.5
+        comp = GUI.Window()
+        comp.horizontalAnchor, comp.verticalAnchor = ('RIGHT', 'TOP')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.width, comp.height = (0.1, 0.1)
+        comp.position = (0.995, 0.965, 0.5)
+        button = PaintButton(comp, visual_state='soGUI/frame/storehouse/storeImageButton.xml')
+        button.image = 'soGUI/frame/storehouse/exit.png'
+        button.on_click = self.hide
+        self.component.addChild(comp, 'exit_button')
+        self._texts.append(button)
+        comp = GUI.Window()
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.position = (0.87, 0.965, 0.5)
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.width, comp.height = (0.3, 0.1)
+        comp.horizontalAnchor, comp.verticalAnchor = ('RIGHT', 'TOP')
+        self._reset_all_button = PaintButton(comp, visual_state='soGUI/frame/paint/paintButtonRegular32.xml')
+        self._reset_all_button.on_click = self._on_reset_all_click
+        self._reset_all_button.text = lc('PaintScreen.screen.RESET_ALL')
+        self.component.addChild(comp, 'resetall_button')
+        self._texts.append(self._reset_all_button)
+        self._reset_all_button.visible = False
+        comp = GUI.Window()
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.position = (0.87, -0.8, 0.5)
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.width, comp.height = (0.3, 0.1)
+        comp.horizontalAnchor, comp.verticalAnchor = ('RIGHT', 'BOTTOM')
+        self._reset_button = PaintButton(comp, visual_state='soGUI/frame/paint/paintButtonRegular24.xml')
+        self._reset_button.visible = False
+        self._reset_button.on_click = self._on_reset_selected_click
+        self._reset_button.text = lc('PaintScreen.screen.RESET')
+        self.component.addChild(comp, 'reset_button')
+        self._texts.append(self._reset_button)
+        tab_btn_width = 0.345
+        buttons_y = 0.683
+        buttons_height = 0.12
+        comp = GUI.Window()
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.width, comp.height = 0.15, buttons_height
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'CENTER')
+        comp.position = (0.5, buttons_y, 0.8)
+        self.component.addChild(comp, 'button_modify')
+        self._modify_button = PaintButton(comp, visual_state='soGUI/frame/paint/paintButtonRegular28.xml')
+        self._modify_button.text = lc('PaintScreen.screen.COLORATION')
+        self._modify_button.on_click = functools.partial(self._set_paint_mode, PaintScreen.MODIFY_MODE)
+        self._texts.append(self._modify_button)
+        comp = GUI.Window()
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.width, comp.height = 0.15, buttons_height
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'CENTER')
+        comp.position = (0.7, buttons_y, 0.8)
+        self.component.addChild(comp, 'button_emblem')
+        self._emblem_button = PaintButton(comp, visual_state='soGUI/frame/paint/paintButtonRegular28.xml')
+        self._emblem_button.text = lc('PaintScreen.screen.EMBLEMS')
+        self._emblem_button.on_click = functools.partial(self._set_paint_mode, PaintScreen.EMBLEM_MODE)
+        self._texts.append(self._emblem_button)
+        comp = GUI.Window()
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.width, comp.height = tab_btn_width, buttons_height
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'CENTER')
+        comp.position = (-0.5, buttons_y, 0.8)
+        self.component.addChild(comp, 'button_equipment')
+        self._equip_button = PaintButton(comp, visual_state='soGUI/frame/paint/paintButtonRegular28.xml')
+        self._equip_button.text = lc('PaintScreen.screen.EQUIPMENT')
+        self._equip_button.on_click = functools.partial(self._set_cloth_mode, PaintScreen.EQUIP_MODE)
+        self._texts.append(self._equip_button)
+        comp = GUI.Window()
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.width, comp.height = tab_btn_width, buttons_height
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'CENTER')
+        comp.position = (-0.7, buttons_y, 0.8)
+        self.component.addChild(comp, 'button_inventory')
+        self._inventory_button = PaintButton(comp, visual_state='soGUI/frame/paint/paintButtonRegular28.xml')
+        self._inventory_button.text = lc('PaintScreen.screen.INVENTORY')
+        self._inventory_button.on_click = functools.partial(self._set_cloth_mode, PaintScreen.INVENTORY_MODE)
+        self._texts.append(self._inventory_button)
+        comp = GUI.Window('soGUI/frame/paint/blue.dds') if DEBUG else GUI.Window()
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.width, comp.height = btn_width, btn_height
+        comp.horizontalAnchor, comp.verticalAnchor = ('RIGHT', 'BOTTOM')
+        comp.position = (btn_right, -0.524, 0.8)
+        self.component.emblems_parent.addChild(comp, 'button_standard_emblems')
+        standard_button = PaintButton(comp, visual_state='soGUI/frame/paint/paintButtonRegular24.xml')
+        standard_button.text = lc('PaintScreen.screen.STANDARD')
+        self._texts.append(standard_button)
+        comp = GUI.Window('soGUI/frame/paint/blue.dds') if DEBUG else GUI.Window()
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.width, comp.height = btn_width, btn_height
+        comp.horizontalAnchor, comp.verticalAnchor = ('RIGHT', 'BOTTOM')
+        comp.position = (btn_right, -0.587, 0.8)
+        self.component.emblems_parent.addChild(comp, 'button_personal_emblems')
+        personal_button = PaintButton(comp, visual_state='soGUI/frame/paint/paintButtonRegular24.xml')
+        personal_button.text = lc('PaintScreen.screen.LOADED')
+        self._texts.append(personal_button)
+        comp = GUI.Window('soGUI/frame/paint/blue.dds') if DEBUG else GUI.Window()
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.width, comp.height = btn_width, btn_height
+        comp.horizontalAnchor, comp.verticalAnchor = ('RIGHT', 'BOTTOM')
+        comp.position = (btn_right, -0.65, 0.8)
+        self.component.emblems_parent.addChild(comp, 'button_load_emblems')
+        load_emblem_button = PaintButton(comp, visual_state='soGUI/frame/paint/paintButtonRegular24.xml')
+        load_emblem_button.text = lc('PaintScreen.screen.LOAD_EMBLEM')
+        self._texts.append(load_emblem_button)
+        comp = GUI.Window('soGUI/frame/paint/blue.dds') if DEBUG else GUI.Window()
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.width, comp.height = (0.17, 0.09)
+        comp.horizontalAnchor, comp.verticalAnchor = ('RIGHT', 'CENTER')
+        comp.position = (btn_right, -0.29, 0.8)
+        self.component.emblems_parent.addChild(comp, 'button_load_emblems2')
+        emblems_comp = GUI.Window()
+        self.component.emblems_parent.addChild(emblems_comp, 'paint_emblems')
+        self._paint_emblems = PaintEmblems(self.component, emblems_comp, standard_button, personal_button, load_emblem_button, file_browser_comp)
+        self._paint_emblems.on_item_emblemed = self._on_item_emblemed
+        comp = GUI.Window('soGUI/frame/paint/black.dds')
+        comp.colour = (255, 255, 255, 150)
+        comp.materialFX = 'BLEND'
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.width, comp.height = (2, 2)
+        comp.position = (0, 0, 0.05)
+        self._texts.append(MessageWin(comp, MessageWin.PAINT))
+        self.component.addChild(comp, 'messagewin')
+        comp = GUI.Text(lc('PaintScreen.screen.CUR_SELECTED') + ' / ')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.widthMode = 'PIXEL'
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'CENTER')
+        comp.position = (-0.9, 0.9, 0.5)
+        ts = TextScaler(comp, 'RobotoCondensedRegular_32_2')
+        self.component.addChild(comp, 'curselectedtext')
+        self._texts.append(ts)
+        comp = GUI.Text(u'')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.widthMode = 'CLIP'
+        comp.width = 1
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'CENTER')
+        comp.position = (-0.9, 0.9, 0.5)
+        ts = TextScaler(comp, 'RobotoCondensedRegular_28_2')
+        self.component.addChild(comp, 'curselectedtext2')
+        self._texts.append(ts)
+        comp = GUI.Text(u'')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.horizontalAnchor, comp.verticalAnchor = ('RIGHT', 'BOTTOM')
+        comp.position = (1, -1, 0.5)
+        ts = TextScaler(comp, 'RobotoCondensedRegular_18_2')
+        self.component.addChild(comp, 'available_text')
+        self._texts.append(ts)
+        comp = GUI.Text(u'')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.horizontalAnchor, comp.verticalAnchor = ('RIGHT', 'BOTTOM')
+        comp.position = (1, -0.95, 0.5)
+        ts = TextScaler(comp, 'RobotoCondensedRegular_18_2')
+        self.component.addChild(comp, 'needed_text')
+        self._texts.append(ts)
+        comp = GUI.Simple('soGUI/frame/paint/white.dds')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.horizontalAnchor, comp.verticalAnchor = ('RIGHT', 'TOP')
+        comp.position = (0, 0, 0.5)
+        comp.colour = (255, 255, 255, 50)
+        comp.filterType = 'LINEAR'
+        self.component.addChild(comp, 'stripe')
+
+    def _update_consumables(self):
+        self.component.available_text.text = lc('PaintScreen.screen.AVAILABLE_TICKETS').format(self._tickets_count)
+        self.component.available_text.colour = (255, 255, 255, 255) if self._tickets_count else (255, 0, 0, 255)
+        self.component.needed_text.text = lc('PaintScreen.screen.NEEDED_TICKETS').format(self._calculate_price())
+        self._confirmation.set_available(self._tickets_count)
+
+    def _on_reset_selected_click(self):
+        if not self._paint_equipment.selected:
+            selected = self._paint_inventory.selected
+            return selected or None
+        modified = selected.complex_item
+        original = self._find_original_item(modified['complexItemID'])
+        self._make_item_original(original, modified)
+        self._paint_cammo.on_inventoryitem_selected(selected)
+        self._paint_emblems.on_item_selected(selected)
+        self._on_item_painted(modified)
+        self._on_item_emblemed(modified)
+        self._update_consumables()
+
+    def _find_original_item(self, item_id):
+        for item in chain(self._equipped_original_items, self._inventory_original_items):
+            if item['complexItemID'] == item_id:
+                return item
+            for sub_item in item['itemList']:
+                if sub_item['itemID'] == item_id:
+                    return sub_item
+
+        raise ValueError
+
+    def _make_item_original(self, original_item, modify_item):
+        if ItemsUtils.is_sub_item(original_item):
+            modify_item['complexItemParametresKeys'] = PY(original_item['itemParametresKeys'])
+            modify_item['complexItemParametresValues'] = PY(original_item['itemParametresValues'])
+        else:
+            modify_item['complexItemParametresKeys'] = PY(original_item['complexItemParametresKeys'])
+            modify_item['complexItemParametresValues'] = PY(original_item['complexItemParametresValues'])
+
+    def _on_reset_all_click(self):
+        selected = self._paint_equipment.selected or self._paint_inventory.selected
+        painted_items = set(self._paint_inventory.painted_items.keys())
+        painted_items.update(self._paint_equipment.painted_items)
+        painted_items.update(self._paint_inventory.emblemed_items)
+        painted_items.update(self._paint_equipment.emblemed_items)
+        for item_id in painted_items:
+            modified = self.get_item_by_id(item_id)
+            original = self._find_original_item(modified['complexItemID'])
+            self._make_item_original(original, modified)
+            self._on_item_painted(modified)
+            self._on_item_emblemed(modified)
+
+        self._paint_cammo.on_inventoryitem_selected(selected)
+        self._paint_emblems.on_item_selected(selected)
+        self._update_consumables()
+
+    def _on_equip_item_selected(self, paint_item):
+        if paint_item:
+            self._paint_inventory.deselect()
+        self._on_item_selected(paint_item)
+
+    def _on_inventory_item_selected(self, paint_item):
+        if paint_item:
+            self._paint_equipment.deselect()
+        self._on_item_selected(paint_item)
+
+    def _on_item_selected(self, paint_item):
+        self._paint_cammo.on_inventoryitem_selected(paint_item)
+        self._paint_emblems.on_item_selected(paint_item)
+        item_name = u''
+        if paint_item and paint_item.complex_item:
+            item_type = paint_item.complex_item['complexItemType']
+            item_name = ItemsUtils.GetItemName(item_type)
+        self.component.curselectedtext2.text = item_name
+        self._update_reset_button(paint_item and paint_item.complex_item and paint_item.complex_item['complexItemID'])
+        self._update_consumables()
+
+    def show_error(self, event_id):
+        MessageWin.paint_instance.show_single_button(PNC.textMsg(event_id), lc('PaintScreen.screen.OK'))
+
+    def _set_cloth_mode(self, mode):
+        self._paint_emblems.close_browser()
+        if mode == PaintScreen.INVENTORY_MODE:
+            self._inventory_button.enabled = False
+            self._equip_button.enabled = True
+            self.component.equip_parent.visible = False
+            self.component.inventory_parent.visible = True
+        elif mode == PaintScreen.EQUIP_MODE:
+            self._inventory_button.enabled = True
+            self._equip_button.enabled = False
+            self.component.equip_parent.visible = True
+            self.component.inventory_parent.visible = False
+
+    def _set_paint_mode(self, mode):
+        self._paint_mode = mode
+        self._paint_emblems.close_browser()
+        if mode == PaintScreen.MODIFY_MODE:
+            self._modify_button.enabled = False
+            self._emblem_button.enabled = True
+            self.component.modify_parent.visible = True
+            self.component.emblems_parent.visible = False
+        elif mode == PaintScreen.EMBLEM_MODE:
+            self._modify_button.enabled = True
+            self._emblem_button.enabled = False
+            self.component.modify_parent.visible = False
+            self.component.emblems_parent.visible = True
+        self._update_dynamics()
+
+    def _on_item_click(self, active, complex_item):
+        if active:
+            result, undress = self._paint_dummy.put_item_on(complex_item)
+        else:
+            result, undress = self._paint_dummy.put_item_off(complex_item)
+        self._paint_inventory.remove_items(undress)
+        self._paint_equipment.remove_items(undress)
+        return result
+
+    def _update_reset_button(self, item_id):
+        changed = self._paint_inventory.is_item_changed(item_id)
+        if changed is None:
+            changed = self._paint_equipment.is_item_changed(item_id)
+        self._reset_button.visible = bool(changed)
+        return
+
+    def _on_item_painted(self, complex_item):
+        self._paint_inventory.on_item_painted(complex_item)
+        self._paint_equipment.on_item_painted(complex_item)
+        self._paint_dummy.on_item_painted(complex_item)
+        has_changes = self._paint_inventory.has_changes() or self._paint_equipment.has_changes()
+        self._apply_button.visible = has_changes
+        self._reset_all_button.visible = has_changes
+        self._update_reset_button(complex_item['complexItemID'])
+        self._update_consumables()
+
+    def _on_item_emblemed(self, complex_item):
+        self._paint_dummy.on_item_emblemed(complex_item)
+        self._paint_inventory.on_item_emblemed(complex_item)
+        self._paint_equipment.on_item_emblemed(complex_item)
+        has_changes = self._paint_inventory.has_changes() or self._paint_equipment.has_changes()
+        self._apply_button.visible = has_changes
+        self._reset_all_button.visible = has_changes
+        self._update_reset_button(complex_item['complexItemID'])
+        self._update_consumables()
+
+    def consumables_updated(self, consumables, inventory_consumables):
+        self._consumables = (consumables, inventory_consumables)
+        self._paint_cammo.reset(restore=True)
+        self._paint_emblems.set_params(self._tickets_count)
+        self._update_consumables()
+
+    @property
+    def _tickets_count(self):
+        return sum((c['count'] for c in chain(*self._consumables) if c['type_id'] == ItemsCatalog.EVENT_TICKET['TypeID']))
+
+    def show(self, inventory_items, equipped_items, equipped_armor, equipped_cond, equip_modes, personality, consumables, inventory_consumables):
+        self._consumables = (consumables, inventory_consumables)
+        if self.component.visible:
+            return
+        else:
+            try:
+                BigWorld.worldDrawEnabled(False)
+                self._cached_items = set()
+                for item in itertools.chain(inventory_items, equipped_items):
+                    self._cached_items |= set(ItemsCatalog.GetItemParam(item['complexItemType']).get('ModelNames', {}).values())
+
+                if self._cached_items:
+                    self._cached_items = BigWorld.Model(*list(self._cached_items))
+                self._inventory_original_items = inventory_items
+                self._inventory_copy_modify_items = utils.pyFixedToNativePythonType(inventory_items)
+                self._equipped_original_items = equipped_items
+                self._equipped_copy_modify_items = utils.pyFixedToNativePythonType(equipped_items)
+
+                def is_item_cloth(item):
+                    return ItemsCatalog.GetItemClass(item['complexItemType']) != ItemsCatalog.WEAPON
+
+                if self.component.parent is None:
+                    BWPersonality.GUICore.generalLayer.addChild(self.component, 'paint_screen')
+                self._paint_inventory.set_params(self._inventory_copy_modify_items, self._inventory_original_items)
+                self._paint_equipment.set_params(self._equipped_copy_modify_items, self._equipped_original_items, equipped_cond)
+                activate_ids = [ item['complexItemID'] for item in self._equipped_copy_modify_items if is_item_cloth(item) ]
+                self._paint_equipment.activate_ids(activate_ids)
+                self._paint_cammo.reset(restore=False)
+                self._paint_emblems.set_params(self._tickets_count)
+                self._paint_dummy.set_look(equipped_armor, equip_modes, personality, self._inventory_copy_modify_items + self._equipped_copy_modify_items)
+                self._apply_button.component.visible = False
+                self._set_paint_mode(PaintScreen.MODIFY_MODE)
+                self._set_cloth_mode(PaintScreen.EQUIP_MODE)
+                self._paint_equipment.select_any()
+            except:
+                raise
+            else:
+                self.component.visible = True
+
+            self._update_consumables()
+            return
+
+    def _apply(self):
+        if BWPersonality.GUICore.is_itemspendwin_visible():
+            MessageWin.paint_instance.show_single_button(lc('PaintScreen.screen.LOCKED'), lc('PaintScreen.screen.OK'))
+            return
+        painted_items = copy.copy(self._paint_inventory.painted_items)
+        painted_items.update(self._paint_equipment.painted_items)
+        emblemed_items = copy.copy(self._paint_inventory.emblemed_items)
+        emblemed_items.update(self._paint_equipment.emblemed_items)
+
+        def on_cancel():
+            self._confirmation.hide()
+            self._apply_button.component.visible = True
+
+        def on_confirm(tickets, painted_items, emblemed_items):
+            if BWPersonality.GUICore.is_itemspendwin_visible():
+                MessageWin.paint_instance.show_single_button(lc('PaintScreen.screen.LOCKED'), lc('PaintScreen.screen.OK'))
+                return
+            if tickets:
+                consumables = {ItemsCatalog.EVENT_TICKET['TypeID']: tickets}
+            else:
+                consumables = {}
+            has_account_consumalbes = defaultdict(int)
+            has_inventory_consumables = defaultdict(int)
+            for c in self._consumables[0]:
+                has_account_consumalbes[c['type_id']] += c['count']
+
+            for c in self._consumables[1]:
+                has_inventory_consumables[c['type_id']] += c['count']
+
+            take_account_consumables = defaultdict(int)
+            take_inventory_consumables = defaultdict(int)
+            need_more = defaultdict(int)
+            for type_id, count in consumables.items():
+                take_inventory = min(has_inventory_consumables[type_id], count)
+                take_inventory_consumables[type_id] += take_inventory
+                count -= take_inventory
+                if count:
+                    take_account = min(has_account_consumalbes[type_id], count)
+                    take_account_consumables[type_id] += take_account
+                    count -= take_account
+                    if count:
+                        need_more[type_id] += count
+
+            if need_more:
+                self._confirmation.not_enough_resources(need_more)
+                return
+            counsumables = []
+            for type_id, count in take_account_consumables.items():
+                if count:
+                    counsumables.append({'type_id': type_id,
+                     'count': count})
+
+            inventory_consumables = []
+            for type_id, count in take_inventory_consumables.items():
+                if count:
+                    inventory_consumables.append({'type_id': type_id,
+                     'count': count})
+
+            if painted_items or emblemed_items:
+                self.on_apply(painted_items, emblemed_items, counsumables, inventory_consumables)
+            self._confirmation.hide()
+
+        self._confirmation.show(painted_items, emblemed_items, lc('PaintScreen.confirm.CONFIRM_HEADER1'))
+        self._confirmation.on_cancel = on_cancel
+        self._confirmation.on_confirm = on_confirm
+        self._apply_button.component.visible = False
+
+    def _calculate_price(self):
+        tickets = defaultdict(int)
+        painted_items = dict(self._paint_inventory.painted_items)
+        painted_items.update(self._paint_equipment.painted_items)
+        emblemed_items = dict(self._paint_inventory.emblemed_items)
+        emblemed_items.update(self._paint_equipment.emblemed_items)
+        for item_id, item_data in painted_items.items():
+            item_type = self.get_item_by_id(item_id)['complexItemType']
+            camo_id = item_data['camo_id']
+            tickets[item_id] += DyeConstant.get_camo_tickets(item_type, camo_id)
+
+        for item_id, item_data in emblemed_items.items():
+            item_type = self.get_item_by_id(item_id)['complexItemType']
+            tickets[item_id] += DyeConstant.get_emblem_tickets(item_type, item_data)
+
+        return sum(tickets.values())
+
+    def get_item_by_id(self, item_id):
+        return self._paint_inventory.get_item_by_id(item_id) or self._paint_equipment.get_item_by_id(item_id)
+
+    def hide(self):
+        self._paint_inventory.deselect()
+        self._paint_equipment.deselect()
+        if not self.component.visible:
+            return
+        else:
+            self._consumables = None
+            self._cached_items = None
+            self.component.visible = False
+            self._paint_dummy.on_hide()
+            self._paint_emblems.on_hide()
+            self._confirmation.hide()
+            BigWorld.worldDrawEnabled(True)
+            self.on_hide()
+            return
+
+    def do_reposition(self):
+        blocks_height = 0.498
+        screen_width, screen_height = BigWorld.screenSize()
+        screen_ratio = float(screen_width) / screen_height
+        comp = self.component.background
+        if screen_ratio > self._background_ratio:
+            comp.width = 2
+            comp.height = 2 * screen_ratio / self._background_ratio
+        else:
+            comp.height = 2
+            comp.width = 2 * self._background_ratio / screen_ratio
+        unit = screen_height * 0.1
+        space = max(0, screen_ratio - 2) * unit * 3
+
+        def left(value):
+            return value * unit + space
+
+        def right(value):
+            return screen_width - value * unit - space
+
+        paint_inventory_comp = self.component.inventory_parent.paint_inventory
+        comp = paint_inventory_comp
+        comp.verticalPositionMode, comp.horizontalPositionMode = ('CLIP', 'CLIP')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.heightMode = 'CLIP'
+        comp.height = 0.756
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        tile_size = int(float(comp.height) / self._paint_inventory.size[1])
+        comp.height = tile_size * self._paint_inventory.size[1]
+        comp.width = tile_size * self._paint_inventory.size[0]
+        comp.width += unit * 0.5
+        comp.position = (-1, blocks_height, 0.2)
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.widthMode = 'CLIP'
+        self._paint_inventory.do_reposition()
+        block_height = paint_inventory_comp.height
+        block_width = block_height * 1.194
+        left_border = block_height * 0.137
+        space = block_height * 0.007
+        comp = self.component.equip_parent.paint_equipment
+        comp.verticalPositionMode, comp.horizontalPositionMode = paint_inventory_comp.verticalPositionMode, paint_inventory_comp.horizontalPositionMode
+        comp.horizontalAnchor, comp.verticalAnchor = paint_inventory_comp.horizontalAnchor, paint_inventory_comp.verticalAnchor
+        comp.heightMode, comp.widthMode = paint_inventory_comp.heightMode, paint_inventory_comp.widthMode
+        comp.width, comp.height = paint_inventory_comp.width, paint_inventory_comp.height
+        comp.position = paint_inventory_comp.position
+        paint_comp = self.component.modify_parent.paint_cammo
+        paint_comp.verticalPositionMode, paint_comp.horizontalPositionMode = ('CLIP', 'CLIP')
+        paint_comp.horizontalAnchor, paint_comp.verticalAnchor = ('RIGHT', 'TOP')
+        paint_comp.widthMode, paint_comp.heightMode = paint_inventory_comp.widthMode, paint_inventory_comp.heightMode
+        paint_comp.height = paint_inventory_comp.height * 0.8
+        paint_comp.width = paint_inventory_comp.width
+        paint_comp.position = (1, blocks_height, 0.2)
+        paint_comp.verticalPositionMode = 'PIXEL'
+        paint_comp.horizontalPositionMode = 'CLIP'
+        comp = self.component.emblems_parent.paint_emblems
+        comp.verticalPositionMode = paint_comp.verticalPositionMode
+        comp.horizontalPositionMode = paint_comp.horizontalPositionMode
+        comp.horizontalAnchor, comp.verticalAnchor = paint_comp.horizontalAnchor, paint_comp.verticalAnchor
+        comp.widthMode, comp.heightMode = paint_comp.widthMode, paint_comp.heightMode
+        comp.position = paint_comp.position
+        comp.width, comp.height = paint_comp.width, paint_inventory_comp.height
+        comp = self.component.modify_parent.background
+        comp.horizontalPositionMode, comp.verticalPositionMode = paint_comp.horizontalPositionMode, paint_comp.verticalPositionMode
+        comp.position[0] = paint_comp.position[0] - paint_comp.width * 0.994
+        comp.position[1] = paint_comp.position[1] + paint_comp.height * 1.03
+        comp.width, comp.height = paint_inventory_comp.width * 0.885, 0.509
+        comp = self.component.emblems_parent.file_browser
+        comp.widthMode, comp.heightMode = paint_comp.widthMode, 'CLIP'
+        comp.width, comp.height = paint_comp.width * 0.9, 1.25
+        for text in self._texts:
+            text.do_reposition()
+
+        self._paint_dummy.do_reposition()
+        self._paint_equipment.do_reposition()
+        self._paint_emblems.do_reposition()
+        self._confirmation.do_reposition()
+        self._inventory_button.do_reposition()
+        self._paint_cammo.do_reposition()
+        comp = self.component.button_inventory
+        comp.widthMode = 'PIXEL'
+        comp.horizontalPositionMode = 'PIXEL'
+        comp.position[0] = left_border
+        comp.width = (block_width - space) * 0.5
+        comp = self.component.button_equipment
+        comp.widthMode = 'PIXEL'
+        comp.horizontalPositionMode = 'PIXEL'
+        comp.horizontalAnchor = 'RIGHT'
+        comp.position[0] = left_border + block_width
+        comp.width = (block_width - space) * 0.5
+        comp = self.component.button_modify
+        comp.horizontalPositionMode = 'CLIP'
+        comp.position[0] = paint_comp.position[0] - paint_comp.width + paint_inventory_comp.width * 0.005
+        comp.width = paint_inventory_comp.width * 0.446
+        comp = self.component.button_emblem
+        comp.position[0] = paint_comp.position[0] - paint_comp.width + paint_inventory_comp.width * 0.455
+        comp.width = paint_inventory_comp.width * 0.446
+        b_width, b_height = block_width * 0.4, 0.07
+        left_border_2 = screen_width - left_border - block_width
+        comp = self.component.emblems_parent.button_standard_emblems
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'CLIP')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'CLIP')
+        comp.width, comp.height = b_width, b_height
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'BOTTOM')
+        comp.position[0] = left_border_2
+        comp.position[1] = paint_inventory_comp.position[1] + 0.003
+        comp = self.component.emblems_parent.button_personal_emblems
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'CLIP')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'CLIP')
+        comp.width, comp.height = b_width, b_height
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'BOTTOM')
+        comp.position[0] = left_border_2 + b_width + space
+        comp.position[1] = paint_inventory_comp.position[1] + 0.003
+        comp = self.component.emblems_parent.button_load_emblems
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'CLIP')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'CLIP')
+        comp.width, comp.height = block_width * 0.08, b_height
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'BOTTOM')
+        comp.position[0] = left_border_2 + b_width * 2 + space * 2
+        comp.position[1] = paint_inventory_comp.position[1] + 0.003
+        comp = self.component.reset_button
+        comp.position[0] = paint_comp.position[0] - paint_comp.width + paint_inventory_comp.width * 0.89
+        comp.widthMode = 'PIXEL'
+        comp.width = b_width * 0.8
+        comp = self.component.resetall_button
+        comp.widthMode = 'PIXEL'
+        comp.width = b_width * 1.5
+        comp = self.component.curselectedtext
+        comp.horizontalPositionMode = 'PIXEL'
+        comp.position[0] = left_border * 0.5
+        comp = self.component.curselectedtext2
+        comp.horizontalPositionMode = 'PIXEL'
+        comp.position[0] = self.component.curselectedtext.position[0] + self.component.curselectedtext.width
+        comp = self.component.needed_text
+        comp.horizontalPositionMode = 'PIXEL'
+        comp.position[0] = left_border_2 + block_width - space
+        comp = self.component.available_text
+        comp.horizontalPositionMode = 'PIXEL'
+        comp.position[0] = self.component.needed_text.position[0]
+        comp = self.component.stripe
+        comp.position[0] = self.component.reset_button.position[0]
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = block_width * 0.98, block_height * 0.005
+        self.component.reSort()
+
+    def _on_colors_size_changed(self):
+        self._update_dynamics()
+
+    def _update_dynamics(self):
+        if self._paint_mode == PaintScreen.MODIFY_MODE:
+            comp = self.component.modify_parent.background
+            prev_mode = (comp.heightMode, comp.verticalPositionMode)
+            comp.heightMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+            bottom_pos = comp.position[1] - comp.height
+            comp.heightMode, comp.verticalPositionMode = prev_mode
+        elif self._paint_mode == PaintScreen.EMBLEM_MODE:
+            bottom_pos = -0.25
+        else:
+            return
+        comp = self.component.stripe
+        comp.position[1] = bottom_pos - 0.022
+        comp = self.component.needed_text
+        comp.verticalPositionMode = 'CLIP'
+        comp.verticalAnchor = 'TOP'
+        comp.position[1] = self.component.stripe.position[1] - 0.01
+        comp = self.component.available_text
+        comp.verticalPositionMode = 'CLIP'
+        comp.verticalAnchor = 'TOP'
+        comp.position[1] = self.component.needed_text.position[1] - 0.06
+        comp = self._reset_button.component
+        comp.verticalPositionMode = 'CLIP'
+        comp.verticalAnchor = 'TOP'
+        comp.position[1] = self.component.available_text.position[1] - 0.1
+
+    def got_emblems_ids(self, emblems_ids, is_personal):
+        self._paint_emblems.set_items(emblems_ids, is_personal)
+
+    def doReposition(self):
+        self.do_reposition()
+
+    @property
+    def visible(self):
+        return self.component.visible
+
+    def handleMouseButtonEvent(self, comp, event):
+        return True
+
+    def handleKeyEvent(self, event):
+        if not self.component.visible:
+            return False
+        key, down = event.key, event.isKeyDown()
+        if not down:
+            return False
+        if key in (Keys.KEY_LEFTMOUSE, Keys.KEY_RIGHTMOUSE):
+            return False
+        if key == Keys.KEY_ESCAPE:
+            if self._confirmation.visible:
+                self._confirmation.handle_esc()
+                return True
+            self.hide()
+        return True

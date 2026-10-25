@@ -1,0 +1,260 @@
+# Embedded file name: ./client/MushroomGrowth.py
+import FX
+import json
+import SFXer
+import ResMgr
+import BigWorld
+import traceback
+from Math import Vector3, Matrix
+from functools import partial
+import sounds_manager as sounds
+from PopAttacher import PopAttacher, CONFIG
+from BurnInterface import BurnInterface
+from Config.Damage import BODY_ZONES
+from Localization import lc
+TINTS = {0: 'Default',
+ 1: 'fresh'}
+
+class MushroomGrowth(BigWorld.Entity, PopAttacher):
+    default_name = 'mushroom_parazit'
+    sound_name = 'mob/mushroom_parazit/'
+    sfx_die = 'sfx/Mob/mushroom_parazit/mushroom_parazit_die.xml'
+    sfx_spit = 'sfx/Mob/mushroom_parazit/mushroom_parazit_spore.xml'
+
+    def __init__(self):
+        BigWorld.Entity.__init__(self)
+        PopAttacher.__init__(self)
+        self.filter = BigWorld.NoneFilter()
+        self.name = lc('TriggerNames.mushrom')
+        self._model_path = 'characters/creatures/mushroom_parazit/mushroom_parazit.model'
+        self.model = None
+        self.sfx_model = None
+        self.skeletonCollider = None
+        self.canBeHurtByBullets = False
+        self.__last_damage_anim = 0
+        self.effect = None
+        self.colliderNames = {}
+        self.collider_boxes = {}
+        self.additional_models = {}
+        self.body_zones = {}
+        self.__anim_list = []
+        self.sound = None
+        return
+
+    def prerequisites(self):
+        if self._model_path:
+            return [self._model_path]
+        return []
+
+    def can_take_cloud_damage(self, collider_name):
+        return True
+
+    def onEnterWorld(self, prereqs):
+        if self._model_path:
+            scale = self.scale
+            self.model = prereqs[self._model_path]
+            self.model.isObstacle = True
+            self.model.visible = True
+            self.model.scale = (scale, scale, scale)
+            self.model.newScaleTest = (scale, scale, scale)
+            self.model.position = self.position
+            self.model.isCalcBoundBoxFromNodes = 1
+            self.model.cue('ExplosionSFX', partial(self.on_cue_active, self.sfx_die))
+            self.model.cue('0SpitSFX', partial(self.on_cue_active, self.sfx_spit))
+            try:
+                tint_name = TINTS[self.tint]
+                setattr(self.model, 'parazite_skinned', tint_name)
+            except:
+                print '[ERROR] MushroomGrowth._set_tint', ['parazite_skinned', tint_name]
+
+        self.add_collider()
+        PopAttacher.onEnterWorld(self, prereqs)
+        self.update_anim()
+
+    def recompose(self):
+        for node_name in self.pop_additional_models:
+            model = self.pop_additional_models[node_name]
+            self.model.node(node_name).detach(model)
+            if self.collider_boxes.has_key(node_name):
+                box = self.collider_boxes[node_name]
+                self.model.node(node_name).detach(box)
+                del self.collider_boxes[node_name]
+
+        self.pop_body_zones = {}
+        self.pop_additional_models = {}
+        BigWorld.callback(0.3, partial(self.load_pop_hit_boxes, True))
+
+    def get_model_path(self):
+        return self._model_path
+
+    def override_client_damage_calculation(self, *args, **kargs):
+        return False
+
+    def on_damaged(self, is_weakness):
+        if self.dead:
+            return
+        if not self.model:
+            return
+        if BigWorld.time() - self.__last_damage_anim < 1:
+            return
+        self.__last_damage_anim = BigWorld.time()
+        if is_weakness:
+            self.model.action(self.default_name + '_pain')()
+            sounds.playSound(self.sound_name + 'pain', self.model)
+
+    def remove_pop_by_anim(self, anim_name):
+        if not anim_name:
+            return
+        if anim_name in self.__anim_list:
+            self.__anim_list.remove(anim_name)
+        self.model.action(anim_name)(0, self.model.action(anim_name + '_loop').stop, 0, 150, 0, 30)
+        sounds.playSound(self.sound_name + 'grow', self.model)
+
+    def add_pop_by_anim(self, anim_name):
+        if not anim_name:
+            return
+        if not self.activated:
+            self.__anim_list.append(anim_name)
+            return
+        self.model.action(anim_name)().action(anim_name + '_loop')()
+        sounds.playSound(self.sound_name + 'grow', self.model)
+
+    def set_activated(self, old_value):
+        if self.activated:
+            for anim_name in self.__anim_list:
+                self.add_pop_by_anim(anim_name)
+
+            self.__anim_list = []
+        self.update_anim()
+
+    def set_dead(self, old_value):
+        if self.dead:
+            self.model.action(self.default_name + '_die')().action(self.default_name + '_dead')()
+            self.play_sound('death')
+
+    def update_anim(self):
+        if self.dead:
+            self.model.action(self.default_name + '_dead')()
+            self.play_sound('death')
+            return
+        else:
+            if self.activated:
+                func = partial(self.play_sound, 'live')
+                self.model.action(self.default_name + '_open')(0, func).action(self.default_name + '_live')()
+                self.play_sound('open')
+            else:
+                self.model.action(self.default_name + '_open')(0, None, 0, 100, 0, 30).action(self.default_name + '_sleep')()
+                self.play_sound('sleep')
+            return
+
+    def play_sound(self, postfix):
+        if self.sound:
+            self.sound.stop()
+            self.sound = None
+        self.sound = sounds.playSound(self.sound_name + postfix, self.model)
+        return
+
+    def stop_all_animations(self):
+        for i in ['die',
+         'dead',
+         'open',
+         'live',
+         'sleep']:
+            self.model.action(self.default_name + '_' + i).stop()
+
+    def on_cue_active(self, path):
+        FX.bufferedOneShotEffect(path, self.model)
+
+    def bleedFromShoot(self, pos, blood_orientation, collider_name, ammo_type, damager_id):
+        return
+        if self.dead:
+            return
+        if not self.activated:
+            return
+        model_path = self.get_model_path()
+        if collider_name not in CONFIG[model_path]['nodes']:
+            return
+        blood_sfx = CONFIG[model_path].get('damage_sfx')
+        if not blood_sfx:
+            return
+        SFXer.BloodBodyHit(self, pos, blood_orientation, blood_sfx)
+
+    def on_cloud_contact(self, collider_name, hit_pos, direction):
+        if self.dead:
+            return
+        if not self.activated:
+            return
+        blood_sfx_id = 'sfx/hits/hit_eggs_yellow.xml'
+        SFXer.BloodBodyHit(self, hit_pos, direction, blood_sfx_id)
+
+    def onLeaveWorld(self):
+        self.clearColliders()
+        self.model = None
+        return
+
+    def get_effect_hips_name(self):
+        return self.burn_hips_name or 'root'
+
+    def client_destroy(self):
+        self.play_sfx()
+        self.model.visible = False
+        self.model.isObstacle = False
+        self.targetCaps = []
+
+    def __createBoxAttachment(self, box_name, min_bounds, max_bounds, transform):
+        box = BigWorld.BoxAttachment()
+        box.name = box_name
+        box.minBounds = min_bounds
+        box.maxBounds = max_bounds
+        if transform:
+            box.localTransform = transform
+        return box
+
+    def attach_collider_box(self, box_name, node_name, body_zone, min_bounds, max_bounds, transform):
+        if box_name == 'None':
+            box_name = node_name
+            print 'MushroomGrowth (ERROR): empty box name', node_name, body_zone, self
+            traceback.print_stack()
+        box = self.__createBoxAttachment(box_name, min_bounds, max_bounds, transform)
+        node = self.model.node(node_name)
+        node.attach(box)
+        self.skeletonCollider.addCollider(box)
+        self.colliderNames[box_name] = body_zone
+        self.collider_boxes[node_name] = box
+
+    def load_other_body_zones(self, dataSection):
+        for entry in dataSection.values():
+            nodeName = entry['nodeName'].asString
+            if self.colliderNames.has_key(nodeName):
+                continue
+            minBounds = entry['minBounds'].asVector3
+            maxBounds = entry['maxBounds'].asVector3
+            transform = entry['transform'].asMatrix if entry.has_key('transform') else None
+            body_zone = entry['body_zone'].asMatrix if entry.has_key('body_zone') else BODY_ZONES.TORSO
+            if transform:
+                transform.translation = transform.translation
+            self.attach_collider_box(nodeName, nodeName, body_zone, minBounds, maxBounds, transform)
+
+        return
+
+    def add_collider(self):
+        self.canBeHurtByBullets = True
+        self.canTakeDamage = True
+        self.respawned_recently = False
+        self.skeletonCollider = BigWorld.SkeletonCollider()
+
+    def clearColliders(self):
+        if self.model:
+            for node_name in self.colliderNames.keys():
+                box = self.collider_boxes.get(node_name)
+                if not box:
+                    continue
+                self.model.node(node_name).detach(box)
+
+        self.collider_boxes = {}
+        self.colliderNames = {}
+        self.body_zones = {}
+        if getattr(self, 'skeletonCollider', None):
+            self.skeletonCollider.clearColliders()
+            self.skeletonCollider = None
+        return

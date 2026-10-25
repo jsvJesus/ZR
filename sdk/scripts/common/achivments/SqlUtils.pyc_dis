@@ -1,0 +1,139 @@
+# Embedded file name: ./common/achivments/SqlUtils.py
+import BigWorld
+import traceback
+from utils_bw import execute_db_command
+_db_name = 'db_stalker_data_archive.achivs'
+_standard_types = {'int(11)': 'INTEGER',
+ 'bigint(20)': 'BIGINT'}
+
+def initialize_validation(columns):
+
+    def on_describe(description):
+        current_keys = set()
+        alter_types = {}
+        for col_desc in description:
+            col_name, col_type = col_desc[0], col_desc[1]
+            if col_name == 'db_id':
+                continue
+            col_type = _standard_types[col_type]
+            current_keys.add(col_name)
+            if col_name in columns:
+                need_type = columns[col_name].get('type', 'INTEGER')
+                if need_type != col_type:
+                    alter_types[col_name] = need_type
+
+        column_keys = set(columns)
+        columns_to_remove = current_keys - column_keys
+        columns_to_add = column_keys - current_keys
+        if columns_to_remove or columns_to_add:
+            request = 'ALTER TABLE {0} '.format(_db_name)
+            for col_name in columns_to_remove:
+                request += 'DROP COLUMN {0},'.format(col_name)
+
+            for col_name in columns_to_add:
+                col_type = columns[col_name].get('type', 'INTEGER')
+                request += 'ADD COLUMN {0} {1} NOT NULL DEFAULT 0,'.format(col_name, col_type)
+
+            for col_name, col_type in alter_types.iteritems():
+                request += 'MODIFY {0} {1},'.format(col_name, col_type)
+
+            request = request[:-1] + ';'
+            _run_request_no_callback(request)
+
+    def on_created():
+        request = 'DESCRIBE {0}'.format(_db_name)
+        _run_request_result_callback(request, on_describe)
+
+    request = 'CREATE TABLE IF NOT EXISTS {0} (db_id BIGINT NOT NULL PRIMARY KEY)'.format(_db_name)
+    _run_request_simple_callback(request, on_created)
+
+
+def set_value(db_id, col_name, value):
+    sql_text = 'INSERT INTO {db_name} ({db_id_alias}, {col_name}) VALUES ({db_id_value}, {value}) ON DUPLICATE KEY UPDATE {col_name}={value}'
+    request = sql_text.format(db_name=_db_name, db_id_alias='db_id', col_name=col_name, db_id_value=db_id, value=value)
+    _run_request_no_callback(request)
+
+
+def increment_and_get_value(db_id, col_name, callback, incremenation = 1):
+
+    def on_increment():
+        request = 'SELECT {0} FROM {1} WHERE db_id={2}'.format(col_name, _db_name, db_id)
+        _run_request_int_callback(request, callback)
+
+    sql_text = 'INSERT INTO {db_name} ({db_id_alias}, {col_name}) VALUES ({db_id_value}, {incremenation}) ON DUPLICATE KEY UPDATE {col_name}={col_name}+{incremenation}'
+    request = sql_text.format(db_name=_db_name, db_id_alias='db_id', col_name=col_name, db_id_value=db_id, incremenation=incremenation)
+    _run_request_simple_callback(request, on_increment)
+
+
+def mark_bit_and_get_value(db_id, col_name, callback, index):
+
+    def on_mask():
+        request = 'SELECT {0} FROM {1} WHERE db_id={2}'.format(col_name, _db_name, db_id)
+        _run_request_int_callback(request, callback)
+
+    mask = 1 << index
+    sql_text = 'INSERT INTO {db_name} ({db_id_alias}, {col_name}) VALUES ({db_id_value}, {mask}) ON DUPLICATE KEY UPDATE {col_name}={col_name}|{mask}'
+    request = sql_text.format(db_name=_db_name, db_id_alias='db_id', col_name=col_name, db_id_value=db_id, mask=mask)
+    _run_request_simple_callback(request, on_mask)
+
+
+def wipe(db_id):
+    request = 'DELETE FROM {0} WHERE db_id={1}'.format(_db_name, db_id)
+    _run_request_no_callback(request)
+
+
+def request_ach_value2(db_id, col_name, callback):
+    request = 'SELECT {0} FROM {1} WHERE db_id={2}'.format(col_name, _db_name, db_id)
+    _run_request_int_callback(request, callback)
+
+
+def _run_request_simple_callback(request, callback):
+
+    def on_result(result, rows_num, error):
+        if error:
+            print repr(request)
+            raise RuntimeError(error)
+        callback()
+
+    BigWorld.executeRawDatabaseCommand(request, on_result)
+
+
+def _run_request_no_callback(request):
+
+    def on_result(result, rows_num, error):
+        if error:
+            raise RuntimeError(error)
+
+    BigWorld.executeRawDatabaseCommand(request, on_result)
+
+
+def _run_request_result_callback(request, callback):
+
+    def on_result(result, rows_num, error):
+        if error:
+            raise RuntimeError(error)
+        callback(result)
+
+    BigWorld.executeRawDatabaseCommand(request, on_result)
+
+
+def _run_request_int_callback(request, callback):
+
+    def on_result(result, rows_num, error):
+        if error:
+            print 'ERROR request:'
+            print request
+            raise RuntimeError(error)
+        if not result:
+            callback(0)
+            return
+        try:
+            callback(int(result[0][0]))
+        except Exception as e:
+            print repr(result)
+            print request
+            traceback.print_exc()
+            traceback.print_stack()
+            raise e
+
+    BigWorld.executeRawDatabaseCommand(request, on_result)

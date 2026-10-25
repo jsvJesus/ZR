@@ -1,0 +1,97 @@
+# Embedded file name: ./client/StoriesEntity.py
+import json
+import ResMgr
+import BigWorld
+import Constants
+from Localization import lc
+from Helpers.Caps import CAP_INTERACT
+from client_utils import readable_space_pos
+section = ResMgr.openSection('scripts/common/EnumProps/StoriesEntity.json')
+CONFIG = json.loads(section.asBinary)['model_index']['values']
+
+class StoriesEntity(BigWorld.Entity):
+
+    def __init__(self):
+        BigWorld.Entity.__init__(self)
+        self._model_path = next((model for index, model in CONFIG if index == self.model_index), None)
+        self.filter = BigWorld.NoneFilter()
+        self.model = None
+        self.callback_id = None
+        self.targetCaps = []
+        self.name = lc('Stories.name.id_{0}'.format(self.stories_id))
+        self.parent = None
+        return
+
+    def __repr__(self):
+        if self.isDestroyed:
+            return 'StoriesEntity[%s]Destroyed' % self.id
+        return 'StoriesEntity[%s] at %s' % (self.id, readable_space_pos(self))
+
+    def set_active(self, value):
+        self.active = value
+        self.change_caps()
+        if not self.model:
+            return
+        self.model.isObstacle = self.active
+
+    def change_caps(self):
+        self.targetCaps = [CAP_INTERACT] if self.active else []
+
+    def _can_interact(self, player):
+        if not player:
+            return False
+        return bool(not player.has_story(self.stories_id) and player.can_use(self.stories_id))
+
+    def interact(self, player):
+        if not player:
+            return
+        player.use_story(self.stories_id)
+
+        def callback():
+            self.set_active(self._can_interact(player))
+
+        BigWorld.callback(1, callback)
+
+    def prerequisites(self):
+        if self._model_path:
+            return [self._model_path]
+        return []
+
+    def onEnterWorld(self, prereqs):
+        if not self._model_path:
+            return
+        scale = self.scale
+        self.model = prereqs[self._model_path]
+        self.model.scale = (scale, scale, scale)
+        self.model.newScaleTest = (scale, scale, scale)
+        p = BigWorld.player()
+        if not p:
+            return
+        self.set_active(self._can_interact(p))
+
+    def setObstacle(self, value):
+        self.isObstacle = value
+        if self.model:
+            self.model.isObstacle = value
+
+    def onLeaveWorld(self):
+        self.model = None
+        return
+
+    def get_interaction_dist(self):
+        p = BigWorld.player()
+        if not p:
+            return
+        self.set_active(self._can_interact(p))
+        if not self.active:
+            return 0
+        return Constants.INTERACTION_DISTANCE ** 2
+
+    def get_hightlight(self, distance):
+        if not self.targetCaps or distance > 15:
+            return None
+        else:
+            return True
+
+    def start_destroy(self):
+        BigWorld.callback(0, lambda : BigWorld.destroyEntity(self.id))

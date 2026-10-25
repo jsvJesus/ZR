@@ -1,0 +1,91 @@
+# Embedded file name: ./client/maputils/party_model.py
+from utils import Listenable
+import BigWorld
+
+class EventType:
+    OnMemberAdded, OnMemberRemoved, OnDie, OnRevive = ((r, 'partymodel') for r in range(4))
+
+
+class PartyModel(Listenable):
+
+    def __init__(self):
+        Listenable.__init__(self)
+        self._party_members = set()
+        self._radio_carriers = set()
+        self._tracked_members = set()
+
+    def _update(self):
+        radio_working = BigWorld.player().is_radio_working()
+
+        def need_track(member_id):
+            if not radio_working:
+                return False
+            if member_id not in self._party_members:
+                return False
+            member = BigWorld.entities.get(member_id)
+            if not member or member.isDestroyed or not member.inWorld:
+                return False
+            if member_id not in self._radio_carriers:
+                return False
+            return True
+
+        for party_member_id in self._party_members:
+            if party_member_id in self._tracked_members:
+                continue
+            if need_track(party_member_id):
+                self._tracked_members.add(party_member_id)
+                data = {'member_id': party_member_id}
+                self.notify_listeners(EventType.OnMemberAdded, data)
+
+        for track_member_id in list(self._tracked_members):
+            if not need_track(track_member_id):
+                self._tracked_members.discard(track_member_id)
+                data = {'member_id': track_member_id}
+                self.notify_listeners(EventType.OnMemberRemoved, data)
+
+    def destroy_party(self):
+        self._party_members.clear()
+        self._radio_carriers.clear()
+        self._update()
+
+    def create_party(self, members_ids):
+        self._party_members = set(members_ids)
+        self._radio_carriers.clear()
+        self._update()
+
+    def add_member(self, member_id):
+        self._party_members.add(member_id)
+        self._update()
+
+    def remove_member(self, member_id):
+        self._party_members.discard(member_id)
+        self._radio_carriers.discard(member_id)
+        self._update()
+
+    def on_avatar_death(self, avatar_id):
+        if avatar_id in self._party_members:
+            data = {'member_id': avatar_id}
+            self.notify_listeners(EventType.OnDie, data)
+
+    def on_avatar_revive(self, avatar_id):
+        if avatar_id in self._party_members:
+            data = {'member_id': avatar_id}
+            self.notify_listeners(EventType.OnRevive, data)
+
+    def on_radio_state_changed(self, member_id, is_working):
+        if is_working:
+            self._radio_carriers.add(member_id)
+        else:
+            self._radio_carriers.discard(member_id)
+        self._update()
+
+    def on_radio_switch(self):
+        self._update()
+
+    def on_avatar_enter_world(self, avatar_id):
+        if avatar_id in self._party_members:
+            self._update()
+
+    def on_avatar_leave_world(self, avatar_id):
+        if avatar_id in self._party_members:
+            BigWorld.callback(0, self._update)

@@ -1,0 +1,460 @@
+# Embedded file name: ./client/soGUI/compass/compass.py
+from math_bw import clamp, move_towards_angle_smooth_damp, angle_dist2
+import colorCodes as cc
+from Math import Vector3
+from Localization import lc
+import BWPersonality
+from math import pi
+from Math import Matrix
+import BigWorld
+import GUI
+from utils import Tickable
+from Helpers.PyGUI import Utils
+from Helpers.PyGUI.PyGUIBase import DragWin
+from soGUI.GUIPositions import GUIPositions
+from Localization import get_lang_short
+from maputils.MarksData import MarksData
+import QuestDispatcher as qd
+from quests_tracker.quests_tracker import EventType as QTrackerET
+from Helpers.BWCoroutine import BWMemberCoroutine, BWWaitForPeriod
+from random import random
+
+class Mark(object):
+
+    def __init__(self, parent_comp, txt_comp, img_path):
+        comp = GUI.Window()
+        comp.materialFX = 'BLEND_MASKABLE'
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('CENTER', 'BOTTOM')
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.height = 40
+        comp.isClip = False
+        self.component = comp
+        parent_comp.addChild(self.component)
+        self.component.position = (0, txt_comp.position[1] - txt_comp.height, 0.5)
+        comp = GUI.Window(img_path)
+        comp.materialFX = 'BLEND_MASKABLE'
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('CENTER', 'BOTTOM')
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.width, comp.height = comp.texture.width, comp.texture.height
+        comp.position = (0, -1, 1.0)
+        self.component.addChild(comp, 'img')
+        comp = GUI.Text(u'', 'RobotoCondensedShadow_16.font')
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.ha, comp.va = ('CENTER', 'TOP')
+        comp.position = (0, 1, 0.5)
+        comp.materialFX = 'BLEND_MASKABLE'
+        comp.visible = False
+        self.component.addChild(comp, 'txt')
+        self.component.width = self.component.img.width
+        self._parent_width = parent_comp.width
+        self._txt_width = txt_comp.width
+        self.reset()
+
+    @property
+    def radius(self):
+        return self._radius
+
+    @radius.setter
+    def radius(self, value):
+        if self._radius == value:
+            return
+        self._radius = value
+        self._dist_dirty = True
+
+    @property
+    def position(self):
+        return self._position and Vector3(self._position)
+
+    @position.setter
+    def position(self, value):
+        if value:
+            value = Vector3(value)
+            return self._position == value and None
+        self._position = value
+        self._place_dirty, self._dist_dirty = True, True
+
+    @property
+    def ratio(self):
+        return self._ratio
+
+    @ratio.setter
+    def ratio(self, value):
+        if self._ratio == value:
+            return
+        self._ratio = value
+        self._place_dirty = True
+
+    @property
+    def player_pos(self):
+        return Vector3(self._player_pos)
+
+    @player_pos.setter
+    def player_pos(self, value):
+        if value:
+            value = Vector3(value)
+            return self._player_pos == value and None
+        self._player_pos = value
+        self._place_dirty, self._dist_dirty = True, True
+
+    def _update_distance(self):
+        if not self.position or not self.player_pos:
+            self.component.txt.visible = False
+            return
+        else:
+            self.component.txt.visible = True
+            potential_dist = self.position.flatDistTo(self.player_pos)
+            self._inside = False
+            if self.radius:
+                potential_dist -= self.radius
+                if potential_dist < 0:
+                    potential_dist = None
+                    self._inside = True
+            if potential_dist is not None:
+                potential_dist = int(round(potential_dist))
+            if potential_dist != self._dist:
+                self._dist = potential_dist
+                if self._dist is None:
+                    self.component.txt.text = u''
+                    self.component.img.visible = False
+                else:
+                    self.component.txt.text = unicode(self._dist) + u' ' + lc('GUI.meters')
+                    self.component.img.visible = True
+                    self.component.position[2] = clamp(potential_dist / 10000.0, 0.001, 0.999)
+            return
+
+    def _update_placement(self):
+        if self.ratio is None or self.position is None:
+            return
+        else:
+            direction = self.position - BigWorld.player().position
+            target_ratio = direction.yaw / (2 * pi)
+            pos_x = target_ratio - self.ratio
+            if pos_x > 0.5:
+                pos_x -= 1
+            if pos_x < -0.5:
+                pos_x += 1
+            pos_x *= self._txt_width
+            pos_x = pos_x + self._parent_width * 0.5
+            self.component.position[0] = pos_x
+            return
+
+    def reset(self):
+        self._dist_dirty = True
+        self._place_dirty = True
+        self._radius = None
+        self._position = None
+        self.component.position[2] = 1.0
+        self._player_pos = None
+        self._ratio = None
+        self._dist = None
+        self._inside = False
+        self.component.txt.visible = False
+        self.component.img.visible = False
+        return
+
+    def on_tick(self):
+        if self._place_dirty:
+            self._place_dirty = False
+            self._update_placement()
+        if self._dist_dirty:
+            self._dist_dirty = False
+            self._update_distance()
+
+
+class TargetMark(Mark):
+
+    def __init__(self, parent_comp, txt_comp):
+        Mark.__init__(self, parent_comp, txt_comp, 'soGUI/frame/compass/goal.dds')
+
+
+class QuestMark(Mark):
+
+    def __init__(self, parent_comp, txt_comp):
+        Mark.__init__(self, parent_comp, txt_comp, 'soGUI/frame/compass/qmark.dds')
+
+    def set_color(self, color):
+        self.component.img.colour = color
+
+
+class CompassUi(DragWin, GUIPositions, Tickable):
+
+    def __init__(self):
+        Tickable.__init__(self)
+        comp = GUI.MaskableWindow('soGUI/frame/compass/mask_compass.dds')
+        self._height = (96, 128)
+        comp.ha, comp.va = ('CENTER', 'TOP')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = 450, self._height[0]
+        comp.materialFX = 'SOLID'
+        comp.position = self._get_default_position()
+        comp.visible = False
+        DragWin.__init__(self, comp)
+        GUIPositions.__init__(self)
+        comp = GUI.Window('soGUI/frame/compass/pointer.dds')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('CENTER', 'BOTTOM')
+        comp.hpm, comp.vpm = ('CLIP', 'PIXEL')
+        comp.width, comp.height = comp.texture.width, comp.texture.height
+        comp.position = (0, 96, 0.5)
+        self.component.addChild(comp, 'pointer')
+        if get_lang_short() == 'RU':
+            comp = GUI.Window('soGUI/frame/compass/ru_compass.dds')
+        else:
+            comp = GUI.Window('soGUI/frame/compass/en_compass.dds')
+        comp.ha, comp.va = ('CENTER', 'BOTTOM')
+        comp.hpm, comp.vpm = ('CLIP', 'PIXEL')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = comp.texture.width, comp.texture.height
+        comp.overrideTextureAddress = 'WRAP'
+        comp.materialFX = 'BLEND_MASKABLE'
+        comp.position = (0, self.component.pointer.position[1] - self.component.pointer.height, 0.9)
+        self.component.addChild(comp, 'txtcomp')
+        comp = GUI.Window()
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.ha, comp.va = ('CENTER', 'BOTTOM')
+        comp.wm, comp.hm = ('CLIP', 'PIXEL')
+        comp.width, comp.height = (2, 30)
+        comp.position = (0, -1, 0.5)
+        comp.materialFX = 'SOLID'
+        comp.visible = False
+        self.component.addChild(comp, 'inside')
+        comp = GUI.Window('soGUI/frame/compass/qe_area.dds')
+        comp.materialFX = 'BLEND'
+        comp.ha, comp.va = ('CENTER', 'TOP')
+        comp.hpm, comp.vpm = ('CLIP', 'PIXEL')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = comp.texture.width, comp.texture.height
+        comp.position = (0, 0, 0.5)
+        self.component.inside.addChild(comp)
+        comp = GUI.Text(lc('GUI.compass_qe'), 'RobotoCondensedShadow_16.font')
+        comp.ha, comp.va = ('CENTER', 'TOP')
+        comp.hpm, comp.vpm = ('CLIP', 'PIXEL')
+        comp.position = (0, 8, 0.5)
+        comp.colour = cc.active_rgba
+        self.component.inside.addChild(comp)
+        self._tmark = TargetMark(self.component, self.component.txtcomp)
+        self._active_qmarks = {}
+        self._inactive_qmarks = []
+        self._space_name = None
+        self._inside_block_visible = False
+        self._broken_coroutine = None
+        self._broken_ratio = 0
+        self._broken_velocity = 0
+        return
+
+    def show(self):
+        self._marks_data.add_listener(self._on_marks_data_event)
+        self._quests_tracker.add_listener(self._on_qtracker_event)
+        self.component.visible = True
+        self.space_name = BWPersonality.game.get_space_name_advanced(BigWorld.player().spaceID)
+        self.do_reposition()
+        GUIPositions.show(self)
+        self.start_tick()
+
+    @property
+    def space_name(self):
+        return self._space_name
+
+    @space_name.setter
+    def space_name(self, value):
+        if value == self._space_name:
+            return
+        self._space_name = value
+        self._recreate_quest_marks()
+
+    def on_space_changed(self, space_name):
+        if self.component.visible:
+            self.space_name = space_name
+
+    def _on_qtracker_event(self, event_type, data):
+        if event_type == QTrackerET.OnStartTrack:
+            quest_marks = self._marks_data.quest_marks.get(self.space_name) or []
+            for q_id in quest_marks:
+                parent_id = qd.get_parent_by_id(q_id)
+                if data['quest_id'] == parent_id:
+                    self._update_quest_mark(q_id, True)
+
+        elif event_type == QTrackerET.OnStopTrack:
+            for q_id in self._active_qmarks.keys():
+                parent_id = qd.get_parent_by_id(q_id)
+                if data['quest_id'] == parent_id:
+                    self._update_quest_mark(q_id, False)
+
+    def _on_marks_data_event(self, event_type, data):
+        if event_type == MarksData.EVENT_COMMON_LOADED:
+            if data['spacename'] == self.space_name:
+                self._recreate_quest_marks()
+        elif event_type == MarksData.EVENT_QUESTMARK_CHANGED:
+            if data['spacename'] == self.space_name:
+                parent_id = qd.get_parent_by_id(data['quest_id'])
+                is_active = data['is_active'] and self._quests_tracker.is_tracking(parent_id)
+                self._update_quest_mark(data['quest_id'], is_active)
+
+    def _get_qmark(self, q_id, mark_data):
+        if not self._inactive_qmarks:
+            self._inactive_qmarks.append(QuestMark(self.component, self.component.txtcomp))
+        qmark = self._inactive_qmarks.pop()
+        qmark.component.visible = True
+        qmark.position = mark_data['pos']
+        qmark.radius = mark_data['radius']
+        qmark.set_color(qd.get_priority_color(q_id))
+        return qmark
+
+    def _pool_mark(self, qmark):
+        self._inactive_qmarks.append(qmark)
+        qmark.reset()
+        qmark.component.visible = False
+
+    def _recreate_quest_marks(self):
+        for qmarks in self._active_qmarks.itervalues():
+            for qmark in qmarks:
+                self._pool_mark(qmark)
+
+        self._active_qmarks.clear()
+        quest_marks = self._marks_data.quest_marks.get(self.space_name) or []
+        for q_id in quest_marks:
+            parent_id = qd.get_parent_by_id(q_id)
+            if not self._quests_tracker.is_tracking(parent_id):
+                continue
+            self._active_qmarks[q_id] = []
+            for mark_data in qd.get_marks(q_id):
+                if self.space_name != mark_data['space_name']:
+                    continue
+                mark = self._get_qmark(q_id, mark_data)
+                self._active_qmarks[q_id].append(mark)
+
+    def _update_quest_mark(self, q_id, is_active):
+        if is_active:
+            if q_id in self._active_qmarks:
+                return
+            self._active_qmarks[q_id] = []
+            for mark_data in qd.get_marks(q_id):
+                if self.space_name != mark_data['space_name']:
+                    continue
+                mark = self._get_qmark(q_id, mark_data)
+                self._active_qmarks[q_id].append(mark)
+
+        else:
+            if q_id not in self._active_qmarks:
+                return
+            for qmark in self._active_qmarks[q_id]:
+                self._pool_mark(qmark)
+
+            del self._active_qmarks[q_id]
+
+    def _get_default_position(self):
+        return (0, 0.85, 0.5)
+
+    def reset_position(self):
+        self.component.position = self._get_default_position()
+
+    def stopDragging(self):
+        DragWin.stopDragging(self)
+        GUIPositions.stopDragging(self)
+
+    def stop_tick(self):
+        Tickable.stop_tick(self)
+        if self._broken_coroutine:
+            self._broken_coroutine.stop()
+            self._broken_coroutine = None
+        return
+
+    def hide(self):
+        self.stop_tick()
+        self.component.visible = False
+        self.space_name = None
+        self._marks_data.remove_listener(self._on_marks_data_event)
+        self._quests_tracker.remove_listener(self._on_qtracker_event)
+        return
+
+    def _show_inside_block(self, value):
+        if self._inside_block_visible == value:
+            return
+        self._inside_block_visible = value
+        if value:
+            self.component.inside.visible = True
+            self.component.height = self._height[1]
+        else:
+            self.component.inside.visible = False
+            self.component.height = self._height[0]
+        self.on_size_changed()
+
+    @BWMemberCoroutine
+    def _run_broken_coroutine(self):
+        self._broken_velocity = 0.0
+        self._broken_ratio = self.component.txtcomp.uvOffset[0]
+        desired_ratio = random() - 0.5
+        pause_time = 2.0
+        wait = pause_time
+        while True:
+            cur_angle = self._broken_ratio * pi * 2
+            desired_angle = desired_ratio * pi * 2
+            cur_angle, self._broken_velocity = move_towards_angle_smooth_damp(cur_angle, desired_angle, self._broken_velocity, 0.5, 1000, BigWorld.getTimeDelta())
+            self._broken_ratio = cur_angle / (pi * 2)
+            if angle_dist2(cur_angle, desired_angle) < 0.1 and abs(self._broken_velocity) < 0.1:
+                wait -= BigWorld.getTimeDelta()
+                if wait < 0:
+                    desired_ratio = random() - 0.5
+                    wait = pause_time
+            yield BWWaitForPeriod(0)
+
+    def on_tick(self):
+        is_broken = BigWorld.player()._portal_shell
+        if is_broken:
+            if not self._broken_coroutine:
+                self._broken_coroutine = self._run_broken_coroutine()
+                self._broken_coroutine.run()
+            ratio = self._broken_ratio
+        else:
+            if self._broken_coroutine:
+                self._broken_coroutine.stop()
+                self._broken_coroutine = None
+            ratio = Matrix(BigWorld.camera().invViewMatrix).yaw / (2 * pi)
+        self.component.txtcomp.uvOffset = (ratio, 0)
+        player_pos = BigWorld.player().position
+        self._tmark.component.visible = False
+        target_mark = self._marks_data.get_target_mark()
+        if target_mark:
+            target_space_name, target_pos = target_mark
+            if self.space_name == target_space_name:
+                self._tmark.position = target_pos
+                self._tmark.player_pos = player_pos
+                self._tmark.ratio = ratio
+                self._tmark.component.visible = True
+                self._tmark.on_tick()
+        has_inside_mark = False
+        for qmarks in self._active_qmarks.itervalues():
+            for qmark in qmarks:
+                qmark.ratio = ratio
+                qmark.player_pos = player_pos
+                qmark.on_tick()
+                if qmark._inside:
+                    has_inside_mark = True
+
+        self._show_inside_block(has_inside_mark)
+        self.component.reSort()
+        return
+
+    @property
+    def visible(self):
+        return self.component.visible
+
+    def can_tick(self):
+        return Utils.is_visible_in_hierarchy(self.component)
+
+    def on_release(self):
+        GUIPositions.on_release(self)
+        self.stop_tick()
+
+    def do_reposition(self):
+        pass
+
+    @property
+    def _marks_data(self):
+        return BigWorld.player().marks_data
+
+    @property
+    def _quests_tracker(self):
+        return BigWorld.player()._quests_tracker

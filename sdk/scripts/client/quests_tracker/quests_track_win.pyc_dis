@@ -1,0 +1,149 @@
+# Embedded file name: ./client/quests_tracker/quests_track_win.py
+import os
+import utils
+import BigWorld
+import QuestDispatcher as qd
+import GUI
+from Helpers.PyGUI.PyGUIBase import DragWin
+from track_block import TrackBlock, EventType as TrackBlockET
+from utils import Listenable
+from soGUI.GUIPositions import GUIPositions
+import pyson
+import traceback
+
+class EventType:
+    OnBlockRemoved, = (('QuestTrackerWin', r) for r in xrange(1))
+
+
+class Saver(object):
+
+    def __init__(self):
+        self._dir_path = os.path.join(utils.stalker_path(), 'usercontent/quests')
+        self._file_path = os.path.join(self._dir_path, 'trackwin')
+        self._data = {}
+        if os.path.exists(self._file_path):
+            try:
+                with open(self._file_path) as f:
+                    self._data = pyson.loads(f.read())
+            except:
+                traceback.print_exc()
+                traceback.print_stack()
+
+    def _flush(self):
+        if not os.path.exists(self._dir_path):
+            os.makedirs(self._dir_path)
+        with open(self._file_path, 'w') as f:
+            f.write(pyson.dumps(self._data))
+
+    def save(self, collapsed_quests):
+        self._data[self._key] = collapsed_quests
+        self._flush()
+
+    def get_collapsed(self, quest_id):
+        data = self._data.get(self._key, [])
+        return quest_id in data
+
+    @property
+    def _key(self):
+        return BigWorld.player().name
+
+
+class QuestsTrackWin(DragWin, Listenable, GUIPositions):
+    factoryString = 'QuestsTrack.GUI.Win'
+
+    def __init__(self):
+        Listenable.__init__(self)
+        comp = GUI.Window()
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width = TrackBlock.width
+        comp.position = (50, 50, 0.21)
+        DragWin.__init__(self, comp)
+        GUIPositions.__init__(self)
+        self.component.script = self
+        self.component.visible = False
+        self._saver = Saver()
+        self._blocks = []
+
+    def append_block(self, quest_id):
+        collapsed = self._saver.get_collapsed(quest_id)
+        tb = TrackBlock(quest_id, collapsed)
+        tb.add_listener(self._on_track_block_event)
+        self.component.addChild(tb.component)
+        self._blocks.append(tb)
+        self._realign()
+
+    def _on_track_block_event(self, event_type, data):
+        if event_type in (TrackBlockET.OnCloseRequest, TrackBlockET.OnBadState):
+            self.remove_block(data['block'].quest_id)
+        elif event_type == TrackBlockET.OnSizeChanged:
+            self._realign()
+        elif event_type == TrackBlockET.OnCollapseChanged:
+            save_data = [ block.quest_id for block in self._blocks if block._collapsed ]
+            self._saver.save(save_data)
+
+    def _index(self, quest_id):
+        return next((i for i, tb in enumerate(self._blocks) if tb.quest_id == quest_id), None)
+
+    def on_quest_state_event(self, quest_id, prev_state, state):
+        parent_id = qd.get_parent_by_id(quest_id)
+        index = self._index(parent_id)
+        if index is not None:
+            self._blocks[index].on_quest_state_event(quest_id, prev_state, state)
+        return
+
+    def on_quest_internal_event(self, quest_id, int_data):
+        parent_id = qd.get_parent_by_id(quest_id)
+        index = self._index(parent_id)
+        if index is not None:
+            self._blocks[index].on_quest_internal_event(quest_id, int_data)
+        return
+
+    def remove_block(self, quest_id):
+        index = self._index(quest_id)
+        if index is not None:
+            block = self._blocks.pop(index)
+            block.release()
+            self.component.delChild(block.component)
+            self._realign()
+            data = {'quest_id': quest_id}
+            self.notify_listeners(EventType.OnBlockRemoved, data)
+        return
+
+    def _realign(self):
+        y_pos = 0
+        for b in self._blocks:
+            b.component.position = (0, y_pos, 0.5)
+            y_pos += b.height
+
+        if self.component.height != y_pos:
+            self.component.height = y_pos
+            sh = BigWorld.screenHeight()
+            if self.component.position[1] + self.component.height > sh:
+                self.component.position[1] = max(0, sh - self.component.height)
+            if self.component.position[1] < 0:
+                self.component.position[1] = 0
+
+    def show(self):
+        self.component.visible = True
+        GUIPositions.show(self)
+
+    def stopDragging(self):
+        DragWin.stopDragging(self)
+        GUIPositions.stopDragging(self)
+
+    def hide(self):
+        for i in xrange(len(self._blocks)):
+            self.remove_block(self._blocks.quest_id)
+
+        self.component.visible = False
+
+    def on_release(self):
+        Listenable.on_release(self)
+        for i in xrange(len(self._blocks)):
+            self.remove_block(self._blocks.quest_id)
+
+    @property
+    def visible(self):
+        return self.component.visible

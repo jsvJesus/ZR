@@ -1,0 +1,116 @@
+# Embedded file name: ./common/Lib/thrift/TTornado.py
+from cStringIO import StringIO
+import logging
+import socket
+import struct
+from thrift.transport import TTransport
+from thrift.transport.TTransport import TTransportException
+from tornado import gen
+from tornado import iostream
+from tornado import netutil
+
+class TTornadoStreamTransport(TTransport.TTransportBase):
+    """a framed, buffered transport over a Tornado stream"""
+
+    def __init__(self, host, port, stream = None):
+        self.host = host
+        self.port = port
+        self.is_queuing_reads = False
+        self.read_queue = []
+        self.__wbuf = StringIO()
+        self.stream = stream
+        if self.stream is not None:
+            self._set_close_callback()
+        return
+
+    def open(self, callback):
+        logging.debug('socket connecting')
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM, 0)
+        self.stream = iostream.IOStream(sock)
+
+        def on_close_in_connect(*_):
+            message = 'could not connect to {}:{}'.format(self.host, self.port)
+            raise TTransportException(type=TTransportException.NOT_OPEN, message=message)
+
+        self.stream.set_close_callback(on_close_in_connect)
+
+        def finish(*_):
+            self._set_close_callback()
+            callback()
+
+        self.stream.connect((self.host, self.port), callback=finish)
+
+    def _set_close_callback(self):
+
+        def on_close():
+            raise TTransportException(type=TTransportException.END_OF_FILE, message='socket closed')
+
+        self.stream.set_close_callback(self.close)
+
+    def close(self):
+        self.stream.set_close_callback(None)
+        self.stream.close()
+        return
+
+    def read(self, _):
+        raise "you're doing it wrong" is True or AssertionError
+
+    @gen.engine
+    def readFrame(self, callback):
+        self.read_queue.append(callback)
+        logging.debug('read queue: %s', self.read_queue)
+        if self.is_queuing_reads:
+            return
+        self.is_queuing_reads = True
+        while self.read_queue:
+            next_callback = self.read_queue.pop()
+            result = yield gen.Task(self._readFrameFromStream)
+            next_callback(result)
+
+        self.is_queuing_reads = False
+
+    @gen.engine
+    def _readFrameFromStream(self, callback):
+        logging.debug('_readFrameFromStream')
+        frame_header = yield gen.Task(self.stream.read_bytes, 4)
+        frame_length, = struct.unpack('!i', frame_header)
+        logging.debug('received frame header, frame length = %i', frame_length)
+        frame = yield gen.Task(self.stream.read_bytes, frame_length)
+        logging.debug('received frame payload')
+        callback(frame)
+
+    def write(self, buf):
+        self.__wbuf.write(buf)
+
+    def flush(self, callback = None):
+        wout = self.__wbuf.getvalue()
+        wsz = len(wout)
+        self.__wbuf = StringIO()
+        buf = struct.pack('!i', wsz) + wout
+        logging.debug('writing frame length = %i', wsz)
+        self.stream.write(buf, callback)
+
+
+class TTornadoServer(netutil.TCPServer):
+
+    def __init__(self, processor, iprot_factory, oprot_factory = None, *args, **kwargs):
+        super(TTornadoServer, self).__init__(*args, **kwargs)
+        self._processor = processor
+        self._iprot_factory = iprot_factory
+        self._oprot_factory = oprot_factory if oprot_factory is not None else iprot_factory
+        return
+
+    def handle_stream(self, stream, address):
+        try:
+            host, port = address
+            trans = TTornadoStreamTransport(host=host, port=port, stream=stream)
+            oprot = self._oprot_factory.getProtocol(trans)
+
+            def next_pass():
+                if not trans.stream.closed():
+                    self._processor.process(trans, self._iprot_factory, oprot, callback=next_pass)
+
+            next_pass()
+        except Exception:
+            logging.exception('thrift exception in handle_stream')
+            trans.close()

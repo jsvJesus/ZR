@@ -1,0 +1,526 @@
+# Embedded file name: ./client/player_transform.py
+import BigWorld
+import BWPersonality
+import time
+import Constants
+import funEventsCommon
+from ChatChannelConfig import CHANNEL_CONSTS
+import Stats
+from FunTransform import FunTransformation
+from FunTransform import EV_START_ANIMATION, EV_STOP_SKILL, EV_APPLY_EFFECT_COLLIDE_BSP
+from FunTransform import EV_END_AMMO
+from transform import Transformation
+import Math
+from Math import Matrix, Vector3
+import math
+import traceback
+import Keys
+from Victim import Victim
+from Localization import lc
+from utils import ignoreError, plog
+from tmp_demo_recorder import rec_attr_demo, rec_foo_demo
+from PostProcessing import addPPChainByName, removePPChain
+import sounds_manager as sounds
+
+class PlayerTransformation(Transformation):
+    transform_action_playing = False
+    lock_move_by_tranform = False
+    fly_timer_id = 0
+    _look_arround_m_cam = None
+    _transform_pp = None
+    _transf_camera_attached = False
+
+    def onLeaveWorldTransform(self):
+        Transformation.onLeaveWorldTransform(self)
+
+    def onInitTransform(self, transf):
+        """\xd0\x98\xd0\xbd\xd0\xb8\xd1\x86\xd0\xb8\xd0\xb0\xd0\xbb\xd0\xb8\xd0\xb7\xd0\xb0\xd1\x86\xd0\xb8\xd1\x8f \xd1\x82\xd1\x80\xd0\xb0\xd0\xbd\xd1\x81\xd1\x84\xd0\xbe\xd1\x80\xd0\xbc\xd0\xb0\xd1\x86\xd0\xb8\xd0\xb8"""
+        if transf.isCustomModel and self.use_gesture:
+            self.cell.stopAvatarGesture()
+        self.USE_MovingActionMather = transf.raw_configs.get('USE_MovingActionMather', False)
+        self.UpdateSniping(False)
+        if self.IsAvatarCrouched():
+            self.UpdateCrouch(False)
+        self.UpdateCrawling(False)
+        self.transform_action_playing = False
+        self._transf_camera_attached = False
+        BWPersonality.settings.keyBindings.registerHook(transf)
+        Transformation.onInitTransform(self, transf)
+        transf.startRandomActionLoop()
+        if transf.getparam('force_to_weapon_incombat'):
+            self.SetWeaponStatus(Constants.WEAPON_INCOMABAT)
+        else:
+            self.SetWeaponStatus(Constants.WEAPON_BORED)
+        post_proccess = transf.getparam('post_proccess')
+        if post_proccess:
+            self._transform_pp = addPPChainByName(post_proccess, 100)
+        screen_texture = transf.getparam('screen_texture')
+        if screen_texture:
+            BWPersonality.GUICore.transformScreenTexture(True, screen_texture)
+        help_text = transf.getparam('help_text')
+        if help_text:
+            BWPersonality.GUICore.showTransformationHelp(True, lc(help_text))
+        BigWorld.callback(0.2, self.__set_camera)
+        BigWorld.callback(0.1, self.__set_phys)
+        if transf.getparam('lock_mouse'):
+            BigWorld.callback(0.1, self.__look_mouse)
+        self._stop_fly()
+        if transf.getparam('fly_camera'):
+            self._start_fly()
+            self._transform_fly_lock_pitch = False
+            if self.active_transform.raw_configs.get('isHelicopter'):
+                self._transform_fly_lock_pitch = True
+        self.cancel_reload()
+
+    def set_transformationProperty(self, old = None):
+        pass
+
+    def __look_mouse(self):
+        self.LookAround(True)
+
+    def __set_phys(self):
+        if not self.active_transform:
+            return
+        transf = self.active_transform
+        if transf.getparam('hide_weapon'):
+            pass
+        self.updatePhysicsModel()
+        if self.active_transform.isHelicopter:
+            self.physics.cleanUserDirectedInAir = False
+        if transf.getparam('physics_disable_collide'):
+            self.physics.collide = False
+        BigWorld.callback(0, BWPersonality.GUICore.updateTransformationGUI)
+
+    __wait_camera_error = False
+
+    def __set_camera(self):
+        if not self.active_transform:
+            return
+        else:
+            cam = BigWorld.camera()
+            if cam.__class__.__name__ != 'CursorCamera':
+                BigWorld.callback(0.2, self.__set_camera)
+                return
+            camera_pivot_position = self.active_transform.getparam('camera_pivot_position')
+            if camera_pivot_position:
+                cam.pivotPosition = tuple(camera_pivot_position)
+                cam.pivotPositionMinPitch = tuple(camera_pivot_position)
+                cam.pivotPositionMaxPitch = tuple(camera_pivot_position)
+            camera_pivot_dist = self.active_transform.getparam('camera_pivot_dist')
+            if camera_pivot_dist is not None:
+                cam.pivotMaxDist = camera_pivot_dist
+                cam.pivotMaxDistMinPitch = camera_pivot_dist
+                cam.pivotMaxDistMaxPitch = camera_pivot_dist
+            try:
+                if self.active_transform.getparam('camera_disable_collide'):
+                    cam.collideScene = False
+            except:
+                print 'camera_disable_collide error set camera.collideScene'
+                traceback.print_exc()
+
+            try:
+                camera_node = self.active_transform.getparam('camera_node')
+                if camera_node:
+                    self._transf_camera_attached = True
+                    cam.target = self.model.node(camera_node)
+                    if self.__wait_camera_error:
+                        self.__wait_camera_error = False
+                        BWPersonality.LOG('attach camera ok', self.model)
+                        if self.model:
+                            print self.model.sources
+                    self.model.forceDraw()
+            except:
+                BWPersonality.LOG('attach camera error', self.__wait_camera_error, self.model)
+                if self.model:
+                    print self.model.sources
+                self.__wait_camera_error = True
+                traceback.print_exc()
+
+            return
+
+    def onResetTransform(self, transf):
+        """\xd0\xa1\xd0\xb1\xd1\x80\xd0\xbe\xd1\x81 \xd1\x81\xd0\xba\xd0\xb8\xd0\xbb\xd0\xbb\xd0\xb0"""
+        BWPersonality.settings.keyBindings.clearHook()
+        Transformation.onResetTransform(self, transf)
+        BWPersonality.GUICore.showTransformationHelp(False)
+        self._look_arround_m_cam = None
+        self.USE_MovingActionMather = True
+        post_proccess = transf.getparam('post_proccess')
+        if post_proccess:
+            removePPChain(self._transform_pp)
+            self._transform_pp = None
+        BWPersonality.GUICore.transformScreenTexture(False)
+        self.AvatarCam.target = BigWorld.PlayerMatrix()
+        BigWorld.callback(0, self.checkCamera)
+        BigWorld.callback(0, self.updatePhysicsModel)
+        self.physics.cleanUserDirectedInAir = True
+        self._transf_camera_attached = False
+        self.transform_action_playing = False
+        self.lock_move_by_tranform = False
+        self.UpdateVelocity()
+        BigWorld.callback(0, self.UpdateVelocity)
+        BigWorld.callback(0, BWPersonality.GUICore.updateTransformationGUI)
+        self._stop_fly()
+        try:
+            self.AvatarCam.collideScene = True
+        except:
+            traceback.print_exc()
+
+        self.SetWeaponStatus(Constants.WEAPON_BORED)
+        self.updatePhysicsModel()
+        return
+
+    @ignoreError
+    def _stop_fly(self):
+        if self.fly_timer_id:
+            BigWorld.cancelCallback(self.fly_timer_id)
+            BWPersonality.GUICore.targettingGUI.builder_dot(False)
+            self.fly_timer_id = 0
+        if self.physics:
+            self.physics.fall = True
+            self.physics.collide = True
+        BWPersonality.GUICore.showFlyCameraTransform(False)
+
+    def _start_fly(self):
+        self._last_fly_time = time.time() + 0.49
+        self.fly_timer_id = BigWorld.callback(0.5, self._tick_fly)
+        BWPersonality.GUICore.targettingGUI.builder_dot(True)
+
+        def show_menu():
+            if self.active_transform.getparam('fly_camera'):
+                BWPersonality.GUICore.showFlyCameraTransform(True)
+
+        BigWorld.callback(0.5, show_menu)
+
+    _transform_fly_speed = 1.0
+    _transform_fly_speed_space = 2.0
+    _transform_fly_add_yaw = 0.0
+    _transform_fly_lock_pitch = False
+    _last_fly_time = 0
+
+    def _tick_fly(self):
+        if not self.active_transform:
+            return
+        dTime = time.time() - self._last_fly_time
+        self._last_fly_time = time.time()
+        dTime = min(dTime, 0.5)
+        self.physics.fall = 0
+        if self._look_arround_m_cam:
+            m_cam = self._look_arround_m_cam
+        else:
+            cam = BigWorld.camera()
+            m_cam = Matrix(cam.invViewMatrix)
+        pl_matr = Matrix()
+        pl_matr.setRotateYPR((self.yaw, 0, 0))
+        pl_matr.invert()
+        speed = self._transform_fly_speed
+        if BigWorld.isKeyDown(BigWorld.stringToKey('F1')):
+            BWPersonality.GUICore.showFlyCameraTransform(True)
+        if BigWorld.isKeyDown(BigWorld.stringToKey('SPACE')):
+            speed *= self._transform_fly_speed_space
+        new_vel = Vector3(0, 0, 0)
+
+        def toPhyDir(axis, back = False, is_fwd = False):
+            vec = m_cam.applyToAxis(axis)
+            if is_fwd and self._transform_fly_lock_pitch:
+                vec[1] = 0
+                vec.normalise()
+            if back:
+                vec = vec * -1
+            loc_vec = pl_matr.applyVector(vec)
+            loc_vec.normalise()
+            return loc_vec * speed
+
+        if self.movingForward:
+            new_vel = toPhyDir(2, is_fwd=1)
+        elif self.movingBackward:
+            new_vel = toPhyDir(2, True, is_fwd=1)
+        if self.movingLeft:
+            new_vel += toPhyDir(0, True) * 0.7
+        elif self.movingRight:
+            new_vel += toPhyDir(0) * 0.7
+        if BigWorld.isKeyDown(BigWorld.stringToKey('E')):
+            new_vel += toPhyDir(1)
+        elif BigWorld.isKeyDown(BigWorld.stringToKey('Q')):
+            new_vel += toPhyDir(1, True)
+        if BigWorld.isKeyDown(Keys.KEY_RIGHTMOUSE):
+            BigWorld.dcursor().yaw += self._transform_fly_add_yaw * 50 * dTime
+        if BigWorld.isKeyDown(Keys.KEY_LEFTMOUSE):
+            BigWorld.dcursor().yaw -= self._transform_fly_add_yaw * 50 * dTime
+        self.physics.velocity = new_vel
+        self.fly_timer_id = BigWorld.callback(0.0, self._tick_fly)
+
+    def __set_cam_target(self, camera_node):
+        if not self.active_transform:
+            return
+        cam = BigWorld.camera()
+        if cam.__class__.__name__ != 'CursorCamera':
+            BigWorld.callback(0.1, lambda : self.__set_cam_target(camera_node))
+            return
+        BigWorld.camera().target = self.model.node(camera_node)
+        if self.__wait_camera_error:
+            self.__wait_camera_error = False
+            BWPersonality.LOG('__set_cam_target ok', self.model)
+            if self.model:
+                print self.model.sources
+
+    def onModelChanged(self):
+        pass
+
+    def startTransformAction(self, action_name, isDown, event = None, print_errors = True):
+        if not self.active_transform:
+            return False
+        if not isDown:
+            return
+        if self.transform_action_playing:
+            return True
+        if not self.can_use_tf_action():
+            return True
+        skill = self.active_transform.getSkillByName(action_name)
+        if not skill.canUseByNumberLimit():
+            if print_errors:
+                self.putMessage(CHANNEL_CONSTS.FIGHT_OUTPUT, lc('FunTransform.messages.max_use'))
+            return True
+        reusetime = skill.getReuseTime()
+        if reusetime:
+            if print_errors and reusetime > 0.3 and skill.canSpamGetReuseTime():
+                skill.onSendSpamReuseTime()
+                self.putMessage(CHANNEL_CONSTS.FIGHT_OUTPUT, lc('FunTransform.messages.at_cooldown') % reusetime)
+            return True
+        need_stamina = skill.getStaminaUsage()
+        if need_stamina and self.GetStatValue(Stats.ch_Stamina) < need_stamina:
+            if print_errors:
+                self.putMessage(CHANNEL_CONSTS.FIGHT_OUTPUT, lc('FunTransform.messages.not_enough_stamina'))
+            return True
+        self.transform_action_playing = True
+        skill.use()
+        return True
+
+    def check_grenade_explode(self, greande, grenade_position, victims, collision_data):
+        if not self.active_transform:
+            return
+        if not self.vechicle_contorled:
+            return
+        if not self.vechicle_contorled._model:
+            return
+        if self.id == collision_data['target_id'] or collision_data['mat_id'] in xrange(200, 205) and collision_data['position'].distTo(self.vechicle_contorled._model.position) < 10.0:
+            self.vechicle_contorled.onHelicopterBurn()
+            self.cell.helicopterBurn()
+
+    def check_on_grenade_damaged(self, damage, grenade_position, collided_id, collision_data):
+        pass
+
+    def breakBoredTimer(self):
+        if self.active_transform:
+            self.active_transform.breakBoredTimer()
+
+    def onActionEvent(self, actionName, okayToGo, event):
+        handle = False
+        if self.active_transform.getparam('fly_camera') and actionName == 'LookAround':
+            if okayToGo:
+                if not self._look_arround_m_cam:
+                    cam = BigWorld.camera()
+                    self._look_arround_m_cam = Matrix(cam.invViewMatrix)
+            else:
+                self._look_arround_m_cam = None
+        if self.vechicle_contorled:
+            if self.vechicle_contorled.onActionEvent(actionName, okayToGo, event):
+                handle = True
+        return handle
+
+    def handleMouseEventTransform(self, event):
+        if self.vechicle_contorled:
+            return self.vechicle_contorled.handleMouseEventTransform(event)
+
+    def handleKeyEventTransform(self, event):
+        if self.vechicle_contorled:
+            return self.vechicle_contorled.handleKeyEventTransform(event)
+
+    def startTSAction(self, action_id, action_name, skill):
+        """\xd1\x81\xd0\xba\xd0\xb8\xd0\xbb\xd0\xbb \xd0\xb7\xd0\xb0\xd0\xbf\xd1\x83\xd1\x81\xd1\x82\xd0\xb8\xd0\xbb \xd0\xb0\xd0\xbd\xd0\xb8\xd0\xbc\xd0\xb0\xd1\x86\xd0\xb8\xd1\x8e"""
+        if skill.param.get('lock_move'):
+            self.lock_move_by_tranform = True
+            self.UpdateVelocity()
+        Transformation.startTSAction(self, action_id, action_name, skill)
+        if not skill.param.get('action_client_only'):
+            self.sendTransformEvent(action_id, EV_START_ANIMATION)
+        cam = BigWorld.camera()
+        camera_pivot_position = skill.param.get('camera_pivot_position')
+        if camera_pivot_position:
+            cam.pivotPosition = tuple(camera_pivot_position)
+            cam.pivotPositionMinPitch = tuple(camera_pivot_position)
+            cam.pivotPositionMaxPitch = tuple(camera_pivot_position)
+        camera_pivot_dist = skill.param.get('camera_pivot_dist')
+        if camera_pivot_dist is not None:
+            cam.pivotMaxDist = camera_pivot_dist
+            cam.pivotMaxDistMinPitch = camera_pivot_dist
+            cam.pivotMaxDistMaxPitch = camera_pivot_dist
+        return
+
+    def startTSAapply(self, action_id, action_name, skill, dead_also = False):
+        """\xd1\x81\xd0\xba\xd0\xb8\xd0\xbb\xd0\xbb \xd0\xb7\xd0\xb0\xd0\xbf\xd1\x83\xd1\x81\xd1\x82\xd0\xb8\xd0\xbb \xd0\xb4\xd0\xb5\xd0\xb9\xd1\x81\xd1\x82\xd0\xb2\xd0\xb8\xd0\xb5"""
+        Transformation.startTSAapply(self, action_id, action_name, skill, dead_also=False)
+        if self.checkEffectBsp(action_id, action_name, skill):
+            self.sendTransformEvent(action_id, EV_APPLY_EFFECT_COLLIDE_BSP)
+
+    def endTSAnimation(self, action_id, action_name, skill):
+        """\xd1\x81\xd0\xba\xd0\xb8\xd0\xbb\xd0\xbb"""
+        self.transform_action_playing = False
+        self.lock_move_by_tranform = False
+        Transformation.endTSAnimation(self, action_id, action_name, skill)
+        self.UpdateVelocity()
+        if not self.active_transform:
+            return
+        else:
+            cam = BigWorld.camera()
+            camera_pivot_position = self.active_transform.getparam('camera_pivot_position')
+            if camera_pivot_position:
+                if hasattr(cam, 'pivotPosition'):
+                    cam.pivotPosition = tuple(camera_pivot_position)
+                if hasattr(cam, 'pivotPositionMinPitch'):
+                    cam.pivotPositionMinPitch = tuple(camera_pivot_position)
+                    cam.pivotPositionMaxPitch = tuple(camera_pivot_position)
+            camera_pivot_dist = self.active_transform.getparam('camera_pivot_dist')
+            if camera_pivot_dist is not None:
+                if hasattr(cam, 'pivotMaxDist'):
+                    cam.pivotMaxDist = camera_pivot_dist
+                if hasattr(cam, 'pivotMaxDistMinPitch'):
+                    cam.pivotMaxDistMinPitch = camera_pivot_dist
+                    cam.pivotMaxDistMaxPitch = camera_pivot_dist
+            self.checkCamera()
+            self.updateCameraPosition()
+            self.breakBoredTimer()
+            self.active_transform.onEndAction(action_id, action_name, skill)
+            return
+
+    def endTSReuseTimer(self, action_id, action_name, skill):
+        """\xd1\x81\xd0\xba\xd0\xb8\xd0\xbb\xd0\xbb"""
+        Transformation.endTSReuseTimer(self, action_id, action_name, skill)
+
+    def onStopSkill(self, action_id, action_name, skill):
+        Transformation.onStopSkill(self, action_id, action_name, skill)
+        self.sendTransformEvent(action_id, EV_STOP_SKILL)
+
+    def onEndSkillAmmo(self, action_id, action_name, skill):
+        if 'if_not_ammo_transform_to' in skill.param:
+            self.sendTransformEvent(action_id, EV_END_AMMO)
+
+    def applyBoxAttack(self, action_id, skill):
+        targets = self._getEntitiesBoxAttack(action_id, skill)
+        targets = Transformation.applyBoxAttack(self, action_id, skill)
+        targets_id = [ e.id for e in targets[:30] ]
+        if targets_id:
+            self.cell.transformAttack(self.transformationID, action_id, targets_id)
+        return targets
+
+    def applySectorAttack(self, action_id, skill, dead_also = False):
+        targets = Transformation.applySectorAttack(self, action_id, skill, dead_also=False)
+        targets_id = [ e.id for e in targets[:30] ]
+        if targets_id:
+            self.cell.transformAttack(self.transformationID, action_id, targets_id)
+        return targets
+
+    def applyAOEAttack(self, action_id, skill, dead_also = False):
+        targets = Transformation.applyAOEAttack(self, action_id, skill, dead_also=False)
+        targets_id = [ e.id for e in targets[:30] ]
+        if targets_id:
+            self.cell.transformAttack(self.transformationID, action_id, targets_id)
+        return targets
+
+    def applySelfEffectAttack(self, action_id, skill, dead_also = False):
+        targets = Transformation.applySelfEffectAttack(self, action_id, skill, dead_also=False)
+        self.cell.transformAttack(self.transformationID, action_id, [self.id])
+        return targets
+
+    def applyThrowGrenadeAttack2(self, action_id, skill):
+        grenade_type = skill.param.get('grenade_type')
+        throw_power = skill.param.get('throw_power', 1)
+        self.throwGrenade(isDown=True, throw_power=throw_power, grenade_type=grenade_type)
+        self.throwGrenade(isDown=False, throw_power=throw_power, grenade_type=grenade_type)
+
+    def applyThrowGrenadeAttack(self, action_id, skill, dead_also = False):
+        targets = Transformation.applyThrowGrenadeAttack(self, action_id, skill, dead_also=False)
+        grenade_params = {}
+        grenade_type = skill.param.get('grenade_type')
+        grenade_velocity = skill.param.get('grenade_velocity')
+        if not grenade_type:
+            print 'TSKill ERROR not grenade_type', skill, self, self.active_transform
+            return
+        if not grenade_velocity:
+            print 'TSKill ERROR not grenade_velocity', skill, self, self.active_transform
+            return
+        node_hand = self.model.node('HP_Rhand')
+
+        def callbackOnThrow(param):
+            if not param:
+                return
+            position, velocity, clientGrenadeID, timeBeforeFlyEnd, destPos = param
+            self.cell.throwGrenade(position, velocity, clientGrenadeID, grenade_type)
+
+        def continue_throw():
+            position = Matrix(node_hand).translation
+            velocity = self.getDirection() * grenade_velocity
+            self.throw(grenade_params, position, velocity, grenade_type, callbackOnThrow=callbackOnThrow)
+
+        if node_hand.isActualCoords:
+            continue_throw()
+        else:
+            BigWorld.callback(0.01, continue_throw)
+        return targets
+
+    def applySummonElf(self, action_id, skill):
+        Transformation.applySummonElf(self, action_id, skill)
+        self.cell.applySummonElf(action_id)
+
+    def onVictimApplyFTSkill(self, damager, action_id, action_name, skill):
+        Transformation.onVictimApplyFTSkill(self, damager, action_id, action_name, skill)
+        if skill.param.get('victim_phys_push'):
+            self._apply_phys_push(damager, action_id, action_name, skill)
+
+    def _apply_phys_push(self, damager, action_id, action_name, skill):
+        victim_phys_push = skill.param.get('victim_phys_push')
+        direction = self.position - damager.position
+        direction.normalise()
+        m = Math.Matrix(self.model.matrix)
+        m.invert()
+        velocity = m.applyVector(direction)
+        velocity *= victim_phys_push
+        victim_phys_push_up = skill.param.get('victim_phys_push_up')
+        if victim_phys_push_up:
+            velocity += (0, victim_phys_push_up, 0)
+        self.physics.fall = 0
+        self.physics.velocity = velocity
+        self.moving_locked = True
+
+        def stop():
+            self.physics.velocity = (0, 0, 0)
+            self.physics.fall = 1
+            self.moving_locked = False
+            self.UpdateVelocity()
+
+        def go_fall():
+            self.physics.fall = 1
+
+        BigWorld.callback(skill.param.get('victim_phys_push_up_time', 0.2), go_fall)
+        BigWorld.callback(skill.param.get('victim_phys_push_time', 0.5), stop)
+
+    def lockMove(self, status):
+        self.look_move_status = status
+
+    def sendTransformEvent(self, event_id, status):
+        self.cell.transformEvent(self.transformationID, event_id, status)
+        rec_foo_demo('transformEvent', event_id, status)
+
+    def transformEvent(self, event_id, status):
+        print 'ERROR FOR', self, event_id, status
+        raise EnvironmentError('player avatar?????')
+
+    def on_damaged_transform(self, source_data, damagetaken_data):
+        Transformation.on_damaged_transform(self, source_data, damagetaken_data)
+
+    def can_use_tf_action(self):
+        if self.is_dead():
+            return False
+        if self.is_box_moving():
+            return False
+        return True

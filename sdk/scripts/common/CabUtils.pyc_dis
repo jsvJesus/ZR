@@ -1,0 +1,148 @@
+# Embedded file name: ./common/CabUtils.py
+import json
+import os
+import ResMgr
+DATA_PATH = 'scripts/common/data/Cabman'
+
+class States:
+    INIT, WAIT, TELEPORT, LOST, PREPARE = xrange(5)
+
+
+class Config:
+
+    def __init__(self, route_config_name, car_config):
+        if not route_config_name or not car_config:
+            raise RuntimeError
+        path = os.path.join('scripts/base/data/cabmen_routes', route_config_name)
+        section = ResMgr.openSection(path)
+        if section is None:
+            print "Cabman Utils (ERROR): can't load routes", route_config_name, car_config, path
+            raise RuntimeError
+        self._routes_config = json.loads(section.asBinary)
+        self._all_dests = set()
+        for route in self._routes_config.get('route', []):
+            route['place'] = route['place'].encode('utf-8')
+            self._all_dests.add(route['place'])
+
+        self._all_dests = list(self._all_dests)
+        unique_names = set()
+        path = os.path.join(DATA_PATH, car_config)
+        self._car_config = json.loads(ResMgr.openSection(path).asBinary)
+        attachments = self._car_config['attachments'].values()
+        attachments.append([self._car_config['base_model']])
+        for model_attachments in attachments:
+            for attachment in model_attachments:
+                if 'hitboxes' not in attachment:
+                    continue
+                path = attachment['hitboxes']['source']
+                section = ResMgr.openSection(path)
+                for section_name, section_data in section.items():
+                    if section_name != 'BoxAttachment':
+                        continue
+                    unique_names.add(section_data['boxName'].asString)
+
+        self.seats_count = len(unique_names)
+        self.riders_seats_count = self.seats_count
+        npc_seat = self._car_config['parameters'].get('npc_seat')
+        if npc_seat:
+            names = sorted(list(unique_names))
+            self.npc_seat_index = names.index(npc_seat)
+            self.riders_seats_count -= 1
+        else:
+            self.npc_seat_index = None
+        return
+
+    def get_alldests(self):
+        return self._all_dests
+
+    def has_route(self):
+        if 'route' not in self._routes_config:
+            return False
+        if len(self._routes_config['route']) == 0:
+            return False
+        return True
+
+    def get_port_name(self, port_index):
+        return self._routes_config['route'][port_index]['place']
+
+    def get_port_condition(self, port_index):
+        return self._routes_config['route'][port_index].get('prepare_delay')
+
+    def get_port_prepare_time(self, port_index):
+        return self._routes_config['route'][port_index].get('prepare_time', 0)
+
+    def get_next_port_index(self, port_index):
+        return (port_index + 1) % len(self._routes_config['route'])
+
+    def get_place_price(self, port_index):
+        return self._routes_config['route'][port_index]['passenger_seat_price']
+
+    def get_place_destination(self, port_index):
+        port_index = self.get_next_port_index(port_index)
+        return self._routes_config['route'][port_index]['place']
+
+    def get_curplace_destination(self, port_index):
+        return self._routes_config['route'][port_index]['place']
+
+    def get_push_radius(self):
+        return self._car_config['parameters']['push_radius']
+
+
+class RidersWrapper:
+
+    def __init__(self, seats, riders, seat_change_callback):
+        self._seats = seats
+        self._riders = riders
+        self._seat_change_callback = seat_change_callback
+
+    def clear_seats_and_riders(self):
+        for i in xrange(len(self._seats)):
+            self._seats[i] = {'entity_id': 0,
+             'db_id': 0}
+
+        self._riders[:] = []
+
+    def clear_seat(self, database_id):
+        index = next((i for i, s in enumerate(self._seats) if s['db_id'] == database_id), -1)
+        if index == -1:
+            return False
+        self.set_seat(0, 0, index)
+        return True
+
+    def set_seat(self, rider_id, rider_db_id, seat_index):
+        self._seats[seat_index] = {'entity_id': rider_id,
+         'db_id': rider_db_id}
+        self._seat_change_callback(seat_index, rider_id)
+
+    def get_registered_riders(self):
+        return [ r['baseid'] for r in self._riders ]
+
+    def get_riders(self):
+        sitting_riders = [ seat['db_id'] for seat in self._seats if seat['db_id'] ]
+        sitting_riders_set = set(sitting_riders)
+        failed_riders = [ r['baseid'] for r in self._riders if r['baseid'] not in sitting_riders_set ]
+        return (sitting_riders, failed_riders)
+
+    def has_rider(self, db_id):
+        return bool(next((r for r in self._riders if r['baseid'] == db_id), None))
+
+    def is_seat_busy(self, seat_index):
+        return self._seats[seat_index]['db_id'] != 0
+
+    def add_rider(self, db_id, name):
+        if self.has_rider(db_id):
+            return False
+        self._riders.append({'baseid': db_id,
+         'name': name})
+        return True
+
+    def del_rider(self, db_id):
+        for i, r in enumerate(self._riders):
+            if r['baseid'] == db_id:
+                del self._riders[i]
+                return True
+
+        return False
+
+    def get_riders_names(self):
+        return [ r['name'] for r in self._riders[:5] ]

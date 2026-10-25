@@ -1,0 +1,974 @@
+# Embedded file name: ./client/AvatarDummy.py
+"""\xd0\x9c\xd0\xbe\xd0\xb4\xd1\x83\xd0\xbb\xd1\x8c \xd1\x80\xd0\xb5\xd0\xb0\xd0\xbb\xd0\xb8\xd0\xb7\xd1\x83\xd0\xb5\xd1\x82 \xd0\xba\xd0\xbb\xd0\xb0\xd1\x81\xd1\x81 \xd0\xb4\xd0\xbb\xd1\x8f \xd1\x81\xd0\xbe\xd0\xb7\xd0\xb4\xd0\xb0\xd0\xbd\xd0\xb8\xd1\x8f \xd0\xbc\xd0\xbe\xd0\xb4\xd0\xb5\xd0\xbb\xd0\xb8 \xd0\xbc\xd0\xb0\xd0\xbd\xd0\xb5\xd0\xba\xd0\xb5\xd0\xbd\xd0\xb0 \xd0\xb0\xd0\xb2\xd0\xb0\xd1\x82\xd0\xb0\xd1\x80\xd0\xb0.
+
+\xd0\x9c\xd0\xb0\xd0\xbd\xd0\xb5\xd0\xba\xd0\xb5\xd0\xbd \xd0\xb8\xd1\x81\xd0\xbf\xd0\xbe\xd0\xbb\xd1\x8c\xd0\xb7\xd1\x83\xd0\xb5\xd1\x82\xd1\x81\xd1\x8f \xd0\xb4\xd0\xbb\xd1\x8f \xd0\xbf\xd0\xbe\xd0\xba\xd0\xb0\xd0\xb7\xd0\xb0 \xd0\xb2 \xd0\xbb\xd0\xbe\xd0\xb3\xd0\xb8\xd0\xbd\xd0\xb5 \xd0\xb3\xd0\xbb\xd0\xb0\xd0\xb2\xd0\xbd\xd0\xbe\xd0\xb3\xd0\xbe \xd0\xbc\xd0\xb5\xd0\xbd\xd1\x8e.
+"""
+import traceback
+import time
+import Avatar
+import BigWorld
+import ItemsUtils
+import datetime
+import DyeConstant
+import BWPersonality
+from DummyRotating import DummyRotating
+from Helpers.Listener import Listenable
+from Items import ItemsCatalog
+from functools import partial
+from AvatarTrackers import AvatarTrackers
+from EquipSlotsConfigs import EquipSlotTypes as EST
+from effect_weapon_control import EffectWeaponControl
+from Fabric import FaceSettings
+from Fabric import FaceSaver
+from AvatarDummyModelLoader import AvatarDummyModelLoader
+from Helpers.BWCoroutine import BWMemberCoroutine, BWWaitForPeriod, BWWaitForCondition, BWCoroutineTimeoutException
+import math_bw
+import StalkerModel
+from Fabric.FaceCustomizer import FaceCustomizer
+import Constants
+from Fabric.FaceSettings import LimitsConfigurator as LC
+import utils_async
+import StalkerModelOld
+
+class AvatarDummy(BigWorld.Entity, Listenable, AvatarTrackers, EffectWeaponControl):
+    """\xd0\x9a\xd0\xbb\xd0\xb0\xd1\x81\xd1\x81 \xd0\xb4\xd0\xbb\xd1\x8f \xd1\x81\xd0\xbe\xd0\xb7\xd0\xb4\xd0\xb0\xd0\xbd\xd0\xb8\xd1\x8f \xd0\xbc\xd0\xbe\xd0\xb4\xd0\xb5\xd0\xbb\xd0\xb8 \xd0\xbc\xd0\xb0\xd0\xbd\xd0\xb5\xd0\xba\xd0\xb5\xd0\xbd\xd0\xb0 \xd0\xb0\xd0\xb2\xd0\xb0\xd1\x82\xd0\xb0\xd1\x80\xd0\xb0."""
+
+    def __init__(self):
+        Listenable.__init__(self)
+        BigWorld.Entity.__init__(self)
+        AvatarTrackers.__init__(self)
+        self._char_mode = None
+        self._yaw = 0
+        self._isFPS = False
+        self.weaponStatus = 0
+        self.crouching_or_crawling = 0
+        self._inAir = False
+        self.isToStayCrouchAnimPlayed = False
+        self._ignorGravityAnimation = False
+        self._show_face_win_callback = None
+        self.active_transform = None
+        self._face_textures_cache = None
+        self._head_exist = False
+        self.manually_managed = True
+        self.update_turn_states = lambda : False
+        self.physicsIsJump = lambda : False
+        self.IsAvatarStand = lambda : True
+        self.IsAvatarCrawling = lambda : False
+        self.isJump = lambda : False
+        self.updateModelRotateMod = lambda : True
+        self.resetFootTwist = lambda : True
+        self.add_collider = lambda : 0
+        self.onChangeWeaponStatus = lambda *e: 0
+        self.onHandToWeaponComplete = lambda : self.updateBlendNodeByImpacting(True)
+        self.updateTorsoHeadProvider = lambda *e: 0
+        self.BellyItemID = 0
+        self.name = ''
+        self.dead = False
+        self.character = None
+        self.default_models = {}
+        self._need_restore_trackers = False
+        self._face_customizer = None
+        self.need_fader = False
+        self._set_model_coroutine_instance = None
+        self._face_mode = False
+        self._force_hide_slots = set()
+        self._model_loader = AvatarDummyModelLoader(self)
+        self._reset_face_on_set_model = False
+        self.face_limit_type = LC.PLAYER
+        self.transform_weapon = None
+
+        def generate_unique_negative_id():
+            number = -10
+            while True:
+                number -= 1
+                yield number
+
+        self._unique_negative_id = generate_unique_negative_id()
+        self._chosen_equipped_armor = EST.get_default_equipped_armor()
+        self._chosen_colorise_emblems = []
+        self._chosen_modes = 0
+        self._chosen_personality = {'face': [],
+         'hairs': 255,
+         'moustache': 255,
+         'beard': 255,
+         'haircolor': 0,
+         'skincolor': 0,
+         'eyescolor': 0,
+         'age': 0,
+         'details': 0,
+         'unshaven': 0,
+         'brows': {'style': 0,
+                   'position': 0,
+                   'rotation': 0},
+         'mark': {'id': 0,
+                  'color': 0}}
+        return
+
+    def isHeadExist(self):
+        return self._head_exist
+
+    def show_dummy(self):
+        if self.oldpersmodel:
+            self.oldpersmodel.visible = True
+            if self.model:
+                self.model.visible = False
+            return
+        if self.model:
+            self.model.visible = True
+
+    def hide_dummy(self):
+        if self.model:
+            self.model.visible = False
+        if self.oldpersmodel:
+            self.oldpersmodel.visible = False
+
+    def onStartDonatFaceEdit(self):
+        self._is_donat_edit_visible = True
+        if self.oldpersmodel:
+            self.oldpersmodel.visible = False
+        if self.model:
+            self.model.visible = True
+
+    def onCancelDonatFaceEdit(self):
+        self._is_donat_edit_visible = False
+
+    def onEnterWorld(self, prereqs = None):
+        AvatarTrackers.onEnterWorld(self, prereqs)
+        try:
+            self.aprilHehehe()
+        except:
+            traceback.print_exc()
+
+    def april1_oldpers(self):
+        self._april1_oldpers_clear()
+        date = datetime.datetime.now()
+        if date.month != 4:
+            return
+        if date.day != 1:
+            return
+        if date.hour < 11:
+            return
+        regpas = time.time() - BigWorld.auth._created
+        if regpas < 5184000:
+            return
+        if getattr(self, '_is_donat_edit_visible', False):
+            return
+        if self.character:
+            self._april1_oldpers_spawn()
+
+    oldpersmodel = None
+
+    def _april1_oldpers_spawn(self):
+        self.oldpersmodel = StalkerModelOld.STALKER_MODEL_OLD().rand_supermodel()
+        BigWorld.addModel(self.oldpersmodel)
+        self.oldpersmodel.IdleUnarmed()
+        rotate_motor = BigWorld.Servo(DummyRotating()._rotate_matrix)
+        self.oldpersmodel.addMotor(rotate_motor)
+        if self.model:
+            self.model.visible = 0
+
+    def _april1_oldpers_clear(self):
+        if getattr(self, 'oldpersmodel', None):
+            if self.model:
+                self.model.visible = 1
+            try:
+                BigWorld.delModel(self.oldpersmodel)
+            except Exception as err:
+                print err
+
+        self.oldpersmodel = None
+        return
+
+    def aprilHehehe(self):
+        date = datetime.datetime.now()
+        if date.month != 4:
+            return
+        if date.day != 1:
+            return
+        self._apr_model = BigWorld.Model('characters/creatures/vedun/vedun_lod1.model')
+        self._apr_model.position = (52.4676, 25.8922, 60.5146)
+        self._apr_model.yaw = 1.0
+        self.addModel(self._apr_model)
+        self._apr_model.Vedun_Idle()
+
+    def on_play_game(self):
+        if self._face_customizer:
+            self._face_customizer.destroy()
+        self._face_customizer = None
+        self._model_loader.clear_cache()
+        return
+
+    def reset(self):
+        """????"""
+        self.character = None
+        self.name = ''
+        self.model = None
+        self.default_models.clear()
+        return
+
+    @property
+    def EquippedVisibleAttaches(self):
+        if self.character:
+            return self.character['clothVisibleAtaches']
+        return {}
+
+    @property
+    def ActiveWeaponSet2(self):
+        if self.character:
+            for weapon_data in self.character['weapon'].values():
+                if weapon_data['itemType'] and not ItemsCatalog.GetItemParam(weapon_data['itemType']):
+                    return ItemsUtils.default_active_weapon_data()
+
+            return self.character['weapon']
+        else:
+            return ItemsUtils.default_active_weapon_data()
+
+    def set_character(self, character, force = False):
+        """\xd0\xa1\xd0\xbe\xd0\xb7\xd0\xb4\xd0\xb0\xd1\x82\xd1\x8c \xd0\xbc\xd0\xbe\xd0\xb4\xd0\xb5\xd0\xbb\xd1\x8c \xd0\xbf\xd0\xb5\xd1\x80\xd0\xb5\xd0\xb4\xd0\xb0\xd0\xbd\xd0\xbd\xd0\xbe\xd0\xb3\xd0\xbe \xd0\xbf\xd0\xb5\xd1\x80\xd1\x81\xd0\xbe\xd0\xbd\xd0\xb0\xd0\xb6\xd0\xb0."""
+        self._is_donat_edit_visible = False
+        if character:
+            self.character = character
+            old_name = self.name
+            self.name = self.character.name
+            self.filter = BigWorld.AvatarFilter()
+            if old_name != self.name or not self.model or force:
+                self.setModel()
+            elif BWPersonality.GUICore.screenUnFaderGUI and BWPersonality.GUICore.screenUnFaderGUI.component.visible:
+                unfade_time = 0.5
+                BWPersonality.GUICore.screenUnFade(hide_time=unfade_time, unfade_speed=0.5)
+                BigWorld.callback(unfade_time, self.unlock_face_button)
+                DummyRotating().load_old_motor(self.model)
+                DummyRotating().init_motor(self, position=self.position)
+                self.model.forceTick(10)
+                self.model.forceDraw()
+                DummyRotating().look_at_camera()
+                DummyRotating().start_loop()
+        else:
+            self.character = None
+            self.name = ''
+        return
+
+    def unlock_face_button(self):
+        BWPersonality.GUICore.loginFlash.send_to_flashscript('change_face_btn_enabled', {'value': True})
+
+    def is_old(self):
+        if not self.character:
+            return
+        return self.character.version < Constants.LEVEL1
+
+    def on_group_chosen(self, choice_group):
+        if 'under-pants' in choice_group:
+            self._force_hide_slots = set([EST.PANTS])
+        elif 'under-shirt' in choice_group:
+            self._force_hide_slots = set([EST.JACKET])
+        else:
+            self._force_hide_slots.clear()
+        if not self._set_model_coroutine_instance:
+            self.setModel(save=True, force_hide_slots=self._force_hide_slots)
+
+    def on_char_menu_mode(self, mode):
+        self._char_mode = mode
+        if mode == 'main':
+            if self._force_hide_slots:
+                self._force_hide_slots.clear()
+        self.setModel(save=True)
+
+    def update_face_from_GUI(self, choice_group, value):
+        """\xd0\x98\xd1\x81\xd0\xbf\xd0\xbe\xd0\xbb\xd1\x8c\xd0\xb7\xd1\x83\xd0\xb5\xd1\x82\xd1\x81\xd1\x8f \xd0\xbf\xd1\x80\xd0\xb8 \xd0\xb8\xd0\xb7\xd0\xbc\xd0\xb5\xd0\xbd\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb8 \xd0\xbe\xd0\xb4\xd0\xb5\xd0\xb6\xd0\xb4\xd1\x8b \xd0\xbb\xd0\xb8\xd1\x86\xd0\xb0 \xd0\xbf\xd1\x80\xd0\xb8 \xd1\x81\xd0\xbe\xd0\xb7\xd0\xb4\xd0\xb0\xd0\xbd\xd0\xb8\xd0\xb8 \xd0\xbf\xd0\xb5\xd1\x80\xd1\x81\xd0\xb0."""
+        need_set_model = [False]
+        need_update_hairs = [False]
+
+        def set_face_part(slot_type):
+            item_type = value
+            old_item_type = EST.get_slot_data(self, slot_type)['itemType']
+            if item_type == old_item_type:
+                return
+            EST.set_slot_data(self, slot_type, {'itemID': 0,
+             'itemType': item_type})
+            need_set_model[0] = True
+
+        def check_face_part(personality_key):
+            v = math_bw.map_100_to_UINT8(value)
+            if v == self.personality[personality_key]:
+                return
+            self.personality[personality_key] = v
+            need_update_hairs[0] = True
+
+        if choice_group == 'HairStyle':
+            set_face_part(EST.HAIR)
+        elif choice_group == 'BeardStyle':
+            set_face_part(EST.BEARD)
+        elif choice_group == 'MustacheStyle':
+            set_face_part(EST.MOUSTACHE)
+        elif choice_group == 'HairLength':
+            check_face_part('hairs')
+        elif choice_group == 'BeardLength':
+            check_face_part('beard')
+        elif choice_group == 'MustacheLength':
+            check_face_part('moustache')
+        elif choice_group == 'HairColor':
+            color = int(value)
+            if self.personality['haircolor'] != color:
+                self.personality['haircolor'] = color
+                need_update_hairs[0] = True
+        elif choice_group == 'SkinColor':
+            color = int(value)
+            if self.personality['skincolor'] != color:
+                self.personality['skincolor'] = color
+                need_update_hairs[0] = True
+        elif choice_group == 'Age':
+            age = math_bw.map_100_to_UINT8(value)
+            if self.personality['age'] != age:
+                self.personality['age'] = age
+                need_update_hairs[0] = True
+        elif choice_group == 'Details':
+            details = math_bw.map_100_to_UINT8(value)
+            if self.personality['details'] != details:
+                self.personality['details'] = details
+                need_update_hairs[0] = True
+        elif choice_group == 'EyeColor':
+            color = int(value)
+            if self.personality['eyescolor'] != color:
+                self.personality['eyescolor'] = color
+                need_update_hairs[0] = True
+        elif choice_group == 'Unshaven':
+            unshaven = math_bw.map_100_to_UINT8(value)
+            if self.personality['unshaven'] != unshaven:
+                self.personality['unshaven'] = unshaven
+                need_update_hairs[0] = True
+        elif choice_group == 'EyebrowsStyle':
+            style = int(value)
+            if self.personality['brows']['style'] != style:
+                self.personality['brows']['style'] = style
+                need_update_hairs[0] = True
+        elif choice_group == 'EyebrowsPosition':
+            position = math_bw.map_100_to_UINT8(value)
+            if self.personality['brows']['position'] != position:
+                self.personality['brows']['position'] = position
+                need_update_hairs[0] = True
+        elif choice_group == 'EyebrowsRotation':
+            rotation = math_bw.map_100_to_UINT8(value)
+            if self.personality['brows']['rotation'] != rotation:
+                self.personality['brows']['rotation'] = rotation
+                need_update_hairs[0] = True
+        elif choice_group == 'TatooStyle':
+            style = int(value)
+            if self.personality['mark']['id'] != style:
+                self.personality['mark']['id'] = style
+                need_update_hairs[0] = True
+        elif choice_group == 'TatooColor':
+            color = math_bw.hexToInt16color(int(value))
+            if self.personality['mark']['color'] != color:
+                self.personality['mark']['color'] = color
+                need_update_hairs[0] = True
+        else:
+            print 'AvatarDummmy (ERROR): undefined face group', choice_group
+        if need_set_model[0]:
+            self.setModel(save=True, force_hide_slots=self._force_hide_slots)
+        elif need_update_hairs[0]:
+            StalkerModel.update_hairs(self)
+
+    def update_cloth_from_GUI(self, choice_group, data):
+        """\xd0\x98\xd1\x81\xd0\xbf\xd0\xbe\xd0\xbb\xd1\x8c\xd0\xb7\xd1\x83\xd0\xb5\xd1\x82\xd1\x81\xd1\x8f \xd0\xbf\xd1\x80\xd0\xb8 \xd0\xb8\xd0\xb7\xd0\xbc\xd0\xb5\xd0\xbd\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb8 \xd0\xbe\xd0\xb4\xd0\xb5\xd0\xb6\xd0\xb4\xd1\x8b \xd1\x82\xd0\xb5\xd0\xbb\xd0\xb0 \xd0\xbf\xd1\x80\xd0\xb8 \xd1\x81\xd0\xbe\xd0\xb7\xd0\xb4\xd0\xb0\xd0\xbd\xd0\xb8\xd0\xb8 \xd0\xbf\xd0\xb5\xd1\x80\xd1\x81\xd0\xb0."""
+        if data:
+            item_type = data['item_id']
+            old_item_type = data.get('old_id')
+            if old_item_type == item_type:
+                return
+            if old_item_type:
+                old_item_param = ItemsCatalog.GetItemParam(old_item_type)
+                for slot_type in old_item_param['SlotType']:
+                    item_id = EST.get_slot_data(self, slot_type)['itemID']
+                    EST.clear_slot(self, slot_type)
+                    self._chosen_colorise_emblems = filter(lambda emblem: emblem['ItemID'] != item_id, self._chosen_colorise_emblems)
+
+            item_param = ItemsCatalog.GetItemParam(item_type)
+            item_id = self._unique_negative_id.next()
+            for slot_type in item_param['SlotType']:
+                EST.set_slot_data(self, slot_type, {'itemID': item_id,
+                 'itemType': item_type})
+
+            color = data.get('color')
+            if color:
+                camo_id = DyeConstant.get_item_default_cammo(item_type)
+                colorise_emblem = ItemsUtils.pack_colorise(item_id, int(color), camo_id)
+                self._chosen_colorise_emblems.append(colorise_emblem)
+        self.setModel(save=True, force_hide_slots=self._force_hide_slots)
+
+    def full_update_char_from_GUI(self, data, set_model = True):
+        """ \xd0\xbe\xd0\xb1\xd0\xbd\xd0\xbe\xd0\xb2\xd0\xbb\xd1\x8f\xd0\xb5\xd1\x82 \xd0\xb2\xd1\x81\xd1\x91, \xd0\xba\xd1\x80\xd0\xbe\xd0\xbc\xd0\xb5 \xd1\x80\xd0\xbe\xd0\xb6\xd0\xb8 """
+        self._chosen_colorise_emblems = []
+        keep_slots = {}
+        for slot_type in EST.get_face_slots():
+            keep_slots[slot_type] = EST.get_slot_data(self, slot_type)
+
+        self.EquippedArmor = EST.get_default_equipped_armor()
+        for slot_type, slot_data in keep_slots.items():
+            EST.set_slot_data(self, slot_type, slot_data)
+
+        for data in [ value['var'] for value in data if value['var'] ]:
+            if not data:
+                continue
+            item_type = data['item_id']
+            item_param = ItemsCatalog.GetItemParam(item_type)
+            item_id = self._unique_negative_id.next()
+            color = data.get('color')
+            if color:
+                camo_id = DyeConstant.get_item_default_cammo(item_type)
+                colorise_emblem = ItemsUtils.pack_colorise(item_id, int(color), camo_id)
+                self._chosen_colorise_emblems.append(colorise_emblem)
+            for slot_type in item_param['SlotType']:
+                EST.set_slot_data(self, slot_type, {'itemID': item_id,
+                 'itemType': item_type})
+
+        for slot_type in EST._replaceonly_slots:
+            free_item_type = EST.default_slot_items.get(slot_type)
+            item_id = self._unique_negative_id.next()
+            EST.set_slot_data(self, slot_type, {'itemID': item_id,
+             'itemType': free_item_type})
+
+        if set_model:
+            self.setModel(save=True)
+
+    def full_update_face_from_GUI(self, data, set_model = True):
+        """ \xd0\xbe\xd0\xb1\xd0\xbd\xd0\xbe\xd0\xb2\xd0\xbb\xd1\x8f\xd0\xb5\xd1\x82 \xd1\x82\xd0\xbe\xd0\xbb\xd1\x8c\xd0\xba\xd0\xbe \xd1\x80\xd0\xbe\xd0\xb6\xd1\x83 """
+        for slot_type in EST.get_face_slots():
+            EST.clear_slot(self, slot_type)
+
+        face_data = None
+        for group_data in data:
+            choice_group = group_data['choiceGroup']
+            value = group_data['value']
+            if choice_group in ('HairStyle', 'MustacheStyle', 'BeardStyle'):
+                item_type = value
+                if not item_type:
+                    continue
+                item_param = ItemsCatalog.GetItemParam(item_type)
+                for slot_type in item_param['SlotType']:
+                    EST.set_slot_data(self, slot_type, {'itemID': 0,
+                     'itemType': item_type})
+
+            elif choice_group == 'HairLength':
+                self.personality['hairs'] = math_bw.map_100_to_UINT8(value)
+            elif choice_group == 'MustacheLength':
+                self.personality['moustache'] = math_bw.map_100_to_UINT8(value)
+            elif choice_group == 'BeardLength':
+                self.personality['beard'] = math_bw.map_100_to_UINT8(value)
+            elif choice_group == 'HairColor':
+                self.personality['haircolor'] = int(value)
+            elif choice_group == 'SkinColor':
+                self.personality['skincolor'] = int(value)
+            elif choice_group == 'Age':
+                self.personality['age'] = math_bw.map_100_to_UINT8(value)
+            elif choice_group == 'Details':
+                self.personality['details'] = math_bw.map_100_to_UINT8(value)
+            elif choice_group == 'FaceForm':
+                face_data = map(int, value)
+            elif choice_group == 'EyeColor':
+                self.personality['eyescolor'] = int(value)
+            elif choice_group == 'Unshaven':
+                self.personality['unshaven'] = math_bw.map_100_to_UINT8(value)
+            elif choice_group == 'EyebrowsStyle':
+                self.personality['brows']['style'] = int(value)
+            elif choice_group == 'EyebrowsPosition':
+                self.personality['brows']['position'] = math_bw.map_100_to_UINT8(value)
+            elif choice_group == 'EyebrowsRotation':
+                self.personality['brows']['rotation'] = math_bw.map_100_to_UINT8(value)
+            elif choice_group == 'TatooStyle':
+                self.personality['mark']['id'] = int(value)
+            elif choice_group == 'TatooColor':
+                self.personality['mark']['color'] = int(value)
+            else:
+                print 'AvatarDummmy (ERROR): undefined face group full update', choice_group
+
+        if not face_data:
+            face_data = FaceSaver.generate_random_face(self.face_limits_type)
+            if not self.personality['face']:
+                BWPersonality.GUICore.loginFlash.send_to_flashscript('set_face_form', {'data': map(str, face_data)})
+            else:
+                BWPersonality.GUICore.loginFlash.send_to_flashscript('set_face_form', {'data': map(str, self.personality['face'])})
+        self.personality['face'] = face_data
+        self._reset_face_on_set_model = True
+        if set_model:
+            self.setModel(save=True)
+        return
+
+    def get_face_for_flash(self):
+        slot_type_to_choice_group = {EST.HAIR: 'HairStyle',
+         EST.BEARD: 'BeardStyle',
+         EST.MOUSTACHE: 'MustacheStyle'}
+        items_data = []
+        for slot_type in EST.get_face_slots():
+            value = EST.get_slot_data(self, slot_type)['itemType']
+            items_data.append({'choiceGroup': slot_type_to_choice_group[slot_type],
+             'value': value})
+
+        data = {'data': [{'choiceGroup': 'HairLength',
+                   'value': math_bw.map_UINT8_to_100(self.personality['hairs'])},
+                  {'choiceGroup': 'MustacheLength',
+                   'value': math_bw.map_UINT8_to_100(self.personality['moustache'])},
+                  {'choiceGroup': 'BeardLength',
+                   'value': math_bw.map_UINT8_to_100(self.personality['beard'])},
+                  {'choiceGroup': 'HairColor',
+                   'value': self.personality['haircolor']},
+                  {'choiceGroup': 'SkinColor',
+                   'value': self.personality['skincolor']},
+                  {'choiceGroup': 'EyeColor',
+                   'value': self.personality['eyescolor']},
+                  {'choiceGroup': 'Age',
+                   'value': math_bw.map_UINT8_to_100(self.personality['age'])},
+                  {'choiceGroup': 'Details',
+                   'value': math_bw.map_UINT8_to_100(self.personality['details'])},
+                  {'choiceGroup': 'Unshaven',
+                   'value': math_bw.map_UINT8_to_100(self.personality['unshaven'])},
+                  {'choiceGroup': 'EyebrowsStyle',
+                   'value': self.personality['brows']['style']},
+                  {'choiceGroup': 'EyebrowsPosition',
+                   'value': math_bw.map_UINT8_to_100(self.personality['brows']['position'])},
+                  {'choiceGroup': 'EyebrowsRotation',
+                   'value': math_bw.map_UINT8_to_100(self.personality['brows']['rotation'])},
+                  {'choiceGroup': 'TatooStyle',
+                   'value': self.personality['mark']['id']},
+                  {'choiceGroup': 'TatooColor',
+                   'value': self.personality['mark']['color']}]}
+        data['data'].extend(items_data)
+        return data
+
+    def full_update_from_GUI(self, data):
+        try:
+            self.full_update_char_from_GUI(data['char_data'], set_model=False)
+            self.full_update_face_from_GUI(data['face_data'], set_model=False)
+        except:
+            print 'AvatarDummy (ERROR):', data
+            raise
+
+        self.setModel(save=not data['init'])
+
+    def set_default_models_from_gui(self, data):
+        """\xd0\x98\xd1\x81\xd0\xbf\xd0\xbe\xd0\xbb\xd1\x8c\xd0\xb7\xd1\x83\xd0\xb5\xd1\x82\xd1\x81\xd1\x8f \xd0\xbf\xd1\x80\xd0\xb8 \xd1\x81\xd0\xbe\xd0\xb7\xd0\xb4\xd0\xb0\xd0\xbd\xd0\xb8\xd0\xb8 \xd0\xb4\xd0\xb5\xd1\x84\xd0\xbe\xd0\xbb\xd1\x82\xd0\xbd\xd0\xbe\xd0\xb9 \xd0\xbc\xd0\xbe\xd0\xb4\xd0\xb5\xd0\xbb\xd0\xb8."""
+        for data in data.values():
+            if not data:
+                continue
+            item_type = data['item_id']
+            item_param = ItemsCatalog.GetItemParam(item_type)
+            for slot_type in item_param['SlotType']:
+                EST.set_slot_data(self, slot_type, {'itemID': 0,
+                 'itemType': item_type})
+
+    def onLoadGunModel(self, gun_type, model):
+        pass
+
+    def is_loaded(self):
+        return hasattr(self, 'face_controller')
+
+    def onPreModelChange(self):
+        AvatarTrackers.onPreModelChange(self)
+        if self._reset_face_on_set_model:
+            return
+        if hasattr(self, 'face_controller'):
+            self._prev_face_raw_data = self.face_controller.raw_data
+
+    def onPostModelChange(self):
+        AvatarTrackers.onPostModelChange(self)
+        if hasattr(self, '_prev_face_raw_data'):
+            self.face_controller.raw_data = self._prev_face_raw_data
+            del self._prev_face_raw_data
+        if self.active_weapon_model and not self._canEnableHandGravity():
+            self.nodeInfoL.AttachedProviders = (self.left_weapon_prov, 0.0001)
+            self.nodeInfoR.AttachedProviders = (self.right_weapon_prov, 0.0001)
+
+    def onLoadModel(self, model):
+        BWPersonality.GUICore.loginFlash.send_to_flashscript('lock_char_buttons', {'value': False})
+        if self._need_restore_trackers:
+            self.onPreModelChange()
+        self._model_loaded = True
+        if self.model:
+            self.clearPistolHolster()
+        self.model = None
+        self.model = model
+        self._head_exist = StalkerModel.isHeadExist(model)
+        self.last_hand_actionHvatR = None
+        self.last_hand_actionHvatL = None
+        self.left_weapon_prov = None
+        self.right_weapon_prov = None
+        try:
+            model.motors[0].matchCaps = [0]
+        except:
+            traceback.print_exc()
+
+        if not self.is_old():
+            self.setAvatarGuns()
+        self.createTrakers()
+        self.createDiffDirProviders()
+        self.setDirectionProviderParam(force=True)
+        if self.active_weapon:
+            if getattr(self, 'nodeInfoR', None):
+                self.nodeInfoR.rotateHand = True
+            if getattr(self, 'nodeInfoL', None):
+                self.nodeInfoL.rotateHand = True
+        if self._need_restore_trackers:
+            self._need_restore_trackers = False
+            DummyRotating().load_old_motor(self.model)
+            self.onPostModelChange()
+            self.model.forceDraw()
+        else:
+            section = self.check_visor(None)
+            section = self.check_gasmask_filter(section)
+            if section:
+                self.model.restoreActionQueue(section)
+            self.model.idle_0_stay_bored()
+            DummyRotating().init_motor(self, position=self.position)
+            if self.active_weapon_model and not self._canEnableHandGravity():
+                self.active_weapon_model.forceDraw()
+                self.nodeInfoL.AttachedProviders = (self.left_weapon_prov, 0.0001)
+                self.nodeInfoR.AttachedProviders = (self.right_weapon_prov, 0.0001)
+            self.model.forceTick(10)
+            self.model.forceDraw()
+            DummyRotating().look_at_camera()
+            StalkerModel.update_tuck(self)
+        DummyRotating().start_loop()
+        try:
+            self.model.Wink()
+        except:
+            print "AvatarDummy: you can't wink without head"
+
+        account = BigWorld.player()
+        if hasattr(account, 'onLoadDummyModelComplete'):
+            account.onLoadDummyModelComplete(model)
+            BigWorld.callback(1, self.unlock_face_button)
+        import ClothAttachSlotsConfig as CASC
+        CASC.update_slots_model(self)
+        self.disableRenderPlaneFace()
+        if hasattr(self, 'face_controller'):
+            self.face_controller.dynamic = True
+            self.create_face_customizer(BWPersonality.GUICore.loginFlash.on_face_changed)
+        self._reset_face_on_set_model = False
+        self.replayHandHvatAnimation()
+        self.onCreateWeaponProvAfterLoadHand()
+        if hasattr(account, 'can_play') and not account.can_play:
+            self.model.visible = False
+        try:
+            if not self._face_textures_cache:
+                self._face_textures_cache = {'scarDiffuse1': self.model.SkinTint.scarDiffuse1,
+                 'diffuseMap': self.model.SkinTint.diffuseMap,
+                 'normalMap': self.model.SkinTint.normalMap}
+        except:
+            print 'ERROR FOR', self, self.model
+            if self.model:
+                print self.model.sources
+            traceback.print_exc()
+
+        self.updatePistolHolster()
+        self.updateBlendNodeByImpacting()
+        self.sendWTonAvatarChangeWeaponStatus()
+        self.sendWTonAvatarChangeWeapon()
+        try:
+            self.april1_oldpers()
+        except:
+            traceback.print_exc()
+
+        return
+
+    def _use_4k_textures(self, use):
+        try:
+            if use:
+                resources = {'scarDiffuse1': 'characters2/clothing/ManNude/Textures/Vesnushki_decal_2048.dds',
+                 'diffuseMap': 'characters2/clothing/ManNude/Textures/ManHead30_4096.dds',
+                 'normalMap': 'characters2/clothing/ManNude/Textures/ManHead30_4096_norm.dds'}
+
+                def loaded(preqs):
+                    if not self._face_mode:
+                        return
+                    for param, texture_key in resources.items():
+                        setattr(self.model.SkinTint, param, preqs[texture_key])
+
+                BigWorld.loadResourceListBG(resources.values(), loaded)
+            else:
+                for param, texture in self._face_textures_cache.items():
+                    setattr(self.model.SkinTint, param, texture)
+
+        except:
+            print "AvatarDummy: can't change high resolution textures"
+            print traceback.format_exc()
+
+    def onConfirmAccount(self):
+        if self.model:
+            self.model.visible = True
+
+    def set_face_mode(self, value):
+        self._face_mode = value
+        if self._face_customizer:
+            self._face_customizer.lock(not self._face_mode)
+        self._use_4k_textures(value)
+        if value:
+            self.setModel(save=True)
+
+    def disableRenderPlaneFace(self):
+        try:
+            for plane_name in FaceSettings.plane_config.keys():
+                if hasattr(self.model, plane_name):
+                    setattr(self.model, plane_name, 'no_render')
+                else:
+                    print "AvatarDummy (ERROR): can't find plane named", plane_name
+
+        except:
+            traceback.print_exc()
+
+    def create_face_customizer(self, change_callback):
+        self.disableRenderPlaneFace()
+        if self._face_customizer:
+            self._face_customizer.destroy()
+        self._face_customizer = FaceCustomizer(self)
+        self._face_customizer.on_enter_game_callback = self.on_play_game
+        self._face_customizer._on_face_changed = change_callback
+        self._face_customizer.lock(not self._face_mode)
+
+    def apply_ignore_bones_items(self):
+        return not self._hide_head_items_mode()
+
+    def _hide_head_items_mode(self):
+        return self._char_mode in ('face', 'cloth')
+
+    def setModel(self, save = False, force_hide_slots = None, force_hide_modes = None):
+        """ \xd0\xa1\xd0\xbe\xd0\xb7\xd0\xb4\xd0\xb0\xd1\x82\xd1\x8c \xd0\xb8 \xd1\x83\xd1\x81\xd1\x82\xd0\xb0\xd0\xbd\xd0\xbe\xd0\xb2\xd0\xb8\xd1\x82\xd1\x8c \xd0\xbd\xd0\xbe\xd0\xb2\xd1\x83\xd1\x8e \xd0\xbc\xd0\xbe\xd0\xb4\xd0\xb5\xd0\xbb\xd1\x8c \xd0\xbc\xd0\xb0\xd0\xbd\xd0\xb5\xd0\xba\xd0\xb5\xd0\xbd\xd0\xb0.
+                save - \xd1\x81\xd0\xbe\xd1\x85\xd1\x80\xd0\xb0\xd0\xbd\xd0\xb8\xd1\x82\xd1\x8c \xd0\xbf\xd0\xb0\xd1\x80\xd0\xb0\xd0\xbc\xd0\xb5\xd1\x82\xd1\x80\xd1\x8b \xd1\x81\xd1\x82\xd0\xb0\xd1\x80\xd0\xbe\xd0\xb9 \xd0\xbc\xd0\xbe\xd0\xb4\xd0\xb5\xd0\xbb\xd0\xb8 \xd0\xb8 \xd0\xb2\xd0\xbe\xd1\x81\xd1\x81\xd1\x82\xd0\xb0\xd0\xbd\xd0\xbe\xd0\xb2\xd0\xb8\xd1\x82\xd1\x8c \xd0\xb8\xd1\x85 \xd0\xb2 \xd0\xbd\xd0\xbe\xd0\xb2\xd0\xbe\xd0\xb9 (\xd0\xb0\xd0\xbd\xd0\xb8\xd0\xbc\xd0\xb0\xd1\x86\xd0\xb8\xd1\x8f, \xd1\x82\xd1\x80\xd0\xb5\xd0\xba\xd0\xb5\xd1\x80\xd1\x8b \xd0\xb8 \xd0\xbf\xd1\x80.)
+                force_hide_slots - \xd1\x81\xd0\xba\xd1\x80\xd1\x8b\xd1\x82\xd1\x8c \xd0\xbf\xd1\x80\xd0\xb5\xd0\xb4\xd0\xbc\xd0\xb5\xd1\x82\xd1\x8b \xd0\xb2 \xd1\x8d\xd1\x82\xd0\xb8\xd1\x85 \xd1\x81\xd0\xbb\xd0\xbe\xd1\x82\xd0\xb0\xd1\x85
+        """
+        if hasattr(self, '_cur_tuck_animation'):
+            del self._cur_tuck_animation
+        if self._hide_head_items_mode():
+            if force_hide_slots is None:
+                force_hide_slots = set()
+            force_hide_slots.update([EST.HELMET,
+             EST.MOUTH,
+             EST.EARS,
+             EST.HAT,
+             EST.C_HAT,
+             EST.EYES])
+            force_hide_modes = set([EST.MODE_HOOD])
+        if self.need_fader:
+            self.need_fader = False
+            if self._set_model_coroutine_instance:
+                try:
+                    self._set_model_coroutine_instance.stop()
+                except Exception as e:
+                    print e
+
+            self._set_model_coroutine_instance = self._set_model_coroutine(save, force_hide_slots, force_hide_modes)
+            self._set_model_coroutine_instance.run()
+            return
+        else:
+            if save:
+                self._need_restore_trackers = True
+            if self.character:
+                self.ActiveItemID = self.character['ActiveItemID']
+            else:
+                self.ActiveItemID = 0
+            if self.is_old():
+                model = BigWorld.Model('characters2/basemodel/StalkerBase2.model', AvatarDummyModelLoader.HEAD_ZONE_MODEL_PATH)
+                self.onLoadModel(model)
+            else:
+                self._model_loader.get_model(self.onLoadModel, force_hide_slots=force_hide_slots, force_hide_modes=force_hide_modes)
+            return
+
+    @BWMemberCoroutine
+    def _set_model_coroutine(self, *args):
+        fade_time = 0.5
+        BWPersonality.GUICore.screenFade(visible_time=None, fade_speed=0.5)
+        yield BWWaitForPeriod(fade_time)
+        self._model_loaded = False
+        self.setModel(*args)
+        try:
+            yield BWWaitForCondition(lambda : self._model_loaded, 5.0, 0)
+        except BWCoroutineTimeoutException:
+            pass
+
+        unfade_time = 0.5
+        BWPersonality.GUICore.screenUnFade(hide_time=unfade_time, unfade_speed=0.5)
+        BigWorld.callback(unfade_time, self.unlock_face_button)
+        self._set_model_coroutine_instance = None
+        return
+
+    def hideModel(self):
+        """\xd0\xa1\xd0\xba\xd1\x80\xd1\x8b\xd1\x82\xd1\x8c \xd0\xbc\xd0\xbe\xd0\xb4\xd0\xb5\xd0\xbb\xd1\x8c \xd0\xbf\xd0\xb5\xd1\x80\xd1\x81\xd0\xbe\xd0\xbd\xd0\xb0\xd0\xb6\xd0\xb0."""
+        self.model = BigWorld.Model('')
+
+    def getDefaultModels(self):
+        if self.character:
+            return Avatar.parse_character_default_models(self.character['defaultModels'])
+        else:
+            return self.default_models
+
+    _tmp_last_models = None
+    _tmp_last_models_read = False
+    _tmp_last_models_path = 'tmp_last_models.pcl'
+
+    def getModelNamesTEMP(self):
+        return None
+
+    def getModelByNamesDict(self, names_dict):
+        core_model = None
+        if names_dict:
+            body_entry = names_dict[ItemsCatalog.BODY]
+            try:
+                core_model = BigWorld.Model(body_entry[ItemsUtils.MODEL_LIST_POSITION])
+            except:
+                traceback.print_exc()
+                print 'Error load gun model:', self
+                print 'names_dict', names_dict
+                print 'body_entry', body_entry
+                print 'key', ItemsUtils.MODEL_LIST_POSITION
+                print 'core_models', body_entry[ItemsUtils.MODEL_LIST_POSITION]
+                print
+                return
+
+            tint_dict = body_entry[ItemsUtils.MODEL_TINT_DICT_POSITION]
+            if tint_dict:
+                for tint_key in tint_dict:
+                    try:
+                        setattr(core_model, tint_key, tint_dict[tint_key])
+                    except:
+                        traceback.print_exc()
+                        print 'ERROR set tint model', repr(tint_key), repr(tint_dict[tint_key])
+                        print 'models:', body_entry[ItemsUtils.MODEL_LIST_POSITION]
+                        print
+
+            del names_dict[ItemsCatalog.BODY]
+            if names_dict:
+                for model_entry in names_dict.values():
+                    if model_entry[ItemsUtils.MODEL_LIST_POSITION]:
+                        try:
+                            model = BigWorld.Model(model_entry[ItemsUtils.MODEL_LIST_POSITION])
+                        except:
+                            traceback.print_exc()
+                            print 'ERROR load gun attach model:'
+                            print [model_entry[ItemsUtils.MODEL_LIST_POSITION]]
+                            print
+                            continue
+
+                    else:
+                        continue
+                    tint_dict = model_entry[ItemsUtils.MODEL_TINT_DICT_POSITION]
+                    if tint_dict:
+                        for tint_key in tint_dict:
+                            if hasattr(model, tint_key):
+                                setattr(model, tint_key, tint_dict[tint_key])
+
+                    try:
+                        setattr(core_model, model_entry[ItemsUtils.MODEL_HP_POSITION], model)
+                    except ValueError:
+                        print 'Cant attach model at hp', model_entry[ItemsUtils.MODEL_HP_POSITION], ' model name ', model_entry[ItemsUtils.MODEL_LIST_POSITION]
+                        print 'core_model', core_model.sources
+                        traceback.print_exc()
+                        return core_model
+                    except AttributeError:
+                        print 'Cant attach model at hp', model_entry[ItemsUtils.MODEL_HP_POSITION], ' model name ', model_entry[ItemsUtils.MODEL_LIST_POSITION]
+                        print 'core_model', core_model.sources
+                        traceback.print_exc()
+                        return core_model
+
+        return core_model
+
+    def fetchModelByNamesDict(self, names_dict, callback):
+        callback(None)
+        return
+
+    def set_loaded_personality(self, personality):
+        personality, face_parts = personality
+        self.personality = personality
+        for slot_type, slot_data in face_parts.items():
+            EST.set_slot_data(self, slot_type, slot_data)
+
+        data = self.get_face_for_flash()
+        BWPersonality.GUICore.loginFlash.send_to_flashscript('set_face_values', data)
+        self._reset_face_on_set_model = True
+        self.setModel(save=True)
+
+    def onLeaveWorld(self):
+        print 'AvatarDummmy onLeaveWorld', self
+
+    def UpdateAvatarAnimationCaps(self):
+        pass
+
+    def on_face_save_click(self):
+        self._face_customizer.on_face_save_click()
+
+    def on_face_load_click(self):
+        self._face_customizer.on_face_load_click()
+
+    def on_npc_face_type_click(self, npc_mode):
+        self.face_limit_type = LC.NPC if npc_mode else LC.PLAYER
+        self.personality['face'] = FaceSaver.generate_random_face(self.face_limits_type)
+        self._reset_face_on_set_model = True
+        self.setModel(save=True)
+
+    @property
+    def face_limits_type(self):
+        return self.face_limit_type
+
+    @property
+    def just_one_face_draw(self):
+        """ False - \xd0\xba\xd0\xbe\xd0\xbd\xd1\x82\xd1\x80\xd0\xbe\xd0\xbb\xd0\xbb\xd0\xb5\xd1\x80 \xd0\xbb\xd0\xb8\xd1\x86\xd0\xb0 \xd0\xbe\xd0\xb1\xd0\xbd\xd0\xbe\xd0\xb2\xd0\xbb\xd1\x8f\xd0\xb5\xd1\x82\xd1\x81\xd1\x8f \xd0\xba\xd0\xb0\xd0\xb6\xd0\xb4\xd1\x8b\xd0\xb9 \xd1\x82\xd0\xb8\xd0\xba """
+        return False
+
+    @property
+    def EquippedArmor(self):
+        if self.character and self.character['equippedArmor']:
+            return self.character['equippedArmor']
+        return self._chosen_equipped_armor
+
+    @EquippedArmor.setter
+    def EquippedArmor(self, value):
+        self._chosen_equipped_armor = value
+
+    @property
+    def coloriseEmblems(self):
+        if self.character and self.character['coloriseEmblems']:
+            return self.character['coloriseEmblems']
+        return self._chosen_colorise_emblems
+
+    @coloriseEmblems.setter
+    def coloriseEmblems(self, value):
+        self._chosen_colorise_emblems = value
+
+    @property
+    def colorDelegates(self):
+        return self.character and self.character['colorDelegates'] or []
+
+    def read_personality(self):
+        """ \xd0\xbf\xd1\x80\xd0\xb5\xd0\xb2\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xbc\xd0\xb0\xd1\x82\xd1\x80\xd0\xb8\xd1\x86\xd1\x8b \xd0\xbb\xd0\xb8\xd1\x86\xd0\xb0 \xd0\xb2 \xd0\xb1\xd0\xb8\xd1\x82\xd1\x8b \xd0\xb8 \xd0\xb7\xd0\xb0\xd0\xbf\xd0\xb8\xd1\x85\xd0\xb8\xd0\xb2\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xb2 personality """
+        face_data = self.face_controller.raw_data
+        face_blob = FaceSaver.face_data_to_int64_array(face_data, self.face_limits_type)
+        self.personality['face'] = face_blob
+        return self.personality
+
+    @property
+    def personality(self):
+        if self.character:
+            return self.character['personality']
+        return self._chosen_personality
+
+    @personality.setter
+    def personality(self, value):
+        if 'mark' not in value:
+            value['mark'] = {'id': 0,
+             'color': 0}
+        self._chosen_personality = value
+
+    @property
+    def EquipModes(self):
+        if self.character:
+            return self.character['equipModes']
+        return self._chosen_modes
+
+    @EquipModes.setter
+    def EquipModes(self, value):
+        self._chosen_modes = value
+
+    def sendWTonAvatarChangeWeaponStatus(self):
+        tracker_key = self._getTrackerKey()
+        BWPersonality.onAvatarChangeWeaponStatus(self.weaponStatus, self._last_action_type, tracker_key)
+
+    def sendWTonAvatarChangeWeapon(self):
+        weapon_type = self.active_weapon.getItemType() if self.active_weapon else 0
+        BWPersonality.onAvatarChangeWeapon(weapon_type)

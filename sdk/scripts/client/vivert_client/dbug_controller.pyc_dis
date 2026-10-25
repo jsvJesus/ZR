@@ -1,0 +1,156 @@
+# Embedded file name: ./client/vivert_client/dbug_controller.py
+import cPickle
+import client_utils
+import BWPersonality
+import Keys
+from Math import Matrix, Vector3
+import BigWorld
+from utils import Destructable, Tickable
+from navmesh3d.kdtree import KdTree
+from navmesh3d import serializator
+from navmesh3d.astar_graph import Graph
+from dbug_target import Target
+from dbug_vivert_entity import DebugVivert
+from control_panel import ControlPanel
+gi = BigWorld.getGeometricInstance()
+
+class DebugController(Destructable, Tickable):
+
+    def __init__(self):
+        Destructable.__init__(self)
+        Tickable.__init__(self)
+        self._gi_handlers = []
+        gi.removeAll()
+        self._model = None
+        self._tree = None
+        self._target = None
+        self._vivert = None
+        self._control_panel = None
+        self._sensor_sphere = None
+        if False:
+            self._model = self._create_model()
+            if self._model:
+                s_points, s_triangles = serializator.serialize_mesh(self._model)
+                self._tree = KdTree(s_points, s_triangles)
+        else:
+            s_points, s_triangles, debug_data = serializator.load_from_guid('D0273193.4533C156.574257B6.057FB7C3')
+            (x, y, z, yaw, pitch, roll), model_path = debug_data
+            translation = Vector3(x, y, z)
+            rotation = Vector3(yaw, pitch, roll)
+            self._model = self._create_model(model_path, (translation, rotation))
+            self._tree = KdTree(s_points, s_triangles)
+        self._astar_graph = Graph()
+        self._control_panel = self._create_control_panel()
+        BWPersonality.register_key_event_interceptor(self._on_key_event)
+        self.start_tick()
+        return
+
+    def _create_target(self):
+        target = Target(Vector3(86.875, 1.12207, 68.9141))
+        return target
+
+    def _find_any_vivert(self):
+        return next((v for v in BigWorld.entities.values() if v.__class__.__name__ == 'Vivert'), None)
+
+    def _create_control_panel(self):
+        control_panel = ControlPanel()
+        control_panel.add_listener(self._on_controlpanel_event)
+        vivert = self._find_any_vivert()
+        if vivert:
+            control_panel.show_and_connect(vivert)
+        return control_panel
+
+    def _create_vivert(self):
+        pos = BigWorld.player().position
+        pos = Vector3(90, 0, 83)
+        vivert = DebugVivert(pos)
+        return vivert
+
+    def _create_model(self, model_path = None, translation_rotation = None):
+        if not model_path:
+            model_path = 'models/temp/test_plane/navgen_test1.model'
+            model_path = 'models/Test/test_sewers.model'
+            model_path = 'models/Test/test_tonnel/test_tonnel.model'
+        model = BigWorld.Model(model_path)
+        model.isObstacle = True
+        if translation_rotation:
+            translation, rotation = translation_rotation
+        else:
+            translation = Vector3(87.262, 1.138, 67.415)
+            rotation = Vector3(0, 0, 0)
+        t = Matrix()
+        t.setTranslate(translation)
+        r = Matrix()
+        r.setRotateYPR(rotation)
+        t.preMultiply(r)
+        model.setWorldTransform(t)
+        BigWorld.addModel(model)
+        return model
+
+    def can_tick(self):
+        return not self.destroyed
+
+    def _on_controlpanel_event(self, event_type, data):
+        pass
+
+    def on_tick(self):
+        for handler in self._gi_handlers:
+            gi.remove(handler)
+
+        self._gi_handlers[:] = []
+        if self._vivert:
+            self._vivert.on_tick(self._target, self._gi_handlers)
+            if self._tree:
+                p1 = BigWorld.player().position
+                p2 = self._vivert.position
+                triangle1, p1 = self._tree.search_closest(p1)
+                triangle2, p2 = self._tree.search_closest(p2)
+                path = self._astar_graph.search(triangle1, triangle2, p1, p2)
+                for i in range(1, len(path)):
+                    self._gi_handlers.append(gi.addLine(path[i], path[i - 1], (1, 1, 1, 1), True))
+
+        if self._target:
+            self._target.on_tick()
+            if self._tree:
+                p1 = self._target.position
+                p2 = self._find_any_vivert().position
+                triangle1, p1 = self._tree.search_closest(p1)
+                triangle2, p2 = self._tree.search_closest(p2)
+                if all((triangle1,
+                 p1,
+                 triangle2,
+                 p2)):
+                    path = self._astar_graph.search(triangle1, triangle2, p1, p2)
+                    self._astar_graph.cut_path(path, 1)
+                    for i in range(1, len(path)):
+                        self._gi_handlers.append(gi.addLine(path[i], path[i - 1], (1, 1, 1, 1), True))
+
+        if self._control_panel:
+            self._control_panel.tick()
+
+    def _on_key_event(self, event):
+        if not event.isKeyDown() and event.key == Keys.KEY_RIGHTMOUSE:
+            from_pos, direction = client_utils.getMousePosDir()
+            direction.normalise()
+            direction *= 500
+            to_pos = from_pos + direction
+            res = BigWorld.filteredCollide(BigWorld.player().spaceID, from_pos, to_pos, 1)
+            if res:
+                hit = Vector3(res[0])
+                vivert = hit and next((e for e in BigWorld.entities.values() if e.__class__.__name__ == 'Vivert'))
+                vivert.cell.run_debug_command('goto', cPickle.dumps(tuple(hit)))
+        return False
+
+    def on_release(self):
+        self.stop_tick()
+        BWPersonality.unregister_key_event_interceptor(self._on_key_event)
+        if self._model:
+            BigWorld.delModel(self._model)
+            self._model = None
+        if self._target:
+            self._target.release()
+        if self._vivert:
+            self._vivert.release()
+        if self._control_panel:
+            self._control_panel.release()
+        return

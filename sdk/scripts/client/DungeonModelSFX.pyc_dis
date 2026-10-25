@@ -1,0 +1,128 @@
+# Embedded file name: ./client/DungeonModelSFX.py
+import FX
+import json
+import ResMgr
+import BigWorld
+from Helpers.Caps import CAP_EXCLUDE
+from FX.persistent_ext_bg import loadPersistentExtAsync
+section = ResMgr.openSection('scripts/common/EnumProps/DungeonModelSFX.json')
+CONFIG = json.loads(section.asBinary)['model_index']['values']
+
+class DungeonModelSFX(BigWorld.Entity):
+    """docstring for  DungeonModelSFX"""
+
+    def __init__(self):
+        BigWorld.Entity.__init__(self)
+        self._model_path = next((model for index, model in CONFIG if index == self.model_index), None)
+        self.effect = None
+        self.callback_id = None
+        self.targetCaps = [CAP_EXCLUDE]
+        self.filter = BigWorld.NoneFilter()
+        return
+
+    def play_sfx(self):
+        if not self.model:
+            return
+        self.stop_sfx(True)
+        if self.sfx:
+
+            def on_load(prereqs):
+                try:
+                    self.effect = FX.PersistentExt(self.sfx, prereqs)
+                    self.effect.attach(self.model)
+                    self.effect.go()
+                except Exception as err:
+                    print 'ERROR FOR:', self, 'sfx=', repr(self.sfx), self.position
+                    raise err
+
+            loadPersistentExtAsync([self.sfx], on_load)
+        if self.sfx_oneshot:
+            FX.bufferedOneShotEffect(self.sfx_oneshot, self.model, maxDuration=21.0)
+
+    def stop_sfx(self, force = False):
+        if self.isDestroyed:
+            return
+        if self.sfx_force_stop:
+            force = True
+        if self.effect:
+            self.effect.stop()
+            if not force:
+                self.callback_id = BigWorld.callback(5, self.remove_effect)
+            else:
+                self.remove_effect()
+
+    def remove_effect(self):
+        if self.callback_id:
+            BigWorld.cancelCallback(self.callback_id)
+        self.callback_id = None
+        if not self.effect:
+            return
+        else:
+            self.effect.detach()
+            self.effect = None
+            return
+
+    def prerequisites(self):
+        if self._model_path:
+            return [self._model_path]
+        return []
+
+    def onEnterWorld(self, prereqs):
+        if self._model_path and self._model_path != 'None':
+            scale = self.scale
+            self.model = prereqs[self._model_path]
+            self.model.scale = (scale, scale, scale)
+            self.model.newScaleTest = (scale, scale, scale)
+            self.model.visible = self.model_state
+            self.model.isObstacle = self.model_state
+        else:
+            self.model = BigWorld.Model('')
+            bb = self.particlesVisBoundBox
+            self.model.scale = (bb, bb, bb)
+        self.set_model_state(None)
+        self.update_sfx_state()
+        self.set_animation_state(None)
+        return
+
+    def onLeaveWorld(self):
+        self.model = None
+        return
+
+    def set_model_state(self, old_value):
+        if not self.model:
+            return
+        self.model.visible = self.model_state
+        self.model.isObstacle = self.model_state
+
+    def update_sfx_state(self):
+        if self.sfx_state:
+            self.play_sfx()
+        else:
+            self.stop_sfx()
+
+    def set_animation_state(self, old_value):
+        if not self.model:
+            return
+        else:
+            action_on = self.model.action(self.animation_on) if self.animation_on else None
+            action_off = self.model.action(self.animation_off) if self.animation_off else None
+            if self.animation_state:
+                if action_off:
+                    action_off.stop()
+                if action_on:
+                    frame_rate = self.animation_on_speed * action_on.frameRate
+                    if self.animation_change:
+                        action_change = self.model.action(self.animation_change)
+                        self.model.action(self.animation_change)(0.0, None, 0, action_change.lastFrame, action_change.firstFrame, action_change.frameRate).action(self.animation_on)(0, None, 0, -1, -1, frame_rate)
+                        return
+                    action_on(0, None, 0, -1, -1, frame_rate)
+            else:
+                if action_on:
+                    action_on.stop()
+                if action_off:
+                    frame_rate = self.animation_off_speed * action_off.frameRate
+                    if self.animation_change:
+                        self.model.action(self.animation_change)().action(self.animation_off)(0, None, 0, -1, -1, frame_rate)
+                        return
+                    action_off(0, None, 0, -1, -1, frame_rate)
+            return

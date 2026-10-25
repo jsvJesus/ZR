@@ -1,0 +1,216 @@
+# Embedded file name: ./client/soGUI/web_browser_embd/page.py
+"""
+        \xd0\x9e\xd1\x82\xd0\xb4\xd0\xb5\xd0\xbb\xd1\x8c\xd0\xbd\xd0\xb0\xd1\x8f \xd1\x81\xd1\x82\xd1\x80\xd0\xb0\xd0\xbd\xd0\xb8\xd1\x86\xd0\xb0 \xd0\xb1\xd1\x80\xd0\xb0\xd1\x83\xd0\xb7\xd0\xb5\xd1\x80\xd0\xb0
+
+
+"""
+import urlparse
+import BigWorld
+import Keys
+from Helpers.PyGUI import PyGUIBase
+import GUI
+from GUI import WebGUIComponent
+from utils import force_unicode
+from functools import partial
+from cef_codes import CEF_CODES
+from soGUI.soTextField import soTextField3
+from soGUI.soButton import soButton
+from Localization import lc
+import BWPersonality
+import traceback
+
+def _ErrorWebGUIComponent(errtext):
+    comp = GUI.Simple('soGUI/white.dds')
+    txt = GUI.Text(force_unicode(errtext))
+    txt.horizontalAnchor = 'LEFT'
+    txt.verticalAnchor = 'TOP'
+    txt.verticalPositionMode = 'PIXEL'
+    txt.horizontalPositionMode = 'PIXEL'
+    txt.position = (3, 120, 0)
+    txt.font = 'RobotoCondensedRegular_16.font'
+    txt.colour = (255, 0, 0, 255)
+    txt.visible = True
+    txt.multiline = True
+    comp.addChild(txt, 'txt')
+    return comp
+
+
+class WebPage(PyGUIBase):
+
+    def __init__(self, parent_browser, page_id, tab, component = None):
+        if not component:
+            try:
+                component = WebGUIComponent('')
+            except IOError:
+                traceback.print_exc()
+                component = _ErrorWebGUIComponent(lc('web_browser.ERROR_CREATE_CEF_FILENOTFOUND'))
+            except Exception:
+                traceback.print_exc()
+                component = _ErrorWebGUIComponent(lc('web_browser.ERROR_CREATE_CEF_UNKNW_ERROR'))
+
+        PyGUIBase.__init__(self, component)
+        component.script = self
+        self.parent_browser = parent_browser
+        self.page_id = page_id
+        self.tab_btn = tab
+        self._title = ''
+        self._url = ''
+        self.is_https_error = False
+        self.is_https = False
+        self.canGoBack = False
+        self.canGoForward = False
+        self.isLoading = False
+        self.created_time = BigWorld.time()
+        self.setupRoot()
+
+    def setupRoot(self):
+        self.component.focus = True
+        self.component.moveFocus = True
+        self.component.mouseButtonFocus = True
+        self.component.horizontalPositionMode = self.component.verticalPositionMode = 'PIXEL'
+        self.component.horizontalAnchor = 'LEFT'
+        self.component.verticalAnchor = 'TOP'
+        self.component.widthMode = self.component.heightMode = 'PIXEL'
+        self.component.colour = (255, 255, 255, 255)
+        self.component.materialFX = 'BLEND'
+        self.component.height = 500
+        self.component.width = 500
+        self.component.position = (2, 0, 0.8)
+
+    def handleMouseEvent(self, comp, event):
+        dz = event.dz
+        if dz and BWPersonality.KEYS_PRESSED.get(Keys.KEY_LCONTROL):
+            if not hasattr(self.component, 'getUrl'):
+                return True
+            zoom = self.component.getZoomLevel()
+            new_zoom = zoom - 0.5 if dz < 0 else zoom + 0.5
+            if new_zoom > 50:
+                new_zoom = 50
+            if new_zoom < -50:
+                new_zoom = -50
+            self.component.setZoomLevel(new_zoom)
+        return True
+
+    def handleMouseButtonEvent(self, *e):
+        self.parent_browser.onMouseButtonPageEvent(self, *e)
+        return True
+
+    def handleKeyEvent(self, *e):
+        return True
+
+    def onAfterCreated(self, new_page):
+        BigWorld.callback(0, partial(self.parent_browser.pageOnAfterCreated, self.page_id, new_page))
+
+    def onLoadingStateChange(self, isLoading, canGoBack, canGoForward):
+        self.isLoading = isLoading
+        self.canGoBack = canGoBack
+        self.canGoForward = canGoForward
+        self.is_https = self.getUrl().lower().startswith('https')
+        BigWorld.callback(0, self.parent_browser.updateNaviBar)
+
+    def onLoadStartData(self, transitionType):
+        self.is_https = self.getUrl().lower().startswith('https')
+
+    def onTitleChange(self, title):
+        self._title = title
+        self.tab_btn.setTitle(self._title)
+        self.parent_browser.updateNaviBar()
+
+    def onBeforeClose(self):
+        BigWorld.callback(0, partial(self.parent_browser._closePage, self.page_id))
+
+    def onCertificateError(self, cert_error, request_url):
+        print 'onCertificateError cert_error={0}, request_url ={1}'.format(cert_error, request_url)
+        self.is_https_error = True
+        BigWorld.callback(0, partial(self._show_cert_error, cert_error, request_url))
+
+    def loadURL(self, url):
+        self._url = url
+        self._title = urlparse.urljoin(url, '/')
+        self.tab_btn.setTitle(self._title)
+        if hasattr(self.component, 'getUrl'):
+            self.component.loadURL(url)
+
+    def goBack(self):
+        if hasattr(self.component, 'getUrl'):
+            self.component.goBack()
+
+    def goForward(self):
+        if hasattr(self.component, 'getUrl'):
+            self.component.goForward()
+
+    def reload(self):
+        if hasattr(self.component, 'getUrl'):
+            self.component.reload()
+
+    def getUrl(self):
+        if hasattr(self.component, 'getUrl'):
+            return self.component.getUrl() or self._url
+        return self._url
+
+    @property
+    def liveTime(self):
+        return BigWorld.time() - self.created_time
+
+    def _show_cert_error(self, cert_error, request_url):
+        code = CEF_CODES.get(cert_error, 'CODE:%s' % cert_error)
+        domain = urlparse.urljoin(request_url, '/')
+        comp = GUI.Window('textures/default/white.dds')
+        comp.horizontalPositionMode = comp.verticalPositionMode = 'CLIP'
+        comp.widthMode = comp.heightMode = 'CLIP'
+        comp.materialFX = 'BLEND'
+        comp.colour = (220, 220, 220, 255)
+        comp.height = 1.5
+        comp.width = 1.5
+        comp.position = (0, 0, 0.02)
+        self.component.addChild(comp, 'error_frame')
+        txt = soTextField3(GUI.Window(), width=500, height=500, textWidth=500, hScroll=False, vScroll=False, hideScroll=1, borderWidth=0, vOffset=5, hOffset=5, textureless=1, autosize=0)
+        cmp = txt.component
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'CLIP'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.horizontalAnchor = 'CENTER'
+        cmp.verticalAnchor = 'CENTER'
+        cmp.position = (0, 0, 0.01)
+        self.component.error_frame.addChild(cmp, 'ctext')
+        red = '<color=%03i%03i%03i%03i> ' % (255, 10, 10, 255)
+        dark = '<color=%03i%03i%03i%03i> ' % (50, 50, 50, 255)
+        gray = '<color=%03i%03i%03i%03i> ' % (100, 100, 100, 255)
+        text = u'<font=RobotoCondensedRegular_24.font>' + red
+        text += lc('web_browser.CertificateErrorTitle') + u'<n><n>'
+        text += u'<font=RobotoCondensedRegular_20.font>' + dark
+        text += lc('web_browser.CertificateErrorText').format(domain=domain)
+        text += u'<p>'
+        text += u'<font=RobotoCondensedRegular_12.font>' + gray
+        text += code
+        txt.setText(text)
+        txt.onBound()
+        closeBox = soButton(GUI.Window())
+        cmp = closeBox.component
+        cmp.horizontalPositionMode = 'CLIP'
+        cmp.verticalPositionMode = 'CLIP'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.horizontalAnchor = 'RIGHT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.width = 16
+        cmp.height = 16
+        cmp.position = (0.95, 0.95, 0.1)
+        closeBox.initVSC('soGUI/visual_styles/btn_web_close_page.xml')
+        closeBox.onBound()
+        closeBox.setVisualState('normal')
+        closeBox.onClick = self._close_cert_error
+        self.component.error_frame.addChild(cmp, 'closeBox')
+
+    def _close_cert_error(self):
+        if self.component and hasattr(self.component, 'error_frame'):
+            self.component.delChild('error_frame')
+
+    def destroy(self):
+        self._close_cert_error()
+        if self.component:
+            self.component.script = None
+        self.component = None
+        self.parent_browser = None
+        self.tab_btn = None
+        return

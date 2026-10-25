@@ -1,0 +1,142 @@
+# Embedded file name: ./client/MortalMobSpawner.py
+import FX
+import json
+import ResMgr
+import BigWorld
+import traceback
+from Math import Vector3
+from functools import partial
+from PopAttacher import PopAttacher, CONFIG
+from BurnInterface import BurnInterface
+section = ResMgr.openSection('scripts/common/EnumProps/MortalMobSpawner.json')
+CONFIG_MODELS = json.loads(section.asBinary)['model_index']['values']
+
+class MortalMobSpawner(BigWorld.Entity, BurnInterface, PopAttacher):
+
+    def __init__(self):
+        BigWorld.Entity.__init__(self)
+        BurnInterface.__init__(self)
+        PopAttacher.__init__(self)
+        self.filter = BigWorld.NoneFilter()
+        self._model_path = next((model for index, model in CONFIG_MODELS if index == self.model_index), None)
+        self.model = None
+        self.sfx_model = None
+        self.skeletonCollider = None
+        self.canBeHurtByBullets = False
+        self.effect = None
+        self.colliderNames = {}
+        self.collider_boxes = {}
+        self.additional_models = {}
+        self.body_zones = {}
+        return
+
+    def prerequisites(self):
+        if self._model_path:
+            return [self._model_path]
+        return []
+
+    def onEnterWorld(self, prereqs):
+        if self._model_path:
+            scale = self.scale
+            self.model = prereqs[self._model_path]
+            self.model.isObstacle = True
+            self.model.visible = True
+            self.model.scale = (scale, scale, scale)
+            self.model.newScaleTest = (scale, scale, scale)
+            self.model.position = self.position
+        self.add_collider()
+        PopAttacher.onEnterWorld(self, prereqs)
+        BurnInterface.onEnterWorld(self)
+
+    def get_model_path(self):
+        return self._model_path
+
+    def override_client_damage_calculation(self, *args, **kargs):
+        return False
+
+    def on_damaged(self, body_zones):
+        data = CONFIG[self._model_path]
+        for body_zone in body_zones:
+            if not self.body_zones.has_key(body_zone):
+                continue
+            node_name = self.body_zones[body_zone]
+            del self.colliderNames[node_name]
+            del self.body_zones[body_zone]
+            if self.additional_models.has_key(node_name):
+                model = self.additional_models[node_name]
+                self.model.node(node_name).detach(model)
+                del self.additional_models[node_name]
+            if self.collider_boxes.has_key(node_name):
+                box = self.collider_boxes[node_name]
+                self.model.node(node_name).detach(box)
+                del self.collider_boxes[node_name]
+            if data['broke_sfx']:
+
+                def on_detach_sfx_model(_node, model):
+                    self.model.node(_node).detach(model)
+
+                sfx_model = BigWorld.Model('')
+                self.model.node(node_name).attach(sfx_model)
+                FX.bufferedOneShotEffect(data['broke_sfx'], sfx_model)
+                BigWorld.callback(5, partial(on_detach_sfx_model, node_name, sfx_model))
+
+            def on_load_model(_node, model):
+                self.model.node(_node).attach(model)
+
+            BigWorld.fetchModel(str(data['broken_model']), partial(on_load_model, node_name))
+
+    def onLeaveWorld(self):
+        self.clearColliders()
+        self.model = None
+        return
+
+    def get_effect_hips_name(self):
+        return self.burn_hips_name or 'root'
+
+    def client_destroy(self):
+        self.play_sfx()
+        self.model.visible = False
+        self.model.isObstacle = False
+        self.targetCaps = []
+
+    def __createBoxAttachment(self, box_name, min_bounds, max_bounds, transform):
+        box = BigWorld.BoxAttachment()
+        box.name = box_name
+        box.minBounds = min_bounds
+        box.maxBounds = max_bounds
+        if transform:
+            box.localTransform = transform
+        return box
+
+    def attach_collider_box(self, box_name, node_name, body_zone, min_bounds, max_bounds, transform):
+        if box_name == 'None':
+            box_name = node_name
+            print 'MortalMobSpawner (ERROR): empty box name', node_name, body_zone, self
+            traceback.print_stack()
+        box = self.__createBoxAttachment(box_name, min_bounds, max_bounds, transform)
+        node = self.model.node(node_name)
+        node.attach(box)
+        self.skeletonCollider.addCollider(box)
+        self.colliderNames[box_name] = body_zone
+        self.collider_boxes[node_name] = box
+
+    def add_collider(self):
+        self.canBeHurtByBullets = True
+        self.canTakeDamage = True
+        self.respawned_recently = False
+        self.skeletonCollider = BigWorld.SkeletonCollider()
+
+    def clearColliders(self):
+        if self.model:
+            for node_name in self.colliderNames.keys():
+                box = self.collider_boxes.get(node_name, None)
+                if box:
+                    self.model.node(node_name).detach(box)
+
+        self.collider_boxes = {}
+        self.colliderNames = {}
+        self.body_zones = {}
+        if getattr(self, 'skeletonCollider', None):
+            self.skeletonCollider.clearColliders()
+            self.skeletonCollider = None
+        return

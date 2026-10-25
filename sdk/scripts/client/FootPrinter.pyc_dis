@@ -1,0 +1,651 @@
+# Embedded file name: ./client/FootPrinter.py
+import BigWorld
+import BWPersonality
+import time
+from Notices import Notices
+import SFXer
+import Math
+import Settings
+import FX
+import traceback
+import ResMgr
+import json
+import rainConstant
+from utils_bw import if_not_destroyed
+import utils_bw
+import sounds_manager as sounds
+from functools import partial
+import utils
+from utils import ignoreError
+from SimpleParticles import getParticleBG
+from Math import Matrix
+from Items import ItemsCatalog
+import ItemCategories as IC
+DEBUG_OFF_SOUNDS = False
+DEBUG_DRAW_WATER = False
+DEF_SLOPE_EFF = {'sound': '',
+ 'sound_loop_time': 0.3,
+ 'particle': '',
+ 'desc': '<None>'}
+
+def _read_footsteps_settings(path):
+    try:
+        py_data_section = ResMgr.openSection(path)
+        raw_configs = json.loads(py_data_section.asBinary)
+    except:
+        print 'path: ', repr(path)
+        raise
+
+    return raw_configs
+
+
+footsteps_cache = {}
+
+def get_settings(path):
+    data = footsteps_cache.get(path)
+    if data:
+        return data
+    data = _read_footsteps_settings(path)
+
+    def normalise_str(entry):
+        for key in entry.keys():
+            if isinstance(entry[key], unicode):
+                entry[key] = str(entry[key])
+
+        return entry
+
+    data['by_material_kind'] = dict(((int(mat_id), normalise_str(val)) for mat_id, val in data['by_material_kind'].items()))
+    footsteps_cache[path] = data
+    return data
+
+
+def reload_settings(apply_to_entities = False):
+    footsteps_cache.clear()
+    ResMgr.purge(FootPrinter.DEF_PATH_FOOTSTEPS)
+    ResMgr.purge(FootPrinter.DEF_PATH_SLOPE_EFFECTS)
+    if apply_to_entities:
+        for e in BigWorld.entities.values():
+            if hasattr(e, 'reAtachWaterVolumeDealayed'):
+                e.reAtachWaterVolumeDealayed(after=0.1)
+
+
+class FootPrinter(object):
+    DEBUG_FOOTSTEPS = False
+    DEBUG_SLIDING = False
+    DEF_PATH_FOOTSTEPS = 'scripts/client/data/footsteps/avatar.json'
+    DEF_PATH_SLOPE_EFFECTS = 'scripts/client/data/footsteps/slope_effects.json'
+    avatarInWater = 0
+    underWaterLevel1 = 0
+    underWaterLevel2 = 0
+    underWaterLevel3 = 0
+    underWaterLevelKnee = 0
+    _waterType = -1
+    underWaterPathLevel1 = ''
+    underWaterPathLevel2 = ''
+    underWaterPathLevel3 = ''
+    avatarInWaterLevel = 0
+    timeEnterWater1 = 0
+    timeWaterExplosionDelta = 0.15
+    soundfootspeed = 1.0
+    soundVolumeFoots = 1.0
+    __last_surfaceHeight = 0.0
+    __timer_reatt = 0
+    __water_volume_enable = True
+    __foot_cue_models = None
+    __cue_model_to_node = None
+    _foot_nodes = None
+    _foot_settings_path = None
+    _foot_settings = None
+    _fp_debug = None
+    _slope_eff_settings = None
+    _add_step_sound_params = {}
+
+    def onEnterWorld(self):
+        self._cue_filter = {}
+
+    def onLeaveWorld(self):
+        self.deleteFootTriger()
+        self._cue_filter = {}
+
+    def getFootCueSettingsPath(self):
+        if self.active_transform:
+            footsteps = self.active_transform.getparam('footsteps_settings_path')
+            if footsteps:
+                return footsteps
+        return self.DEF_PATH_FOOTSTEPS
+
+    def _attachVolumeListener(self):
+        if self.active_transform and self.active_transform.isCustomModel:
+            return
+        hips_path = str(self._foot_settings['water_node_hips_stay'])
+        head_path = str(self._foot_settings['water_node_head'])
+        try:
+            head_node = self.model.node(head_path)
+        except:
+            print 'self:', self, self.id
+            print 'head_path:', repr(head_path)
+            print 'model:', self.model
+            print 'model:', self.model.sources
+            raise
+
+        hips_node = self.model.node(hips_path)
+        add_water_node_knee_height = self._foot_settings.get('add_water_node_knee_height', 0.3)
+        m = Matrix()
+        m.setTranslate((0, add_water_node_knee_height, 0))
+        knee_node = self.model.node('Scene Root', m)
+        self.waterListenerHead = BigWorld.addWaterVolumeListener(head_node, self.waterCross3)
+        self.waterListenerHips = BigWorld.addWaterVolumeListener(hips_node, self.waterCross2)
+        self.waterListenerKnee = BigWorld.addWaterVolumeListener(knee_node, self.waterCrossKnee)
+        self.waterListener = BigWorld.addWaterVolumeListener(self.model.root, self.waterCross1)
+        if DEBUG_DRAW_WATER:
+            try:
+                from __debug.show_text_label import AttachText
+                self._fp_debug = {}
+
+                def add(name, node):
+                    deb_model = BigWorld.Model('models/test/xyz.model')
+                    deb_model.newScaleTest = (1, 0.1, 0.1)
+                    at_text = AttachText(node, name, text_size=0.2, fk=1, pos_offset=(0, 0, 0.5))
+                    node.attach(deb_model)
+                    self._fp_debug[name] = dict(node=node, deb_model=deb_model, at_text=at_text)
+
+                add('head_node', head_node)
+                add('hips_node', hips_node)
+                add('knee_node', knee_node)
+                add('root', self.model.root)
+            except:
+                traceback.print_exc()
+
+    @if_not_destroyed
+    def createFootTriger(self):
+        self._add_step_sound_params.clear()
+        if getattr(self, 'npcSuit', False):
+            return
+        self.__last_surfaceHeight = 0.0
+        self.deleteFootTriger(force_save=True)
+        if self == BigWorld.player():
+            self.cell.notifyWater(Notices.RESET_WATER, 0, 0)
+        if not self.model:
+            print 'WARNING! createFootTriger - not model', self
+            return
+        self._foot_settings_path = self.getFootCueSettingsPath()
+        self._foot_settings = get_settings(self._foot_settings_path)
+        self._slope_eff_settings = get_settings(self.DEF_PATH_SLOPE_EFFECTS)
+        self._foot_nodes = self._foot_settings['cue_to_node']
+        self._sound_only_for_me = self._foot_settings.get('sound_only_for_me')
+        if self.DEBUG_FOOTSTEPS:
+            print 'createFootTriger', self, self._foot_nodes
+        self.__water_volume_enable = True
+        self._attachVolumeListener()
+        self.__foot_cue_models = {}
+        self.__cue_model_to_node = {}
+        if self._sound_only_for_me and self != BigWorld.player():
+            return
+        for cue_name, node_name in self._foot_nodes.items():
+            node = self.model.node(str(node_name))
+            sound_model = BigWorld.Model('')
+            self.__foot_cue_models[cue_name] = sound_model
+            node.attach(sound_model)
+            self.__cue_model_to_node[sound_model] = node
+            self.model.cue(cue_name, partial(self._cueTrigger, cue_name))
+
+        cue_name = 'Slide'
+        self.model.cue(cue_name, self._cueTrigger_sliding)
+        self.model.cue('Scuff', self._cueTrigger_Scuff)
+        for item in self.EquippedArmor.values():
+            item_type = item['itemType']
+            if not item_type:
+                continue
+            item_param = ItemsCatalog.GetItemParam(item_type)
+            if not item_param:
+                continue
+            cat_id = ItemsCatalog.GetItemCategory(item_type)
+            if cat_id == IC.HE_SUITE:
+                self._add_step_sound_params['add_step_ozk'] = 1
+            elif cat_id == IC.BACKPACK:
+                self._add_step_sound_params['add_step_backpack'] = 1
+
+        self.update_add_step_sound_params()
+
+    def update_add_step_sound_params(self):
+        self._add_step_sound_params['add_step_pistol'] = 0
+        self._add_step_sound_params['add_step_smg'] = 0
+        self._add_step_sound_params['add_step_autogun'] = 0
+        for slot_name, weapon in getattr(self, 'weapon_slots', {}).items():
+            cat_id = ItemsCatalog.GetItemCategory(weapon.getItemType())
+            if cat_id == IC.PISTOL:
+                self._add_step_sound_params['add_step_pistol'] = 1
+            elif cat_id == IC.SUBMACHINEGUN:
+                self._add_step_sound_params['add_step_smg'] = 1
+            elif cat_id in (IC.SMOOTHBORE, IC.TREADED_BAR):
+                self._add_step_sound_params['add_step_autogun'] = 1
+            else:
+                self._add_step_sound_params['add_step_heavy'] = 1
+
+    _slope_sound = None
+    _slope_sound_loopid = 0
+    _slope_particle = None
+    _slope_all_particles = None
+    _prev_slope_material_id = -1
+
+    def __slopeSoundLoop(self):
+        if self.isDestroyed:
+            return
+        elif not self.model:
+            return
+        elif not self._slope_eff_settings:
+            return
+        else:
+            conf = self._slope_eff_settings['by_material_kind'].get(self._prev_slope_material_id, None)
+            if not conf:
+                return
+            elif not conf['sound']:
+                return
+            sounds.playSound(conf['sound'], self.model)
+            sound_loop_time = DEF_SLOPE_EFF['sound_loop_time']
+            sound_loop_time = conf.get('sound_loop_time', sound_loop_time)
+            self._slope_sound_loopid = BigWorld.callback(sound_loop_time, self.__slopeSoundLoop)
+            return
+
+    def onChangeSlope(self, is_slope, material_id):
+        if self._prev_slope_material_id == material_id:
+            return
+        elif not self._slope_eff_settings:
+            return
+        else:
+            prev_id = self._prev_slope_material_id
+            self._prev_slope_material_id = material_id
+            prev_conf = self._slope_eff_settings['by_material_kind'].get(prev_id, DEF_SLOPE_EFF)
+            conf = self._slope_eff_settings['by_material_kind'].get(material_id, DEF_SLOPE_EFF)
+            BigWorld.cancelCallback(self._slope_sound_loopid)
+            if material_id > 0:
+                self._slope_sound_loopid = BigWorld.callback(0.1, self.__slopeSoundLoop)
+            if self._slope_all_particles is None:
+                self._slope_all_particles = {}
+            if conf['particle'] != prev_conf['particle']:
+                for ps in self._slope_all_particles.values():
+                    ps.stopEmit()
+
+                if conf['particle']:
+                    ps = self._slope_all_particles.get(conf['particle'], None)
+                    if not ps:
+                        self._slope_all_particles[conf['particle']] = ps = getParticleBG(conf['particle'])
+                        ps.attach(self.model.root)
+                    ps.go()
+            return
+
+    def on_step(self, position):
+        pass
+
+    def get_param_material_under_me(self, default = 'stone'):
+        start_pos = self.position + (0, 0.5, 0)
+        end_pos = self.position - (0, 1, 0)
+        col = BigWorld.collide(self.spaceID, start_pos, end_pos)
+        if col:
+            mat_id = col[2]
+        else:
+            mat_id = -1
+        param_val = utils.get_material_sound_by_id(mat_id, default=default)
+        return param_val
+
+    def _cueTrigger_Scuff(self):
+        if self.isDestroyed:
+            return
+        param_val = self.get_param_material_under_me()
+        sound = sounds.getSound('players/scuff', model=self.model)
+        sound.set_param('surface_material', param_val)
+        sound.play()
+
+    def _cueTrigger_sliding(self):
+        """\xd0\xbf\xd1\x80\xd0\xb8 \xd0\xbf\xd0\xbe\xd0\xb4\xd0\xba\xd0\xb0\xd1\x82\xd0\xb5"""
+        if self.isDestroyed:
+            return
+        param_val = self.get_param_material_under_me()
+        sound = sounds.getSound('players/sliding', model=self.model)
+        sound.set_param('surface_material', param_val)
+        sound.play()
+
+    def _cueTrigger(self, cue_name):
+        if self.isDestroyed:
+            return
+        elif self._sound_only_for_me and self != BigWorld.player():
+            return
+        elif not self.__foot_cue_models:
+            return
+        elif not self.__water_volume_enable:
+            return
+        elif DEBUG_OFF_SOUNDS:
+            return
+        else:
+            current_time = BigWorld.time()
+            if abs(self._cue_filter.get(cue_name, 0) - current_time) <= 1e-05:
+                return
+            self._cue_filter[cue_name] = current_time
+            if self.avatarInWaterLevel:
+                if self == BigWorld.player():
+                    self._wet_step_vol = 1.0
+                self._playSfxStepInWater(cue_name)
+                return
+            cam_pos = BigWorld.camera().position
+            max_dist_sound = 20.0
+            if self.active_transform and self.active_transform.isBig:
+                max_dist_sound = 300
+            if cam_pos.distTo(self.position) > max_dist_sound:
+                return
+            sound_model = self.__foot_cue_models[cue_name]
+            if sound_model.position.distTo(self.model.position) > 3.0:
+                sound_model = self.model
+            else:
+                self.on_step(sound_model.position)
+            toPos = sound_model.position
+            cl = utils_bw.collide(self.spaceID, toPos + (0, 0.3, 0), toPos + (0, -0.8, 0))
+            if not cl:
+                if self.DEBUG_FOOTSTEPS:
+                    print 'no collide:', toPos + (0, 0.1, 0), toPos + (0, -0.5, 0)
+            if cl:
+                matID = cl[-1]
+                data = self._foot_settings['by_material_kind'].get(matID)
+                if not data:
+                    if self.DEBUG_FOOTSTEPS:
+                        print 'no matID %s in _foot_settings!' % matID
+                    return
+                mat_sound = str(data[cue_name]['sound'])
+                mat_sfx = str(data[cue_name]['sfx'])
+                if self.DEBUG_FOOTSTEPS:
+                    print 'matKindSound:', matID, mat_sound, mat_sfx
+                if mat_sound:
+                    sound = None
+                    err = None
+                    try:
+                        sound = sounds.playSound(mat_sound, self.model)
+                    except Exception as err:
+                        pass
+
+                    if not sound:
+                        print 'not found foot sound:', self, repr(mat_sound), 'by_material_kind:', matID, self._foot_settings_path, err
+                        return
+                    shell_mod = 1.0
+                    player = BigWorld.player()
+                    if self != player and player.in_shell_player_xor_point(toPos):
+                        shell_mod = rainConstant.foot_volume_in_shell
+                    volume = 1.0
+                    action = self.getLastActionType()
+                    if not self.active_transform:
+                        volumes = {'idle': 0.3,
+                         'walk': 0.6,
+                         'run': 0.75,
+                         'sprint': 1.0,
+                         'crouch_idle': 0.3,
+                         'crouch_walk': 0.5,
+                         'crouch_run': 0.6,
+                         'crawl_idle': 0.2,
+                         'crawl_walk': 0.3}
+                        volume = volumes.get(action, 1.0)
+                    if not sound.isVirtual:
+                        sound.volume = Settings.Settings().getEnvironmentVolume() * volume * shell_mod
+                    try:
+                        add_step_sound = sounds.getSound('players/footsteps/add_step_sound', model=self.model)
+                        for k, v in self._add_step_sound_params.items():
+                            add_step_sound.set_param(k, v)
+
+                    except:
+                        print 'ERROR for', self
+                        traceback.print_exc()
+                    else:
+                        add_step_sound.play()
+                        if not add_step_sound.isVirtual:
+                            add_step_sound.volume = Settings.Settings().getEnvironmentVolume() * volume * shell_mod
+                if mat_sfx:
+                    pass
+            return
+
+    def _playSfxStepInWater(self, cue_name):
+        if self.avatarInWaterLevel == 1:
+            sound_model = self.__foot_cue_models[cue_name]
+            key = 'sfx_foot_in_water_levKnee' if self.underWaterLevelKnee else 'sfx_foot_in_water_lev1'
+            sfxpath = str(self._foot_settings.get(key, ''))
+            if not sfxpath:
+                return
+            self._createSfxOnTheWater(sound_model.position, sfxpath)
+        else:
+            if self.avatarInWaterLevel == 2:
+                key = 'sfx_foot_in_water_lev2'
+            if self.avatarInWaterLevel == 3:
+                key = 'sfx_foot_in_water_lev3'
+            sfxpath = self._foot_settings[key][cue_name]
+            sfxpath = str(sfxpath)
+            if not sfxpath:
+                return
+            if self.DEBUG_FOOTSTEPS:
+                print '_playSfxStepInWater sfxpath:', sfxpath
+            FX.bufferedOneShotEffect(sfxpath, self.model, maxDuration=4.0)
+
+    @ignoreError
+    def deleteFootTriger(self, force_save = False):
+        self.__water_volume_enable = False
+        if self.DEBUG_FOOTSTEPS:
+            print 'deleteFootTriger', self
+        if getattr(self, 'waterListener', False):
+            BigWorld.delWaterVolumeListener(self.waterListener)
+            self.waterListener = None
+        if getattr(self, 'waterListenerHips', False):
+            BigWorld.delWaterVolumeListener(self.waterListenerHips)
+            self.waterListenerHips = None
+        if getattr(self, 'waterListenerHead', False):
+            BigWorld.delWaterVolumeListener(self.waterListenerHead)
+            self.waterListenerHead = None
+        if getattr(self, 'waterListenerKnee', False):
+            BigWorld.delWaterVolumeListener(self.waterListenerKnee)
+            self.waterListenerKnee = None
+        if self.__cue_model_to_node:
+            for sound_model, node in self.__cue_model_to_node.items():
+                node.detach(sound_model)
+
+            self.__cue_model_to_node = {}
+        self.__foot_cue_models = {}
+        self.footTriggers = []
+        if DEBUG_DRAW_WATER:
+            try:
+                if self._fp_debug:
+                    for key, data in self._fp_debug.items():
+                        data['at_text'].destroy()
+                        data['node'].detach(data['deb_model'])
+
+                self._fp_debug = {}
+            except:
+                traceback.print_exc()
+
+        if self.avatarInWaterLevel and not force_save:
+            self.avatarInWaterLevel = 0
+            self.underWaterLevel1 = 0
+            self.underWaterLevel2 = 0
+            self.underWaterLevel3 = 0
+            self.underWaterLevelKnee = 0
+            self.updateWaterNotifer()
+        if self._slope_all_particles:
+            for ps in self._slope_all_particles.values():
+                ps.detach()
+
+            self._slope_all_particles = None
+        try:
+            if self == BigWorld.player():
+                self.physics.gravity = 9.8
+        except:
+            pass
+
+        return
+
+    @if_not_destroyed
+    def waterCross1(self, enterWater, volume):
+        if self.DEBUG_FOOTSTEPS:
+            print 'waterCross1', enterWater, volume
+        self._waterType = volume.waterType if volume else -1
+        self.avatarInWater = int(enterWater)
+        self.underWaterLevel1 = int(enterWater)
+        self.applyWaterLevel()
+        if enterWater:
+            self.timeEnterWater1 = time.time()
+        elif self.underWaterLevel2 != int(enterWater):
+            self.waterCross2(enterWater, volume)
+        self.changeWater([Notices.LEAVE_WATER, Notices.ENTER_WATER], enterWater, volume)
+
+    @if_not_destroyed
+    def waterCross2(self, enterWater, volume):
+        if self.DEBUG_FOOTSTEPS:
+            print 'waterCross2', enterWater, volume
+        self._waterType = volume.waterType if volume else -1
+        self.underWaterLevel2 = int(enterWater)
+        self.applyWaterLevel()
+        if enterWater:
+            self.checkSplashingWater()
+        elif self.underWaterLevel3 != int(enterWater):
+            self.waterCross3(enterWater, volume)
+        self.changeWater([Notices.LEAVE_WATER_HIPS, Notices.ENTER_WATER_HIPS], enterWater, volume)
+
+    @if_not_destroyed
+    def waterCross3(self, enterWater, volume):
+        if self.DEBUG_FOOTSTEPS:
+            print 'waterCross3', enterWater, volume
+        self._waterType = volume.waterType if volume else -1
+        self.underWaterLevel3 = int(enterWater)
+        if self.underWaterLevel3:
+            self.cancelCandle()
+        self.applyWaterLevel()
+        self.changeWater([Notices.LEAVE_WATER_HEAD, Notices.ENTER_WATER_HEAD], enterWater, volume)
+        self.onUnderWaterLevel3(enterWater)
+
+    @if_not_destroyed
+    def waterCrossKnee(self, enterWater, volume):
+        if self.DEBUG_FOOTSTEPS:
+            print 'waterCrossKnee', enterWater, volume
+        self.underWaterLevelKnee = int(enterWater)
+        self._onChangeWaterVol()
+        if self == BigWorld.player():
+            self.UpdateVelocity()
+
+    @ignoreError
+    def _onChangeWaterVol(self):
+        if not DEBUG_DRAW_WATER:
+            return
+
+        def update_deb(key, val):
+            col = (0, 0, 255, 245) if val else (255, 205, 149, 245)
+            self._fp_debug[key]['at_text'].textnode.colour = col
+
+        update_deb('head_node', self.underWaterLevel3)
+        update_deb('hips_node', self.underWaterLevel2)
+        update_deb('knee_node', self.underWaterLevelKnee)
+        update_deb('root', self.underWaterLevel1)
+
+    def applyWaterLevel(self):
+        self.avatarInWaterLevel = max([self.underWaterLevel1, self.underWaterLevel2 * 2, self.underWaterLevel3 * 3])
+
+    def _createSfxOnTheWater(self, position, sfxpath, only_if_found = True):
+        water_collide = BigWorld.waterCollide(position + Math.Vector3(0, 3, 0), position + Math.Vector3(0, -2, 0))
+        if not water_collide and only_if_found:
+            return
+        else:
+            if water_collide:
+                position = water_collide[0]
+            SFXer.footWaterStep(self, position, sfxpath, alignToVector=None, lifeTime=3.3)
+            return
+
+    def checkSplashingWater(self):
+        return
+        difTime = time.time() - self.timeEnterWater1
+        if self.DEBUG_FOOTSTEPS:
+            print 'checkSplashingWater difTime', difTime
+        if difTime < self.timeWaterExplosionDelta:
+            sfxpath = str(self._foot_settings['sfx_splashing_water'])
+            self._createSfxOnTheWater(self.position, sfxpath)
+
+    def checkWaterinAirNotifier(self, fallingVelocity, inAir):
+        if not inAir and self.underWaterLevel1 or self.underWaterLevelKnee:
+            if fallingVelocity > self._foot_settings.get('fall_speed_splashing_water', 4.0):
+                sfxpath = str(self._foot_settings['sfx_splashing_water'])
+                self._createSfxOnTheWater(self.position, sfxpath)
+
+    def changeWater(self, levels, enterWater, volume):
+        if self.DEBUG_FOOTSTEPS:
+            print 'changeWater', self.avatarInWaterLevel, levels, enterWater, volume
+        if not self.avatarInWaterLevel:
+            self._waterType = -1
+        self.UpdateAvatarAnimationCaps()
+        self._onChangeWaterVol()
+        if self != BigWorld.player():
+            return
+        if not self.__water_volume_enable:
+            return
+        if enterWater:
+            ht = volume.surfaceHeight
+            self.__last_surfaceHeight = ht
+            self.cell.notifyWater(levels[int(enterWater)], ht, self._waterType)
+        else:
+            self.cell.notifyWater(levels[int(enterWater)], 0.0, self._waterType)
+        self.UpdateVelocity()
+
+    def updateWaterNotiferAfterRevive(self):
+        if not self.__last_surfaceHeight:
+            return
+        if self.underWaterLevel1:
+            self.cell.notifyWater(Notices.ENTER_WATER, self.__last_surfaceHeight, self._waterType)
+        if self.underWaterLevel2:
+            self.cell.notifyWater(Notices.ENTER_WATER_HIPS, self.__last_surfaceHeight, self._waterType)
+        if self.underWaterLevel3:
+            self.cell.notifyWater(Notices.ENTER_WATER_HEAD, self.__last_surfaceHeight, self._waterType)
+
+    def updateWaterNotifer(self):
+        pass
+
+    def waterCollide(self, scr, hitPoint):
+        try:
+            waterpos = BigWorld.waterCollide(scr, hitPoint)
+        except:
+            print [scr, hitPoint]
+            raise
+
+        return waterpos
+
+    def drawWaterFire(self, waterpos):
+        if waterpos:
+            waterpos = waterpos + (0, -0.1, 0)
+            sfxpath = 'sfx/hits/water.xml'
+            self.lastwaterpos = waterpos
+            SFXer.waterHit(self, waterpos, sfxpath, alignToVector=None, lifeTime=3.3)
+            return True
+        else:
+            return False
+
+    def tooFootUpdateCrouch(self):
+        pass
+
+    def onHideLoadprogress(self):
+        if self.DEBUG_FOOTSTEPS:
+            print '>onHideLoadprogress', self
+
+    def onShowLoadprogress(self):
+        if self.DEBUG_FOOTSTEPS:
+            print '>onShowLoadprogress', self
+
+    def onUnderWaterLevel3(self, value):
+        pass
+
+    def reAtachWaterVolumeDealayed(self, after = 2.0, dont_clear = False):
+        if self.isDestroyed:
+            return
+        if self.DEBUG_FOOTSTEPS:
+            print '>reAtachWaterVolumeDealayed', self
+        try:
+            if not dont_clear:
+                self.deleteFootTriger()
+        except:
+            traceback.print_exc()
+
+        BigWorld.cancelCallback(self.__timer_reatt)
+        if BWPersonality.GUICore.isVisibleLoaderGUI():
+            self.__timer_reatt = BigWorld.callback(after, self.reAtachWaterVolumeDealayed)
+            return
+        if not BigWorld.worldDrawEnabled():
+            self.__timer_reatt = BigWorld.callback(after, self.reAtachWaterVolumeDealayed)
+            return
+        self.__timer_reatt = BigWorld.callback(after, self.createFootTriger)

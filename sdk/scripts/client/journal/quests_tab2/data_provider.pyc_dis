@@ -1,0 +1,233 @@
+# Embedded file name: ./client/journal/quests_tab2/data_provider.py
+import BigWorld
+import QuestDispatcher as qd
+
+class DpET:
+    OnDataReplaced, OnClear, OnItemChanged, OnDataInserted, OnSubInserted, OnSubRemoved, OnDataRemoved, OnItemSelected = xrange(8)
+
+
+class IdET:
+    OnExpandedChanged, OnSubsChanged, OnSelectedChanged, OnReadChanged = xrange(4)
+
+
+class ItemData(object):
+    unique_id_counter = 0
+
+    def __init__(self, chapter = None):
+        self._callback_listener = None
+        self._q_id = chapter and chapter['q_id']
+        self._subs = chapter and chapter['sub_ids']
+        self._expanded = bool(qd.get_chapters(self._q_id))
+        self.selection = None
+        ItemData.unique_id_counter += 1
+        self._unique_id = ItemData.unique_id_counter
+        return
+
+    def set_callback_listener(self, callback_listener):
+        self._callback_listener = callback_listener
+
+    def set_subs(self, sub_ids):
+        self._subs = sub_ids
+        if self._callback_listener:
+            self._callback_listener(IdET.OnSubsChanged, self)
+
+    def insert_sub(self, index, sub_id):
+        self._subs.insert(index, sub_id)
+        if self._callback_listener:
+            self._callback_listener(IdET.OnSubsChanged, self)
+
+    def remove_sub(self, quest_id):
+        for i, s_id in enumerate(self._subs):
+            if s_id == quest_id:
+                del self._subs[i]
+                self._callback_listener(IdET.OnSubsChanged, self)
+                break
+
+    def on_destroy(self):
+        self._callback_listener = None
+        return
+
+    @property
+    def expanded(self):
+        return self._expanded
+
+    @expanded.setter
+    def expanded(self, value):
+        if self._expanded == value:
+            return
+        self._expanded = value
+        if self._callback_listener:
+            self._callback_listener(IdET.OnExpandedChanged, self)
+
+    def set_selection(self, quest_id):
+        if self.selection == quest_id:
+            return
+        self.selection = quest_id
+        if self._callback_listener:
+            self._callback_listener(IdET.OnSelectedChanged, self)
+
+    def get_read_status(self, sub_id = None):
+        q_id = self._q_id if sub_id is None else sub_id
+        return BigWorld.player().get_read_status(q_id)
+
+    def mark_read_status(self, quest_id, status):
+        if quest_id == self._q_id or quest_id in self._subs:
+            if self._callback_listener:
+                self._callback_listener(IdET.OnReadChanged, self)
+
+
+class DataProvider:
+
+    def __init__(self):
+        self._data = [ItemData()]
+        self._callback_listener = None
+        return
+
+    def set_callback_listener(self, callback_listener):
+        self._callback_listener = callback_listener
+
+    def set_item_expanded(self, unique_id, expanded):
+        index = self._index_by_unique_id(unique_id)
+        if self._data[index].expanded == expanded:
+            return
+        self._data[index].expanded = expanded
+        data = {'unique_id': unique_id}
+        self._callback_listener(DpET.OnItemChanged, data)
+
+    def set_selection(self, unique_id, quest_id):
+        if unique_id is None:
+            seek_id = qd.get_main(quest_id) or quest_id
+            index = self.get_index_by_quest_id(seek_id)
+            unique_id = self._data[index]._unique_id
+        for i, item_data in enumerate(self._data):
+            if item_data._unique_id == unique_id:
+                if self._data[i].selection != quest_id:
+                    self._data[i].set_selection(quest_id)
+                    data = {'unique_id': unique_id}
+                    if self._callback_listener:
+                        self._callback_listener(DpET.OnItemChanged, data)
+            elif self._data[i].selection:
+                self._data[i].set_selection(None)
+                data = {'unique_id': unique_id}
+                if self._callback_listener:
+                    self._callback_listener(DpET.OnItemChanged, data)
+
+        return
+
+    def get_index_by_quest_id(self, quest_id):
+        for i, item_data in enumerate(self._data):
+            if item_data._q_id == quest_id:
+                return i
+
+        return None
+
+    def get_item_context(self, unique_id):
+        index = self._index_by_unique_id(unique_id)
+        pre_context, post_context = (0, 0)
+        if index > 0:
+            pre_context = self._data[index - 1]._q_id
+        if index < len(self._data) - 1:
+            post_context = self._data[index + 1]._q_id
+        return (pre_context, post_context)
+
+    def get_items(self, unique_id, length):
+        index = self._index_by_unique_id(unique_id)
+        return self._data[index:index + length]
+
+    def get_item(self, unique_id):
+        return self._data[self._index_by_unique_id(unique_id)]
+
+    def _index_by_unique_id(self, unique_id):
+        return next((i for i, item_data in enumerate(self._data) if item_data._unique_id == unique_id), None)
+
+    def get_next(self, unique_id):
+        index = self._index_by_unique_id(unique_id)
+        if index is not None and index < len(self._data) - 1:
+            return self._data[index + 1]
+        else:
+            return
+
+    def get_prev(self, unique_id):
+        index = self._index_by_unique_id(unique_id)
+        if index is not None and index > 0:
+            return self._data[index - 1]
+        else:
+            return
+
+    def replace_empty_data(self, unique_id, chapters, preselect_quest_id):
+        index = self._index_by_unique_id(unique_id)
+        deleted_item = self._delete_item_data(index)
+        replaced_items = []
+        for chapter in chapters:
+            item_data = ItemData(chapter)
+            if preselect_quest_id:
+                if not qd.get_main(preselect_quest_id):
+                    main_quest_id = preselect_quest_id
+                    item_data._q_id == main_quest_id and item_data.set_selection(preselect_quest_id)
+                    item_data.expanded = True
+            replaced_items.append(item_data)
+
+        self._data[index:index] = replaced_items
+        if self._callback_listener:
+            data = {'deleted_id': deleted_item._unique_id,
+             'replaced_ids': [ it._unique_id for it in replaced_items ]}
+            self._callback_listener(DpET.OnDataReplaced, data)
+
+    def remove_quest_id(self, quest_id):
+        for i in xrange(len(self._data)):
+            if self._data[i]._q_id == quest_id:
+                remove_item_data = self._data.pop(i)
+                data = {'unique_id': remove_item_data._unique_id}
+                self._callback_listener(DpET.OnDataRemoved, data)
+                break
+
+    def insert_data(self, index, quest_id):
+        chapter = {'q_id': quest_id,
+         'sub_ids': None}
+        item_data = ItemData(chapter)
+        self._data.insert(index, item_data)
+        data = {'unique_id': item_data._unique_id,
+         'index': index}
+        self._callback_listener(DpET.OnDataInserted, data)
+        return
+
+    def mark_read_status(self, quest_id, status):
+        if not qd.get_main(quest_id):
+            main_id = quest_id
+            quest_index = self.get_index_by_quest_id(main_id)
+            quest_index is not None and self._data[quest_index].mark_read_status(quest_id, status)
+        return
+
+    def insert_sub(self, main_index, sub_index, sub_id):
+        self._data[main_index].insert_sub(sub_index, sub_id)
+        self._callback_listener(DpET.OnSubInserted, None)
+        return
+
+    def remove_sub(self, main_index, quest_id):
+        self._data[main_index].remove_sub(quest_id)
+        self._callback_listener(DpET.OnSubRemoved, None)
+        return
+
+    def set_subs_data(self, unique_id, quest_ids):
+        index = self._index_by_unique_id(unique_id)
+        self._data[index].set_subs(quest_ids)
+        data = {'unique_id': unique_id}
+        self._callback_listener(DpET.OnItemChanged, data)
+
+    def _delete_item_data(self, index):
+        item_data = self._data[index]
+        item_data.on_destroy()
+        del self._data[index]
+        return item_data
+
+    def find_first_selection(self):
+        return next((d.selection for d in self._data if d.selection), None)
+
+    def clear(self):
+        for i in xrange(len(self._data) - 1, -1, -1):
+            self._delete_item_data(i)
+
+        self._data = [ItemData()]
+        if self._callback_listener:
+            self._callback_listener(DpET.OnClear, None)
+        return

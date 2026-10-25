@@ -1,0 +1,192 @@
+# Embedded file name: ./client/soGUI/WorldMapGUI/background_controller.py
+from Math import Vector2
+import BigWorld
+from MapNotes import get_npcmarks_config
+from maputils import config_parser
+
+class BackgroundController:
+
+    def __init__(self, component, spacename):
+        component.widthMode, component.heightMode = ('PIXEL', 'PIXEL')
+        component.materialFX = 'BLEND'
+        component.horizontalPositionMode, component.verticalPositionMode = ('PIXEL', 'PIXEL')
+        component.horizontalAnchor, component.verticalAnchor = ('CENTER', 'CENTER')
+        self.component = component
+        self.spacename = spacename
+        texture_name = config_parser.get_map_texture_name(spacename)
+
+        def on_texture_loaded(resource):
+            component.texture = resource[texture_name]
+
+        BigWorld.loadResourceListBG([texture_name], on_texture_loaded)
+        config = get_npcmarks_config(spacename)
+        bounds = config['bounds']
+        self._zoom_limits = config_parser.get_zoom_limits(spacename)
+        self._min_border = Vector2(bounds[0], bounds[1])
+        self._world_size = Vector2(bounds[2] - bounds[0], bounds[3] - bounds[1])
+        self._map_ratio = self._world_size.x / self._world_size.y
+        component.width, component.height = (0, 0)
+        component.position.x, component.position.y = (0, 0)
+        self._assert_clamp()
+
+    def del_note(self, note):
+        self.component.delChild(note.component)
+
+    def get_cursor_world_position(self, cursor_pos):
+        local_pixel_pos = self.component.screenToLocal(cursor_pos)
+        local_homo_pos = Vector2(local_pixel_pos.x / self.component.width, 1 - local_pixel_pos.y / self.component.height)
+        world_x = local_homo_pos.x * self._world_size.x + self._min_border.x
+        world_y = local_homo_pos.y * self._world_size.y + self._min_border.y
+        return Vector2(world_x, world_y)
+
+    def save_map_texture(self):
+        texture_name = config_parser.get_map_texture_name(self.spacename)
+
+        def on_texture_loaded(resource):
+            texture = resource[texture_name]
+            count = getattr(self, 'saved_count', 0)
+            setattr(self, 'saved_count', count + 1)
+            x, y, x1, y1 = self.get_visible_texture_coords()
+            w = int(round(x1 - x))
+            h = int(round(y1 - y))
+            in_rt = BigWorld.RenderTarget('in', int(self.component.texture.width), int(self.component.texture.height))
+            out_rt = BigWorld.RenderTarget('out', w, h)
+
+            def callback():
+                out_rt.copyTo(in_rt, (x,
+                 y,
+                 x1,
+                 y1), (0,
+                 0,
+                 w,
+                 h))
+                spacename = self.spacename.replace('spaces/', '')
+                BigWorld.player().putMessage(4, u'\u041a\u043e\u043e\u0440\u0434\u0438\u043d\u0430\u0442\u044b: {0}'.format(self.get_visible_world_coords()))
+                out_rt.texture.saveCompressedToDisk('out_{0}_{1}.dds'.format(spacename, count), 'DDS')
+
+            in_rt.stretchCompressedTexture(texture, callback)
+
+        BigWorld.loadResourceListBG([texture_name], on_texture_loaded)
+
+    def add_note(self, note):
+        self.component.addChild(note.component)
+        self.update_note_position(note)
+        size = note.size
+        if size is not None:
+            clip_size = Vector2(note.size / self._world_size.x, note.size / self._world_size.y)
+            note.component.width, note.component.height = clip_size.x * 2, clip_size.y * 2
+        return
+
+    def update_note_position(self, note):
+        world_pos = note.position
+        if world_pos is None:
+            return
+        else:
+            clip_pos_x = (world_pos.x - self._min_border.x) / self._world_size.x * 2 - 1
+            clip_pos_y = (world_pos.z - self._min_border.y) / self._world_size.y * 2 - 1
+            note.component.position = (clip_pos_x, clip_pos_y, note.component.position.z)
+            return
+
+    def zoom(self, dz, cursor_pos):
+        screen_pixel_pos = Vector2((cursor_pos.x + 1) * 0.5 * BigWorld.screenWidth(), 0.5 * (cursor_pos.y + 1) * BigWorld.screenHeight())
+        local_pixel_pos = self.component.screenToLocal(cursor_pos)
+        local_homo_pos = Vector2(float(local_pixel_pos.x) / self.component.width, float(local_pixel_pos.y) / self.component.height)
+        prev_width = self.component.width
+        self.component.width += dz * 0.001 * self.component.width
+        self.component.height = self.component.width / self._map_ratio
+        self._assert_clamp()
+        local_pixel_pos_new = (local_homo_pos.x * self.component.width, local_homo_pos.y * self.component.height)
+        cursor_pos_new = self.component.localToScreen(local_pixel_pos_new)
+        cursor_pos_new = self.component.localToScreen(local_pixel_pos_new)
+        screen_pixel_pos_new = Vector2((cursor_pos_new.x + 1) * 0.5 * BigWorld.screenWidth(), 0.5 * (cursor_pos_new.y + 1) * BigWorld.screenHeight())
+        disp = screen_pixel_pos_new - screen_pixel_pos
+        self.component.position.x -= disp.x
+        self.component.position.y += disp.y
+        self._assert_clamp()
+        return prev_width != self.component.width
+
+    def pan(self, dx, dy):
+        self.component.position.x += dx
+        self.component.position.y += dy
+        self._assert_clamp()
+
+    def _assert_clamp(self):
+        if self.component.width == 0:
+            self.component.width = self.component.parent.width
+            self.component.height = self.component.width / self._map_ratio
+        visible_width = float(self.component.parent.width) / self.component.width * self._world_size.x
+        if visible_width < self._zoom_limits[0]:
+            self.component.width = self.component.parent.width * self._world_size.x / self._zoom_limits[0]
+            self.component.height = self.component.width / self._map_ratio
+        if visible_width > self._zoom_limits[1]:
+            self.component.width = self.component.parent.width * self._world_size.x / self._zoom_limits[1]
+            self.component.height = self.component.width / self._map_ratio
+        if self.component.width < self.component.parent.width:
+            self.component.width = self.component.parent.width
+            self.component.height = self.component.width / self._map_ratio
+        if self.component.height < self.component.parent.height:
+            self.component.height = self.component.parent.height
+            self.component.width = self.component.height * self._map_ratio
+        pos = self.component.position.x - self.component.width * 0.5
+        if pos > 0:
+            self.component.position.x -= pos
+        pos = self.component.position.x + self.component.width * 0.5
+        if pos < self.component.parent.width:
+            self.component.position.x += self.component.parent.width - pos
+        pos = self.component.position.y - self.component.height * 0.5
+        if pos > 0:
+            self.component.position.y -= pos
+        pos = self.component.position.y + self.component.height * 0.5
+        if pos < self.component.parent.height:
+            self.component.position.y += self.component.parent.height - pos
+
+    def get_visible_texture_coords(self):
+        if not self.component.texture:
+            return None
+        else:
+            width, height = self.component.width, self.component.height
+            pwidth, pheight = self.component.parent.width, self.component.parent.height
+            twidth, theight = self.component.texture.width, self.component.texture.height
+            pos_x, pos_y = self.component.position.x, self.component.position.y
+            left_pixels = (width * 0.5 - pos_x) / width * twidth
+            right_pixels = (width * 0.5 - pos_x + pwidth) / width * twidth
+            top_pixels = (height * 0.5 - pos_y) / height * theight
+            bottom_pixels = (height * 0.5 - pos_y + pheight) / height * theight
+            return (round(left_pixels, 2),
+             round(top_pixels, 2),
+             round(right_pixels, 2),
+             round(bottom_pixels, 2))
+
+    def get_visible_world_coords(self):
+        if not self.component.texture:
+            return None
+        else:
+            width, height = self.component.width, self.component.height
+            pwidth, pheight = self.component.parent.width, self.component.parent.height
+            pos_x, pos_y = self.component.position.x, self.component.position.y
+            left_clip = (width * 0.5 - pos_x) / width
+            left_world = left_clip * self._world_size.x + self._min_border.x
+            right_clip = (width * 0.5 - pos_x + pwidth) / width
+            right_world = right_clip * self._world_size.x + self._min_border.x
+            top_clip = (height * 0.5 - pos_y) / height
+            top_world = (1 - top_clip) * self._world_size.y + self._min_border.y
+            bottom_clip = (height * 0.5 - pos_y + pheight) / height
+            bottom_world = (1 - bottom_clip) * self._world_size.y + self._min_border.y
+            return (left_world,
+             top_world,
+             right_world,
+             bottom_world)
+
+    def center_on(self, position):
+        homo_pos_x = (position.x - self._min_border.x) / self._world_size.x
+        homo_pos_y = 1 - (position.y - self._min_border.y) / self._world_size.y
+        disp = Vector2(homo_pos_x * self.component.width, homo_pos_y * self.component.height)
+        self.component.position.x = self.component.width * 0.5 - disp.x + self.component.parent.width * 0.5
+        self.component.position.y = self.component.height * 0.5 - disp.y + self.component.parent.height * 0.5
+        self._assert_clamp()
+
+    def on_show(self):
+        self._assert_clamp()
+
+    def on_parent_size_changed(self):
+        self._assert_clamp()

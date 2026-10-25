@@ -1,0 +1,212 @@
+# Embedded file name: ./client/soGUI/storinventory/storinventory.py
+from Localization import lc
+from Settings import Settings
+import ItemsUtils
+import BigWorld
+from math_bw import smooth_damp
+import GUI
+import BWPersonality
+from Helpers.PyGUI.PyGUIBase import DragWin
+from soGUI.soInventoryScreen import EventType as InventoryET
+from utils import Destructable, Tickable
+from soGUI.GUIPositions import GUIPositions
+from Helpers.PyGUI import Utils
+from storgrid import Storgrid, GridET, SlotET
+from model import Model, EventType as ModelET
+from toggle_button import ToggleButton
+from AvatarCommon import WEIGHT_STATE
+
+class StorInventory(DragWin, Destructable, GUIPositions, Tickable):
+
+    def __init__(self, inventory):
+        Tickable.__init__(self)
+        Destructable.__init__(self)
+        GUIPositions.__init__(self)
+        comp = GUI.Window('')
+        comp.isClip = False
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('RIGHT', 'CENTER')
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.position = (0, 0, 0.5)
+        comp.visible = False
+        DragWin.__init__(self, comp)
+        comp = GUI.Frame2('soGUI/frame/basic_frame_1.dds')
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.wm, comp.hm = ('CLIP', 'CLIP')
+        comp.materialFX = 'BLEND'
+        comp.width, comp.height = (2, 2)
+        comp.position = (0, 0, 0.9)
+        self.component.addChild(comp)
+        self._model = Model()
+        self._model.add_listener(self._on_model_event)
+        self._hash_key = 'stor:' + str(hash(BWPersonality.game.last_server_address + BWPersonality.game.last_account_name))[:8]
+        self._storgrid = Storgrid(self._model, inventory.ROWS)
+        self._storgrid.add_listener(self._on_grid_event)
+        self.component.addChild(self._storgrid.component)
+        self._btn = ToggleButton()
+        inventory.component.addChild(self._btn.component)
+        self._btn.on_click = self._on_stor_click
+        self._btn.set_open(False)
+        comp = inventory.component
+        comp.hpm, comp.vpm = ('CLIP', 'PIXEL')
+        comp.ha, comp.va = ('RIGHT', 'TOP')
+        comp.position = (1, 0, 0.9)
+        self.component.addChild(comp, 'inventory')
+        inventory.add_listener(self._on_inventory_event)
+        self._move_velocity = 0.0
+        self._storage_ratio = 0.0
+        self._desired_ratio = 0.0
+
+    def _on_stor_click(self):
+        opened = not bool(self._desired_ratio)
+        self._desired_ratio = int(opened)
+        self._move_velocity = 0.0
+        self._btn.set_open(opened)
+        self.start_tick()
+        self._align_components()
+        if opened:
+            self._update_saferesp_availability()
+        if self._model.last_hash_value is not None:
+            Settings().setSetting(self._hash_key, self._model.last_hash_value)
+            self._btn.mark_pip(False)
+        return
+
+    def _align_components(self):
+        inv_comp = BWPersonality.GUICore.inventoryGUI.component
+        self.component.width = inv_comp.width + self.storage_ratio * Storgrid.base_width
+        self.component.height = inv_comp.height
+        comp = self._storgrid.component
+        comp.height, comp.width = self.component.height, self.component.width - inv_comp.width
+        comp.visible = comp.width > 0
+        self._btn.show_wing(self.storage_ratio)
+        GUIPositions.on_size_changed(self)
+
+    def _on_model_event(self, event_type, data):
+        if event_type == ModelET.OnGotHash:
+            last_visible_hash = Settings().getSetting(self._hash_key)
+            if last_visible_hash == self._model.last_hash_value:
+                self._btn.mark_pip(False)
+            elif self._desired_ratio == 0 and self._storage_ratio == 0:
+                self._btn.mark_pip(True)
+            else:
+                Settings().setSetting(self._hash_key, self._model.last_hash_value)
+                self._btn.mark_pip(False)
+
+    def _on_grid_event(self, event_type, data):
+        if event_type == SlotET.OnInventoryDrop:
+            item_ids_set = set(data['item_ids'])
+            item_ids = []
+            item_types = []
+            counts = []
+            indices = []
+            items_weight = 0
+            for index, item in enumerate(self._model.items):
+                item_id = item['complexItemID']
+                if item_id in item_ids_set:
+                    count = ItemsUtils.GetItemNumber(item)
+                    items_weight += ItemsUtils.GetItemWeight(item)
+                    item_ids.append(item_id)
+                    counts.append(count)
+                    indices.append(index)
+                    item_types.append(item['complexItemType'])
+
+            raise 'counts' in data and (len(counts) == 1 or AssertionError)
+            total_counts = counts[0]
+            asked_counts = data['counts'][0]
+            counts = [asked_counts]
+            items_weight *= float(asked_counts) / total_counts
+        raise len(item_ids) == len(counts) or AssertionError
+        if not len(item_ids_set) == len(item_ids):
+            raise AssertionError
+            p = BigWorld.player()
+            if not p.CanAcceptItemTypesAdvanced(item_types) or p.get_potential_encumbered_state(items_weight) != WEIGHT_STATE.NORMAL:
+                p.systemMsgChat(lc('GUI.Inventory.STOR_OVERLOAD'))
+                return
+            if not data['available']:
+                p.systemMsgChat(lc('GUI.Inventory.NOT_SAFE'))
+                return
+
+            def debug_delayed():
+                p.base.takeStoreHouseItemToInventory(item_ids, item_types, counts)
+
+            self._model.mark_pending(indices)
+            debug_delayed()
+        elif event_type == GridET.OnCollapseRequest:
+            self._on_stor_click()
+
+    def _on_inventory_event(self, event_type, data):
+        inventory = BWPersonality.GUICore.inventoryGUI
+        if event_type == InventoryET.OnSizeChanged:
+            self._storgrid.set_rows(inventory.ROWS)
+            self._align_components()
+        elif event_type == InventoryET.OnShowRequest:
+            if not self.component.visible:
+                BigWorld.player().getStoreHouseItems()
+                self.stop_tick()
+                self.component.visible = True
+                GUIPositions.show(self)
+                inventory.on_show()
+                self._desired_ratio = 0.0
+                self._btn.set_open(False)
+                self.storage_ratio = self._desired_ratio
+                self._move_velocity = 0.0
+                self._align_components()
+                self._storgrid.on_show()
+        elif event_type == InventoryET.OnHideRequest:
+            if self.component.visible:
+                self.stop_tick()
+                self.component.visible = False
+                self._desired_ratio = 0.0
+                self._btn.set_open(False)
+                self.storage_ratio = self._desired_ratio
+                self._move_velocity = 0.0
+                inventory.on_hide()
+
+    def on_inside_saferesp_changed(self):
+        if self._desired_ratio == 0 and self._storage_ratio == 0:
+            return
+        self._update_saferesp_availability()
+
+    def _update_saferesp_availability(self):
+        available = getattr(BigWorld.player(), 'inside_safe_and_resp', False)
+        self._storgrid.set_saferesp_available(available)
+
+    def set_store_items(self, items):
+        self._model.set_items(items)
+
+    def reset_position(self):
+        """ \xd1\x81\xd0\xb1\xd1\x80\xd0\xb0\xd1\x81\xd1\x8b\xd0\xb2\xd0\xb0\xd0\xb5\xd1\x82 \xd1\x81\xd0\xbe\xd1\x85\xd1\x80\xd0\xb0\xd0\xbd\xd1\x91\xd0\xbd\xd0\xbd\xd1\x8b\xd0\xb5 \xd0\xbf\xd0\xbe\xd0\xbb\xd0\xbe\xd0\xb6\xd0\xb5\xd0\xbd\xd0\xb8\xd1\x8f \xd0\xbe\xd0\xba\xd0\xbe\xd0\xbd """
+        self.component.position = (0, 0, 0.5)
+
+    @property
+    def storage_ratio(self):
+        return self._storage_ratio
+
+    @storage_ratio.setter
+    def storage_ratio(self, value):
+        self._storage_ratio = value
+        self._align_components()
+
+    def stopDragging(self):
+        DragWin.stopDragging(self)
+        GUIPositions.stopDragging(self)
+
+    def on_release(self):
+        inventory = BWPersonality.GUICore.inventoryGUI
+        if self.component.visible:
+            inventory.on_hide()
+        inventory.component.delChild(self._btn.component)
+        inventory.remove_listener(self._on_inventory_event)
+        self.component.delChild(inventory.component)
+
+    def on_tick(self):
+        storage_ratio, self._move_velocity = smooth_damp(self.storage_ratio, self._desired_ratio, self._move_velocity, 0.1, 500, BigWorld.getTimeDelta())
+        if abs(storage_ratio - self._desired_ratio) < 0.0001:
+            storage_ratio = self._desired_ratio
+        self.storage_ratio = storage_ratio
+
+    def can_tick(self):
+        if not Utils.is_visible_in_hierarchy(self.component):
+            return False
+        return self.storage_ratio != self._desired_ratio

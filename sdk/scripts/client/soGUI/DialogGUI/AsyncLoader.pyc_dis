@@ -1,0 +1,305 @@
+# Embedded file name: ./client/soGUI/DialogGUI/AsyncLoader.py
+import BigWorld
+from Helpers.BWCoroutine import BWMemberCoroutine, BWWaitForCondition
+from Localization import lc
+import re
+import QuestDispatcher
+import ItemsUtils
+import BWPersonality
+import colorCodes as cc
+import client_utils
+import DialogsLocalization as dl
+from base_to_capture_common.utils import get_teleport_price
+
+def time_to_string(time_sec):
+    m, s = divmod(time_sec, 60)
+    h, m = divmod(m, 60)
+    d, h = divmod(h, 24)
+    if not d and not h and not m:
+        m = 1
+    result = u''
+    if d:
+        result += u'{0} {1} '.format(int(d), lc('Quester.DAYS'))
+    if h:
+        result += u'{0} {1} '.format(int(h), lc('Quester.HOURS'))
+    if m:
+        result += u'{0} {1} '.format(int(m), lc('Quester.MINUTES'))
+    return result[:-1]
+
+
+def time_to_string2(time_sec):
+    m, s = divmod(time_sec, 60)
+    return '{0:02d}:{1:02d}'.format(m, s)
+
+
+class PrepareResult:
+    NotChanged, SyncChange, AsyncChange = xrange(3)
+
+
+class AsyncLoader(object):
+
+    def __init__(self):
+        self.need_break = lambda : False
+        self.ticker = None
+        return
+
+    @property
+    def _delegate(self):
+        return BigWorld.player()
+
+    @BWMemberCoroutine
+    def generate_autotext(self, npc_id):
+        random_quest = [None]
+
+        def get_random_quest():
+            random_quest[0] = self._delegate.get_random_quest(npc_id)
+            return random_quest[0]
+
+        yield BWWaitForCondition(lambda : get_random_quest() is not None or self.need_break(), 5, 0)
+        if self.need_break():
+            return
+        else:
+            self.text = QuestDispatcher.get_autoquest_replica(random_quest[0][0])
+            return
+
+    def _replace_sync(self, text, colorise = False):
+
+        def colorise_if_needed(t):
+            if colorise:
+                return cc.active_xml + t + '<basecolor>'
+            else:
+                return t
+
+        result = False
+        if '[' in text:
+            while '[QUEST' in text:
+                result = True
+                if '[QUESTITEMNAME:' in text:
+                    quest_id_text = re.search('\\[QUESTITEMNAME:(\\d*?)\\]', text)
+                    if quest_id_text:
+                        quest_id = int(quest_id_text.groups()[0])
+                        item_type = QuestDispatcher.get_needed_items_by_id(quest_id)[0]
+                        item_name = ItemsUtils.GetItemNameCached(item_type)
+                        text = text.replace(quest_id_text.group(), colorise_if_needed(item_name))
+                elif '[QUESTITEMNUMBER:' in text:
+                    quest_id_text = re.search('\\[QUESTITEMNUMBER:(\\d*?)\\]', text)
+                    if quest_id_text:
+                        quest_id = int(quest_id_text.groups()[0])
+                        item_count = QuestDispatcher.get_needed_items_by_id(quest_id)[1]
+                        text = text.replace(quest_id_text.group(), colorise_if_needed(str(item_count)))
+                elif '[QUESTMONEY:' in text:
+                    quest_id_text = re.search('\\[QUESTMONEY:(\\d*?)\\]', text)
+                    quest_id = int(quest_id_text.groups()[0])
+                    money = QuestDispatcher.getQuestOnID(quest_id)['Reward']['Credits']
+                    text = text.replace(quest_id_text.group(), colorise_if_needed(str(money)))
+                else:
+                    print 'AsyncLoader (ERROR):', text.encode('utf-8')
+                    raise NotImplementedError
+
+            if '[TP_BASECOST]' in text:
+                space_name = BWPersonality.game.get_space_name_advanced(BigWorld.player().spaceID)
+                price = get_teleport_price(space_name)
+                text = text.replace('[TP_BASECOST]', unicode(price))
+        if '%' in text:
+            while True:
+                quest_dialog_text = re.search('%D:(.*?):DIALOGID%', text)
+                if quest_dialog_text:
+                    result = True
+                    quest_dialog_id = int(quest_dialog_text.groups()[0])
+                    replaced_text = dl.get_text(quest_dialog_id)
+                    text = text.replace(quest_dialog_text.group(), replaced_text)
+                else:
+                    break
+
+        if '{' in text:
+            actions_text = BWPersonality.settings.keyBindings.parse_actions_and_replace(text, colorise)
+            if actions_text != text:
+                text = actions_text
+                result = True
+        return (result, text)
+
+    def prepare_async_text(self, text, colorise = False):
+
+        def colorise_if_needed(t):
+            if colorise:
+                return cc.active_xml + t + '<basecolor>'
+            else:
+                return t
+
+        result = PrepareResult.NotChanged
+        points = colorise_if_needed('...')
+        changed, text = self._replace_sync(text, colorise=colorise)
+        if changed:
+            result |= PrepareResult.SyncChange
+        if '[' in text:
+            if '[TICKER' in text:
+                start = text.find('[TICKER:')
+                end = text.find(']', start)
+                text = text[:start] + points + text[end + 1:]
+                result |= PrepareResult.AsyncChange
+            if '[TIME:' in text:
+                start = text.find('[TIME')
+                end = text.find(']', start)
+                text = text[:start] + points + text[end + 1:]
+                result |= PrepareResult.AsyncChange
+            if '[BUYSPECS]' in text:
+                start = text.find('[BUYSPECS]')
+                end = text.find(']', start)
+                text = text[:start] + points + text[end + 1:]
+                result |= PrepareResult.AsyncChange
+        if '%' in text:
+            money_text = re.search('%D:(.*?):MONEY_COST%', text)
+            if money_text:
+                text = text.replace(money_text.group(), colorise_if_needed(points))
+                result |= PrepareResult.AsyncChange
+            if '%CAB' in text:
+                if '%CABLIST%' in text:
+                    text = text.replace('%CABLIST%', points)
+                    result |= PrepareResult.AsyncChange
+                for tag in ('%CABDESTINATION%', '%CABEMPTYSEATS%', '%CABROUTEPRICE%', '%CABTIMETODEPART%'):
+                    text = text.replace(tag, points)
+                    result |= PrepareResult.AsyncChange
+
+                if '%CABALLDESTINATIONS%' in text:
+                    text = text.replace('%CABALLDESTINATIONS%', points)
+                    result |= PrepareResult.AsyncChange
+        self.text = client_utils.colorise_text(text) if colorise else self.text
+        return result
+
+    @BWMemberCoroutine
+    def replace_text(self, text, colorise = False):
+        self.ticker = None
+
+        def colorise_if_needed(t):
+            if colorise:
+                return cc.active_xml + t + '<basecolor>'
+            else:
+                return t
+
+        text = self._replace_sync(text, colorise=colorise)[1]
+        if '[' in text:
+            if '[TIME:' in text:
+                start = text.find('[TIME:') + 6
+                end = text.find(']', start)
+                quest_id = int(text[start:end])
+                time_remain = [None]
+
+                def get_time_remain(quest_id):
+                    time_remain[0] = self._delegate.get_time_remain(quest_id)
+                    return time_remain[0]
+
+                yield BWWaitForCondition(lambda : get_time_remain(quest_id) is not None or self.need_break(), 5, 0)
+                if self.need_break():
+                    return
+                start = text.find('[TIME')
+                end = text.find(']', start)
+                timer_data = (text[:start], text[end + 1:])
+                text = timer_data[0] + colorise_if_needed(time_to_string(time_remain[0])) + timer_data[1]
+                self.ticker = (time_remain[0],
+                 timer_data[0],
+                 timer_data[1],
+                 time_to_string)
+            while '[TICKER:' in text:
+                start = text.find('[TICKER:') + 8
+                end = text.find(']', start)
+                quest_id = int(text[start:end])
+                time_end = [None]
+
+                def get_time_end(quest_id):
+                    time_end[0] = self._delegate.get_time_end(quest_id)
+                    return time_end[0]
+
+                yield BWWaitForCondition(lambda : get_time_end(quest_id) is not None or self.need_break(), 5, 0)
+                if self.need_break():
+                    return
+                start = text.find('[TICKER:')
+                end = text.find(']', start)
+                ticker_data = (text[:start], text[end + 1:])
+                text = ticker_data[0] + colorise_if_needed(time_to_string2(int(time_end[0]))) + ticker_data[1]
+                self.ticker = (int(time_end[0]),
+                 ticker_data[0],
+                 ticker_data[1],
+                 time_to_string2)
+
+            while '[BUYSPECS]' in text:
+                items_needed = [None]
+
+                def get_items_text():
+                    items_needed[0] = self._delegate.get_items_text()
+                    return items_needed[0]
+
+                yield BWWaitForCondition(lambda : get_items_text() is not None or self.need_break(), 5, 0)
+                if self.need_break():
+                    return
+                item_names = []
+                for item_type in items_needed[0]:
+                    item_names.append(ItemsUtils.GetItemNameCached(item_type))
+
+                text = text.replace('[BUYSPECS]', colorise_if_needed(u', '.join(item_names)))
+
+        money_text = re.search('%D:(.*?):MONEY_COST%', text)
+        if money_text:
+            money_needed = [None]
+
+            def get_money_text(money_dialog_id):
+                money_needed[0] = self._delegate.get_money_text(money_dialog_id)
+                return money_needed[0]
+
+            money_dialog_id = int(money_text.groups()[0])
+            yield BWWaitForCondition(lambda : get_money_text(money_dialog_id) is not None or self.need_break(), 5, 0)
+            if self.need_break():
+                return
+            text = text.replace(money_text.group(), colorise_if_needed(str(money_needed[0])))
+        if '%CAB' in text:
+            if '%CABLIST%' in text:
+                cablist = [None]
+
+                def get_cablist():
+                    cablist[0] = self._delegate.get_cablist()
+                    return cablist[0]
+
+                yield BWWaitForCondition(lambda : get_cablist() is not None or self.need_break(), 5, 0)
+                if self.need_break():
+                    return
+                names, destination = cablist[0]
+                riders = destination + '\n'
+                for c in names:
+                    riders += c + '\n'
+
+                text = text.replace('%CABLIST%', colorise_if_needed(riders.strip()))
+            if any((d in text for d in ('%CABDESTINATION%', '%CABEMPTYSEATS%', '%CABROUTEPRICE%', '%CABTIMETODEPART%'))):
+                cabdest = [None]
+
+                def get_cabdestdata():
+                    cabdest[0] = self._delegate.get_cabdestdata()
+                    return cabdest[0]
+
+                yield BWWaitForCondition(lambda : get_cabdestdata() is not None or self.need_break(), 5, 0)
+                if self.need_break():
+                    return
+                destination = lc('Cabman.destinations.' + cabdest[0]['destination']) if cabdest[0]['destination'] else u'[undefined]'
+                empty_seats = str(cabdest[0]['empty_seats']) if cabdest[0]['empty_seats'] > 0 else u'[undefined]'
+                price = str(cabdest[0]['price']) if cabdest[0]['price'] > 0 else u'[undefined]'
+                depart_time = time_to_string(cabdest[0]['depart_time']) if cabdest[0]['depart_time'] > 0 else u'[undefined]'
+                text = text.replace('%CABDESTINATION%', colorise_if_needed(destination))
+                text = text.replace('%CABEMPTYSEATS%', colorise_if_needed(empty_seats))
+                text = text.replace('%CABROUTEPRICE%', colorise_if_needed(price))
+                text = text.replace('%CABTIMETODEPART%', colorise_if_needed(depart_time))
+            if '%CABALLDESTINATIONS%' in text:
+                caballdests = [None]
+
+                def get_caballdests():
+                    caballdests[0] = self._delegate.get_caballdests()
+                    return caballdests[0]
+
+                yield BWWaitForCondition(lambda : get_caballdests() is not None or self.need_break(), 5, 0)
+                if self.need_break():
+                    return
+                dests = u''
+                for dest in caballdests[0]:
+                    dests += lc('Cabman.destinations.' + dest) + u', '
+
+                dests = dests[:-2]
+                text = text.replace('%CABALLDESTINATIONS%', colorise_if_needed(dests))
+        self.text = client_utils.colorise_text(text) if colorise else text
+        return

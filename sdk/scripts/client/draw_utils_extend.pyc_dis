@@ -1,0 +1,270 @@
+# Embedded file name: ./client/draw_utils_extend.py
+import BigWorld
+import Math
+import time
+import math
+from Math import Vector3
+gi = BigWorld.getGeometricInstance()
+
+class LinesHolder:
+
+    def __init__(self, max_lines = 1, def_color = (0, 1, 0, 1), def_add = Vector3(0, 1, 0), auto_clear = 0, draw_system = None, matrix = None):
+        """
+        
+        max_lines - \xd0\xbe\xd1\x82 1 \xd0\xb4\xd0\xbe .. - \xd0\xbf\xd1\x80\xd0\xb8 \xd0\xb4\xd0\xbe\xd0\xb1\xd0\xb0\xd0\xb2\xd0\xbb\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb8 \xd0\xb1\xd0\xbe\xd0\xbb\xd1\x8c\xd1\x88\xd0\xb5 \xd1\x87\xd0\xb5\xd0\xbc, \xd1\x83\xd0\xb4\xd0\xb0\xd0\xbb\xd0\xb8\xd1\x82\xd1\x81\xd1\x8f \xd0\xbd\xd0\xb0\xd0\xb8\xd0\xb1\xd0\xbe\xd0\xbb\xd0\xb5\xd0\xb5 \xd1\x81\xd1\x82\xd0\xb0\xd1\x80\xd1\x8b\xd0\xb5 \xd0\xbb\xd0\xb8\xd0\xbd\xd0\xb8\xd0\xb8
+                                0 - \xd1\x83\xd0\xb4\xd0\xb0\xd0\xbb\xd1\x8f\xd1\x82\xd1\x8c \xd1\x82\xd0\xbe\xd0\xbb\xd1\x8c\xd0\xba\xd0\xbe \xd0\xb2\xd1\x80\xd1\x83\xd1\x87\xd0\xbd\xd1\x83\xd1\x8e
+        """
+        self.draw_system = draw_system or gi
+        self._max_lines = max_lines
+        self.def_color = def_color
+        self.def_add = def_add
+        self.auto_clear = auto_clear
+        self.__aclear_id = 0
+        self._lines = []
+        self._prev_pos = None
+        self.matrix = matrix
+        return
+
+    def setMatrix(self, matrix):
+        self.matrix = matrix
+
+    def continue_line(self, pos, color = None, ower = False):
+        if self._prev_pos is None:
+            self._prev_pos = Vector3(pos)
+            return
+        else:
+            self.add(pos, self._prev_pos, color, ower)
+            self._prev_pos = Vector3(pos)
+            return
+
+    def addLine(self, *args, **kargs):
+        return self.add(*args, **kargs)
+
+    def addCross(self, pos, size = 0.1, **kargs):
+        h = size / 2.0
+        self.addLine((pos + (h, 0, 0)), (pos - (h, 0, 0)), **kargs)
+        self.addLine((pos + (0, h, 0)), (pos - (0, h, 0)), **kargs)
+        self.addLine((pos + (0, 0, h)), (pos - (0, 0, h)), **kargs)
+
+    def addList(self, pos_arr, color = None, ower = False):
+        prev = pos_arr[-1]
+        for p in pos_arr:
+            self.addLine(p, prev, color=color, ower=ower)
+            prev = p
+
+    def add(self, pos, pos2 = None, color = None, ower = False):
+        if pos2 is None:
+            pos2 = pos + self.def_add
+        if color is None:
+            color = self.def_color
+        if self.matrix:
+            pos = self.matrix.applyPoint(pos)
+            pos2 = self.matrix.applyPoint(pos2)
+        line_id = self.draw_system.addLine(pos, pos2, color, ower)
+        self._lines.insert(0, line_id)
+        if self._max_lines > 0:
+            while len(self._lines) > self._max_lines:
+                self.pop()
+
+        if self.auto_clear > 0:
+            if self.__aclear_id:
+                BigWorld.cancelCallback(self.__aclear_id)
+            BigWorld.callback(self.auto_clear, self.clear)
+        return
+
+    addLine = add
+    tmp_v = Vector3()
+
+    def addVectorYawPitch(self, pos, yaw = 0, pitch = 0, color = None):
+        self.tmp_v.setPitchYaw(pitch, yaw)
+        self.add(pos, pos + self.tmp_v, color=color)
+
+    def addYawSector(self, pos, yaw0 = -1.0, yaw1 = 1.0, pitch = 0, dist = 1.0, step = 0.3, color = None):
+        if yaw1 < yaw0:
+            yaw1 += math.pi * 2
+        yawrange = yaw1 - yaw0
+        number = int(yawrange / step) + 1
+        last_fwd = None
+        self.addVectorYawPitch(pos, yaw0, pitch, color)
+        self.addVectorYawPitch(pos, yaw1, pitch, color)
+        for i in xrange(number + 1):
+            angle = yaw0 + i * step
+            if i == number:
+                angle = yaw1
+            self.tmp_v.setPitchYaw(pitch, angle)
+            fwd = self.tmp_v * dist + pos
+            if last_fwd:
+                self.add(fwd, last_fwd, color=color)
+            last_fwd = fwd
+
+        return
+
+    def pop(self, count = 1):
+        for x in xrange(count):
+            line_id = self._lines.pop(-1)
+            self.draw_system.remove(line_id)
+
+    def clear(self):
+        self._prev_pos = None
+        if self._lines:
+            self.pop(len(self._lines))
+        return
+
+    def __call__(self, pos, pos2 = None, color = None, ower = False, **kw):
+        return self.add(pos, pos2, color, ower)
+
+
+class ClipListFixedFrame:
+
+    def __init__(self, size = 60, color = (0, 1, 0, 1), fps = 30, draw_system = None):
+        self._dt = 1.0 / fps
+        self._lastvalue = 0.0
+        self._cl = ClipList(size=size, color=color, auto_draw=False, draw_system=draw_system)
+        self._t = time.time()
+        self._tick_id = BigWorld.callback(self._dt, self._tick)
+
+    def destroy(self):
+        BigWorld.cancelCallback(self._tick_id)
+        self._cl.clear()
+        self._cl = None
+        return
+
+    def _tick(self):
+        dt = time.time() - self._t
+        if dt > self._dt:
+            for i in xrange(int(dt / self._dt)):
+                self._cl.addValue(self._lastvalue)
+
+            self._cl.draw()
+            self._t = time.time()
+        self._tick_id = BigWorld.callback(self._dt, self._tick)
+
+    def addValue(self, val):
+        self._lastvalue = val
+
+
+class ClipList:
+    """docstring for ClassName"""
+
+    def __init__(self, size = 60, color = (0, 1, 0, 1), auto_tick_delay = -1, auto_draw = True, draw_system = None):
+        self.draw_system = draw_system or gi
+        self.size = size
+        self.color = color
+        self._lst = []
+        self._line_id = 0
+        self._tick_id = 0
+        self._auto_draw = auto_draw
+        self.__auto_tick_delay = 0
+        self._set_auto_tick_delay(auto_tick_delay)
+
+    def _get_auto_tick_delay(self):
+        return self.__auto_tick_delay
+
+    def _set_auto_tick_delay(self, val):
+        self.__auto_tick_delay = val
+        if self._tick_id:
+            BigWorld.cancelCallback(self._tick_id)
+            self._tick_id = 0
+        if self.__auto_tick_delay >= 0:
+            self.__tick()
+
+    auto_tick_delay = property(_get_auto_tick_delay, _set_auto_tick_delay)
+
+    def __tick(self):
+        if self.__auto_tick_delay < 0:
+            return
+        self._tick_id = BigWorld.callback(self.__auto_tick_delay, self.__tick)
+        self.draw()
+
+    def addValue(self, val):
+        self._lst.insert(0, val)
+        while len(self._lst) > self.size:
+            self._lst.pop()
+
+        if self._auto_draw:
+            self.draw()
+
+    def clear(self):
+        self.hide()
+        self._lst = []
+
+    def hide(self):
+        if self._line_id:
+            self.draw_system.remove(self._line_id)
+            self._line_id = 0
+
+    def draw(self):
+        self.hide()
+        lns = []
+        for i, data in enumerate(self._lst):
+            x = i / (self.size * 0.5) - 1
+            y = data * 2.5
+            lns.append((x, y))
+
+        if lns:
+            first = lns[0]
+            last = lns[-1]
+            lns.insert(0, (first[0], 0))
+            lns.append((last[0], 0))
+            self._line_id = self.draw_system.addMultiLineClip(tuple(lns), self.color)
+
+
+class Cylinder(LinesHolder):
+
+    def __init__(self, max_lines = 512):
+        LinesHolder.__init__(self, max_lines=max_lines)
+
+    def drawCylinder(self, center, dest, radius, numberOfFaces = 8, color = (0, 1, 0, 1), draw_system = None):
+        self.draw_system = draw_system or gi
+        r_mult = math.cos(math.pi / numberOfFaces) * radius
+        v = Vector3()
+        prev = None
+        prevD = None
+        for x in xrange(numberOfFaces + 1):
+            v.setPitchYaw(0, math.pi * 2 * x / numberOfFaces)
+            p1 = center + v * r_mult
+            if prev:
+                self.add(p1, prev, color=color)
+            prev = p1
+            pD = dest + v * r_mult
+            if prevD:
+                self.add(pD, prevD, color=color)
+            prevD = pD
+            self.add(pD, p1, color=color)
+
+        return
+
+    def drawCyrcle(self, center, dir_, radius, numberOfFaces = 8, color = (1, 0, 0, 1)):
+        r_mult = math.cos(math.pi / numberOfFaces) * radius
+        v = Vector3()
+        prev = None
+        for x in xrange(numberOfFaces):
+            v.setPitchYaw(0, math.pi * 2 * x / numberOfFaces)
+            p1 = center + v * r_mult
+            if prev:
+                self.add(p1, prev, color=color)
+            prev = p1
+
+        return
+
+    def drawBox(self, minBounds, maxBounds, color = (1, 0, 0, 1)):
+        point00 = Vector3(minBounds[0], minBounds[1], minBounds[2])
+        point01 = Vector3(minBounds[0], minBounds[1], maxBounds[2])
+        point02 = Vector3(minBounds[0], maxBounds[1], minBounds[2])
+        point03 = Vector3(minBounds[0], maxBounds[1], maxBounds[2])
+        point10 = Vector3(maxBounds[0], minBounds[1], minBounds[2])
+        point11 = Vector3(maxBounds[0], maxBounds[1], minBounds[2])
+        point12 = Vector3(maxBounds[0], minBounds[1], maxBounds[2])
+        point13 = Vector3(maxBounds[0], maxBounds[1], maxBounds[2])
+        self.addLine(point00, point10, color)
+        self.addLine(point01, point12, color)
+        self.addLine(point02, point11, color)
+        self.addLine(point03, point13, color)
+        self.addLine(point00, point01, color)
+        self.addLine(point03, point02, color)
+        self.addLine(point02, point00, color)
+        self.addLine(point03, point01, color)
+        self.addLine(point10, point11, color)
+        self.addLine(point13, point12, color)
+        self.addLine(point12, point10, color)
+        self.addLine(point13, point11, color)

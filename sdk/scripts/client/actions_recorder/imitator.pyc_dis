@@ -1,0 +1,262 @@
+# Embedded file name: ./client/actions_recorder/imitator.py
+from Math import Matrix
+import BigWorld
+import math_bw
+from utils import PY
+from functools import partial
+from EquipSlotsConfigs import EquipSlotTypes as EST
+
+class State:
+    Play, Stop, Pause = xrange(3)
+
+
+class EventType:
+    NpcChanged, LoopChanged, StateChanged, BeforePlay, LoopEndChanged = xrange(5)
+
+
+class Imitator(object):
+
+    def __init__(self, data):
+        self._data = data
+        self._tick_controller = None
+        self._entity_id = None
+        self._entity = None
+        self._key_index = 0
+        self._last_action = None
+        self._accumulated_time = 0
+        self.state = State.Stop
+        self.loop = False
+        self.loop_end = False
+        self.npc = True
+        self._listeners = []
+        return
+
+    def add_listener(self, listener):
+        self._listeners.append(listener)
+
+    def remove_listener(self, listener):
+        if listener in self._listeners:
+            self._listeners.remove(listener)
+
+    def _notify_listeners(self, event_type, data = None):
+        for listener in self._listeners:
+            listener.on_imitator_event(event_type, data)
+
+    def _apply_coords(self, coords0, coords1, factor):
+        position0, yaw0, pitch0 = coords0
+        position1, yaw1, pitch1 = coords1
+        t0 = Matrix()
+        t0.setTranslate(tuple(position0))
+        r0 = Matrix()
+        r0.setRotateYPR((yaw0, pitch0, 0))
+        t0.preMultiply(r0)
+        t1 = Matrix()
+        t1.setTranslate(tuple(position1))
+        r1 = Matrix()
+        r1.setRotateYPR((yaw1, pitch1, 0))
+        t1.preMultiply(r1)
+        t0.blendMatrix(factor, t1)
+        self._entity.filter.debugPosition(t0.translation, (t0.yaw, t0.pitch, 0))
+
+    def _on_attr_applied(self, attr, old_value, value):
+        pass
+
+    def _on_foo_applied(self, foo_name, *args, **kargs):
+        pass
+
+    def _apply_magic(self):
+        self._entity.updateHandControl()
+
+    def _set_entity_attr(self, attr, value):
+        prev_value = getattr(self._entity, attr, None)
+        if prev_value == value:
+            return
+        else:
+            setattr(self._entity, attr, value)
+            attr_setter = getattr(self._entity, 'set_' + attr, None)
+            if attr_setter:
+                attr_setter(prev_value)
+            self._on_attr_applied(attr, prev_value, value)
+            return
+
+    def _apply_actions(self, last_index, cur_index):
+        if cur_index == last_index:
+            return
+        else:
+            if last_index is None:
+                index = 0
+            else:
+                index = last_index + 1
+            while True:
+                if index == len(self._data['keys']):
+                    for attr, old_value in self._original_attrs.items():
+                        self._set_entity_attr(attr, old_value)
+
+                    self._original_attrs = {}
+                    index = 0
+                key = self._data['keys'][index]
+                for action in key['actions']:
+                    is_attr = action[0]
+                    if is_attr:
+                        _, attr, old_value, new_value = action
+                        if attr not in self._original_attrs:
+                            self._original_attrs[attr] = old_value
+                        self._set_entity_attr(attr, new_value)
+                    else:
+                        _, foo_name, args, kargs = action
+                        getattr(self._entity, foo_name)(*args, **kargs)
+                        self._on_foo_applied(foo_name, args, kargs)
+
+                if index == cur_index:
+                    break
+                index += 1
+
+            return
+
+    def _set_loop_end(self, value):
+        if self.loop_end != value:
+            self.loop_end = value
+            self._notify_listeners(EventType.LoopEndChanged)
+
+    def _tick(self):
+        if not self._entity:
+            entity = BigWorld.entities.get(self._entity_id)
+            if entity:
+                self._entity = entity
+                self._entity.filter = BigWorld.DumbFilter()
+                self._entity.STOP_MODE = 0
+                if self._entity.__class__.__name__ == 'NPC':
+                    self._entity.model.motors[0].matchNotifierLodDistance = 200.0
+                    self._entity.fniLeft.maxWorkingDistanceToCamera = 200.0
+                    self._entity.fniRight.maxWorkingDistanceToCamera = 200.0
+                    self._entity.model.simple_cloth_tracker.maxLod = 50.0
+        if self._entity:
+            loop_end = False
+            total_time = self._data['keys'][-1]['time']
+            if self.state == State.Play:
+                self._accumulated_time += BigWorld.getTimeDelta()
+                if self._accumulated_time >= total_time:
+                    if self.loop:
+                        self._accumulated_time -= total_time
+                    else:
+                        loop_end = True
+                        self._accumulated_time = total_time
+            self._set_loop_end(loop_end)
+            if loop_end:
+                self._key_index = len(self._data['keys']) - 1
+                key0 = self._data['keys'][self._key_index]
+                key1 = key0
+                factor = 0
+            else:
+                normal_time = self._accumulated_time % total_time
+                key_time = self._data['keys'][self._key_index]['time']
+                if key_time > normal_time:
+                    self._key_index = 0
+                else:
+                    while True:
+                        next_key_time = self._data['keys'][self._key_index + 1]['time']
+                        if next_key_time > normal_time:
+                            break
+                        self._key_index += 1
+
+                key0 = self._data['keys'][self._key_index]
+                key1 = self._data['keys'][self._key_index + 1]
+                factor = math_bw.inverse_lerp(key0['time'], key1['time'], normal_time)
+            self._apply_coords(key0['coords'], key1['coords'], factor)
+            self._apply_actions(self._last_action, self._key_index)
+            self._apply_magic()
+            self._last_action = self._key_index
+        self._tick_controller = BigWorld.callback(0, self._tick)
+
+    def set_pause(self, pause):
+        self.set_state(State.Pause if pause else State.Play)
+
+    def set_npc(self, npc):
+        if self.npc != npc:
+            self.npc = npc
+            self._notify_listeners(EventType.NpcChanged)
+
+    def set_loop(self, loop):
+        if self.loop != loop:
+            self.loop = loop
+            self._notify_listeners(EventType.LoopChanged)
+
+    def set_loop_end(self, value):
+        if self.loop_end != value:
+            self.loop_end = value
+            self._notify_listeners(EventType.LoopEndChanged)
+
+    def play(self):
+        data = {'imitator': self}
+        self.stop()
+        self._notify_listeners(EventType.BeforePlay, data)
+        self.set_state(State.Play)
+        params = PY(self._data['params'])
+        if self.npc:
+            class_name = 'NPC'
+            from tmp_demo_recorder import tutorial_demos_npc_config
+            params.update(tutorial_demos_npc_config)
+            if self._entity_id:
+                entity = BigWorld.entities.get(self._entity_id)
+                data = getattr(entity, '_get_personality_npc', None)
+                if data:
+                    personality, face_data = data()
+                    for slot_type, slot_data in face_data.iteritems():
+                        slot_attr = EST._slot_type_to_attr.get(slot_type) or EST._slot_type_to_attr.get(int(slot_type))
+                        params['EquippedArmor'][slot_attr] = slot_data
+
+                    params['personality'] = personality
+                params['name'] = entity.name
+            params['EquipModes'] &= ~(1 << EST.MODE_GASMASK_FILTER_OFF)
+        else:
+            class_name = 'Avatar'
+        position, yaw, pitch = self._data['keys'][0]['coords']
+        if self._entity_id:
+            coords = (position, yaw, pitch)
+            self._apply_coords(coords, coords, 0)
+            for key, value in params.items():
+                self._set_entity_attr(key, value)
+
+            self._apply_magic()
+        else:
+            player = BigWorld.player()
+            self._entity_id = BigWorld.createEntity(class_name, player.spaceID, 0, position, (0, pitch, yaw), params)
+        self._tick()
+        return
+
+    def accept_entity(self, entity):
+        self._entity_id = entity.id
+        self._entity = entity
+
+    def stop(self, withdraw_entity = False):
+        self.set_state(State.Stop)
+        if self._tick_controller:
+            BigWorld.cancelCallback(self._tick_controller)
+        self._tick_controller = None
+        withdrawed_entity = None
+        if self._entity_id:
+            if withdraw_entity:
+                withdrawed_entity = self._entity
+            else:
+                BigWorld.callback(0, partial(BigWorld.destroyEntity, self._entity_id))
+        self._entity_id = None
+        self._entity = None
+        self._key_index = 0
+        self._last_action = None
+        self._accumulated_time = 0
+        self._original_attrs = {}
+        self._set_loop_end(False)
+        return withdrawed_entity
+
+    @property
+    def entity(self):
+        return self._entity
+
+    def set_state(self, state):
+        if self.state != state:
+            self.state = state
+            self._notify_listeners(EventType.StateChanged)
+
+    def on_destroy(self):
+        self.stop()
+        self._listeners = []

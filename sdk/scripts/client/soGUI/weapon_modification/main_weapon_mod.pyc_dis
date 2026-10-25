@@ -1,0 +1,545 @@
+# Embedded file name: ./client/soGUI/weapon_modification/main_weapon_mod.py
+import BigWorld
+import BWPersonality
+from Math import Matrix
+import edit_weapon
+from sounds_manager import playSound
+import GUI
+from Items import ItemsCatalog
+import ItemsUtils
+import gui_jokes
+import traceback
+import Keys
+from Localization import lc
+from Helpers.PyGUI.PyGUIBase import PyGUIBase, WinBehaviour
+from soGUI.soButton import soButton, soButtonWTT
+from soGUI.soCheckBox import soCheckBox
+from soGUI import CheckBoxPropsStructure
+from soGUI.soEditField import soEditBox2
+import attachment_panel_right
+import attached_panel_top
+import render_window
+import fade_wind
+from Helpers.BWCoroutine import BWMemberCoroutine, BWWaitForPeriod
+
+def gen_bb():
+    while True:
+        for bb in ('true', 'false'):
+            for ms in (0, 1):
+                yield (ms, bb)
+
+
+gen_bb = gen_bb()
+
+class WeaponMod(PyGUIBase):
+    factoryString = 'soGUI.WeaponMod'
+
+    def __init__(self, component):
+        PyGUIBase.__init__(self, component)
+        self.set_behaviours(WinBehaviour.Full)
+        component.script = self
+        self.weapon = None
+        self._hook_hide = False
+        self._original_attachments_count = 0
+        self.setupRoot()
+        self.setupContent()
+        self.setupBtns()
+        self.setupDebugBtns()
+        self.component.reSort()
+        return
+
+    def doReposition(self):
+        self.width, self.height = BigWorld.screenSize()
+        self.component.bApply.position = ((self.width - 330) / 2, -0.99, 0.01)
+        self.component.closeBox.position = (self.width - 10, 6, 0.01)
+        self.inventory_panel.doReposition()
+        self._rw.updateSize(update_model=self.component.visible)
+        if self._hook_hide:
+            return
+
+    def setupRoot(self):
+        cmp = self.component
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'CLIP'
+        cmp.widthMode = cmp.heightMode = 'CLIP'
+        cmp.horizontalAnchor = 'CENTER'
+        cmp.verticalAnchor = 'CENTER'
+        cmp.colour = (19, 19, 17, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.textureName = 'textures/default/white.dds'
+        self.component.moveFocus = 1
+        self.component.dragFocus = 1
+        self.component.dropFocus = 1
+        self.component.mouseButtonFocus = 1
+        self.component.crossFocus = 1
+        self.component.focus = 1
+        self.component.width = 2
+        self.component.height = 2
+        sW, sH = BigWorld.screenSize()
+        self.width = sW
+        self.height = sH
+        cmp.position = (0, 0, 0.12)
+
+    def setupContent(self):
+        self._rw = render_window.RenderWindow(GUI.Window(), self)
+        self.component.addChild(self._rw.component, 'dummy')
+        self.inventory_panel = attachment_panel_right.AttachmentPanelRight(GUI.Window(), self._rw, self)
+        self.component.addChild(self.inventory_panel.component, 'inventory_panel')
+        self.inventory_panel.component.position = (1, 1, 0.9)
+        self.top_panel = attached_panel_top.AttachedPanelTop(GUI.Window(), self)
+        self.component.addChild(self.top_panel.component, 'top_panel')
+        self.top_panel.component.position = (0, 1, 0.1)
+        self._fader = fade_wind.FadeWindow(GUI.Window(), self)
+        self.component.addChild(self._fader.component, 'fader')
+
+    def setupBtns(self):
+        closeBox = soButton(GUI.Window())
+        cmp = closeBox.component
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.horizontalAnchor = 'RIGHT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.width = 20
+        cmp.height = 20
+        cmp.position = (self.width - 10, 6, 0.01)
+        closeBox.initVSC('soGUI/elements/closeBox.xml')
+        closeBox.onBound()
+        closeBox.setVisualState('normal')
+        closeBox.onClick = self.hide
+        self.component.addChild(cmp, 'closeBox')
+        bApply = soButtonWTT(GUI.Window())
+        bApply.initVSC('soGUI/elements/button_big.xml')
+        cmp = bApply.component
+        cmp.horizontalPositionMode = 'PIXEL'
+        cmp.verticalPositionMode = 'CLIP'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.horizontalAnchor = 'CENTER'
+        cmp.verticalAnchor = 'BOTTOM'
+        cmp.width = 342
+        cmp.height = 65
+        cmp.label.text = lc('colourItemWindow.APPLY_CHANGES_TO_AN_ITEM')
+        cmp.position = ((self.width - 330) / 2, -0.99, 0.01)
+        self.component.addChild(cmp, 'bApply')
+        bApply.onClick = self._on_btn_apply
+        bApply.onBound()
+        bApply._updateVisualState()
+        self._btn_apply = bApply
+
+    def setupDebugBtns(self):
+        frame_debug = GUI.Window()
+        frame_debug.materialFX = 'BLEND'
+        frame_debug.textureName = 'textures/default/white.dds'
+        frame_debug.colour = (5, 5, 20, 200)
+        frame_debug.horizontalPositionMode = 'PIXEL'
+        frame_debug.verticalPositionMode = 'PIXEL'
+        frame_debug.widthMode = 'PIXEL'
+        frame_debug.heightMode = 'PIXEL'
+        frame_debug.horizontalAnchor = 'LEFT'
+        frame_debug.verticalAnchor = 'TOP'
+        frame_debug.width = 300
+        frame_debug.height = 90
+        frame_debug.position = (3, 10, 0.4)
+        self.component.addChild(frame_debug, 'frame_debug')
+        closeDebug = soButton(GUI.Window())
+        cmp = closeDebug.component
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.horizontalAnchor = 'RIGHT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.width = 15
+        cmp.height = 15
+        cmp.position = (frame_debug.width - 5, 6, 0.01)
+        closeDebug.initVSC('soGUI/elements/closeBox.xml')
+        closeDebug.onBound()
+        closeDebug.setVisualState('normal')
+        closeDebug.onClick = self._closeDebug
+        frame_debug.addChild(cmp, 'closeDebug')
+        btn = soButtonWTT(GUI.Window())
+        btn.initVSC('soGUI/elements/button_1.xml')
+        cmp = btn.component
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.colour = (255, 255, 255, 255)
+        cmp.width = 60
+        cmp.height = 32
+        cmp.label.text = 'DEBUG'
+        cmp.position = (10, 4, 0.01)
+        frame_debug.addChild(cmp, 'bDebugMode')
+        btn.onClick = self._swith_debug_mode
+        btn.onBound()
+        btn._updateVisualState()
+        btn = soButtonWTT(GUI.Window())
+        btn.initVSC('soGUI/elements/button_1.xml')
+        cmp = btn.component
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.colour = (255, 255, 255, 255)
+        cmp.width = 30
+        cmp.height = 32
+        cmp.label.text = 'BB'
+        cmp.position = (75, 4, 0.01)
+        frame_debug.addChild(cmp, 'bVisibleBB')
+        btn.onClick = self._swith_visible_bb
+        btn.onBound()
+        btn._updateVisualState()
+        btn = soButtonWTT(GUI.Window())
+        btn.initVSC('soGUI/elements/button_1.xml')
+        cmp = btn.component
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.colour = (255, 255, 255, 255)
+        cmp.width = 100
+        cmp.height = 32
+        cmp.label.text = 'RELOAD ITEMS'
+        cmp.position = (10, 38, 0.01)
+        frame_debug.addChild(cmp, 'bReloadItems')
+        btn.onClick = lambda *e: BigWorld.callback(0.01, self._reload_items)
+        btn.onBound()
+        btn._updateVisualState()
+        btn = soButtonWTT(GUI.Window())
+        btn.initVSC('soGUI/elements/button_1.xml')
+        cmp = btn.component
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.colour = (255, 255, 255, 255)
+        cmp.width = 100
+        cmp.height = 32
+        cmp.label.text = 'ReL Model'
+        cmp.position = (110, 4, 0.01)
+        frame_debug.addChild(cmp, 'bReloadModel')
+        btn.onClick = lambda *e: BigWorld.callback(0.01, self._reload_model)
+        btn.onBound()
+        btn._updateVisualState()
+        self._cb_rotate = soCheckBox(GUI.Window(), CheckBoxPropsStructure(labelText=u'\u041a\u0440\u0443\u0442\u0438\u0442\u044c', font='ruRU_Cyrvetica_Extra_10i.font', labelColour=(175, 166, 112, 255)))
+        cmp = self._cb_rotate.component
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.materialFX = 'BLEND'
+        cmp.position = (120, 45, 0.1)
+        cmp.script.setInactive()
+        frame_debug.addChild(cmp, 'cb_autoBored')
+        self._cb_rotate.onBound()
+        self._cb_rotate.onStateChange = self._onChangeRotate
+        self._rotate_speed_entry = soEditBox2(GUI.Window(), width=60, height=21, font='RobotoCondensedRegular_14.font', hOffset=1, vOffset=2)
+        cmp = self._rotate_speed_entry.component
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.position = (190, 42, 0.3)
+        frame_debug.addChild(cmp, 'rotate_speed')
+        self._rotate_speed_entry.onBound()
+        self._rotate_speed_entry.setEnableCopyPaste(True)
+        self._rotate_speed = 1.0
+        self._tm_rot = 0
+
+        def onRotateSpeedChange(*e):
+            val = self._rotate_speed_entry.getValue()[0].strip()
+            if not val:
+                val = 0.0
+            self._rotate_speed = float(val)
+
+        self._rotate_speed_entry.onValueChange = onRotateSpeedChange
+        self._rotate_speed_entry.setValue(u'1.0')
+
+    def _onChangeRotate(self):
+        enable = self._cb_rotate.isChecked()
+        if self._tm_rot:
+            BigWorld.cancelCallback(self._tm_rot)
+        if enable:
+            self._inTickDEbugRotate()
+
+    def _inTickDEbugRotate(self):
+        if not self.component.visible:
+            self._tm_rot = 0
+            return
+        self._tm_rot = BigWorld.callback(0.001, self._inTickDEbugRotate)
+        self._rw.addYawRotate(self._rotate_speed)
+
+    def hideInvPanel(self):
+        comp = self.inventory_panel.component
+        if comp.visible:
+            if comp.position[2] != 1.0:
+                comp.visible = False
+            else:
+                comp.position[2] = 0.3
+        else:
+            comp.visible = True
+            comp.position[2] = 1.0
+        self.component.reSort()
+
+    def show(self, item_or_slot = None, slot_name = None, debug_mode = False, show_deb_btns = False, animate_in_model = True):
+        if not item_or_slot:
+            raise ValueError
+        self._hook_hide = False
+        BWPersonality.GUICore.setMouseAltState(1, 1)
+        BWPersonality.GUICore.worldLayer.delChild(self.factoryString)
+        super(WeaponMod, self).show()
+        if self.component.parent is None:
+            BWPersonality.GUICore.worldLayer.addChild(self.component, self.factoryString)
+        import weapon_attachment
+        weapon_attachment.DEBUG = debug_mode
+        if BigWorld.isKeyDown(BigWorld.stringToKey('F2')):
+            if not BigWorld.player().isAdminAccess():
+                self._closeDebug()
+            self.enableEventRightPanel(True)
+            if 'upgr' in item_or_slot.keys():
+                raise AssertionError
+            try:
+                self.weapon = edit_weapon.EditWeapon(item_or_slot)
+                self.weapon.checkAllLinks()
+                self.weapon.getModel()
+            except:
+                print 'item_or_slot:', item_or_slot
+                traceback.print_exc()
+                self.hide()
+                BWPersonality.gpd.sendHightMessage('Error load weapon')
+                return
+
+            self._original_attachments_count = len(self.weapon.getChildrenInfoList()) - 1
+            self.weapon.from_slot_name = slot_name
+            self._rw.show(self.weapon, animate_in_model=animate_in_model)
+            self.inventory_panel.show(self.weapon)
+            self.top_panel.show(self.weapon)
+            try:
+                if BWPersonality.GUICore.dbg_window:
+                    BWPersonality.GUICore.dbg_window.toRight()
+            except:
+                traceback.print_exc()
+
+            self._fader.hide()
+            self.__upd_btn_coro and self.__upd_btn_coro.stop()
+        self.__upd_btn_coro = self._upd_btn_coro()
+        self.__upd_btn_coro.run()
+        return
+
+    def hide(self):
+        if self._hook_hide:
+            print 'hide wepon mode: hook'
+            return
+        else:
+            self.component.visible = False
+            self._rw.hide()
+            if self.weapon:
+                self.weapon.registerRender(None)
+                self.weapon.registerDebugGeometryRender(None)
+                self.weapon.clearCollider()
+                self.weapon.destroy()
+            self.weapon = None
+            return
+
+    _prev_weapon_att_list = None
+    _have_changes = False
+    __upd_btn_coro = None
+
+    @BWMemberCoroutine
+    def _upd_btn_coro(self):
+        self._prev_weapon_att_list = self.weapon.getChildrenInfoList()
+        self._have_changes = False
+        while True:
+            yield BWWaitForPeriod(0.1)
+            if not self.weapon:
+                break
+            weapon_att_list = self.weapon.getChildrenInfoList()
+            if self._prev_weapon_att_list == weapon_att_list:
+                self._btn_apply.component.label.text = lc('colourItemWindow.TAKE_OFF_ALL_MODIFICATIONS')
+                self._have_changes = False
+            else:
+                self._btn_apply.component.label.text = lc('colourItemWindow.APPLY_CHANGES_TO_AN_ITEM')
+                self._have_changes = True
+                break
+
+        self.__upd_btn_coro = None
+        return
+
+    def _on_btn_apply(self):
+        if self._have_changes:
+            self._apply_changes_to_an_item()
+        else:
+            self._take_off_all_modifications()
+
+    def _take_off_all_modifications(self):
+
+        def detach(att):
+            if not att._parentAttach:
+                return
+            self.weapon.detachNodeByID(att.getID())
+
+        for att in tuple(self.weapon._weapon._allChildren()):
+            detach(att)
+
+    def _apply_changes_to_an_item(self):
+        player = BigWorld.player()
+        if player.offline_mode:
+            self.applyOflineMode()
+            self.hide()
+            return
+        att_list = self.weapon.getChildrenInfoList()
+        att_list.pop(0)
+        count_change = self._original_attachments_count - len(att_list)
+        if count_change > 0 and not ItemsUtils.CheckMaxItemNumber(player, count_change):
+            player.systemMsgChat(lc('GUI.InterPlayerTrade.NO_INVENTORY_ROOM'))
+            return
+        item_id = self.weapon.getItemID()
+        self._fader.show((self.width - 330) / 2)
+
+        def _apply():
+            player.disableSpotLight()
+            player.cell.AttachPartsToWeapon(item_id, att_list)
+            BigWorld.worldDrawEnabled(True)
+
+        def _hide():
+            self._hook_hide = False
+            self.hide()
+
+        self._hook_hide = True
+        playSound('ui/weapon_mod/approve')
+        BigWorld.callback(0.5, _apply)
+        BigWorld.callback(1.3, _hide)
+
+    def applyOflineMode(self):
+        """
+         DEBUG!!!!
+        """
+        item = self.weapon.debugDumpToItem()
+        player = BigWorld.player()
+
+        def save_item():
+            for index, it in enumerate(player.CarryingItems):
+                if it['complexItemID'] == item['complexItemID']:
+                    player.CarryingItems[index] = item
+                    return
+
+            player.CarryingItems.append(item)
+
+        save_item()
+        player.onWeaponUpgrade(item['complexItemID'])
+
+    def updateItems(self):
+        self.inventory_panel.onWeaponChange()
+        self.top_panel.onWeaponChange()
+
+    def onWeaponChange(self):
+        self.inventory_panel.onWeaponChange()
+        self.top_panel.onWeaponChange()
+
+    def onSelectedAttachID(self, itemID):
+        self.top_panel.onSelectedAttachID(itemID)
+
+    def onRMBAttach(self, item, attach = None):
+        self.top_panel.onRMBAttach(item, attach)
+
+    def onWeaponDetach(self, items):
+        self.inventory_panel.onWeaponDetach(items)
+        self.top_panel.onWeaponChange()
+
+    def onPiaktiniMoveAttach(self):
+        playSound('ui/weapon_mod/adjust')
+
+    def onAttachTmpPart(self):
+        playSound('ui/weapon_mod/adjust')
+
+    def onAttachItemType(self, attached_item_type):
+        incompl_item = self.weapon.getIncompatibleItemsOnFireGrenadeForItem(attached_item_type)
+        if incompl_item:
+            msg = lc('weapon_mod.gui.warning_msg_incompatible')
+            msg = msg.format(itemA=ItemsUtils.GetItemName(attached_item_type), itemB=ItemsUtils.GetItemName(incompl_item))
+            gui_jokes.askUserOk(lc('weapon_mod.gui.warning_title_incompatible'), msg)
+
+    def onDetachTmpPart(self):
+        playSound('ui/weapon_mod/adjust')
+
+    def handleMouseEvent(self, component, event):
+        self._rw.handleMouseEvent(component, event)
+        return True
+
+    def handleMouseButtonEvent(self, component, event):
+        self._rw.handleMouseButtonEvent(component, event)
+        if event.key == Keys.KEY_LEFTMOUSE and not event.isKeyDown():
+            if BigWorld.isKeyDown(BigWorld.stringToKey('F2')) and BigWorld.player().isAdminAccess():
+                self.component.frame_debug.visible = True
+        return True
+
+    def handleKeyEvent(self, event):
+        if event.key == 183:
+            return False
+        return True
+
+    def _swith_visible_bb(self):
+        m = self.weapon.getModel()
+        stipple_model, bb_vis = gen_bb.next()
+        BigWorld.setWatcher('Client Settings/displayImpactBoxes/Debug Draw', bb_vis)
+        BigWorld.setWatcher('Client Settings/displayImpactBoxes/Obstacle/Debug Draw', bb_vis)
+        BigWorld.setWatcher('Client Settings/displayImpactBoxes/Obstacle/draw regenerated bsp only', bb_vis)
+        m.stipple = stipple_model
+
+    def _swith_debug_mode(self):
+        import weapon_attachment
+        self.weapon._weapon.hideDebugLabels()
+        weapon_attachment.DEBUG = not weapon_attachment.DEBUG
+        if self.weapon and weapon_attachment.DEBUG:
+            self.weapon._weapon.updateDebugLabels()
+
+    def _closeDebug(self):
+        self.component.frame_debug.visible = False
+
+    def _reload_items(self):
+        import nodes_attach
+        reload(nodes_attach)
+        ItemsCatalog.reloadItems()
+        BigWorld.callback(0.01, self.reopen)
+
+    def _reload_model(self):
+        import ResMgr
+        for modelpath in self.weapon.getAllModelsPaths():
+            len_ext = len('model')
+            path = modelpath[:-len_ext] + 'bwhitbox.xml'
+            ResMgr.purge(modelpath)
+            ResMgr.purge(path)
+            try:
+                m = BigWorld.Model(modelpath)
+                m.reloadModel()
+            except:
+                print modelpath
+                traceback.print_exc()
+
+        BigWorld.callback(0.01, self.reopen)
+
+    def reopen(self):
+        if not self.weapon:
+            return
+        if not self.component.visible:
+            return
+        if self.weapon._complex_item:
+            item = self.weapon._complex_item
+        else:
+            item = self.weapon._weapon_slot
+        self.hide()
+        import weapon_attachment
+        self.show(item, debug_mode=weapon_attachment.DEBUG, show_deb_btns=True)
+
+    def updateParamWeapon(self):
+        if not self.weapon:
+            return
+        if not self.component.visible:
+            return
+        self.weapon.resetCacheParam()
+        self._rw._onChangePosition()
+
+    def enableEventRightPanel(self, enable = True):
+        for comp in self.inventory_panel.component.attach_view.children:
+            comp = comp[1]
+            comp.dragFocus = enable
+            comp.dropFocus = enable
+            comp.crossFocus = enable
+            comp.moveFocus = enable
+            comp.mouseButtonFocus = enable

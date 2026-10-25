@@ -1,0 +1,1042 @@
+# Embedded file name: ./client/StalkerModel.py
+import ItemsUtils
+from Items import ItemsCatalog
+import BigWorld
+import ResourceLoader
+import ResMgr
+import traceback
+import DyeConstant
+import UCManager
+from NPCs import NPCs
+from EquipSlotsConfigs import EquipSlotTypes as EST
+import math_bw
+import time
+from Fabric import FaceSettings, FaceSaver
+from functools import partial
+from collections import defaultdict
+from itertools import chain
+import utils_async
+from utils import pyFixedToNativePythonType as toPy
+PISTOL_HOLSTER_PATH = 'characters2/clothing/belt_bags/holster_1/holster.model'
+_head_models = ['characters2/clothing/ManNude/ManHead.model', 'characters2/clothing/ManNude/ManHead_mushroom.model']
+
+class STALKER_PART:
+    HEAD, SHIRT, HANDS, PANTS, BOOTS = xrange(0, 5)
+    ARMOR = 5
+    HAT, MASK, BACKPACK = xrange(6, 9)
+
+
+class STALKER_HP:
+    HEAD = 'HP_head'
+    BACKPACK = 'HP_backpack'
+    BACKPACK_NOARMOR = 'HP_backpack_noarmor'
+
+
+def unique(parts):
+    parts = set(parts)
+    return tuple(parts)
+
+
+def unique_second(parts):
+    base_model = parts[0]
+    parts = set(parts[1:])
+    return [base_model] + list(parts)
+
+
+def unique_noempty(parts):
+    parts = [ x for x in parts if x ]
+    parts = set(parts)
+    return tuple(parts)
+
+
+def printSourcesNotFound(res_sources_list):
+    if isinstance(res_sources_list, tuple) or isinstance(res_sources_list, list):
+        not_found_sources = [ s for s in res_sources_list if not ResMgr.isFile(s) ]
+        if not_found_sources:
+            print 'ERROR. sources not found:', tuple(not_found_sources)
+
+
+class STALKER_MODEL:
+    BASE_NP = 'characters2/basemodel/StalkerBase2.model'
+    BASE_NP_LOD = 'characters2/basemodel/Basem/Basem.model'
+    BASE = 'characters/avatars/basem.model'
+    BASE_INVISIBLE = 'characters/avatars/basem_invisible.model'
+    REQUIRED = {STALKER_PART.HEAD: [['characters/avatars/heads/head_m1.model']],
+     STALKER_PART.SHIRT: [['characters/avatars/body/body_pilot.model'], ['characters/avatars/body/body_haki.model', STALKER_PART.HAT]],
+     STALKER_PART.HANDS: [['characters/avatars/hands/hand_koja.model']],
+     STALKER_PART.PANTS: [['characters/avatars/legs/legs_pants_1.model'], ['characters/avatars/legs/legs_haki.model']],
+     STALKER_PART.BOOTS: [['characters/avatars/boots/boots_bertsi.model']]}
+    OPTIONAL = {STALKER_PART.ARMOR: [['characters/avatars/mod-armor/armor_ninja.model'], ['characters/avatars/mod-armor/armor_kaiser.model']]}
+    ATTACHING = {STALKER_PART.BACKPACK: [['characters/avatars/mod-back/backpack_m1.model'], ['characters/avatars/mod-back/backpack_sakvoyaj80.model']],
+     STALKER_PART.MASK: [['characters/avatars/mod-mask/mask1.model', STALKER_PART.HAT], ['characters/avatars/mod-mask/mask2.model'], ['characters/avatars/mod-mask/mask_jaba.model']],
+     STALKER_PART.HAT: [['characters/avatars/mod-cap/cap1.model']]}
+    DEAFAULT_MODELS = {ItemsCatalog.HEAD: REQUIRED[STALKER_PART.HEAD][0][0],
+     ItemsCatalog.SHIRT: REQUIRED[STALKER_PART.SHIRT][0][0],
+     ItemsCatalog.HANDS: REQUIRED[STALKER_PART.HANDS][0][0],
+     ItemsCatalog.PANTS: REQUIRED[STALKER_PART.PANTS][0][0],
+     ItemsCatalog.BOOTS: REQUIRED[STALKER_PART.BOOTS][0][0],
+     ItemsCatalog.ARMOR: None}
+
+
+class SubstratesCache:
+
+    def __init__(self):
+        self._cache = {}
+        self._brows_cache = {1: BigWorld.PyTextureProvider('characters2/clothing/ManNude/Brow/Brow_1.dds'),
+         2: BigWorld.PyTextureProvider('characters2/clothing/ManNude/Brow/Brow_2.dds'),
+         3: BigWorld.PyTextureProvider('characters2/clothing/ManNude/Brow/Brow_3.dds'),
+         4: BigWorld.PyTextureProvider('characters2/clothing/ManNude/Brow/Brow_4.dds')}
+        self._battle_mark = {1: BigWorld.PyTextureProvider('characters2/clothing/ManNude/BattleMark/battle_mark_1.dds'),
+         2: BigWorld.PyTextureProvider('characters2/clothing/ManNude/BattleMark/battle_mark_2.dds'),
+         3: BigWorld.PyTextureProvider('characters2/clothing/ManNude/BattleMark/battle_mark_3.dds'),
+         4: BigWorld.PyTextureProvider('characters2/clothing/ManNude/BattleMark/battle_mark_4.dds')}
+        self._camo_cache = {}
+        for color_data in DyeConstant.ITEM_COLORS_CONFIG.values():
+            self._camo_cache[color_data['id']] = BigWorld.PyTextureProvider(color_data['mask'])
+
+        self.black_pixel = BigWorld.PyTextureProvider('textures/default/blackpixel.dds')
+
+    def _add_to_cache(self, path):
+        self._cache[path] = BigWorld.PyTextureProvider(path)
+
+    def __getitem__(self, path):
+        if path not in self._cache:
+            self._add_to_cache(path)
+        return self._cache[path]
+
+    def get_brow(self, brow_type):
+        return self._brows_cache[brow_type]
+
+    def get_battle_mark(self, battle_mark):
+        return self._battle_mark[battle_mark]
+
+    def get_camo(self, camo_id):
+        return self._camo_cache[camo_id]
+
+
+SUBSTRATES_CACHE = SubstratesCache()
+
+def isHeadExist(model):
+    """\xd0\x95\xd1\x81\xd1\x82\xd1\x8c \xd0\xbb\xd0\xb8 \xd1\x83 \xd1\x8d\xd1\x82\xd0\xbe\xd0\xb9 \xd0\xbc\xd0\xbe\xd0\xb4\xd0\xb5\xd0\xbb\xd0\xb8 \xd1\x81\xd1\x83\xd0\xb1\xd0\xbc\xd0\xbe\xd0\xb4\xd0\xb5\xd0\xbb\xd1\x8c \xd0\xb3\xd0\xbe\xd0\xbb\xd0\xbe\xd0\xb2\xd1\x8b"""
+    if not model:
+        return False
+    for model_name in model.sources:
+        if model_name in _head_models:
+            return True
+
+    return False
+
+
+def default():
+    supermodel = [STALKER_MODEL.BASE]
+    for part_model in STALKER_MODEL.REQUIRED.values():
+        supermodel.append(part_model[0][0])
+
+    return supermodel
+
+
+def getItemTints(item_type):
+    param = ItemsCatalog.GetItemParam(item_type)
+    return param and param.get('Tint') or {}
+
+
+def baseNPC():
+    supermodel = [STALKER_MODEL.BASE]
+    for part_model in STALKER_MODEL.REQUIRED.values():
+        supermodel.append(part_model[0][0])
+
+    for part_model in STALKER_MODEL.OPTIONAL.values():
+        supermodel.append(part_model[0][0])
+
+    return supermodel
+
+
+def apply_face(player, face_controller):
+    if player.personality['face']:
+        face_bones_filter = []
+        if player.apply_ignore_bones_items():
+            for item_data in player.VisualArmor.values():
+                if not item_data['itemType']:
+                    continue
+                item_param = ItemsCatalog.GetItemParam(item_data['itemType'])
+                if 'IgnoreBones' in item_param:
+                    face_bones_filter.extend(item_param['IgnoreBones'])
+
+        face_controller.set_filter(face_bones_filter)
+        face_controller.raw_data = FaceSaver.int64_array_to_face_data(player.personality['face'], player.face_limits_type)
+
+
+def _color_delegates(player):
+    color_delegates = {}
+    for item_type in player.VisualColorDelegates:
+        item_param = ItemsCatalog.GetItemParam(item_type)
+        for parent_type in item_param.get('ParentItemTypes', []):
+            color_delegates[parent_type] = item_type
+
+    return color_delegates
+
+
+def compose_player_model_list(player, additional_models = None, force_hide_slots = None, force_hide_modes = None):
+    """ \xd0\xb2\xd0\xbe\xd0\xb7\xd0\xb2\xd1\x80\xd0\xb0\xd1\x89\xd0\xb0\xd0\xb5\xd1\x82 \xd1\x81\xd0\xbf\xd0\xb8\xd1\x81\xd0\xbe\xd0\xba \xd1\x81\xd1\x82\xd1\x80\xd0\xbe\xd0\xba-\xd0\xb0\xd0\xb4\xd1\x80\xd0\xb5\xd1\x81\xd0\xbe\xd0\xb2 \xd0\xbc\xd0\xbe\xd0\xb4\xd0\xb5\xd0\xbb\xd0\xb5\xd0\xb9
+            \xd0\xb8 \xd1\x81\xd0\xb5\xd1\x82 \xd0\xbf\xd0\xbe\xd0\xbb\xd0\xbd\xd0\xbe\xd1\x81\xd1\x82\xd1\x8c\xd1\x8e \xd1\x81\xd0\xba\xd1\x80\xd1\x8b\xd1\x82\xd1\x8b\xd1\x85 \xd1\x81\xd0\xbb\xd0\xbe\xd1\x82\xd0\xbe\xd0\xb2
+    """
+    if getattr(player, 'npcSuit', False):
+        models = [NPCs.BaseModel]
+        if NPCs.Bodies.models.get(player.npcSuit):
+            models.append(NPCs.Bodies.models[player.npcSuit])
+        if player.isDisableDialogs:
+            models.append('characters/items/misc/guitar_lod1.model')
+            models.append('models/bolvan/taburet_4_npc.model')
+        return {'models': models,
+         'hidden_slots': [],
+         'transform_models': False}
+    else:
+        if not force_hide_slots:
+            force_hide_slots = set()
+        if not force_hide_modes:
+            force_hide_modes = set()
+        if hasattr(player, 'is_sitting_in_car') and player.is_sitting_in_car():
+            force_hide_slots.add(EST.BACKPACK_MED)
+        if hasattr(player, 'in_helicopter') and player.in_helicopter:
+            force_hide_slots.add(EST.BACKPACK_MED)
+        if hasattr(player, 'getModelNamesTEMP'):
+            if not player.getModelNamesTEMP():
+                model_lst = []
+            else:
+                model_lst = []
+            totally_hidden_slots = set()
+            player.fix_roll_left_hand = False
+            transform_models = False
+            if hasattr(player, 'VisualArmor') and not model_lst:
+                model_lst = set()
+                visual_armor = player.VisualArmor
+                if getattr(player, 'transformationID', False) and player.active_transform:
+                    transform_item_types = player.active_transform.getparam('equipped_items')
+                    if transform_item_types:
+                        visual_armor = toPy(visual_armor)
+                        slottype_by_itemtype = {}
+                        all_slot_types = set()
+                        for transform_item_type in transform_item_types:
+                            types = ItemsCatalog.GetItemParam(transform_item_type).get('SlotType')
+                            slottype_by_itemtype[transform_item_type] = types
+                            all_slot_types = all_slot_types.union(types)
+
+                        undress_types = player.get_item_types_from_slot_types(all_slot_types)
+                        for key, value in visual_armor.items():
+                            if value['itemType'] not in undress_types:
+                                continue
+                            visual_armor[key] = {'itemID': 0,
+                             'itemType': 0}
+
+                        for transform_item_type, slots in slottype_by_itemtype.iteritems():
+                            for st in slots:
+                                visual_armor[EST._slot_type_to_attr[st]] = {'itemID': -1,
+                                 'itemType': transform_item_type}
+
+                equipped_item_types = [ v['itemType'] for v in visual_armor.values() if v['itemType'] ]
+                nude = True
+                slot_tags = defaultdict(set)
+                if EST.is_mode_on(player, EST.MODE_HOOD, visual=True):
+                    is_hood_on = EST.MODE_HOOD not in force_hide_modes
+                    has_hoodable_item_on = False
+                    for item_type in equipped_item_types:
+                        item_param = ItemsCatalog.GetItemParam(item_type)
+                        if not item_param:
+                            print 'player:', player, getattr(player, 'id', '???'), '\n\n'
+                            continue
+                        if ItemsUtils.has_item_hood(item_type):
+                            has_hoodable_item_on = True
+                        slot_types = item_param.get('SlotType', None)
+                        if slot_types is None:
+                            print "StalkerModel (ERROR): can't find slot type for " + str(item_type)
+                            continue
+                        nude = False
+                        if any((s in force_hide_slots for s in slot_types)):
+                            continue
+                        if item_param.get('FixRollLeftHand', False):
+                            player.fix_roll_left_hand = True
+                        for slot_type, override_value in item_param.get('OverrideSlots', []):
+                            slot_tags[slot_type].add(override_value)
+
+                    if not has_hoodable_item_on:
+                        is_hood_on = False
+                    torso_body_type = ItemsCatalog.NP_BODY_ERROR['TypeID'] if nude else ItemsCatalog.NP_TORSO['TypeID']
+                    torso_legs_type = ItemsCatalog.NP_LEGS_ERROR['TypeID'] if nude else ItemsCatalog.NP_LEGS['TypeID']
+                    body_item_types = [torso_body_type, torso_legs_type, ItemsCatalog.NP_FEET['TypeID']]
+                    head_type_id = visual_armor['head']['itemType']
+                    if not head_type_id:
+                        head_type_id = ItemsCatalog.NP_HEAD['TypeID']
+                        body_item_types.append(head_type_id)
+                    if not visual_armor['hands']['itemType']:
+                        body_item_types.append(ItemsCatalog.NP_HANDS['TypeID'])
+
+                    def get_models(item_type, tags):
+                        if None in tags:
+                            return
+                        else:
+                            item_param = ItemsCatalog.GetItemParam(item_type)
+                            for tag, ams in item_param.get('AlternativeModelsList', []):
+                                if tag in tags:
+                                    if ams:
+                                        return set(filter(bool, ams))
+                                    return
+
+                            return set(item_param.get('ModelNames', {}).values())
+
+                    color_delegates = _color_delegates(player)
+                    head_models = None
+                    for item_type in chain(equipped_item_types, body_item_types):
+                        item_param = ItemsCatalog.GetItemParam(item_type)
+                        slot_types = item_param.get('SlotType', None)
+                        if slot_types is None:
+                            print "StalkerModel (ERROR): can't find slot type for " + str(item_type)
+                            continue
+                        if any((s in force_hide_slots for s in slot_types)):
+                            continue
+                        tags = set()
+                        for slot_type in slot_types:
+                            tags.update(slot_tags[slot_type])
+                            if is_hood_on:
+                                tags.add(EST.MODE_HOOD)
+
+                        models_item_type = color_delegates.get(item_type, item_type)
+                        models_to_show = get_models(models_item_type, tags)
+                        if item_type == head_type_id:
+                            head_models = models_to_show
+                        if models_to_show:
+                            model_lst.update(models_to_show)
+                        else:
+                            totally_hidden_slots.update(slot_types)
+
+                    if head_models:
+                        for head_model in head_models:
+                            if head_model in model_lst:
+                                model_lst = set(model_lst)
+                                model_lst.remove(head_model)
+                                model_lst = [head_model] + list(model_lst)
+
+                    model_lst = [STALKER_MODEL.BASE_NP, STALKER_MODEL.BASE_NP_LOD] + list(model_lst)
+                    if getattr(player, 'transformationID', False):
+                        if player.active_transform:
+                            ft = player.active_transform
+                        else:
+                            from FunTransform import FunTransformation
+                            ft = FunTransformation(player, player.transformationID)
+                        if ft.isCustomModel:
+                            model_lst = [STALKER_MODEL.BASE_NP]
+                            tr_model = str(ft.getModelPath())
+                            if tr_model:
+                                model_lst.append(tr_model)
+                            transform_models = True
+                additional_models and model_lst.extend(additional_models)
+            hasattr(player, 'getAdditionalModels') and model_lst.extend(player.getAdditionalModels())
+        return {'models': model_lst,
+         'hidden_slots': totally_hidden_slots | force_hide_slots,
+         'transform_models': transform_models}
+
+
+pending_players = {}
+
+def ComposePlayerModelTraker(player, callback = None, additional_models = None, force_hide_slots = None, force_hide_modes = None, ready_model = None):
+    """ \xd1\x81\xd0\xbe\xd0\xb7\xd0\xb4\xd0\xb0\xd1\x91\xd1\x82 \xd0\xbc\xd0\xbe\xd0\xb4\xd0\xb5\xd0\xbb\xd1\x8c \xd0\xb4\xd0\xbb\xd1\x8f \xd0\xb8\xd0\xb3\xd1\x80\xd0\xbe\xd0\xba\xd0\xb0
+            \xd0\xb5\xd1\x81\xd0\xbb\xd0\xb8 \xd0\xb5\xd1\x81\xd1\x82\xd1\x8c callback - \xd1\x81\xd0\xbe\xd0\xb7\xd0\xb4\xd0\xb0\xd1\x81\xd1\x82 \xd0\xb0\xd1\x81\xd0\xb8\xd0\xbd\xd1\x85\xd1\x80\xd0\xbe\xd0\xbd\xd0\xbd\xd0\xbe \xd0\xb8 \xd0\xb4\xd0\xb0\xd1\x81\xd1\x82 \xd0\xbc\xd0\xbe\xd0\xb4\xd0\xb5\xd0\xbb\xd1\x8c \xd0\xb2 \xd0\xb0\xd1\x80\xd0\xb3\xd1\x83\xd0\xbc\xd0\xb5\xd0\xbd\xd1\x82\xd0\xb0\xd1\x85 callback
+            \xd0\xb5\xd1\x81\xd0\xbb\xd0\xb8 \xd0\xbd\xd0\xb5\xd1\x82 callback - \xd1\x81\xd0\xbe\xd0\xb7\xd0\xb4\xd0\xb0\xd1\x82 \xd1\x81\xd0\xb8\xd0\xbd\xd1\x85\xd1\x80\xd0\xbe\xd0\xbd\xd0\xbd\xd0\xbe \xd0\xb8 \xd0\xb2\xd0\xb5\xd1\x80\xd0\xbd\xd1\x91\xd1\x82 \xd0\xbc\xd0\xbe\xd0\xb4\xd0\xb5\xd0\xbb\xd1\x8c
+            additional_model - \xd1\x81\xd0\xbf\xd0\xb8\xd1\x81\xd0\xbe\xd0\xba, \xd0\xb2 \xd0\xba\xd0\xbe\xd1\x82\xd0\xbe\xd1\x80\xd1\x8b\xd0\xb9 \xd0\xbc\xd0\xbe\xd0\xb6\xd0\xbd\xd0\xbe \xd0\xb2\xd0\xba\xd0\xbb\xd1\x8e\xd1\x87\xd0\xb8\xd1\x82\xd1\x8c \xd0\xb4\xd0\xbe\xd0\xbf\xd0\xbe\xd0\xbb\xd0\xbd\xd0\xb8\xd1\x82\xd0\xb5\xd0\xbb\xd1\x8c\xd0\xbd\xd1\x8b\xd0\xb5 \xd0\xbc\xd0\xbe\xd0\xb4\xd0\xb5\xd0\xbb\xd0\xb8
+    """
+    time_load_start = time.time()
+    player_models_data = compose_player_model_list(player, additional_models, force_hide_slots, force_hide_modes)
+    model_lst = player_models_data['models']
+    totally_hidden_slots = player_models_data['hidden_slots']
+    player._totally_hidden_slots = totally_hidden_slots
+    transform_models = player_models_data.get('transform_models', False)
+
+    def on_model_loaded_fetch(model, fetch_id = None):
+        BigWorld.callback(0, partial(on_model_loaded, model, fetch_id))
+
+    def on_model_loaded(model, fetch_id = None):
+        if player.id in pending_players:
+            if fetch_id != pending_players[player.id]:
+                return
+            del pending_players[player.id]
+        elif fetch_id:
+            return
+        if player.isDestroyed:
+            print 'ComposePlayerModelTraker:on_model_loaded player isDestroyed', player
+            print 'load model time:', time.time() - time_load_start
+            return
+        if not model:
+            print "StalkerModel (ERROR): can't load model", player_models_data, additional_models, ready_model
+        if transform_models and model:
+            try:
+                for dye, tint in player.active_transform.getTints().items():
+                    setTint(model, dye, tint)
+
+            except:
+                print player, player.active_transform
+                print model.sources
+                print 'transform_models', transform_models
+                traceback.print_exc()
+
+        if not getattr(player, 'npcSuit', 0) and not transform_models:
+            try:
+                updateEmblems(player, getattr(player, 'VisualColoriseEmblems', []), model)
+                update_hairs(player, model, totally_hidden_slots)
+                update_megaLod(player, model, totally_hidden_slots)
+            except:
+                print 'player:', player
+                print 'model:', model
+                model_sources = getattr(model, 'sources', '???')
+                print 'model sources:', model_sources
+                printSourcesNotFound(model_sources)
+                traceback.print_exc()
+
+        if callback:
+            callback(model)
+
+    if ready_model:
+        on_model_loaded(ready_model)
+        if callback:
+            return
+        return ready_model
+    else:
+        if callback:
+            pending_players[player.id] = BigWorld.fetchModelWithID(*(model_lst + [on_model_loaded_fetch]))
+        else:
+            model = None
+            try:
+                model = BigWorld.Model(*model_lst)
+            except:
+                printSourcesNotFound(model_lst)
+                print
+                print 'model_lst', repr(model_lst)
+                traceback.print_stack()
+                traceback.print_exc()
+                print
+            finally:
+                on_model_loaded(model)
+                return model
+
+        return
+
+
+def ComposePlayerTransformModel(player, transformation, callback):
+    if hasattr(player, 'onPreModelChange'):
+        player.onPreModelChange()
+    player.emblems_colors = {}
+    model_set = [STALKER_MODEL.BASE_NP]
+    path_model_transf = transformation.getModelPath()
+    if path_model_transf:
+        path_model_transf = path_model_transf.encode('utf8')
+        model_set.append(path_model_transf)
+    model_tints_dict = transformation.getTints()
+    ComposeAvatarBodyModel(model_set, model_tints_dict, [], {}, [], {}, callback)
+
+
+def UpdatePlayerWeaponAttachments(player, model, weapon_back_attachments, weapon_pistol_attachments):
+    from functools import partial
+    try:
+        model.weaponback = None
+        if weapon_back_attachments:
+
+            def onLoadWeaponback(core_model, weapon_model):
+                weapon_model.origin('HP_weaponback')
+                core_model.weaponback = weapon_model
+
+            player.fetchModelByNamesDict(weapon_back_attachments, partial(onLoadWeaponback, model))
+    except Exception as e:
+        traceback.print_exc()
+
+    try:
+        model.Pistol = None
+        if weapon_pistol_attachments:
+
+            def onLoadPistol(core_model, weapon_model):
+                core_model.Pistol = weapon_model
+
+            player.fetchModelByNamesDict(weapon_pistol_attachments, partial(onLoadPistol, model))
+    except Exception as e:
+        traceback.print_exc()
+
+    emblems = getattr(player, 'VisualColoriseEmblems', [])
+    updateEmblems(player, emblems, model=model)
+    return
+
+
+def UpdatePlayerBodyAttachments(model, core_model_tints_dict, back_pack_attachments, backback_tints_dict, head_attachments, head_tints_dict):
+    for model_tint in core_model_tints_dict:
+        try:
+            setattr(model, str(model_tint), str(core_model_tints_dict[model_tint]))
+        except:
+            print 'PLAYER unable to TINT model!', model_tint, core_model_tints_dict[model_tint]
+
+    model.backpack = None
+    model.backpack_noarmor = None
+    if back_pack_attachments:
+
+        def on_load(prereqs):
+            model_backpack = prereqs.produce(0)
+            for backback_tints in backback_tints_dict:
+                try:
+                    setattr(model_backpack, str(backback_tints), str(backback_tints_dict[backback_tints]))
+                except:
+                    print 'PLAYER unable to TINT model!', backback_tints, backback_tints_dict[backback_tints]
+
+            model.backpack_noarmor = model_backpack
+
+        utils_async.load_model_from_list(unique(back_pack_attachments), on_load)
+    model.head = None
+    if head_attachments:
+
+        def on_load(prereqs):
+            model = prereqs.produce(0)
+            try:
+                model.head = model
+            except ValueError:
+                print 'head_attachments:', head_attachments
+                traceback.print_exc()
+                return
+
+            for head_tint in head_tints_dict:
+                try:
+                    setattr(model.head, str(head_tint), str(head_tints_dict[head_tint]))
+                except:
+                    print 'PLAYER unable to TINT model!', head_tint, head_tints_dict[head_tint]
+
+        utils_async.load_model_from_list(unique(head_attachments), on_load)
+    return
+
+
+def ComposeAvatarBodyModel(core_model_set, core_model_tints_dict, back_pack_attachments, backback_tints_dict, head_attachments, head_tints_dict, callback):
+
+    def onLoadModel(model):
+        UpdatePlayerBodyAttachments(model, core_model_tints_dict, back_pack_attachments, backback_tints_dict, head_attachments, head_tints_dict)
+        callback(model)
+
+    model_list = unique_second(core_model_set)
+    model_list.append(onLoadModel)
+    BigWorld.fetchModel(*model_list)
+
+
+def update_filter_mask(avatar):
+    from DressInterface import GASMASK_FILTER_OFF_LOOP_ACTION
+    if not avatar.model:
+        return
+    else:
+        action = getattr(avatar.model, GASMASK_FILTER_OFF_LOOP_ACTION, None)
+        if action:
+            if avatar.VisualEquipModes & 1 << EST.MODE_GASMASK_FILTER_OFF:
+                action()
+            else:
+                action.stop()
+        return
+
+
+def update_tuck(avatar):
+    if not avatar.model:
+        return
+    else:
+        model = avatar.model
+        if not avatar.VisualEquipModes & 1 << EST.MODE_TUCK:
+            value = avatar.VisualTuckForce
+            stop_tuck_action = None
+            stop_tuck_animation = getattr(avatar, '_cur_tuck_animation', None)
+            if stop_tuck_animation:
+                stop_tuck_action = getattr(model, stop_tuck_animation, None)
+            run_tuck_action = None
+            if value:
+                run_tuck_animation = avatar.VisualTuckAnimation
+                if run_tuck_animation:
+                    run_tuck_action = getattr(model, run_tuck_animation, None)
+                del stop_tuck_animation == run_tuck_animation and run_tuck_animation and not hasattr(model, run_tuck_animation) and hasattr(avatar, '_cur_tuck_animation') and avatar._cur_tuck_animation
+        elif stop_tuck_animation != run_tuck_animation:
+            if stop_tuck_action:
+                stop_tuck_action.stop()
+            if stop_tuck_animation:
+                del avatar._cur_tuck_animation
+            if run_tuck_action:
+                run_tuck_action()
+                avatar._cur_tuck_animation = run_tuck_animation
+        return
+
+
+def update_hairs(avatar, model = None, totally_hidden_slots = []):
+    if not model:
+        model = avatar.model
+    if not model:
+        return
+    try:
+        model.SkinTint = 'SkinCustomize'
+    except:
+        return
+
+    r, g, b = math_bw.toRGB(avatar.personality['skincolor'] or math_bw.toHEXno_alpha(130, 130, 100))
+    model.SkinTint.skinColour = (r,
+     g,
+     b,
+     1.0)
+    if EST.HEAD in totally_hidden_slots:
+        return
+    age = math_bw.map_UINT8_to_1(avatar.personality['age'])
+    model.SkinTint.normalBlendFactor = (age,
+     0,
+     0,
+     0)
+    details = math_bw.map_UINT8_to_1(avatar.personality['details'])
+    model.SkinTint.g_scar1Alpha = (details,
+     0,
+     0,
+     0)
+    model.Eyes_skinned = 'EyesTint'
+    r, g, b = math_bw.toRGB(avatar.personality['eyescolor'])
+    model.Eyes_skinned.colouriseR = (r,
+     g,
+     b,
+     1.0)
+    hr, hg, hb = math_bw.toRGB(avatar.personality['haircolor'])
+    model.SkinTint.hairColour = (hr,
+     hg,
+     hb,
+     1.0)
+    unshaven = math_bw.map_UINT8_to_1(avatar.personality['unshaven'])
+    model.SkinTint.g_unshavenAlpha = (unshaven,
+     0,
+     0,
+     0)
+    brows = avatar.personality['brows']
+    if brows['style']:
+        model.SkinTint.browDiffuse = SUBSTRATES_CACHE.get_brow(brows['style'])
+        rotation = math_bw.map_UINT8(brows['rotation'], *FaceSettings.brows_rotate_limit)
+        model.SkinTint.browAngle = (rotation,
+         0,
+         0,
+         0)
+        position = math_bw.map_UINT8(brows['position'], *FaceSettings.brows_shift_limit)
+        model.SkinTint.browShiftV = (position,
+         0,
+         0,
+         0)
+    mark = avatar.personality['mark']
+    if mark['id']:
+        model.SkinTint.scarDiffuse3 = SUBSTRATES_CACHE.get_battle_mark(mark['id'])
+        tr, tg, tb = math_bw.int16toRGB(mark['color'])
+        model.SkinTint.g_tattooColor = (tr,
+         tg,
+         tb,
+         1.0)
+
+    def update_face_part(slot_type, personality_key):
+        if slot_type in totally_hidden_slots:
+            return
+        item_type = EST.get_slot_data(avatar, slot_type)['itemType']
+        if item_type:
+            item_param = ItemsCatalog.GetItemParam(item_type)
+            substrate_texture = item_param.get('Substrate')
+            substrate_attr, transpatency_attr = EST.get_substrate(slot_type)
+            substrate_provider = SUBSTRATES_CACHE[substrate_texture]
+            setattr(model.SkinTint, substrate_attr, substrate_provider)
+            length_limits = item_param.get('LengthLimits', (-2.0, 2.0))
+            valueUINT = avatar.personality[personality_key]
+            substrate_transparency = math_bw.clamp(math_bw.map_any(valueUINT, 0, 64, 0.0, 1.0))
+            if transpatency_attr:
+                setattr(model.SkinTint, transpatency_attr, (substrate_transparency,
+                 0,
+                 0,
+                 0))
+            length_value = math_bw.clamp(math_bw.map_any(valueUINT, 64, 255, length_limits[1], length_limits[0]), *length_limits)
+            for tint_name, tint_value in item_param['Tint'].items():
+                setattr(model, tint_name, tint_value)
+                getattr(model, tint_name).hairShiftV = (length_value,
+                 0,
+                 0,
+                 0)
+                getattr(model, tint_name).hairColour = (hr,
+                 hg,
+                 hb,
+                 1.0)
+
+    update_face_part(EST.HAIR, 'hairs')
+    update_face_part(EST.BEARD, 'beard')
+    update_face_part(EST.MOUSTACHE, 'moustache')
+
+
+def on_megalod_settings_changed():
+    import BWPersonality
+    value = BWPersonality.settings.getMegaLodValue()
+    for e in BigWorld.entities.values():
+        if getattr(e, 'megaLodInOutDistanceInited', False) and e.model:
+            e.model.megaLodInOutDistance = value
+        if hasattr(e, 'weapon_slots'):
+            for w in e.weapon_slots.values():
+                w.updateLODparams()
+
+
+def update_megaLod(avatar, model, totally_hidden_slots):
+    import BWPersonality
+    model.megaLodInOutDistance = BWPersonality.settings.getMegaLodValue()
+    model.basem_skinned = 'LOD_personage'
+    avatar.megaLodInOutDistanceInited = True
+    DEF_LOD_COLOR = (0.439216, 0.478431, 0.313726, 1.0)
+    if BWPersonality.RELEASE:
+        DEF_LOD_COLOR = (1, 0, 0, 1)
+
+    def color2float(color, def_val = (0, 0, 0, 0)):
+        if not color:
+            return def_val
+        return tuple([ x / 255.0 for x in color ])
+
+    def getColorBySlots(stot_type_list, def_colour = DEF_LOD_COLOR):
+        for stot_type in stot_type_list:
+            if EST.get_slot_type_from_attr(stot_type) in totally_hidden_slots:
+                continue
+            if avatar.VisualArmor[stot_type]['itemType']:
+                itemType = avatar.VisualArmor[stot_type]['itemType']
+                itemID = avatar.VisualArmor[stot_type]['itemID']
+                params = ItemsCatalog.GetItemParam(itemType)
+                if not params.get('LOD_VISIBLE', True):
+                    continue
+                color = None
+                if itemID in avatar.emblems_colors and avatar.emblems_colors[itemID]['COLORS4_4']:
+                    color = DyeConstant.get_lod_color(itemType, avatar.emblems_colors[itemID]['TINTID'], avatar.emblems_colors[itemID]['COLORS4_4'])
+                    if color:
+                        return color
+                    return color2float(avatar.emblems_colors[itemID]['COLORS4_4']['A'])
+                color = params.get('LOD_COLOR')
+                if color:
+                    return color2float(color)
+                if itemID in avatar.emblems_colors:
+                    model_dyes = avatar.emblems_colors[itemID]['model_dyes']
+                    col4 = getColorsFromModel(model, None, model_dyes, avatar, itemType)
+                    if col4:
+                        texture_name = detectMaskForColourise(model, None, model_dyes, avatar, itemType)
+                        cammo_id = DyeConstant.camo_mask_to_id.get(texture_name)
+                        if cammo_id:
+                            color = DyeConstant.get_lod_color(itemType, cammo_id, col4)
+                            if color:
+                                return color
+                        return color2float(col4['R'])
+                return def_colour
+
+        return
+
+    def getisGhillyeCap():
+        for stot_type, slot_data in avatar.VisualArmor.items():
+            if slot_data['itemType']:
+                itemType = slot_data['itemType']
+                params = ItemsCatalog.GetItemParam(itemType)
+                if params.get('isGhillyeCap', False):
+                    return True
+
+    GhillyeCap = getisGhillyeCap()
+    legs_color = getColorBySlots(('cpants', 'pants', 'upants'))
+    if GhillyeCap:
+        body_color = getColorBySlots(('jacket', 'mshirt', 'ushirt', 'uwbody'))
+    else:
+        body_color = getColorBySlots(('cbody', 'jacket', 'mshirt', 'ushirt', 'uwbody'))
+    armor_color = getColorBySlots(('armor',))
+    hat_color = getColorBySlots(('chat', 'helmet', 'hat'))
+    face_color = getColorBySlots(('mouth',), def_colour=None)
+    backpackmed_color = getColorBySlots(('backpackmed',))
+    foot_color = getColorBySlots(('cshoes', 'shoes', 'uwfoot'))
+    if not face_color:
+        face_color = math_bw.toRGB(avatar.personality['skincolor'])
+    if not foot_color:
+        foot_color = math_bw.toRGB(avatar.personality['skincolor'])
+
+    def apply_lod_color(key, color):
+        if not color:
+            color = DEF_LOD_COLOR
+        alpha = color[3] if len(color) > 3 else 1.0
+        color4 = (color[0],
+         color[1],
+         color[2],
+         alpha)
+        setattr(model.basem_skinned, key, color4)
+
+    apply_lod_color('g_colourJacket', body_color)
+    apply_lod_color('g_colourLegs', legs_color)
+    apply_lod_color('g_colourArmor', armor_color)
+    apply_lod_color('g_colourBackpack', backpackmed_color)
+    apply_lod_color('g_colourBoots', foot_color)
+    apply_lod_color('g_colourFace', face_color)
+    hidden_bones = []
+    if hat_color:
+        apply_lod_color('g_colourOnHead', hat_color)
+    elif avatar.VisualArmor['hairs']['itemType']:
+        apply_lod_color('g_colourOnHead', math_bw.toRGB(avatar.personality['haircolor']))
+    else:
+        hidden_bones.append('LOD_Cap')
+    if not armor_color:
+        hidden_bones += ['LOD_Armor0',
+         'LOD_Armor1',
+         'LOD_Armor2',
+         'LOD_Armor3']
+    if not backpackmed_color:
+        hidden_bones.append('LOD_Backpack')
+    if not EST.is_mode_on(avatar, EST.MODE_HOOD, visual=True):
+        hidden_bones.append('LOD_Hood')
+    if not GhillyeCap:
+        hidden_bones += ['LOD_GhillyeBody', 'LOD_LeftArm_Ghillye']
+        hidden_bones += ['LOD_RightArm_Ghillye', 'LOD_GhillyeHood']
+    elif 'LOD_Hood' not in hidden_bones:
+        hidden_bones.append('LOD_Hood')
+    nf = BigWorld.NodeInfoLODCloth(model)
+    model.lod_tracker = BigWorld.Tracker()
+    model.lod_tracker.testTick = False
+    model.lod_tracker.fashionEraID = 5
+    model.lod_tracker.maxLod = 500
+    model.lod_tracker.need_redraw_model_additional = True
+    model.lod_tracker.addAdditionalNode(nf)
+    model.lod_tracker.nodeMatrixUpdateType = 'UPDATE_SELECTED'
+    model.lod_tracker.nodeMatrixUpdateList = hidden_bones
+    nf.nodesNames = hidden_bones
+    return
+
+
+def updateEmblems(avatar, emblems, model = None):
+    """ \xd0\xbe\xd0\xb1\xd0\xbd\xd0\xbe\xd0\xb2\xd0\xbb\xd1\x8f\xd0\xb5\xd1\x82 \xd1\x86\xd0\xb2\xd0\xb5\xd1\x82\xd0\xb0 \xd0\xbe\xd0\xb4\xd0\xb5\xd0\xb6\xd0\xb4\xd1\x8b \xd0\xb8 \xd1\x8d\xd0\xbc\xd0\xb1\xd0\xbb\xd0\xb5\xd0\xbc\xd1\x8b """
+    if not model:
+        model = avatar.model
+    if not model:
+        return
+    else:
+        equipped_items = set()
+        avatar.emblems_colors = {}
+        models = set(model.sources)
+        color_delegates = _color_delegates(avatar)
+        for item_data in avatar.VisualArmor.values():
+            item_type = item_data['itemType']
+            if not item_type:
+                continue
+            del_item_type = color_delegates.get(item_type, item_type)
+            tint = getItemTints(del_item_type)
+            if not tint:
+                continue
+            item_models = set(ItemsCatalog.GetItemParam(del_item_type).get('ModelNames', {}).values())
+            for _, ams in ItemsCatalog.GetItemParam(del_item_type).get('AlternativeModelsList', []):
+                if ams:
+                    item_models |= set(ams)
+
+            if not item_models & models:
+                continue
+            model_dyes = []
+            for dye, oldtint in tint.items():
+                model_dyes.append(dye)
+                setTint(model, dye, oldtint, entity=avatar)
+
+            avatar.emblems_colors[item_data['itemID']] = dict(model_dyes=model_dyes, oldtint=oldtint, tint=oldtint, TINTID=None, COLORS4_4=None, EMBLEMID=None)
+            equipped_items.add(item_data['itemID'])
+
+        for clrs in emblems:
+            itemID = clrs['ItemID']
+            colors, tintid, emblemID = ItemsUtils.unpackColoriseClient(clrs)
+            if itemID not in equipped_items:
+                continue
+            model_dyes = avatar.emblems_colors[itemID]['model_dyes']
+            if tintid:
+                for dye in model_dyes:
+                    try:
+                        setColoredTexture(model, dye, tintid, colors)
+                    except:
+                        print '  --', avatar, itemID, model, dye, tintid
+                        print model.sources
+                        traceback.print_exc()
+
+                avatar.emblems_colors[itemID]['TINTID'] = tintid
+                avatar.emblems_colors[itemID]['COLORS4_4'] = colors
+            if emblemID and not UCManager.ucmanager.isBannedEmblem(emblemID):
+                for model_dye in model_dyes:
+                    if can_set_dye(model, model_dye):
+                        UCManager.ucmanager.loadImg(emblemID, partial(onLoadIcon, model, None, model_dye))
+                        avatar.emblems_colors[itemID]['EMBLEMID'] = emblemID
+                        break
+
+        return
+
+
+def onLoadIcon(model, node, dye, imgID, feedName, texture):
+    setFeed(model, node, dye, feedName, texture)
+
+
+def setBlackPixel(model, dye):
+    try:
+        dye_atrr = getattr(model, dye)
+        setattr(dye_atrr, 'MaskForColourise', SUBSTRATES_CACHE.black_pixel)
+    except:
+        print '----------'
+        print model.sources
+        print [model, dye]
+        raise
+
+    color = getColorsFromModel(model, None, dye)
+    for chanel in color.values():
+        chanel[3] = 0.0
+
+    setcolors(model, dye, color)
+    return
+
+
+def setColoredTexture(model, dye, camo_id, colors):
+    try:
+        dye_atrr = getattr(model, dye)
+        setattr(dye_atrr, 'MaskForColourise', SUBSTRATES_CACHE.get_camo(camo_id))
+    except:
+        print '----------'
+        print model.sources
+        print [model,
+         dye,
+         camo_id,
+         colors]
+        raise
+
+    setcolors(model, dye, colors)
+
+
+def set_weapon_tint(model):
+    setTint(model, 'tint_weapon', 'stock')
+
+
+def setTint(model, dye, tintname, entity = None):
+    try:
+        setattr(model, str(dye), str(tintname))
+    except:
+        print
+        print 'tintname, node, dye, model', entity, [tintname, model, dye]
+        if model:
+            print model.sources
+        traceback.print_stack()
+        traceback.print_exc()
+        print
+        print
+
+
+def setcolors(model, dye, colors):
+    try:
+        node = model
+        getattr(node, dye).colouriseR = tuple(map(lambda x: x / 255.0, colors['R']))
+        getattr(node, dye).colouriseG = tuple(map(lambda x: x / 255.0, colors['G']))
+        getattr(node, dye).colouriseB = tuple(map(lambda x: x / 255.0, colors['B']))
+        getattr(node, dye).colouriseA = tuple(map(lambda x: x / 255.0, colors['A']))
+    except:
+        print 'model, node, dye, colors', [model,
+         node,
+         dye,
+         colors]
+        if model:
+            print model.sources
+        traceback.print_stack()
+        traceback.print_exc()
+
+
+def getColorsFromModel(model, node, dye_list, avatar = None, itemType = None):
+    try:
+        if not node:
+            node = model
+        else:
+            node = getattr(model, node)
+    except:
+        print 'ERROR getColorsFromModel:', [node, dye_list], avatar, itemType
+
+    dye_obj = None
+    if type(dye_list) in (str, unicode):
+        dye_list = [dye_list]
+    found_tints = []
+    ret = {}
+    for dye in dye_list:
+        dye_obj = getattr(node, dye, None)
+        if not dye_obj:
+            continue
+        try:
+            ret['R'] = list(map(lambda x: int(x * 255.0), dye_obj.colouriseR))
+            ret['G'] = list(map(lambda x: int(x * 255.0), dye_obj.colouriseG))
+            ret['B'] = list(map(lambda x: int(x * 255.0), dye_obj.colouriseB))
+            ret['A'] = list(map(lambda x: int(x * 255.0), dye_obj.colouriseA))
+            return ret
+        except AttributeError:
+            found_tints.append(dye_obj.tint)
+
+    if not ret:
+        print 'ERROR getColorsFromModel:', itemType, avatar, node
+        print '  dye_list:', dye_list
+        print '  found_tints:', found_tints
+    return
+
+
+def detectMaskForColourise(model, node, model_dyes, avatar = None, itemType = None):
+    try:
+        if not node:
+            node = model
+        else:
+            node = getattr(model, node)
+        for dye in model_dyes:
+            mater = getattr(node, dye, None)
+            if not mater:
+                continue
+            tprov = getattr(mater, 'MaskForColourise', None)
+            if tprov:
+                return tprov.name
+
+    except Exception as err:
+        print 'ERROR detectMaskForColourise, node, model_dyes, colors', [node, model_dyes], avatar, itemType, err
+
+    return
+
+
+dye_fields = ('DiffMapDecal', 'DiffMap1')
+
+def can_set_dye(model, dye):
+    model_dye = getattr(model, dye, None)
+    if not model_dye:
+        return False
+    else:
+        for field in dye_fields:
+            if hasattr(model_dye, field):
+                return True
+
+        return False
+
+
+def set_dye(model, dye, texture):
+    try:
+        model_dye = getattr(model, dye)
+        for field in dye_fields:
+            if hasattr(model_dye, field):
+                setattr(model_dye, field, texture)
+                break
+
+    except:
+        traceback.print_exc()
+        traceback.print_stack()
+
+
+def setFeed(model, node, dye, feedName, texture = None):
+    try:
+        if not node:
+            node = model
+        else:
+            node = getattr(model, node)
+        try:
+            if not texture:
+                texture = NO_TEXTURE.get(feedName)
+                texture is None and LoadFeed(model, node, dye, feedName)
+                return
+            set_dye(model, dye, texture)
+        except Exception as e:
+            traceback.print_exc()
+            raise e
+
+    except:
+        print 'model, node, dye, feedName', model, node, dye, feedName
+        traceback.print_exc()
+
+    return
+
+
+def LoadFeed(model, node, dye, feedName):
+    if not feedName.startswith('feed_embl_'):
+        return
+    emblemID = int(feedName.replace('feed_embl_'))
+    UCManager.ucmanager.loadImg(emblemID, partial(onLoadIcon, model, node, dye))
+
+
+NO_TEXTURE = {'feed_disabled': BigWorld.PyTextureProvider('textures/default/alpha.dds'),
+ '': BigWorld.PyTextureProvider('textures/default/alpha.dds')}

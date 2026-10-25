@@ -1,0 +1,179 @@
+# Embedded file name: ./client/AgroObject.py
+import FX
+import json
+import ResMgr
+import BigWorld
+import traceback
+import csconstans
+import Helpers.Caps
+import BWPersonality
+import RestrictionsUtils
+from Localization import lc
+from tank_parts.tank_mark import TankMarker
+from FX.persistent_ext_bg import loadPersistentExtAsync
+section = ResMgr.openSection('scripts/common/EnumProps/AgroObject.json')
+CONFIG = json.loads(section.asBinary)['model_index']['values']
+
+class AgroObject(BigWorld.Entity):
+
+    def __init__(self):
+        BigWorld.Entity.__init__(self)
+        self.name = lc(self.local_name)
+        self._model_path = next((model for index, model in CONFIG if index == self.model_index), None)
+        self._model_path_dead = next((model for index, model in CONFIG if index == self.model_index_dead), None)
+        self.model = None
+        self.callback_id = None
+        self.effect = None
+        self.effect_dead = None
+        self._ui_marker = None
+        self._locked = None
+        player = BigWorld.player()
+        if getattr(player, 'inPVPinstance', None):
+            self.targetCaps = [Helpers.Caps.CAP_INTERACT]
+        else:
+            self.targetCaps = [Helpers.Caps.CAP_CAN_USE]
+        return
+
+    def play_dead_sfx(self):
+        self.stop_sfx()
+        self.stop_dead_sfx()
+        if not self.sfx_dead or not self.model:
+            return
+
+        def on_load(prereqs):
+            self.effect_dead = FX.PersistentExt(self.sfx_dead, prereqs)
+            self.effect_dead.attach(self.model)
+            self.effect_dead.go()
+
+        loadPersistentExtAsync([self.sfx_dead], on_load)
+
+    def stop_dead_sfx(self):
+        if self.isDestroyed:
+            return
+        else:
+            if self.effect_dead:
+                self.effect_dead.stop()
+            self.effect_dead = None
+            return
+
+    def play_sfx(self):
+        self.stop_sfx()
+        self.stop_dead_sfx()
+        if not self.sfx_spawn or not self.model:
+            return
+
+        def on_load(prereqs):
+            self.effect = FX.PersistentExt(self.sfx_spawn, prereqs)
+            self.effect.attach(self.model)
+            self.effect.go()
+
+        loadPersistentExtAsync([self.sfx_spawn], on_load)
+
+    def stop_sfx(self):
+        if self.isDestroyed:
+            return
+        else:
+            if self.effect:
+                self.effect.stop()
+            self.effect = None
+            return
+
+    def activate(self):
+        pass
+
+    def interact(self, player):
+        if self._locked:
+            return
+        player.cancel_action_release()
+        if not player.CheckRestriction(RestrictionsUtils.CHANNEL_ITEMS) or player.control_locked or player.dead:
+            return
+        self._locked = True
+
+        def off_lock():
+            self._locked = False
+
+        BigWorld.callback(1, off_lock)
+        if 0 < self.health_ratio < 100:
+            self.cell.interact()
+
+    def onBoarHit(self, damager):
+        pass
+
+    def prerequisites(self):
+        prereqs = []
+        if self._model_path:
+            prereqs.append(self._model_path)
+        if self._model_path_dead and self._model_path != self._model_path_dead:
+            prereqs.append(self._model_path_dead)
+        return prereqs
+
+    def onEnterWorld(self, prereqs):
+        if self._model_path:
+            self.normal_model = prereqs[self._model_path]
+        if self._model_path_dead and self._model_path != self._model_path_dead:
+            self.dead_model = prereqs[self._model_path_dead]
+        else:
+            self.dead_model = self.normal_model
+        self.model = self.get_model()
+        try:
+            self.model.no_draw = 'no_draw'
+        except:
+            pass
+
+        if self.dead:
+            self.on_death()
+        else:
+            self.on_revive()
+
+    def get_model(self):
+        model = self.dead_model if self.dead and self.dead_model else self.normal_model
+        scale = self.scale
+        model.scale = (scale, scale, scale)
+        model.newScaleTest = (scale, scale, scale)
+        model.visible = True
+        model.isObstacle = True
+        return model
+
+    def get_custom_mark(self, distance):
+        if distance > self.get_mark_distance():
+            return
+        else:
+            if self._ui_marker is None:
+                self._ui_marker = TankMarker(self, 2)
+                self._ui_marker.set_ratio(self.health_ratio)
+            return self._ui_marker
+
+    def get_mark_distance(self):
+        return 70.0
+
+    def set_health_ratio(self, old_value):
+        if self._ui_marker:
+            self._ui_marker.set_ratio(self.health_ratio)
+        player = BigWorld.player()
+        if getattr(player, 'inPVPinstance', None):
+            BWPersonality.GUICore.pvpScoreEvent(csconstans.EVENT_NY_PROTECT_CHANGE_ELKA_HP, self.health_ratio, u'')
+        return
+
+    def onLeaveWorld(self):
+        if self.model:
+            self.stop_sfx()
+            self.stop_dead_sfx()
+            self.model = None
+        return
+
+    def on_death(self):
+        if self.sfx_dead:
+            self.play_dead_sfx()
+
+    def on_revive(self):
+        if self.sfx_spawn:
+            self.play_sfx()
+
+    def set_dead(self, old_value):
+        model = self.get_model()
+        if self.model.sources == model.sources:
+            return
+        self.model = self.get_model()
+
+    def getName(self):
+        return self.name

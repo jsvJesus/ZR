@@ -1,0 +1,192 @@
+# Embedded file name: ./client/particle_spawner.py
+import BigWorld
+from Math import Vector3, Matrix
+from functools import partial
+import traceback
+DEBUG_DRAW = False
+
+def draw_rect(p0, r, m):
+    gi = BigWorld.getGeometricInstance()
+    a = p0 + Vector3(-r, 0, +r)
+    b = p0 + Vector3(+r, 0, +r)
+    c = p0 + Vector3(+r, 0, -r)
+    d = p0 + Vector3(-r, 0, -r)
+    points = [ m.applyPoint(p_loc) for p_loc in (a,
+     b,
+     c,
+     d) ]
+    color = (0, 1, 0, 1)
+    lineStrip = True
+    alwaysDraw = True
+    gi.addMultiLine(points, color, lineStrip, alwaysDraw)
+
+
+class ParticleSpawnerPartition:
+
+    def __init__(self, matrix):
+        self._matrix = matrix
+        self._parts = []
+
+    def release(self):
+        for p in self._parts:
+            p.release()
+
+        self._parts = []
+
+    def stop_spawn(self):
+        for p in self._parts:
+            p.stop_spawn()
+
+    def start_spawn(self, pxname, prereqs, spawnpos, radius = 1, part_min_lenght_metr = 30, debugprint = False):
+        self.release()
+        parts = int(radius / part_min_lenght_metr)
+        parts = max(1, parts)
+        parts = min(100, parts)
+        min_ = -int(parts / 2)
+        max_ = int(parts / 2)
+        part_radius = radius / float(parts)
+        ofsset = part_radius * 2
+        start_offset = part_radius
+        if max_ - min_ < parts:
+            min_ -= 1
+            start_offset = part_radius * 2
+        for x in range(min_, max_):
+            for y in range(min_, max_):
+                try:
+                    particle_system = prereqs[pxname]
+                except Exception as err:
+                    print 'ERROR FOR', self, spawnpos, BigWorld.player().getSpaceName(), repr(pxname)
+                    raise err
+
+                s = ParticleSpawner()
+                s.mult_rate = 1.0 / parts
+                self._parts.append(s)
+                p_loc = (x * ofsset + start_offset, 0, y * ofsset + start_offset)
+                matrix = Matrix()
+                matrix.translation = p_loc
+                matrix.postMultiply(self._matrix)
+                s.start_spawn(particle_system, matrix, radius=part_radius)
+                if DEBUG_DRAW:
+                    draw_rect(p_loc, part_radius, self._matrix)
+
+        if debugprint:
+            print '\nparts', parts, '   count particle_system', len(self._parts)
+            print 'radius', radius, 'part_radius', part_radius
+
+
+class ParticleSpawner:
+
+    def __init__(self):
+        self._particles = None
+        self._model = None
+        self.mult_rate = 1.0
+        self._particles_initial_data = {}
+        return
+
+    def start_spawn(self, particle_system, pos_or_matrix, radius = None):
+        if self._model and self._model.inWorld:
+            ParticleSpawner._del_particle_model(self._model)
+            self._model = None
+        if hash(particle_system) not in self._particles_initial_data:
+            rates = []
+            lods = {}
+            self._particles_initial_data[hash(particle_system)] = (rates, lods)
+            for i in xrange(particle_system.nSystems()):
+                system = particle_system.system(i)
+                lods[i] = system.maxLod
+                for action in system.actions:
+                    if action.__name__ in ('SourcePSA',):
+                        rates.append(action.rate)
+
+        else:
+            rates, lods = self._particles_initial_data[hash(particle_system)]
+            index = 0
+            for i in xrange(particle_system.nSystems()):
+                system = particle_system.system(i)
+                system.maxLod = lods[i]
+                for action in system.actions:
+                    if action.__name__ in ('SourcePSA',):
+                        action.rate = rates[index]
+                        index += 1
+
+        if self._model and self._particles:
+            if self._particles == particle_system:
+                return
+            if self._particles.resourceID and self._particles.resourceID == particle_system.resourceID:
+                return
+        self.stop_spawn()
+        self._model = BigWorld.Model('')
+        if type(pos_or_matrix) == Vector3:
+            self._model.position = pos_or_matrix
+        else:
+            self._model.setWorldTransform(pos_or_matrix)
+        BigWorld.addModel(self._model)
+        self._particles = particle_system
+        self._model.root.attach(self._particles)
+        if radius is not None:
+            self._model.scale = self._scale_particles(radius)
+        return
+
+    def stop_spawn(self):
+        if not self._model or not self._particles:
+            return
+        else:
+            delay = 1.0
+            for i in xrange(self._particles.nSystems()):
+                system = self._particles.system(i)
+                for action in system.actions:
+                    if action.__name__ in ('SourcePSA',):
+                        action.rate = 0
+                    if action.__name__ in ('SinkPSA',):
+                        delay = max(action.maximumAge, delay)
+
+            BigWorld.callback(delay * 1.5, partial(ParticleSpawner._del_particle_model, self._model))
+            self._particles = None
+            return
+
+    def _scale_particles(self, radius):
+        max_coef = 1
+        max_h = 1
+        for i in xrange(self._particles.nSystems()):
+            system = self._particles.system(i)
+            if system.maxLod:
+                system.maxLod += radius
+            for j, action in enumerate(system.actions):
+                if action.__name__ in ('SourcePSA',):
+                    pos_source = action.getPositionSource()
+                    if not pos_source or pos_source[0] != 'Box':
+                        print 'ERROR: not support:', pos_source, self
+                        continue
+                    min_ = Vector3(pos_source[1])
+                    max_ = Vector3(pos_source[2])
+                    prev_rate = action.rate
+                    part_raduis = (max_.x - min_.x) / 2.0
+                    coef = radius / part_raduis
+                    action.rate = prev_rate * coef * self.mult_rate
+                    min_.x *= coef
+                    min_.z *= coef
+                    max_.x *= coef
+                    max_.z *= coef
+                    max_h = max(max_h, max_.y)
+                    max_coef = max(max_coef, coef)
+                    action.setPositionSource(['Box', min_, max_])
+
+        scale = (max_coef * 4, max_h, max_coef * 4)
+        return scale
+
+    def release(self):
+        self.stop_spawn()
+        if self._model and self._model.inWorld:
+            ParticleSpawner._del_particle_model(self._model)
+            self._model = None
+        return
+
+    @staticmethod
+    def _del_particle_model(model):
+        try:
+            model.root.attachments = []
+        except:
+            traceback.print_exc()
+
+        if model.inWorld:
+            BigWorld.delModel(model)

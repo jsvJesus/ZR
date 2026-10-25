@@ -1,0 +1,262 @@
+# Embedded file name: ./client/barter/barterwin.py
+import ItemsUtils
+import BigWorld
+import BWPersonality
+from Localization import lc
+import GUI
+from Helpers.PyGUI.PyGUIBase import DragWin
+from soGUI.soButton import soButton
+from utils import Listenable
+from barter.tradeblock import TradeBlock
+from barter.retranslator import Retranslator
+from barter.container import EventType as ContET, LockType
+from ChatChannelConfig import CHANNEL_CONSTS
+import gui_jokes
+
+class EventType:
+    OnClose, OnComply = ((r, 'bartwin') for r in range(2))
+
+
+class BarterWin(DragWin, Listenable):
+
+    def __init__(self):
+        Listenable.__init__(self)
+        self._bartopponent = None
+        comp = GUI.Window()
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('LEFT', 'TOP')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = (460, 590)
+        comp.position = (250, 50, 0.3)
+        comp.visible = False
+        DragWin.__init__(self, comp)
+        comp = GUI.Frame2('soGUI/frame/basic_frame_1.dds')
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.wm, comp.hm = ('CLIP', 'CLIP')
+        comp.materialFX = 'BLEND'
+        comp.height, comp.width = (2, 2)
+        comp.position = (0.0, 0.0, 0.9)
+        self.component.addChild(comp)
+        comp = GUI.Window()
+        btn = soButton(comp)
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('LEFT', 'TOP')
+        comp.materialFX = 'BLEND'
+        comp.width, comp.height = (18, 18)
+        comp.position = (self.component.width - 24, 6, 0.2)
+        btn.initVSC('soGUI/elements/closeBox.xml')
+        btn.onBound()
+        btn.onClick = self.hide
+        btn._updateVisualState()
+        self.component.addChild(comp)
+        comp = GUI.Window('')
+        self._offer_btn = soButton(comp)
+        comp = self._offer_btn.component
+        comp.vpm, comp.hpm = ('PIXEL', 'PIXEL')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('LEFT', 'BOTTOM')
+        comp.width, comp.height = (101, 29)
+        comp.position = (7, self.component.height - 8, 0.4)
+        comp.label.text = lc('GUI.InterPlayerTrade.MAKE_OFFER_BUTTON_LABEL')
+        self._offer_btn.initVSC('soGUI/elements/button_1.xml')
+        self._offer_btn.onBound()
+        self._offer_btn.onClick = self._on_offer_click
+        self.component.addChild(comp)
+        comp = GUI.Window('')
+        self._cancel_btn = soButton(comp)
+        comp = self._cancel_btn.component
+        comp.vpm, comp.hpm = ('PIXEL', 'PIXEL')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('RIGHT', 'BOTTOM')
+        comp.width, comp.height = (101, 29)
+        comp.position = (self.component.width - 10, self._offer_btn.component.position[1], 0.4)
+        self._cancel_btn.initVSC('soGUI/elements/button_1.xml')
+        self._cancel_btn.onBound()
+        comp.label.text = lc('GUI.InterPlayerTrade.CANCEL_BUTTON_LABEL')
+        self._cancel_btn.onClick = self._on_cancel_click
+        self._cancel_btn.setDisabledState(True)
+        self.component.addChild(comp)
+        comp = GUI.Window('')
+        self._confirm_btn = soButton(comp)
+        comp.vpm, comp.hpm = ('PIXEL', 'PIXEL')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('LEFT', 'BOTTOM')
+        comp.width, comp.height = (101, 29)
+        comp.position = (229, self._offer_btn.component.position[1], 0.4)
+        self._confirm_btn.initVSC('soGUI/elements/button_1.xml')
+        self._confirm_btn.onBound()
+        self._confirm_btn.setDisabledState(True)
+        self._confirm_btn.onClick = self._on_confirm_click
+        comp.label.text = lc('GUI.InterPlayerTrade.CONFIRM_BUTTON_LABEL')
+        self.component.addChild(comp, 'confirmBtn')
+        comp = GUI.Simple('soGUI/white.dds')
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('LEFT', 'TOP')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.colour = (85, 85, 85, 255)
+        comp.materialFX = 'BLEND'
+        comp.width, comp.height = (454, 1)
+        comp.position = (3, 532, 0.9)
+        self.component.addChild(comp)
+        self._tradeblock1 = TradeBlock(False)
+        comp = self._tradeblock1.component
+        comp.width = self.component.width
+        comp.position = (0, 0, 0.5)
+        self.component.addChild(comp)
+        self._tradeblock0 = TradeBlock(True)
+        comp = self._tradeblock0.component
+        comp.width = self.component.width
+        comp.position = (0, 284, 0.5)
+        self.component.addChild(comp)
+        self._retranslator = Retranslator(self.get_player_container(), self.get_opponent_container())
+        self.get_player_container().add_listener(self._on_container_event)
+        self.get_opponent_container().add_listener(self._on_opponent_container_event)
+        return
+
+    def _on_opponent_container_event(self, event_type, data):
+        if event_type in (ContET.OnLockChanged, ContET.OnCleared):
+            opponent_locked = self.get_opponent_container().locked
+            if opponent_locked == LockType.Null:
+                self.get_player_container().set_lock(LockType.Null)
+                if self._bartopponent:
+                    title = lc('Inventory.client.exchangeCancelPopupTitle')
+                    msg = lc('Inventory.client.exchangeCancelPopupMsg').format(self._bartopponent.name)
+                    gui_jokes.askUserOk(title, msg)
+            self._update_buttons()
+            self._check_comply()
+        elif event_type == ContET.OnAdded:
+            if self._bartopponent:
+                for item in data['items']:
+                    message = lc('GUI.InterPlayerTrade.OPPONENT_ADD_ITEM').format(self._bartopponent.name)
+                    msg = u"<font color='#00FF00'>{0}</font> {1}".format(message, ItemsUtils.GetInterfaceItemName(item))
+                    BigWorld.player().putMessage(CHANNEL_CONSTS.ITEMS, msg)
+
+        elif event_type == ContET.OnRemoved:
+            if self._bartopponent:
+                for item in data['removed_items']:
+                    message = lc('GUI.InterPlayerTrade.OPPONENT_REMOVE_ITEM').format(self._bartopponent.name)
+                    msg = u"<font color='#FF0000'>{0}</font> {1}".format(message, ItemsUtils.GetInterfaceItemName(item))
+                    BigWorld.player().putMessage(CHANNEL_CONSTS.ITEMS, msg)
+
+        if event_type in (ContET.OnAdded,
+         ContET.OnRemoved,
+         ContET.OnCleared,
+         ContET.OnMoneyChanged):
+            container = self.get_player_container()
+            if container.locked != LockType.Null:
+                container.set_lock(False)
+                container.clear()
+                container.set_owner(BigWorld.player())
+                title = lc('Inventory.client.exchangeCancelPopupTitle')
+                msg = lc('Inventory.client.exchangeTermChanged')
+                gui_jokes.askUserOk(title, msg)
+        elif event_type == ContET.BadData:
+            self.hide()
+
+    def _on_container_event(self, event_type, data):
+        if event_type in (ContET.OnLockChanged, ContET.OnCleared):
+            self._update_buttons()
+            self._check_comply()
+
+    def _update_buttons(self):
+        locked = self.get_player_container().locked
+        self._offer_btn.setDisabledState(locked != LockType.Null)
+        opponent_locked = self.get_opponent_container().locked
+        self._cancel_btn.setDisabledState((locked == LockType.Null or locked) == opponent_locked == LockType.Confirm)
+        self._confirm_btn.setDisabledState(locked != LockType.Lock or opponent_locked == LockType.Null)
+
+    def _check_comply(self):
+        container = self.get_player_container()
+        opponent_container = self.get_opponent_container()
+        if container.locked == opponent_container.locked == LockType.Confirm:
+            data = {'items': list(container.items),
+             'opponent_items': list(opponent_container.items),
+             'money': container.money,
+             'opponent_money': opponent_container.money}
+            self.notify_listeners(EventType.OnComply, data)
+
+    def _on_confirm_click(self):
+        p = BigWorld.player()
+        trade_item_ids = set()
+        for item in self.get_player_container().items:
+            trade_item_ids.add(item['complexItemID'])
+
+        unique_carry_types = set([ item['complexItemType'] for item in p.CarryingItems if item['complexItemID'] not in trade_item_ids ])
+        count = 0
+        for item in self.get_opponent_container().items:
+            item_type = item['complexItemType']
+            if not ItemsUtils.isStackedItemType(item_type):
+                count += 1
+                continue
+            if item_type in unique_carry_types:
+                continue
+            count += 1
+
+        if not ItemsUtils.CheckMaxItemNumber(BigWorld.player(), count - len(trade_item_ids)):
+            gui_jokes.askUserOk(u'', lc('GUI.InterPlayerTrade.NO_INVENTORY_ROOM'))
+            return
+        self.get_player_container().set_lock(LockType.Confirm)
+
+    def _on_offer_click(self):
+
+        def listener(code):
+            if code == gui_jokes.askUserYesNo.YES:
+                self.get_player_container().set_lock(True)
+
+        opponent_container = self.get_opponent_container()
+        if not opponent_container.money and not opponent_container.items:
+            container = self.get_player_container()
+            if container.money or container.items:
+                title = lc('Inventory.client.PCT_TRADE_CHECKDECEIVER_TITLE')
+                msg = lc('Inventory.client.PCT_TRACE_FREE')
+                gui_jokes.askUserYesNo(title, msg, listener)
+                return
+        self.get_player_container().set_lock(True)
+
+    def _on_cancel_click(self):
+        self.get_player_container().set_lock(False)
+
+    def get_player_container(self):
+        return self._tradeblock0.container
+
+    def get_opponent_container(self):
+        return self._tradeblock1.container
+
+    def on_money_changed(self, prev_money, cur_money):
+        if not self.visible:
+            return
+        container = self.get_player_container()
+        if cur_money < container.money:
+            container.set_lock(False)
+            container.clear()
+            container.set_owner(BigWorld.player())
+            title = lc('Inventory.client.exchangeCancelPopupTitle')
+            msg = lc('Inventory.client.exchangeTermChanged')
+            gui_jokes.askUserOk(title, msg)
+
+    def is_item_locked(self, item_id):
+        return self._tradeblock0.is_item_locked(item_id)
+
+    def show(self, opponent):
+        if not self.component.visible:
+            self._bartopponent = opponent
+            self.component.visible = True
+            self._tradeblock0.on_show(BigWorld.player())
+            self._tradeblock1.on_show(opponent)
+            self._retranslator.on_show(opponent)
+
+    def hide(self):
+        if self.component.visible:
+            self._bartopponent = None
+            self.component.visible = False
+            self.notify_listeners(EventType.OnClose)
+            self._tradeblock0.on_hide()
+            self._tradeblock1.on_hide()
+            BWPersonality.GUICore.setBestCursor()
+        return
+
+    @property
+    def visible(self):
+        return self.component.visible

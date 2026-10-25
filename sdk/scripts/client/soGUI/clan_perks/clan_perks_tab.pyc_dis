@@ -1,0 +1,483 @@
+# Embedded file name: ./client/soGUI/clan_perks/clan_perks_tab.py
+import ItemsUtils
+from Items import ItemsCatalog
+import Keys
+import BigWorld
+from utils import Tickable, Destructable, Listenable
+from Localization import lc
+from collections import defaultdict
+from perks_system import perks_parser as pp
+from Helpers.PyGUI.PyGUIBase import Interceptor
+import colorCodes as cc
+from exp_line import ExpLine
+import GUI
+import ClanSettings as CS
+from Helpers.PyGUI import Utils
+import Clan
+from info_win import InfoWin, EventType as InfoET
+from ui.button import Button
+import gui_jokes
+from client_utils import time_to_string3
+
+class PerkEventType:
+    OnMouseEntered, OnMouseLeft, OnMouseInsideTick = ((r, 'Perk') for r in range(3))
+
+
+class ColumnType:
+    Completed, Ready, Unavaiable = range(3)
+
+
+class TexturesProvider:
+
+    def __init__(self):
+        self.available = BigWorld.PyTextureProvider('soGUI/frame/perks/clan/available.dds')
+        self.unavailable = BigWorld.PyTextureProvider('soGUI/frame/perks/clan/unavailable.dds')
+        self.bought = BigWorld.PyTextureProvider('soGUI/frame/perks/clan/bought.dds')
+        self.travel = BigWorld.PyTextureProvider('soGUI/frame/perks/clan/travel.dds')
+
+
+class Perk(Listenable):
+
+    def __init__(self, perk_id, component, textures_provider, level):
+        Listenable.__init__(self)
+        self.component = component
+        self.perk_id = perk_id
+        self.level = level
+        self.column_type = None
+        self.is_pathed = False
+        self._mouse_inside = False
+        self._textures_provider = textures_provider
+        self.component.isClip = False
+        self._selected = False
+        self._infoed = False
+        comp = GUI.Window('soGUI/frame/perks/Icons/Perk{0}.dds'.format(self.perk_id))
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.materialFX = 'BLEND'
+        comp.filterType = 'LINEAR'
+        comp.width, comp.height = (48, 48)
+        self.component.addChild(comp, 'image')
+        comp = GUI.Window('soGUI/frame/perks/clan/selection.dds')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = comp.texture.width, comp.texture.height
+        comp.visible = False
+        self.component.addChild(comp, 'selection')
+        return
+
+    def set_data(self, is_owner, level, column_type, pathed, personal_points):
+        self.is_pathed = pathed
+        self.column_type = column_type
+        self.component.image.colour = (255, 255, 255, 255)
+        if self.column_type == ColumnType.Unavaiable:
+            self.component.texture = self._textures_provider.unavailable
+        elif self.column_type == ColumnType.Ready:
+            if is_owner and level >= self.level:
+                self.component.texture = self._textures_provider.available
+            else:
+                self.component.texture = self._textures_provider.unavailable
+            self.component.image.colour = (220, 220, 220, 255)
+        elif self.column_type == ColumnType.Completed:
+            if self.is_pathed:
+                if personal_points >= pp.get_cost(self.perk_id):
+                    self.component.texture = self._textures_provider.bought
+                else:
+                    self.component.texture = self._textures_provider.travel
+                self.component.image.colour = (16, 16, 16, 255)
+            else:
+                self.component.texture = self._textures_provider.unavailable
+                self.component.image.colour = (96, 96, 96, 255) if is_owner else (96, 96, 96, 51)
+
+    def on_tick(self, cursor_pos):
+        cursor_pos = self.component.screenToLocal(cursor_pos)
+        x = 2.0 * cursor_pos[0] / float(self.component.width) - 1.0
+        y = 1.0 - 2.0 * cursor_pos[1] / float(self.component.height)
+        if y <= 1 - x and y >= x - 1 and y <= x + 1:
+            self.mouse_inside = y >= -x - 1
+            data = self.mouse_inside and {'perk': self}
+            self.notify_listeners(PerkEventType.OnMouseInsideTick, data)
+
+    def on_hide(self):
+        self.mouse_inside = False
+
+    @property
+    def mouse_inside(self):
+        return self._mouse_inside
+
+    @mouse_inside.setter
+    def mouse_inside(self, value):
+        if value == self._mouse_inside:
+            return
+        self._mouse_inside = value
+        data = {'perk': self}
+        if self._mouse_inside:
+            self.notify_listeners(PerkEventType.OnMouseEntered, data)
+        else:
+            self.notify_listeners(PerkEventType.OnMouseLeft, data)
+
+    def _update_selection(self):
+        self.component.selection.visible = self._selected or self._infoed
+
+    def set_selected(self, value):
+        self._selected = value
+        self._update_selection()
+
+    def set_infoed(self, value):
+        self._infoed = value
+        self._update_selection()
+
+
+class PerkColumn(Listenable):
+
+    def __init__(self, component, level, perk_ids, textures_provider):
+        Listenable.__init__(self)
+        self.component = component
+        self.level = level
+        self._perks = []
+        top_margin = 26
+        height = self.component.height - top_margin
+        height = height / len(perk_ids)
+        pos_y = height / 2 + top_margin
+        comp = GUI.Text(unicode(self.level) + u' ' + lc('GUI.ClanGUI.PERKS.ColLevel'), 'RobotoCondensedRegular_16.font')
+        comp.ha, comp.va = ('CENTER', 'TOP')
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.position = (0, 1, 0.5)
+        comp.colour = cc.inactive_rgba
+        self.component.addChild(comp)
+        for perk_id in perk_ids:
+            comp = GUI.Window()
+            comp.texture = textures_provider.unavailable
+            comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+            comp.width, comp.height = comp.texture.width, comp.texture.height
+            comp.hpm, comp.vpm = ('CLIP', 'PIXEL')
+            comp.ha, comp.va = ('CENTER', 'CENTER')
+            comp.position = (0, pos_y, 0.8)
+            comp.materialFX = 'BLEND'
+            self.component.addChild(comp)
+            perk = Perk(perk_id, comp, textures_provider, self.level)
+            self._perks.append(perk)
+            perk.add_listener(self._on_perk_event)
+            pos_y += height
+
+    def _on_perk_event(self, event_type, data):
+        self.notify_listeners(event_type, data)
+
+    def set_data(self, is_owner, level, pathed_perks, column_type, personal_points):
+        for perk in self._perks:
+            perk.set_data(is_owner, level, column_type, perk.perk_id in pathed_perks, personal_points)
+
+    def on_tick(self, cursor_pos):
+        for perk in self._perks:
+            perk.on_tick(cursor_pos)
+
+    def on_hide(self):
+        for perk in self._perks:
+            perk.on_hide()
+
+
+class PerksTab(Tickable, Destructable, Interceptor):
+
+    def __init__(self, width, height):
+        Tickable.__init__(self)
+        Destructable.__init__(self)
+        comp = GUI.Window()
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('LEFT', 'TOP')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = width, height
+        Interceptor.__init__(self, comp)
+        self._update_callback = None
+        self._can_reset_in = -1
+        self._personal_ponts = 0
+        self._clan_level = 1
+        self._mouse_inside = False
+        self._info_win = None
+        self._selected_perk = None
+        self._infoed_perk = None
+        self._columns = []
+        self._textures_provider = None
+        self._inited = False
+        self._clan_points = 0
+        button = Button(self.component, 'reset_button', depth=0.1)
+        button.set_visual('soGUI/frame/buttons/perkreset.json')
+        pivot = (0.5, 0.5)
+        clip_pos = (0.955, 0.85)
+        size = (48, 48)
+        button.transform.set_pixel_mode(pivot, clip_pos, size)
+        button.on_click = self._on_reset_click
+        return
+
+    def _create_content(self):
+        nodes = pp.get_clan_perks_raw_data()['nodes']
+        nodes_by_level = defaultdict(list)
+        for node in nodes:
+            level = node['params']['main']['level']
+            nodes_by_level[level].append(node['id'])
+
+        raise len(nodes_by_level) == CS.get_max_level() or AssertionError
+        textures_provider = TexturesProvider()
+        left_margin = 64
+        right_margin = 64
+        top_margin = 16
+        column_width = (self.component.width - left_margin - right_margin) / len(nodes_by_level)
+        exp_height = 18
+        pos_x = left_margin
+        pos_y = top_margin
+        column_height = 318
+        for level, perk_ids in sorted(nodes_by_level.iteritems()):
+            comp = GUI.Window()
+            comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+            comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+            comp.width, comp.height = column_width, column_height
+            comp.ha, comp.va = ('LEFT', 'TOP')
+            comp.position = (pos_x, pos_y, 0.9)
+            self.component.addChild(comp)
+            pos_x += column_width
+            column = PerkColumn(comp, level, perk_ids, textures_provider)
+            self._columns.append(column)
+            column.add_listener(self._on_column_event)
+            if level > 1:
+                col_comp = comp
+                comp = GUI.Window('soGUI/frame/paint/white.dds')
+                comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+                comp.width, comp.height = 2, column_height + exp_height
+                comp.ha, comp.va = ('CENTER', 'TOP')
+                comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+                comp.materialFX = 'SOLID'
+                comp.colour = (31, 31, 31, 255)
+                comp.position = (col_comp.position[0], pos_y, 0.2)
+                self.component.addChild(comp)
+
+        pos_y += column_height
+        comp = GUI.Window('soGUI/frame/paint/white.dds')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('LEFT', 'TOP')
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.position = (left_margin, pos_y, 0.5)
+        comp.width, comp.height = self.component.width - left_margin - right_margin, exp_height
+        self.component.addChild(comp)
+        self._exp_line = ExpLine(comp)
+        comp = GUI.Text(lc('GUI.ClanGUI.PERKS.SinglePerk'), 'RobotoCondensedRegular_16.font')
+        comp.colour = cc.inactive_rgba
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.hpm, comp.vpm = ('CLIP', 'PIXEL')
+        comp.position = (0, self.component.height - 20, 0.5)
+        self.component.addChild(comp)
+        comp = GUI.Window('soGUI/frame/paint/black.dds')
+        comp.wm, comp.hm = ('CLIP', 'CLIP')
+        comp.materialFX = 'BLEND'
+        comp.colour = (255, 255, 255, 150)
+        comp.width, comp.height = (2, 2)
+        comp.position = (0, 0, 0)
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.visible = False
+        self.component.addChild(comp, 'loadpane')
+        Interceptor(comp)
+        comp = GUI.Simple('soGUI/maps/loadingScreen/loadingCircle/loadingCircle.texanim')
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('LEFT', 'TOP')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.materialFX = 'BLEND'
+        comp.width, comp.height = (20, 20)
+        comp.position = (5, 5, 0.5)
+        self.component.loadpane.addChild(comp)
+
+    def handleMouseEnterEvent(self, comp):
+        self._mouse_inside = True
+        return Interceptor.handleMouseEnterEvent(self, comp)
+
+    def handleMouseLeaveEvent(self, comp):
+        self._mouse_inside = False
+        self.selected_perk = None
+        return Interceptor.handleMouseLeaveEvent(self, comp)
+
+    def on_show(self):
+        if not self._inited:
+            self._inited = True
+            self._create_content()
+        self._clear_data()
+        if BigWorld.player().clanID:
+            BigWorld.player().got_clanperk_data = self._got_clanperk_data
+            self.start_tick()
+            self._request_data()
+
+    def _on_column_event(self, event_type, data):
+        if event_type == PerkEventType.OnMouseInsideTick:
+            self.selected_perk = data['perk']
+        elif event_type == PerkEventType.OnMouseLeft:
+            if self.selected_perk == data['perk']:
+                self.selected_perk = None
+        return
+
+    def _request_data(self):
+        if self._update_callback:
+            BigWorld.cancelCallback(self._update_callback)
+            self._update_callback = None
+        if Utils.is_visible_in_hierarchy(self.component):
+            if BigWorld.player().clanID:
+                BigWorld.player().base.get_clanperk_data0()
+            else:
+                self._got_clanperk_data([], False)
+        return
+
+    def _got_clanperk_data(self, perkspath, can_reset_in):
+        player = BigWorld.player()
+        owner = bool(player.checkClanRights(Clan.FLAG_CAN_CHANGE_SKILLS))
+        personal_points = self.component.parent.script.my_points_all
+        self._set_data(owner, perkspath, player.clan_level, player.clanpoints, personal_points, can_reset_in)
+        self._update_callback = BigWorld.callback(3, self._request_data)
+
+    def _clear_data(self):
+        self._exp_line.clear_data()
+        self.component.reset_button.script.set_enabled(False)
+        self.component.loadpane.visible = True
+
+    def _set_data(self, is_owner, perks_path, clan_level, clan_points, personal_points, can_reset_in):
+        self._can_reset_in = can_reset_in
+        self._personal_ponts = personal_points
+        self._clan_level = clan_level
+        self._clan_points = clan_points
+        self._is_owner = is_owner
+        self._exp_line.set_data(clan_level, self._clan_points)
+        max_level = 0
+        perks_by_level = defaultdict(list)
+        for p_id in perks_path:
+            level = pp.get_perk_level(p_id)
+            max_level = max(max_level, level)
+            perks_by_level[level].append(p_id)
+
+        self.component.loadpane.visible = False
+        for column in self._columns:
+            perk_ids = perks_by_level.get(column.level, [])
+            if column.level <= max_level:
+                column_type = ColumnType.Completed
+            elif column.level == max_level + 1:
+                column_type = ColumnType.Ready
+            else:
+                column_type = ColumnType.Unavaiable
+            column.set_data(self._is_owner, clan_level, perk_ids, column_type, personal_points)
+
+        self.component.reset_button.script.set_enabled(is_owner and perks_path and self._can_reset_in >= 0)
+
+    def on_tick(self):
+        if not self._mouse_inside:
+            return
+        cursor_pos = GUI.mcursor().position
+        for col in self._columns:
+            col.on_tick(cursor_pos)
+
+    def can_tick(self):
+        return Utils.is_visible_in_hierarchy(self.component)
+
+    def handleMouseButtonEvent(self, comp, event):
+        if event.key == Keys.KEY_LEFTMOUSE and event.isKeyDown() and not event.isRepeatedEvent():
+            if self.selected_perk:
+                if not self._info_win:
+                    self._info_win = InfoWin(self.component.position[2] * 0.5)
+                    self._info_win.add_listener(self._on_infowin_event)
+                available = self._is_owner and self.selected_perk.column_type == ColumnType.Ready and self._clan_level >= self.selected_perk.level
+                self._info_win.show(self.selected_perk.perk_id, self.selected_perk.is_pathed, self.selected_perk.level, self._personal_ponts, available)
+                self.infoed_perk = self.selected_perk
+        return True
+
+    def _on_infowin_event(self, event_type, data):
+        if event_type == InfoET.OnLearnClick:
+            self._info_win.hide()
+            perk_id = data['perk_id']
+            level = pp.get_perk_level(perk_id)
+            player = BigWorld.player()
+            if CS.get_perk_buy_cp_cost(level) > self._clan_points:
+                player.systemMsgChat(lc('ServerClientMessages.Avatar_clan_perk_no_cp'))
+                return
+            if CS.get_perk_buy_money_cost(level) > player.money:
+                player.systemMsgChat(lc('ServerClientMessages.Avatar_clan_perk_no_money'))
+                return
+            self.component.loadpane.visible = True
+            player.cell.clan_learn_perk0(perk_id)
+        elif event_type == InfoET.OnHide:
+            self.infoed_perk = None
+        return
+
+    def _on_reset_click(self):
+        if self._info_win:
+            self._info_win.hide()
+        if self._can_reset_in < 0:
+            return
+        if self._can_reset_in > 0:
+            text = time_to_string3(self._can_reset_in / 60.0 / 60.0)
+            text = lc('GUI.ClanGUI.PERKS.ResetTimeText') + u'\n' + cc.active_xml + text + cc.inactive_xml
+            gui_jokes.askUserOk(lc('GUI.ClanGUI.PERKS.ResetTimeTitle'), text)
+            return
+        player = BigWorld.player()
+        money = Clan.CLAN_PERK_RESET_COST_MONEY
+        tickets = Clan.CLAN_PERK_RESET_COST_TICKETS
+
+        def check_condition_and_nofity():
+            if player.money < money:
+                gui_jokes.askUserOk(u'', lc('ServerClientMessages.Avatar_clan_perk_no_money_reset'))
+                return False
+            if ItemsUtils.get_item_number_by_type(player, ItemsCatalog.EVENT_TICKET['TypeID']) < tickets:
+                gui_jokes.askUserOk(u'', lc('ServerClientMessages.Avatar_clan_perk_no_tickets'))
+                return False
+            return True
+
+        def callback(event):
+            if event == gui_jokes.askUserYesNo.YES:
+                if check_condition_and_nofity():
+                    self.component.loadpane.visible = True
+                    player.cell.clan_reset_perks0()
+
+        text = lc('GUI.ClanGUI.PERKS.ResetConfirm').format(money, tickets)
+        gui_jokes.askUserYesNo(u'', text, callback)
+
+    def on_hide(self):
+        BigWorld.player().got_clanperk_data = lambda *args: None
+        if self._update_callback:
+            BigWorld.cancelCallback(self._update_callback)
+            self._update_callback = None
+        for col in self._columns:
+            col.on_hide()
+
+        if self._info_win:
+            self._info_win.hide()
+        self.stop_tick()
+        self.selected_perk = None
+        self.infoed_perk = None
+        return
+
+    @property
+    def selected_perk(self):
+        return self._selected_perk
+
+    @selected_perk.setter
+    def selected_perk(self, value):
+        if value == self._selected_perk:
+            return
+        if self._selected_perk:
+            self._selected_perk.set_selected(False)
+        self._selected_perk = value
+        if self._selected_perk:
+            self._selected_perk.set_selected(True)
+
+    @property
+    def infoed_perk(self):
+        return self._infoed_perk
+
+    @infoed_perk.setter
+    def infoed_perk(self, value):
+        if value == self._infoed_perk:
+            return
+        if self._infoed_perk:
+            self._infoed_perk.set_infoed(False)
+        self._infoed_perk = value
+        if self._infoed_perk:
+            self._infoed_perk.set_infoed(True)
+
+    def show(self):
+        self.component.visible = True
+
+    def hide(self):
+        self.component.visible = False
+
+    def on_release(self):
+        if self._info_win:
+            self._info_win.release()

@@ -1,0 +1,284 @@
+# Embedded file name: ./client/soGUI/TradeGUI/TradeSlot.py
+from soGUI.soItemView import soItemSlot, LOCKED_COLOR
+import GUI
+import BWPersonality
+from Localization import lc
+import soGUI
+import colorCodes
+import utils
+import BigWorld
+import ItemsUtils
+import Constants
+from utils import PY
+from gui_const import MESSAGEBOX
+import msgbox_templates
+import Keys
+
+def number_input_validator(newStr, wholeText, offset):
+    total_text = wholeText + newStr
+    return len(total_text) < 16 and total_text.isdigit()
+
+
+class TradeSlot(soItemSlot):
+    """ \xd1\x81\xd0\xbb\xd0\xbe\xd1\x82 """
+    factoryString = 'soGUI.TradeSlot'
+    SLOTWIDTH = Constants.SLOT_SIZE
+    SLOTHEIGHT = Constants.SLOT_SIZE
+    EVENT_ADD, EVENT_REMOVE, EVENT_INFO, EVENT_TRADEDATA = xrange(4)
+
+    def __init__(self, component, slotIndex, itemData = None):
+        soItemSlot.__init__(self, component, slotIndex, itemData, centerDProxy=True)
+        component.script = self
+        self._interface_id = self.factoryString + str(self.slotIndex)
+        self._msg_box = None
+        self.dragProxy = self.component.dragProxy
+        self._onDragStart = self.on_drag_start
+        self._onDragStop = self.on_drag_stop
+        self._has_tooltip = False
+        self.trade_locked = False
+        self.create_droplet()
+        return
+
+    def setupRoot(self):
+        cmp = self.component
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.width = Constants.SLOT_SIZE
+        cmp.height = Constants.SLOT_SIZE
+        cmp.crossFocus = True
+        cmp.dragFocus = True
+        cmp.dropFocus = True
+        cmp.moveFocus = True
+        cmp.mouseButtonFocus = True
+        cmp = GUI.Frame2('soGUI/items/cell.dds')
+        cmp.verticalPositionMode = cmp.horizontalPositionMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.width = Constants.SLOT_SIZE
+        cmp.height = Constants.SLOT_SIZE
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.position = (0, 0, 0.9)
+        self.component.addChild(cmp)
+
+    def setupContent(self):
+        cmp = GUI.Simple('')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.horizontalAnchor = 'RIGHT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.width = Constants.SLOT_SIZE
+        cmp.height = Constants.SLOT_SIZE
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.position = (Constants.SLOT_SIZE, 0, 0.4)
+        self.component.addChild(cmp, 'item_icon')
+        cmp = GUI.Simple('soGUI/items/broken.dds')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.width = Constants.SLOT_SIZE
+        cmp.height = Constants.SLOT_SIZE
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.position = (0, 0, 0.7)
+        cmp.visible = False
+        self.component.addChild(cmp, 'item_broken')
+        cmp = GUI.Text('')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'BOTTOM'
+        cmp.font = 'ruRU_Cyrvetica_Extra_10i.family'
+        cmp.colour = (175, 166, 112, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.position = (4, Constants.SLOT_SIZE - 5, 0.3)
+        self.component.addChild(cmp, 'item_price')
+        cmp = GUI.Simple('')
+        cmp.verticalAnchor = 'BOTTOM'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.position = (4, 48, 0.0)
+        self.component.addChild(cmp, 'price_icon')
+        cmp = GUI.Simple('')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.horizontalAnchor = 'LEFT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.widthMode = cmp.heightMode = 'PIXEL'
+        cmp.width = Constants.SLOT_SIZE
+        cmp.height = Constants.SLOT_SIZE
+        cmp.colour = (255, 255, 255, 128)
+        cmp.materialFX = 'BLEND'
+        cmp.position = (0, 0, 0.5)
+        cmp.visible = False
+        self.component.addChild(cmp, 'dragProxy')
+        cmp = GUI.Text('')
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'PIXEL'
+        cmp.horizontalAnchor = 'RIGHT'
+        cmp.verticalAnchor = 'TOP'
+        cmp.font = 'ruRU_Cyrvetica_Extra_10i.family'
+        cmp.colour = (175, 166, 112, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.position = (Constants.SLOT_SIZE - 5, 5, 0.3)
+        self.component.addChild(cmp, 'item_count')
+
+    def has_remove_context_action(self):
+        return False
+
+    def onRClick(self):
+        if self.haveItem():
+            BWPersonality.GUICore.addListener('contextMenuEvent', self.context_menu_event)
+            BWPersonality.GUICore.showContextMenu(self._interface_id, self.get_context_menu_actions())
+
+    def get_context_menu_actions(self):
+        actions = {TradeSlot.EVENT_INFO: lc('Inventory.client.INFO')}
+        if BigWorld.isKeyDown(BigWorld.stringToKey('F2')) and BigWorld.player().isAdminAccess():
+            actions[TradeSlot.EVENT_TRADEDATA] = u'\u0434\u0430\u043d\u043d\u044b\u0435 \u043e \u0442\u043e\u0440\u0433\u043e\u0432\u043b\u0435'
+        if self.has_remove_context_action() and self.itemData:
+            if ItemsUtils.isStackedItemType(self.itemData['complexItemType']) and self.itemData['count'] > 1:
+                actions[TradeSlot.EVENT_REMOVE] = lc('Inventory.client.REMOVE_ITEMS')
+        return actions
+
+    def prepare_item_before_show_infow_window(self, complex_item):
+        return complex_item
+
+    def context_menu_event(self, interface_id, eventid, caption, event, data = None):
+        if event == soGUI.soContextMenuComponent.EVENT_SHOW and self._interface_id == interface_id:
+            return
+        BWPersonality.GUICore.removeListener('contextMenuEvent', self.context_menu_event)
+        if interface_id != self._interface_id:
+            return
+        if eventid == TradeSlot.EVENT_INFO:
+            info_item_data = PY(self.itemData)
+            if '~' in self.itemData['complexItemParametresValues']:
+                complex_values = info_item_data['complexItemParametresValues']
+                for i in xrange(len(complex_values)):
+                    if complex_values[i] == '~':
+                        complex_values[i] = 1
+
+            self.prepare_item_before_show_infow_window(info_item_data)
+            BWPersonality.GUICore.showItemInfo(info_item_data)
+        elif eventid == TradeSlot.EVENT_TRADEDATA:
+            BWPersonality.GUICore.chatConsole.run_command('request_trade_data ' + str(self.itemData['complexItemType']))
+        elif eventid == TradeSlot.EVENT_REMOVE:
+
+            def add_number_to_remove(event, data):
+                if event == MESSAGEBOX.EVENT_BTNPRESS:
+                    if data['btn'] == MESSAGEBOX.BTN_ALL:
+                        edit_box.setValue(str(self.itemData['count']))
+                    elif data['btn'] == MESSAGEBOX.BTN_OK:
+                        text = data['add_controls']['edit_box']
+                        if text.isdigit():
+                            count = int(text)
+                            self._item_box.on_slot_remove_count(self, min(self.itemData['count'], count))
+                elif event == MESSAGEBOX.EVENT_CLOSE or event == MESSAGEBOX.EVENT_CLOSE_NONUSER:
+                    self._msg_box = None
+                return
+
+            self._msg_box = msgbox_templates.input_box_ok_all_cancel('Inventory.add_number_to_buy', lc('GUI.Inventory.BUY_CAPTION'), lc('GUI.Inventory.BUY_TEXT_REMOVE'), callback=add_number_to_remove, default='1', input_validator=number_input_validator)
+            edit_box = self._msg_box.component.edit_edit_box.script
+
+            def intercept_input(event):
+                if event.key == Keys.KEY_F:
+                    edit_box.setValue(str(self.itemData['count']))
+                    return True
+                return False
+
+            edit_box.select([0, 0], [0, 1])
+            edit_box.keys_interceptor = intercept_input
+
+    def on_drag_start(self):
+        if self.haveItem():
+            self.dragProxy.visible = True
+            return True
+        return False
+
+    def on_drag_stop(self):
+        self.dragProxy.visible = False
+        return True
+
+    def handleMouseLeaveEvent(self, comp):
+        self._has_tooltip = False
+        if BWPersonality.GUICore.toolTip:
+            BWPersonality.GUICore.toolTip.hide()
+        return soItemSlot.handleMouseLeaveEvent(self, comp)
+
+    def handleMouseEnterEvent(self, comp):
+        if self.haveItem():
+            self._has_tooltip = True
+            BWPersonality.GUICore.showToolTip(colorCodes.tf3_regular_text_color + self._get_tooltip_text(), delay=0)
+        return soItemSlot.handleMouseEnterEvent(self, comp)
+
+    def _update_tooltip(self):
+        if self._has_tooltip and BWPersonality.GUICore.toolTip:
+            if self.haveItem():
+                BWPersonality.GUICore.showToolTip(colorCodes.tf3_regular_text_color + self._get_tooltip_text(), delay=0)
+            else:
+                self._has_tooltip = False
+                BWPersonality.GUICore.toolTip.hide()
+
+    def _get_tooltip_text(self):
+        return self._trade_screen.delegate.get_item_desc(self.itemData)
+
+    def get_count_text(self):
+        raise NotImplementedError
+
+    def _applyItemData(self):
+        self._update_droplet()
+        if self._msg_box:
+            self._msg_box.internalClose()
+            self._msg_box = None
+        if self.haveItem():
+            icon_name = ItemsUtils.GetIconName(self.itemData) or 'nottexture.dds'
+            self._set_icon(self.component.item_icon, icon_name)
+            self.component.item_price.text = utils.groupNumber(self.itemData.get('price', '???'))
+            self.component.item_broken.visible = ItemsUtils.is_item_broken(self.itemData)
+            self.component.item_count.text = self.get_count_text()
+            icon_name = 'soGUI/frame/inventory/money.dds'
+            self.component.price_icon.height = 8
+            self.component.price_icon.width = 16
+            self._set_icon(self.component.price_icon, icon_name)
+        else:
+            self.component.item_broken.visible = False
+            self.component.item_icon.textureName = ''
+            self.component.price_icon.textureName = ''
+            self.component.item_price.text = ''
+            self.component.item_count.text = ''
+        BigWorld.callback(0, self._update_tooltip)
+        self.dragProxy.texture = self.component.item_icon.texture
+        return
+
+    def _set_icon(self, component, icon_name):
+        icon = BWPersonality.GUICore.get_icon_from_cache(icon_name)
+        if icon:
+            component.texture = icon
+        else:
+            component.textureName = icon_name
+
+    def on_out_screen_drop(self):
+        if self.haveItem():
+            self._trade_screen.on_slot_outdrop(self.factoryString, self.itemData)
+
+    @property
+    def _trade_screen(self):
+        if self.factoryString in ('soGUI.GivingTradeSlot', 'soGUI.RecieveTradeSlot', 'soGUI.SellTradeSlot'):
+            return BWPersonality.GUICore.trade_screen
+
+    @property
+    def _item_box(self):
+        if self.factoryString == 'soGUI.GivingTradeSlot':
+            return BWPersonality.GUICore.trade_screen._givining_item_list
+        if self.factoryString == 'soGUI.RecieveTradeSlot':
+            return BWPersonality.GUICore.trade_screen._recieving_item_list
+        if self.factoryString == 'soGUI.SellTradeSlot':
+            return BWPersonality.GUICore.trade_screen._selling_item_list
+
+    @property
+    def trade_locked(self):
+        return tuple(self.component.item_icon.colour) == LOCKED_COLOR
+
+    @trade_locked.setter
+    def trade_locked(self, value):
+        self.lockSlot(value)
+        self.component.item_icon.colour = LOCKED_COLOR if value else (255, 255, 255, 255)

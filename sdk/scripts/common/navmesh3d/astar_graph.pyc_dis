@@ -1,0 +1,109 @@
+# Embedded file name: ./common/navmesh3d/astar_graph.py
+from math_bw import lerp
+from navmesh3d.navmesh_math import PriorityQueue
+
+class Funnel:
+
+    def __init__(self, apex):
+        self._apex = apex
+        self._left = None
+        self._right = None
+        return
+
+    def _angle_dot(self, v1, v2):
+        length = v1.length * v2.length
+        if not length:
+            return 0
+        return v1.dot(v2) / length
+
+    def _is_inside_funnel(self, point):
+        dir_left = self._left - self._apex
+        dir_right = self._right - self._apex
+        to_point = point - self._apex
+        apex_angle = self._angle_dot(dir_left, dir_right)
+        if self._angle_dot(to_point, dir_left) < apex_angle:
+            return False
+        if self._angle_dot(to_point, dir_right) < apex_angle:
+            return False
+        return True
+
+    def apply(self, portal):
+        left, right = portal
+        if not self._left:
+            self._left, self._right = left, right
+            return False
+        if not self._is_inside_funnel(left):
+            if self._left in (left, right):
+                self._apex = self._right
+            elif self._right in (left, right):
+                self._apex = self._left
+            else:
+                raise RuntimeError
+            self._left, self._right = left, right
+            return self._apex
+        if not self._is_inside_funnel(right):
+            if self._left in (left, right):
+                self._apex = self._right
+            elif self._right in (right, left):
+                self._apex = self._left
+            else:
+                raise RuntimeError
+            self._left, self._right = left, right
+            return self._apex
+        self._left, self._right = left, right
+        return False
+
+
+class Graph:
+
+    def search(self, start, goal, start_point, goal_point):
+        """ \xd0\xb2\xd0\xba\xd0\xbb\xd1\x8e\xd1\x87\xd0\xb8\xd1\x82 \xd0\xbd\xd0\xb0\xd1\x87\xd0\xb0\xd0\xbb\xd1\x8c\xd0\xbd\xd1\x83\xd1\x8e \xd0\xb8 \xd0\xba\xd0\xbe\xd0\xbd\xd0\xb5\xd1\x87\xd0\xbd\xd1\x83\xd1\x8e \xd1\x82\xd0\xbe\xd1\x87\xd0\xba\xd0\xb8 """
+        frontier = PriorityQueue()
+        frontier.put(start, 0)
+        came_from = {start: None}
+        cost_so_far = {start: 0}
+        while not frontier.empty():
+            current = frontier.get()
+            if current == goal:
+                break
+            for i in range(len(current.neigbours)):
+                nxt, cost = current.neigbours[i], current.costs[i]
+                new_cost = cost_so_far[current] + cost
+                if nxt not in cost_so_far or new_cost < cost_so_far[nxt]:
+                    cost_so_far[nxt] = new_cost
+                    priority = new_cost + nxt.pivot.distTo(goal.pivot)
+                    frontier.put(nxt, priority)
+                    came_from[nxt] = current
+
+        t_path = [goal]
+        p_path = []
+        nxt = goal
+        while nxt != start:
+            cur = came_from[nxt]
+            t_path.append(cur)
+            p_path.append(nxt.get_portal(cur))
+            nxt = cur
+
+        path = [goal_point]
+        funnel = Funnel(goal_point)
+        for i, portal in enumerate(p_path):
+            new_point = funnel.apply(portal)
+            if new_point:
+                path.append(new_point)
+
+        path.append(start_point)
+        path.reverse()
+        return path
+
+    def cut_path(self, path, distance):
+        point = path[-1]
+        popped_point = path.pop(-1)
+        while path[-1].distTo(point) < distance:
+            popped_point = path.pop(-1)
+            if not path:
+                return
+
+        path_distance = path[-1].distTo(point)
+        ratio = (path_distance - distance) / path[-1].distTo(popped_point)
+        point = lerp(path[-1], popped_point, ratio)
+        path.append(point)

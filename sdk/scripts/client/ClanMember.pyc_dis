@@ -1,0 +1,595 @@
+# Embedded file name: ./client/ClanMember.py
+"""
+Created on 29.09.2011
+
+@author: Madcat
+"""
+import os
+import BigWorld
+import gui_jokes
+from PlayerAvatarForSoClanScreen import PlayerAvatarForSoClanScreen
+import BWPersonality
+from gui_const import OBJECTIVE_TRACKER
+from gui_const import MESSAGEBOX
+from soGUI.soDialogueBox import soDialogueBox
+import Clan
+from Localization import lc
+import ChatChannelConfig
+from clan_utils import check_clan_name
+import utils
+import pyson
+import traceback
+import ClanSettings
+CHANNEL_CONSTS = ChatChannelConfig.ChannelConsts()
+ALLIANCE_SAVE_PATH = os.path.join(utils.stalker_path(), 'usercontent/alliances.pyson')
+MEMBERS_SAVE_PATH = os.path.join(utils.stalker_path(), 'usercontent/members_visible.pyson')
+
+class ClanMember(PlayerAvatarForSoClanScreen):
+    debug_dict = dict()
+    BASE_CAPTURE_ID = '_base'
+    FLAG_CAPTURE_ID = '_flag'
+    base_tracker = dict()
+    reinfp_tracker = dict()
+    clanUnion = None
+    clan_myenemies = []
+    clan_unenemies = []
+    clanRoster = {}
+    relationshipClanParam = {}
+    visible_clan_members = {}
+
+    def __init__(self):
+        pass
+
+    @property
+    def clanEnemies(self):
+        return self.clan_myenemies
+
+    def clanRosterUpdate(self, roster):
+        PlayerAvatarForSoClanScreen.clanRosterUpdate(self, roster)
+
+    def clanMemberRosterUpdate(self, member):
+        PlayerAvatarForSoClanScreen.clanMemberRosterUpdate(self, member)
+
+    def clanRanksUpdate(self, ranks, self_id):
+        PlayerAvatarForSoClanScreen.clanRanksUpdate(self, ranks, self_id)
+
+    def clan_info_update(self, motto, message, clan_points):
+        self.clan_motto_update(motto)
+        self.clan_message_update(message)
+        PlayerAvatarForSoClanScreen.clan_points_update(self, clan_points)
+
+    def clan_motto_update(self, motto):
+        PlayerAvatarForSoClanScreen.clan_motto_update(self, motto)
+
+    def clan_message_update(self, message):
+        PlayerAvatarForSoClanScreen.clan_message_update(self, message)
+        if message:
+            self.putMessage(CHANNEL_CONSTS.CLAN, message, lc('Clans.Messages.CLAN_MESSAGE'))
+
+    def clan_motto_change(self, motto_text):
+        if not self.checkClanRights(Clan.FLAG_CAN_CHANGE_MOTD):
+            return
+        self.base.clan_motto_change(motto_text)
+
+    def clan_message_change(self, message_text):
+        if not self.checkClanRights(Clan.FLAG_CAN_CHANGE_CLANMSG):
+            return
+        self.base.clan_message_change(message_text)
+
+    def clan_level_up(self):
+        if not self.checkClanRights(Clan.FLAG_CLAN_OWNER):
+            self.tellAboutClanStatus([], [], Clan.STATUS_YOU_ARE_NOT_LEADER)
+            return
+
+        def callback(event):
+            if event == gui_jokes.askUserYesNo.YES:
+                self.cell.clan_upgrade_level()
+
+        if self.clan_level == 2:
+            msg = lc('Clans.Interface.SURE_UPGRADE')
+            gui_jokes.askUserYesNo('', msg, callback)
+            return
+        self.cell.clan_upgrade_level()
+
+    def showClanCreateDialog(self, isRepeat):
+        msg = u' '
+        title = lc('Clans.Interface.ENTER_CLAN_NAME')
+        gui_jokes.inputBox(title, msg, self.onTryCreateClan, active=True)
+        BWPersonality.GUICore.mouseAltMode = True
+        BWPersonality.game.set_cursor_mouse(True)
+
+    def onTryCreateClan(self, text):
+        err = check_clan_name(text)
+        if err != Clan.STATUS_CLAN_NAME_OK:
+            self.tellAboutClanStatus([], [], err)
+            BigWorld.callback(0.5, lambda : self.showClanCreateDialog(True))
+            return
+        if self.money < Clan.COST_CREATE_CLAN:
+            self.tellAboutClanStatus([], [], Clan.STATUS_NOT_ENOUGH_MONEY)
+            BigWorld.callback(0.5, lambda : self.showClanCreateDialog(True))
+            return
+        if self.get_level() < Clan.LEVEL_CREATE_CLAN:
+            self.tellAboutClanStatus([], [], Clan.STATUS_NOT_ENOUGH_PLAYER_LEVEL)
+            BigWorld.callback(0.5, lambda : self.showClanCreateDialog(True))
+            return
+
+        def endCreateClan(event):
+            if event == gui_jokes.askUserYesNo.YES:
+                BWPersonality.GUICore.mouseAltMode = False
+                BWPersonality.GUICore.setBestCursor()
+                self.cell.createClan(text.encode('utf-8'))
+                return
+            if event == gui_jokes.askUserYesNo.NO:
+                BigWorld.callback(0.5, lambda : self.showClanCreateDialog(True))
+
+        msg = lc('Clans.Interface.CREATE_CLAN_MESSSAGE').format(text, Clan.COST_CREATE_CLAN)
+        gui_jokes.askUserYesNo('', msg, endCreateClan)
+
+    def runClanLeader(self, ua):
+        new_leader_name = ua[12:]
+        if new_leader_name:
+            self.runCommand(ua)
+        else:
+            print 'WARNING :: runClanLeader, not new_leader_name'
+
+    def GetHolderClanID(self):
+        return self.GetClanID()
+
+    def GetClanID(self):
+        return self.cellClanID
+
+    def set_cellClanID(self, old_value):
+        self.clanID = self.cellClanID
+        self.update_clan_screen()
+        if not self.clanID:
+            self.clearClanMemberVisible()
+
+    def onLeaveBase(self):
+        pass
+
+    def onLeaveRFPoint(self):
+        pass
+
+    def showClanWars(self):
+        if not self.clanEnemies:
+            warList = lc('Clans.Messages.YOUR_CLAN_HAS_NO_WARS')
+        else:
+            warList = lc('Clans.Messages.YOUR_CLAN_IS_IN_WAR_WITH')
+            warList += '\n'
+            warList += '\n'.join(self.clanEnemies).decode('utf-8')
+        self.putMessage(CHANNEL_CONSTS.SYSTEM, warList)
+
+    def setClanRelations(self, my_enemies, union_enemies, union):
+        self.clanUnion = union if union else None
+        self.clan_myenemies = my_enemies
+        self.clan_unenemies = union_enemies
+        self.update_clan_screen()
+        return
+
+    def tellAboutClanStatus(self, data, stringData, status):
+        message = u''
+        if status == Clan.STATUS_CLAN_NAME_IS_OCCUPIED:
+            message = lc('Clans.Messages.CLAN_NAME_IS_OCCUPIED')
+        elif status == Clan.STATUS_CLAN_NAME_IS_TOO_SHORT:
+            message = lc('Clans.Messages.CLAN_NAME_IS_TOO_SHORT')
+        elif status == Clan.STATUS_CLAN_NAME_IS_TOO_LONG:
+            message = lc('Clans.Messages.CLAN_NAME_IS_TOO_LONG')
+        elif status == Clan.STATUS_CLAN_NAME_HAVE_TOO_MUCH_UNDERLINE:
+            message = lc('Clans.Messages.CLAN_NAME_HAVE_TOO_MUCH_UNDERLINE')
+        elif status == Clan.STATUS_CLAN_NAME_CANT_ENDS_WITH_UNDERLINE:
+            message = lc('Clans.Messages.CLAN_NAME_CANT_ENDS_WITH_UNDERLINE')
+        elif status == Clan.STATUS_CLAN_NAME_CANT_BEGIN_WITH_UNDERLINE:
+            message = lc('Clans.Messages.CLAN_NAME_CANT_BEGIN_WITH_UNDERLINE')
+        elif status == Clan.STATUS_CLAN_NAME_HAVE_FORBIDDEN_CHAR:
+            message = lc('Clans.Messages.CLAN_NAME_HAVE_FORBIDDEN_CHAR')
+        elif status == Clan.STATUS_UNION_NAME_IS_TOO_SHORT:
+            message = lc('Clans.Messages.UNION_NAME_IS_TOO_SHORT')
+        elif status == Clan.STATUS_UNION_NAME_IS_TOO_LONG:
+            message = lc('Clans.Messages.UNION_NAME_IS_TOO_LONG')
+        elif status == Clan.STATUS_UNION_NAME_HAVE_FORBIDDEN_CHAR:
+            message = lc('Clans.Messages.UNION_NAME_HAVE_FORBIDDEN_CHAR')
+        elif status == Clan.STATUS_UNION_NAME_HAVE_TOO_MUCH_UNDERLINE:
+            message = lc('Clans.Messages.UNION_NAME_HAVE_TOO_MUCH_UNDERLINE')
+        elif status == Clan.STATUS_UNION_NAME_CANT_BEGIN_WITH_UNDERLINE:
+            message = lc('Clans.Messages.UNION_NAME_CANT_BEGIN_WITH_UNDERLINE')
+        elif status == Clan.STATUS_UNION_NAME_CANT_ENDS_WITH_UNDERLINE:
+            message = lc('Clans.MessagesUNION_NAME_CANT_ENDS_WITH_UNDERLINE')
+        elif status == Clan.STATUS_CLAN_HAVE_BEEN_DELETED:
+            message = lc('Clans.Messages.CLAN_HAVE_BEEN_DELETED')
+        elif status == Clan.STATUS_CLAN_HAVE_BEEN_CREATED:
+            message = lc('Clans.Messages.CLAN_HAVE_BEEN_CREATED')
+        elif status == Clan.STATUS_YOR_CLAN_IS_NOT_EXIST:
+            message = lc('Clans.Messages.YOR_CLAN_IS_NOT_EXIST')
+        elif status == Clan.STATUS_PLAYER_HAVE_LEAVE_CLAN:
+            message = lc('Clans.Messages.PLAYER_HAVE_LEAVE_CLAN').format(stringData[0])
+        elif status == Clan.STATUS_YOU_HAVE_LEAVE_THE_CLAN:
+            message = lc('Clans.Messages.YOU_HAVE_LEAVE_THE_CLAN')
+        elif status == Clan.STATUS_YOU_CANT_LEAVE_CLAN_BECAUSE_YOU_ARE_LEADER:
+            message = lc('Clans.Messages.YOU_CANT_LEAVE_CLAN_BECAUSE_YOU_ARE_LEADER')
+        elif status == Clan.STATUS_YOU_ARE_NOT_MEMBER_OF_THE_GROUP:
+            message = lc('Clans.Messages.YOU_ARE_NOT_MEMBER_OF_THE_GROUP')
+        elif status == Clan.STATUS_YOU_CANT_KICK_YOURSELF:
+            message = lc('Clans.Messages.YOU_CANT_KICK_YOURSELF')
+        elif status == Clan.STATUS_YOU_HAVE_NOT_RIGHT_TO_KICK:
+            message = lc('Clans.Messages.YOU_HAVE_NOT_RIGHT_TO_KICK')
+        elif status == Clan.STATUS_YOU_CANT_KICK_THE_LEADER:
+            message = lc('Clans.Messages.YOU_CANT_KICK_THE_LEADER')
+        elif status == Clan.STATUS_PLAYER_HAS_BEEN_KICKED_KICK_WITH_REASON:
+            message = lc('Clans.Messages.PLAYER_HAS_BEEN_KICKED_KICK_WITH_REASON').format(stringData[0], stringData[1], stringData[2])
+        elif status == Clan.STATUS_PLAYER_HAS_BEEN_KICKED:
+            message = lc('Clans.Messages.PLAYER_HAS_BEEN_KICKED').format(stringData[0], stringData[1])
+        elif status == Clan.STATUS_PLAYER_HAS_BENN_PROMOTED_TO_THE_RANK:
+            message = lc('Clans.Messages.PLAYER_HAS_BENN_PROMOTED_TO_THE_RANK').format(stringData[0], stringData[1], stringData[2])
+        elif status == Clan.STATUS_PLAYER_HAS_BENN_DEMOTED_TO_THE_RANK:
+            message = lc('Clans.Messages.PLAYER_HAS_BENN_DEMOTED_TO_THE_RANK').format(stringData[0], stringData[1], stringData[2])
+        elif status == Clan.STATUS_CLAN_LEADER_HAS_CHANGED:
+            message = lc('Clans.Messages.CLAN_LEADER_HAS_CHANGED').format(stringData[0])
+        elif status == Clan.STATUS_YOU_HAVE_NOT_RIGHT_TO_INVITE:
+            message = lc('Clans.Messages.YOU_HAVE_NOT_RIGHT_TO_INVITE')
+        elif status == Clan.STATUS_YOU_ARE_NOT_IN_CLAN:
+            message = lc('Clans.Messages.YOU_ARE_NOT_IN_CLAN')
+        elif status == Clan.STATUS_YOU_HAVE_NOT_RIGHT_TO_START_WAR:
+            message = lc('Clans.Messages.YOU_HAVE_NOT_RIGHT_TO_START_WAR')
+        elif status == Clan.STATUS_YOU_HAVE_NOT_RIGHT_TO_STOP_WAR:
+            message = lc('Clans.Messages.YOU_HAVE_NOT_RIGHT_TO_STOP_WAR')
+        elif status == Clan.STATUS_YOU_CANT_START_WAR_WITH_YOUR_OWN_CLAN:
+            message = lc('Clans.Messages.YOU_CANT_START_WAR_WITH_YOUR_OWN_CLAN')
+        elif status == Clan.STATUS_CANT_FIND_CLAN_TO_WAR:
+            message = lc('Clans.Messages.CANT_FIND_CLAN_TO_WAR')
+        elif status == Clan.STATUS_YOU_CANT_START_WAR_WITH_BLOCK:
+            message = lc('Clans.Messages.YOU_CANT_START_WAR_WITH_BLOCK')
+        elif status == Clan.STATUS_CANT_FIND_CLAN_TO_STOP_WAR:
+            message = lc('Clans.Messages.CANT_FIND_CLAN_TO_STOP_WAR')
+        elif status == Clan.STATUS_YOU_HAVE_REFUSED_TO_JOIN_IN_CLAN:
+            message = lc('Clans.Messages.YOU_HAVE_REFUSED_TO_JOIN_IN_CLAN')
+        elif status == Clan.STATUS_HE_HAVE_REFUSED_TO_JOIN_IN_CLAN:
+            message = lc('Clans.Messages.HE_HAVE_REFUSED_TO_JOIN_IN_CLAN').format(stringData[0])
+        elif status == Clan.STATUS_YOU_HAVE_JOINED_IN_CLAN:
+            message = lc('Clans.Messages.YOU_HAVE_JOINED_IN_CLAN')
+        elif status == Clan.STATUS_YOUR_INVITATION_IS_OUT_OF_DATE:
+            message = lc('Clans.Messages.YOUR_INVITATION_IS_OUT_OF_DATE')
+        elif status == Clan.STATUS_THERE_IS_NO_CLAN_MEMBER_WITH_NAME:
+            message = lc('Clans.Messages.THERE_IS_NO_CLAN_MEMBER_WITH_NAME').format(stringData[0])
+        elif status == Clan.STATUS_THERE_IS_NO_CLAN_WITH_NAME:
+            message = lc('Clans.Messages.THERE_IS_NO_CLAN_WITH_NAME').format(stringData[0])
+        elif status == Clan.STATUS_YOU_MUST_LEAVE_FROM_THE_CLAN_BEFORE_CREATE_NEW:
+            message = lc('Clans.Messages.YOU_MUST_LEAVE_FROM_THE_CLAN_BEFORE_CREATE_NEW')
+        elif status == Clan.STATUS_YOU_CANT_CREATE_CLAN_WITH_THIS_NAME:
+            message = lc('Clans.Messages.YOU_CANT_CREATE_CLAN_WITH_THIS_NAME')
+        elif status == Clan.STATUS_YOU_CANT_JOIN_TO_THIS_CLAN:
+            message = lc('Clans.Messages.YOU_CANT_JOIN_TO_THIS_CLAN')
+        elif status == Clan.STATUS_YOU_CANT_LEAVE_BEFORE_YOU_ARE_LEADER:
+            message = lc('Clans.Messages.YOU_CANT_LEAVE_BEFORE_YOU_ARE_LEADER')
+        elif status == Clan.STATUS_YOU_MUST_LEAVE_FROM_THE_CLAN_BEFORE_YOU_WILL_BE_JOINED:
+            message = lc('Clans.Messages.YOU_MUST_LEAVE_FROM_THE_CLAN_BEFORE_YOU_WILL_BE_JOINED').format(stringData[0])
+        elif status == Clan.STATUS_PLAYER_CANT_ACCEPT_YOUR_OFFER_BEACUSE_HE_IS_ALREADY_IN_CLAN:
+            message = lc('Clans.Messages.PLAYER_CANT_ACCEPT_YOUR_OFFER_BEACUSE_HE_IS_ALREADY_IN_CLAN').format(stringData[0])
+        elif status == Clan.STATUS_YOU_INVITATION_HAS_BEEN_SENT:
+            message = lc('Clans.Messages.YOU_INVITATION_HAS_BEEN_SENT')
+        elif status == Clan.STATUS_YOU_CAN_INVITE_THIS_PLAYER_IN_TIME:
+            message = lc('Clans.Messages.YOU_CAN_INVITE_THIS_PLAYER_IN_TIME').format(data[0], data[1], data[2], data[3])
+        elif status == Clan.STATUS_YOU_HAVE_BEEN_INVITED:
+            message = lc('Clans.Messages.YOU_HAVE_BEEN_INVITED').format(stringData[0])
+        elif status == Clan.STATUS_YOU_ARE_NOT_LEADER:
+            message = lc('Clans.Messages.YOU_ARE_NOT_LEADER')
+        elif status == Clan.STATUS_IGNORE:
+            message = lc('Clans.Messages.IGNORRED').format(stringData[0])
+        elif status == Clan.STATUS_NEED_PROMOTE_RANK:
+            message = lc('Clans.Messages.NEED_PROMOTE_RANK')
+        elif status == Clan.STATUS_ACCEPTED_CLANLEADER_OFFER:
+            message = lc('Clans.Messages.ACCEPTED_CLANLEADER_OFFER')
+        elif status == Clan.STATUS_REJECTED_CLANLEADER_OFFER:
+            message = lc('Clans.Messages.REJECTED_CLANLEADER_OFFER')
+        elif status == Clan.STATUS_FAILED_CLANLEADER_APPOINTMENT:
+            message = lc('Clans.Messages.FAILED_CLANLEADER_APPOINTMENT')
+        elif status == Clan.STATUS_CANCELED_CLANLEADER_OFFER:
+            message = lc('Clans.Messages.CANCELED_CLANLEADER_OFFER')
+        elif status == Clan.STATUS_FAILED_CLANLEADER_OFFER:
+            message = lc('Clans.Messages.FAILED_CLANLEADER_OFFER')
+        elif status == Clan.STATUS_MAX_LEVEL:
+            message = lc('Clans.Messages.MAX_LEVEL')
+        elif status == Clan.STATUS_NOT_ENOUGH_CLAN_POINTS:
+            message = lc('Clans.Messages.NOT_ENOUGH_CLAN_POINTS')
+        elif status == Clan.STATUS_NOT_ENOUGH_MONEY:
+            message = lc('Clans.Messages.NOT_ENOUGH_MONEY')
+        elif status == Clan.STATUS_NOT_ENOUGH_MONEY_LEVEL:
+            message = lc('Clans.Messages.NOT_ENOUGH_MONEY_LEVEL')
+        elif status == Clan.STATUS_NOT_ENOUGH_MEMBERS:
+            message = lc('Clans.Messages.NOT_ENOUGH_MEMBERS')
+        elif status == Clan.STATUS_TOO_MUCH_MEMBERS:
+            message = lc('Clans.Messages.TOO_MUCH_MEMBERS')
+        elif status == Clan.STATUS_NOT_ENOUGH_PLAYER_LEVEL:
+            message = lc('Clans.Messages.NOT_ENOUGH_PLAYER_LEVEL')
+        elif status == Clan.STATUS_YOU_ARE_NOT_LAST_LEADER:
+            message = lc('Clans.Messages.STATUS_YOU_ARE_NOT_LAST_LEADER')
+        elif status == Clan.STATUS_NOT_SUCCESS_PEACE_NON_MEMBERS:
+            message = lc('Clans.Messages.STATUS_NOT_SUCCESS_PEACE_NON_MEMBERS')
+        elif status == Clan.STATUS_NOT_SUCCESS_PEACE:
+            message = lc('Clans.Messages.STATUS_NOT_SUCCESS_PEACE').format(stringData[0])
+        elif status == Clan.STATUS_NOT_SUCCESS_WAR:
+            message = lc('Clans.Messages.STATUS_NOT_SUCCESS_WAR').format(stringData[0])
+        elif status == Clan.STATUS_CONDUCTOR_NO_POINTS:
+            message = lc('Clans.Messages.STATUS_CONDUCTOR_NO_POINTS')
+        elif status == Clan.STATUS_CONDUCTOR_NO_MONEY:
+            message = lc('Clans.Messages.STATUS_CONDUCTOR_NO_MONEY')
+        elif status == Clan.STATUS_CLAN_PERKS_RESET:
+            message = lc('Clans.Messages.STATUS_CLAN_PERKS_RESET')
+        elif status == Clan.STATUS_GOT_CLAN_PERKS:
+            message = None
+            for p_id in data:
+                pmessage = lc('Clans.Messages.STATUS_GOT_CLAN_PERKS') + u' ' + lc('PerksSystem.desc.id{0}'.format(p_id))
+                self.putMessage(CHANNEL_CONSTS.SYSTEM, pmessage)
+
+        if message:
+            self.putMessage(CHANNEL_CONSTS.SYSTEM, message)
+        return
+
+    def checkClanRights(self, right):
+        return self.clanRights & (right | Clan.FLAG_CLAN_OWNER)
+
+    def onEnterRFPoint(self):
+        pass
+
+    def onEnterBase(self):
+        pass
+
+    def onLeaveWorld(self):
+        self.close_clanleader_offer()
+        try:
+            f = open(ALLIANCE_SAVE_PATH, 'wb')
+            f.write(pyson.dumps(self.relationshipClanParam))
+            f = open(MEMBERS_SAVE_PATH, 'wb')
+            f.write(pyson.dumps(self.visible_clan_members))
+        except:
+            traceback.print_stack()
+            traceback.print_exc()
+
+    def onEnterWorld(self):
+        self.start_check_clanleader_offer()
+        if os.path.isfile(ALLIANCE_SAVE_PATH):
+            try:
+                with open(ALLIANCE_SAVE_PATH, 'rb') as f:
+                    self.relationshipClanParam = pyson.loads(f.read())
+            except:
+                traceback.print_exc()
+
+        if os.path.isfile(MEMBERS_SAVE_PATH):
+            try:
+                with open(MEMBERS_SAVE_PATH, 'rb') as f:
+                    self.visible_clan_members = pyson.loads(f.read())
+            except:
+                traceback.print_exc()
+
+    def start_check_clanleader_offer(self):
+        self.base.start_check_clanleader_offer()
+
+    def getRelationMarkParamByName(self, clan_name):
+        clan_relation_type = 0
+        if clan_name == self.clanName:
+            clan_relation_type = Clan.CLAN_RELATION_TYPE_MY_CLAN
+        elif clan_name in self.clanEnemies:
+            clan_relation_type = Clan.CLAN_RELATION_TYPE_WAR
+        elif clan_name == self.clanUnion:
+            clan_relation_type = Clan.CLAN_RELATION_TYPE_UNION
+        return self.getRelationMarkParam(clan_relation_type)
+
+    def getRelationMarkParam(self, clan_relation_type):
+        return self.relationshipClanParam.get(self.name, {}).get(clan_relation_type, Clan.GUI_VISIBLE_NORMAL)
+
+    def setAllianceMarkParam(self, clan_relation_type, value):
+        if not self.relationshipClanParam.has_key(self.name):
+            self.relationshipClanParam[self.name] = {}
+        self.relationshipClanParam[self.name][clan_relation_type] = value
+
+    def setClanMemberVisible(self, member_name, value):
+        if not self.visible_clan_members.has_key(self.name):
+            self.visible_clan_members[self.name] = []
+        has_key = member_name in self.visible_clan_members[self.name]
+        if value and not has_key:
+            self.visible_clan_members[self.name].append(member_name)
+        elif not value and has_key:
+            self.visible_clan_members[self.name].remove(member_name)
+
+    def clearClanMemberVisible(self):
+        if self.visible_clan_members.has_key(self.name):
+            del self.visible_clan_members[self.name]
+
+    def getClamMemberVisible(self):
+        return self.visible_clan_members.get(self.name, [])
+
+    def set_clanName(self, old_value):
+        self.clanRoster['cName'] = self.clanName.decode('utf-8')
+        self.update_clan_screen()
+        self.updateOnlineClanMembers()
+
+    def setClanRights(self, value):
+        self.clanRights = value
+        self.update_clan_screen()
+
+    def set_clan_bases_list(self, bases_list):
+        self.clan_screen_set_bases(bases_list)
+
+    def set_clan_donat_bases_list(self, bases_list):
+        self.clan_screen_set_donat_bases(bases_list)
+
+    def leaveClan(self):
+
+        def listener(event, data):
+            if event == MESSAGEBOX.EVENT_BTNPRESS:
+                if data['btn'] == MESSAGEBOX.BTN_YES:
+                    if self == BigWorld.player():
+                        self.cell.leaveClan()
+
+        BWPersonality.GUICore.showMsgBox(id='clan_leave', isModal=False, x=0.0, y=0.0, width=300, caption=lc('Clans.Interface.LEAVE_TITLE'), forcePos=False, parent_gui_id=None, bind_to_parent=False, btn_set=[{'type': MESSAGEBOX.BTN_YES,
+          'width': 80}, {'type': MESSAGEBOX.BTN_NO,
+          'width': 80}], timeout=10, closeBox=True, defaultAction=MESSAGEBOX.BTN_NO, addControls=[{'type': MESSAGEBOX.ADDCONTROL_TEXTFIELD,
+          'ID': 'main_txt_field',
+          'text': lc('Clans.Interface.LEAVE_QUESTION'),
+          'hAnchor': MESSAGEBOX.ANCHOR_CENTER}], callback=listener)
+        return
+
+    def tryDestroyClan(self):
+
+        def listener(event, data):
+            if event == MESSAGEBOX.EVENT_BTNPRESS:
+                if data['btn'] == MESSAGEBOX.BTN_YES:
+                    if self == BigWorld.player():
+                        self.base.destroyClan()
+
+        BWPersonality.GUICore.showMsgBox(id='clan_leave', isModal=False, x=0.0, y=0.0, width=300, caption=lc('Clans.Interface.DESTROY_TITLE'), forcePos=False, parent_gui_id=None, bind_to_parent=False, btn_set=[{'type': MESSAGEBOX.BTN_YES,
+          'width': 80}, {'type': MESSAGEBOX.BTN_NO,
+          'width': 80}], timeout=10, closeBox=True, defaultAction=MESSAGEBOX.BTN_NO, addControls=[{'type': MESSAGEBOX.ADDCONTROL_TEXTFIELD,
+          'ID': 'main_txt_field',
+          'text': lc('Clans.Interface.DESTROY_QUESTION'),
+          'hAnchor': MESSAGEBOX.ANCHOR_CENTER}], callback=listener)
+        return
+
+    def can_auction(self):
+        if not self.GetClanID():
+            return False
+        if not ClanSettings.can_buy_base(self.clan_level):
+            return False
+        return self.checkClanRights(Clan.FLAG_CLAN_OWNER)
+
+    def ask_union_invite(self, allianceClanID, clan_name, tag):
+
+        def callback(event):
+            BWPersonality.GUICore.closeMsgBox('clan_union_offer')
+            if event == soDialogueBox.BTN_ACCEPT:
+                self.base.confirmInviteUnion(allianceClanID, tag)
+                return
+            self.base.cancelCreateUnion(allianceClanID)
+
+        cost = ClanSettings.get_diplomacy_cost(self.clan_level, 'union')
+        msg = lc('Clans.Interface.ASK_UNION1').format(clan_name.decode('utf-8'), tag.decode('utf-8'), cost)
+        gui_jokes.askUserAcceptDecline('', msg, callback, timeout_for_default=30, show_timer_btn=1, default_btn=soDialogueBox.BTN_DECLINE, unic_id='clan_union_offer', modal=False)
+
+    def ask_clan_peace(self, offer_peace_id, peace_clan_name):
+        from soGUI.soDialogueBox import soDialogueBox
+
+        def callback(event):
+            if event == soDialogueBox.BTN_ACCEPT:
+                self.cell.answer_clan_peace(True, offer_peace_id)
+                return
+            self.cell.answer_clan_peace(False, offer_peace_id)
+
+        cost = ClanSettings.get_diplomacy_cost(self.clan_level, 'peace')
+        msg = lc('Clans.Interface.ASK_PEACE').format(peace_clan_name.decode('utf-8'), cost)
+        gui_jokes.askUserAcceptDecline('', msg, callback, timeout_for_default=30, show_timer_btn=1, default_btn=soDialogueBox.BTN_DECLINE, unic_id='clan_peace_offer')
+
+    def ask_clan_war(self, offer_peace_id, war_clan_name):
+        from soGUI.soDialogueBox import soDialogueBox
+
+        def callback(event):
+            if event == soDialogueBox.BTN_ACCEPT:
+                self.cell.answer_clan_war(True, offer_peace_id)
+                return
+            self.cell.answer_clan_war(False, offer_peace_id)
+
+        msg = lc('Clans.Interface.ASK_WAR').format(war_clan_name.decode('utf-8'))
+        gui_jokes.askUserAcceptDecline('', msg, callback, timeout_for_default=30, show_timer_btn=1, default_btn=soDialogueBox.BTN_DECLINE, unic_id='clan_war_offer')
+
+    def stop_offer_clan_peace(self):
+        BWPersonality.GUICore.closeMsgBox('clan_peace_offer')
+
+    def stop_offer_clan_war(self):
+        BWPersonality.GUICore.closeMsgBox('clan_war_offer')
+
+    def union_invite_sended(self, allianceClanID, clan_name):
+
+        def cancel():
+            try:
+                self.base.cancelCreateUnion(allianceClanID)
+            except Exception as e:
+                print 'ERROR :: union_invite_sended.cancel:', self, allianceClanID, clan_name
+                print e
+
+        BWPersonality.GUICore.showWaitingAlliance(clan_name, cancel, '')
+
+    def cancel_union_invite(self, clan_name):
+        if isinstance(clan_name, str):
+            clan_name = clan_name.decode('utf-8')
+        message = lc('Clans.Messages.CREATE_UNION_CANCELED').format(clan_name)
+        self.putMessage(CHANNEL_CONSTS.CLAN, message)
+
+    def cancel_alliance_invite(self, clan_name):
+        if isinstance(clan_name, str):
+            clan_name = clan_name.decode('utf-8')
+        message = lc('Clans.Messages.CREATE_ALLIANCE_CANCELED').format(clan_name)
+        self.putMessage(CHANNEL_CONSTS.CLAN, message)
+
+    def show_msg_with_timer(self, text, timerfield_text, **kwargs):
+        addControls = ({'type': MESSAGEBOX.ADDCONTROL_TEXTFIELD,
+          'ID': 'main_txt_field',
+          'text': text,
+          'hAnchor': MESSAGEBOX.ANCHOR_CENTER}, {'type': MESSAGEBOX.ADDCONTROL_TIMERFIELD,
+          'ID': '',
+          'text': timerfield_text,
+          'hAnchor': MESSAGEBOX.ANCHOR_CENTER})
+        kwargs['width'] = 550
+        kwargs['timeout'] = 30
+        kwargs['closeBox'] = True
+        kwargs['defaultAction'] = None
+        return BWPersonality.GUICore.showMsgBox(addControls=addControls, **kwargs)
+
+    def show_confirm_clanleader_offer(self, owner_dbid):
+
+        def listener(event, data):
+
+            def response(is_agree):
+                try:
+                    self.base.clanleader_owner_offer_response(owner_dbid, is_agree)
+                except Exception as e:
+                    print 'ERROR :: show_confirm_clanleader_offer:', self, owner_dbid, is_agree
+                    print e
+
+            if event == MESSAGEBOX.EVENT_BTNPRESS:
+                if data['btn'] == MESSAGEBOX.BTN_CONFIRM:
+                    response(True)
+                elif data['btn'] == MESSAGEBOX.BTN_CANCEL:
+                    response(False)
+
+        if getattr(self, '_clanleader_offer_gui', None):
+            self._clanleader_offer_gui.internalClose()
+        title = lc('Clans.Interface.LEADERSHIP_TITLE')
+        text = lc('Clans.Interface.OWNER_OFFER_CONFIRM_TEXT')
+        timerfield_text = lc('Clans.Interface.TIMER_TEXT')
+        self._clanleader_offer_gui = self.show_msg_with_timer(text, timerfield_text, id='waiting_clanleader_offer', caption=title, btn_set=[{'type': MESSAGEBOX.BTN_CONFIRM,
+          'width': 140}, {'type': MESSAGEBOX.BTN_CANCEL,
+          'width': 140}], callback=listener)
+        return
+
+    def show_waiting_clanleader_offer(self, new_leader_name):
+
+        def listener(event, data):
+            if event == MESSAGEBOX.EVENT_BTNPRESS:
+                if data['btn'] == MESSAGEBOX.BTN_CANCEL:
+                    try:
+                        self.base.clanleader_owner_offer_cancel()
+                    except Exception as e:
+                        print 'ERROR :: show_waiting_clanleader_offer.cancel:', self, new_leader_name
+                        print e
+
+        if getattr(self, '_clanleader_offer_gui', None):
+            self._clanleader_offer_gui.internalClose()
+        title = lc('Clans.Interface.LEADERSHIP_TITLE')
+        text = lc('Clans.Interface.OWNER_OFFER_WAIT_TEXT').format(new_leader_name.decode('utf-8') if isinstance(new_leader_name, str) else new_leader_name)
+        timerfield_text = lc('Clans.Interface.TIMER_TEXT')
+        self._clanleader_offer_gui = self.show_msg_with_timer(text, timerfield_text, id='waiting_clanleader_offer', caption=title, btn_set=[{'type': MESSAGEBOX.BTN_CANCEL,
+          'width': 140}], callback=listener)
+        return
+
+    def close_clanleader_offer(self):
+        if getattr(self, '_clanleader_offer_gui', None):
+            self._clanleader_offer_gui.internalClose()
+            self._clanleader_offer_gui = None
+        return
+
+    def send_another_clan_info(self, data):
+        BWPersonality.GUICore.showClanCard(data)
+
+    def get_available_rewards_count(self):
+        self.base.get_available_rewards_count()
+
+    def request_clan_rate_reward(self, level):
+        self.base.request_clan_rate_reward0(level)

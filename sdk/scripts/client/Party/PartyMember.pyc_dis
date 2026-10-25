@@ -1,0 +1,317 @@
+# Embedded file name: ./client/Party/PartyMember.py
+import BWPersonality
+from Localization import lc
+from ChatChannelConfig import CHANNEL_CONSTS
+from party_utils import InviteTimer, InviteSequence, ActionsCompiler
+from party_common import MemberStatus as S, Notifications as N
+from utils import lazyproperty
+import BigWorld
+import EventInWorldUtils
+
+class PartyMember:
+
+    def __init__(self):
+        self._party_status = S.Lone
+        self._members_subscribed = False
+
+    def _confirmation_accepted(self, inviter_name):
+        """ self \xd0\xbf\xd0\xbe\xd0\xb4\xd1\x82\xd0\xb2\xd0\xb5\xd1\x80\xd0\xb4\xd0\xb8\xd0\xbb \xd0\xb2\xd1\x81\xd1\x82\xd1\x83\xd0\xbf\xd0\xbb\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5 \xd0\xb2 \xd0\xbf\xd0\xb0\xd1\x82\xd0\xb8 """
+        self.base.invite_accepted1(inviter_name)
+
+    def resolve_party_invitation3(self, inviter_name, need_teleport):
+        """ inviter \xd0\xbf\xd1\x8b\xd1\x82\xd0\xb0\xd0\xb5\xd1\x82\xd1\x81\xd1\x8f \xd0\xbf\xd1\x80\xd0\xb8\xd0\xb3\xd0\xbb\xd0\xb0\xd1\x81\xd0\xb8\xd1\x82\xd1\x8c self \xd0\xb2 \xd0\xbf\xd0\xb0\xd1\x82\xd0\xb8, \xd1\x82\xd1\x80\xd0\xb5\xd0\xb1\xd1\x83\xd0\xb5\xd1\x82\xd1\x81\xd1\x8f \xd0\xbf\xd0\xbe\xd0\xb4\xd1\x82\xd0\xb2\xd0\xb5\xd1\x80\xd0\xb6\xd0\xb4\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5 """
+        if self._party_status != S.Lone:
+            print 'PartyMember (Warning): ivite while in party', self, self._party_status
+            return
+        self._invite_sequence.add_invitation(inviter_name, need_teleport)
+
+    def onLeaveWorld(self):
+        if self._party_status != S.Lone:
+            self._party_status = S.Lone
+            self._party_gui.destroy_party()
+            self._minimap.destroy_party()
+            self.on_lost_party()
+
+    def on_death(self):
+        self._minimap.on_avatar_death(self.id)
+
+    def on_revive(self):
+        self._minimap.on_avatar_revive(self.id)
+
+    def update_party_effects2(self, *args):
+        self._party_gui.update_party_effects3(*args)
+
+    def update_party_hpst2(self, *args):
+        self._party_gui.update_party_hpst3(*args)
+
+    def on_world_map_switch(self, value):
+        self._update_members_subscription()
+
+    def on_radio_switch(self, value):
+        self._update_members_subscription()
+        self._minimap.on_radio_switch()
+
+    def _update_members_subscription(self):
+        has_radio = self.is_radio_working()
+        visible_map = BWPersonality.GUICore.is_worldmap_visible()
+        is_member = self._party_status != S.Lone
+        need_subscription = has_radio and visible_map and is_member
+        if need_subscription != self._members_subscribed:
+            self._members_subscribed = need_subscription
+            if need_subscription:
+                self.base.subscribe_to_members1()
+            else:
+                self.base.unsubscribe_from_members1()
+                map_created = BWPersonality.GUICore.is_world_map_created()
+                if map_created:
+                    BWPersonality.GUICore.world_map.update_party_members([])
+
+    def got_members_data(self, members_data):
+        if self._party_status == S.Lone:
+            return
+        if not self.is_radio_working():
+            return
+        if not BWPersonality.GUICore.is_worldmap_visible():
+            return
+        members_data = filter(lambda m: m['id'] != self.id, members_data)
+        BWPersonality.GUICore.world_map.update_party_members(members_data)
+
+    def _update_visibility(self, ids):
+        """ \xd0\xb2\xd0\xb8\xd0\xb4\xd0\xb8\xd0\xbc\xd0\xbe\xd1\x81\xd1\x82\xd1\x8c \xd0\xb4\xd0\xbb\xd1\x8f \xd1\x80\xd0\xb5\xd0\xb6\xd0\xb8\xd0\xbc\xd0\xb0 '\xd1\x81\xd0\xba\xd1\x80\xd1\x8b\xd1\x82\xd0\xb8\xd1\x8f \xd0\xb0\xd0\xb2\xd0\xb0\xd1\x82\xd0\xb0\xd1\x80\xd0\xbe\xd0\xb2' \xd0\xbf\xd0\xbe ctrl+H """
+        for member_id in ids:
+            member = BigWorld.entities.get(member_id)
+            if not member or member.isDestroyed:
+                continue
+            member.updateVisibleForPlayer()
+
+    def party_event_notify(self, code):
+        self.putMessage(CHANNEL_CONSTS.SYSTEM, N.get_code_text(code))
+
+    def on_leader_changed2(self, entity_id):
+        """ \xd0\xbb\xd0\xb8\xd0\xb4\xd0\xb5\xd1\x80 \xd1\x81\xd0\xbc\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xbb\xd1\x81\xd1\x8f \xd0\xbd\xd0\xb0 entity """
+        if self._party_status == S.Leader:
+            self._party_status = S.Combatant
+        if self.id == entity_id:
+            self._party_status = S.Leader
+        self._party_gui.change_leader(entity_id)
+        self.party_event_notify(N.LeaderChanged)
+
+    def notify_radio_state4(self, member_id, is_working):
+        self._minimap.on_radio_state_changed(member_id, is_working)
+
+    def on_added_to_party2(self, members):
+        """ self \xd0\xbf\xd1\x80\xd0\xb8\xd1\x81\xd0\xbe\xd0\xb5\xd0\xb4\xd0\xb8\xd0\xbd\xd0\xb8\xd0\xbb\xd1\x81\xd1\x8f \xd0\xba \xd0\xbf\xd0\xb0\xd1\x82\xd0\xb8 """
+        others = filter(lambda m: m['name'] != self.name, members)
+        this = next((m for m in members if self.name == m['name']))
+        self._party_status = this['status']
+        self._party_gui.create_party(this, others)
+        self._minimap.create_party([ o['id'] for o in others ])
+        self.on_got_party()
+        self.party_event_notify(N.AcceptedToParty)
+        self._update_visibility([ m['id'] for m in members ])
+
+    def on_new_member2(self, member):
+        """ \xd0\xbf\xd1\x80\xd0\xb8\xd1\x81\xd0\xbe\xd0\xb5\xd0\xb4\xd0\xb8\xd0\xbd\xd0\xb8\xd0\xbb\xd1\x81\xd1\x8f \xd0\xbd\xd0\xbe\xd0\xb2\xd1\x8b\xd0\xb9 member """
+        self._party_gui.add_member(member)
+        self._minimap.add_member(member['id'])
+        self.party_event_notify(N.NewMember)
+        self._update_visibility([member['id']])
+
+    def on_party_created2(self, members):
+        """ \xd0\xbf\xd0\xb0\xd1\x82\xd0\xb8 \xd1\x82\xd0\xbe\xd0\xbb\xd1\x8c\xd0\xba\xd0\xbe \xd1\x87\xd1\x82\xd0\xbe \xd0\xb1\xd1\x8b\xd0\xbb\xd0\xb0 \xd1\x81\xd0\xbe\xd0\xb7\xd0\xb4\xd0\xb0\xd0\xbd\xd0\xb0 """
+        raise len(members) <= 2 or AssertionError
+        others = filter(lambda m: m['name'] != self.name, members)
+        this = next((m for m in members if self.name == m['name']))
+        self._party_status = this['status']
+        self._party_gui.create_party(this, others)
+        self._minimap.create_party([ o['id'] for o in others ])
+        self.on_got_party()
+        self.party_event_notify(N.PartyCreated)
+        self._update_visibility([ m['id'] for m in members ])
+
+    def on_party_destroyed2(self):
+        """ \xd0\xbf\xd0\xb0\xd1\x82\xd0\xb8 \xd1\x82\xd0\xbe\xd0\xbb\xd1\x8c\xd0\xba\xd0\xbe \xd1\x87\xd1\x82\xd0\xbe \xd0\xb1\xd1\x8b\xd0\xbb\xd0\xb0 \xd1\x83\xd0\xbd\xd0\xb8\xd1\x87\xd1\x82\xd0\xbe\xd0\xb6\xd0\xb5\xd0\xbd\xd0\xb0 """
+        previous_member_ids = self._party_gui.get_members_ids()
+        self._party_status = S.Lone
+        self._party_gui.destroy_party()
+        self._minimap.destroy_party()
+        self.on_lost_party()
+        self.party_event_notify(N.PartyDestroyed)
+        self._update_visibility(previous_member_ids)
+
+    def on_member_left2(self, entity_id):
+        """ leaver \xd0\xbf\xd0\xbe\xd0\xba\xd0\xb8\xd0\xbd\xd1\x83\xd0\xbb \xd0\xbf\xd0\xb0\xd1\x82\xd0\xb8 """
+        self._party_gui.remove_member(entity_id)
+        self._minimap.remove_member(entity_id)
+        self.party_event_notify(N.MemberLeft)
+        self._update_visibility([entity_id])
+
+    def on_member_kicked2(self, entity_id):
+        """ kicked \xd0\xb2\xd1\x8b\xd0\xba\xd0\xb8\xd0\xbd\xd1\x83\xd0\xbb\xd0\xb8 \xd0\xb8\xd0\xb7 \xd0\xbf\xd0\xb0\xd1\x82\xd0\xb8 """
+        self._party_gui.remove_member(entity_id)
+        self._minimap.remove_member(entity_id)
+        self.party_event_notify(N.MemberKicked)
+        self._update_visibility([entity_id])
+
+    def on_left2(self):
+        """ self \xd0\xbf\xd0\xbe\xd0\xba\xd0\xb8\xd0\xbd\xd1\x83\xd0\xbb \xd0\xbf\xd0\xb0\xd1\x82\xd0\xb8 """
+        previous_member_ids = self._party_gui.get_members_ids()
+        self._party_status = S.Lone
+        self._party_gui.destroy_party()
+        self._minimap.destroy_party()
+        self.on_lost_party()
+        self.party_event_notify(N.SelfLeft)
+        self._update_visibility(previous_member_ids)
+
+    def on_kicked2(self):
+        """ self \xd0\xb1\xd1\x8b\xd0\xbb \xd0\xb2\xd1\x8b\xd0\xba\xd0\xb8\xd0\xbd\xd1\x83\xd1\x82 """
+        previous_member_ids = self._party_gui.get_members_ids()
+        self._party_status = S.Lone
+        self._party_gui.destroy_party()
+        self._minimap.destroy_party()
+        self.on_lost_party()
+        self.party_event_notify(N.SelfKicked)
+        self._update_visibility(previous_member_ids)
+
+    def on_got_party(self):
+        self._update_members_subscription()
+
+    def on_lost_party(self):
+        self._update_members_subscription()
+
+    def send_invitation1(self, entity_name, entity_id = 0):
+        """ self \xd0\xbf\xd1\x8b\xd1\x82\xd0\xb0\xd0\xb5\xd1\x82\xd1\x81\xd1\x8f \xd0\xbf\xd1\x80\xd0\xb8\xd0\xb3\xd0\xbb\xd0\xb0\xd1\x81\xd0\xb8\xd1\x82\xd1\x8c entity \xd0\xb2 \xd0\xbf\xd0\xb0\xd1\x82\xd0\xb8 """
+        if self._party_status == S.Combatant:
+            self.party_event_notify(N.InviteErrorCombatant)
+            return
+        time_remain = self._invite_timer.get_time(entity_name)
+        if time_remain > 0:
+            self.putMessage(CHANNEL_CONSTS.SYSTEM, lc('GUI.FriendList.InviteNotSendTime').format(time_remain))
+            return
+        self.cell.send_invitation2(entity_name, entity_id)
+
+    def remove_party1(self):
+        """ self \xd0\xbf\xd1\x8b\xd1\x82\xd0\xb0\xd0\xb5\xd1\x82\xd1\x81\xd1\x8f \xd1\x83\xd0\xb4\xd0\xb0\xd0\xbb\xd0\xb8\xd1\x82\xd1\x8c \xd0\xbf\xd0\xb0\xd1\x82\xd0\xb8 """
+        if self._party_status != S.Leader:
+            self.putMessage(CHANNEL_CONSTS.GROUP, lc('Groups.Messages.CANT_DESTROY'))
+            return
+        self.base.remove_party2()
+
+    def leave_party1(self):
+        """ self \xd0\xbf\xd1\x8b\xd1\x82\xd0\xb0\xd0\xb5\xd1\x82\xd1\x81\xd1\x8f \xd0\xbf\xd0\xbe\xd0\xba\xd0\xb8\xd0\xbd\xd1\x83\xd1\x82\xd1\x8c \xd0\xbf\xd0\xb0\xd1\x82\xd0\xb8 """
+        if self._party_status == S.Lone:
+            self.putMessage(CHANNEL_CONSTS.GROUP, lc('Groups.Messages.NOT_IN_GROUP'))
+            return
+        self.base.leave_party2()
+
+    def kick_member(self, entity_name):
+        """ self \xd0\xbf\xd1\x8b\xd1\x82\xd0\xb0\xd0\xb5\xd1\x82\xd1\x81\xd1\x8f \xd0\xb2\xd1\x8b\xd0\xb3\xd0\xbd\xd0\xb0\xd1\x82\xd1\x8c entity \xd0\xb8\xd0\xb7 \xd0\xbf\xd0\xb0\xd1\x82\xd0\xb8 """
+        if self._party_status != S.Leader:
+            self.putMessage(CHANNEL_CONSTS.GROUP, lc('Groups.Messages.CANT_KICK'))
+            return
+        self.base.kick_member1(entity_name)
+
+    def give_leadership(self, entity_name):
+        """ self \xd0\xbe\xd1\x82\xd0\xb4\xd0\xb0\xd1\x91\xd1\x82 \xd0\xbb\xd0\xb8\xd0\xb4\xd0\xb5\xd1\x80\xd1\x81\xd1\x82\xd0\xb2\xd0\xbe entity """
+        if self._party_status != S.Leader:
+            self.putMessage(CHANNEL_CONSTS.GROUP, lc('Groups.Messages.CANT_LEADER'))
+            return
+        self.base.give_leadership1(entity_name)
+
+    def _show_bufs(self, show):
+        """ \xd0\xbf\xd0\xbe\xd0\xba\xd0\xb0\xd0\xb7\xd0\xb0\xd1\x82\xd1\x8c/\xd1\x81\xd0\xba\xd1\x80\xd1\x8b\xd1\x82\xd1\x8c \xd0\xb2\xd1\x81\xd0\xb5 \xd1\x8d\xd1\x84\xd1\x84\xd0\xb5\xd0\xba\xd1\x82\xd1\x8b \xd0\xbe\xd1\x82\xd1\x80\xd1\x8f\xd0\xb4\xd0\xb0 """
+        self._party_gui.show_bufs(show)
+
+    def logpring_members(self):
+        if self._party_status == S.Lone:
+            self.putMessage(CHANNEL_CONSTS.GROUP, lc('Groups.Messages.NOT_IN_GROUP'))
+            return
+        output = lc('Groups.Messages.YOUR_GROUP') + u'\n'
+        self_member_data = {'name': self.name,
+         'status': self._party_status,
+         'id': self.id}
+        for member in [self_member_data] + self._party_gui.get_members():
+            output += member['name']
+            if member['status'] == S.Leader:
+                output += lc('Groups.Messages.OWNER')
+            if member['id'] == self.id:
+                output += lc('Groups.Messages.YOU')
+            output += u'\n'
+
+        self.putMessage(CHANNEL_CONSTS.GROUP, output)
+
+    def can_be_invited_to_party(self, entity_name):
+        if self._party_status == S.Lone:
+            return True
+        if self._party_gui.has_member(entity_name):
+            return False
+        return True
+
+    def get_member_ids(self):
+        if self._party_status == S.Lone:
+            return []
+        return self._party_gui.get_members_ids()
+
+    def in_party(self, entity = None):
+        if self._party_status == S.Lone:
+            return False
+        if not entity:
+            return True
+        return self._party_gui.has_member(entity.name)
+
+    def get_party_member_actions(self):
+        return self._actions_compiler.get_party_member_actions(self._party_status)
+
+    def get_party_hbbar_actions(self):
+        return self._actions_compiler.get_party_hbbar_actions(self._party_status)
+
+    def on_party_action(self, action, data = None):
+        self._actions_compiler.run_action(action, data)
+
+    @property
+    def _party_gui(self):
+        return BWPersonality.GUICore.party_gui
+
+    @property
+    def _minimap(self):
+        return BWPersonality.GUICore.minimap
+
+    @lazyproperty
+    def _invite_timer(self):
+        return InviteTimer()
+
+    @lazyproperty
+    def _invite_sequence(self):
+        return InviteSequence(self._confirmation_accepted)
+
+    @lazyproperty
+    def _actions_compiler(self):
+        ac = ActionsCompiler()
+        ac.remove_party_callback = self.remove_party1
+        ac.leave_party_callback = self.leave_party1
+        ac.kick_member_callback = self.kick_member
+        ac.give_leadership_callback = self.give_leadership
+        ac.show_buffs_callback = self._show_bufs
+        return ac
+
+    def get_space_name(self, space_id):
+        space_data = BWPersonality.GUICore.spaces.get(space_id)
+        if space_data:
+            return space_data[0]
+        return BWPersonality.game.get_space_name(space_id)
+
+    def subscribe_to_dungeons(self):
+        self.base.subscribe_to_dungeons()
+
+    def subscribe_to_events(self):
+        self.base.subscribe_to_events()
+
+    def dungeons_data_updated1(self, quests_data):
+        BWPersonality.GUICore.dungeons_data_updated2(quests_data)
+
+    def got_events_data2(self, events_data):
+        BWPersonality.GUICore.got_events_data3(events_data)
+
+    def _on_event_visited(self, event_entity):
+        event_id = EventInWorldUtils.get_event_id(event_entity.event_name)
+        self.base.on_event_visited(event_id)

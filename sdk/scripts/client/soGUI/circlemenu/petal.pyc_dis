@@ -1,0 +1,426 @@
+# Embedded file name: ./client/soGUI/circlemenu/petal.py
+from Items import ItemsCatalog
+import BigWorld
+import BWPersonality
+import GUI
+from Math import Vector2
+import colorCodes as cc
+from Localization import lc
+import ItemsUtils
+from math import pi, cos, sin
+from soGUI.soQuickSlotsBar import soActionBar
+from gui_const import INV_CONST
+from soGUI.soDraggableComponent import soDraggableComponent
+import clweapon
+from Helpers.BWCoroutine import BWMemberCoroutine, BWWaitForPeriod
+from math_bw import linear_map
+
+class StateType:
+    Init, Use, Edit = range(3)
+
+
+class State:
+
+    def __init__(self, petal):
+        self._petal = petal
+
+    def handle_drag_start(self):
+        pass
+
+    def handle_drag_stop(self, comp, petal):
+        pass
+
+    def on_enter(self):
+        pass
+
+    def on_exit(self):
+        pass
+
+    def on_parent_size_changed(self, direction, parent_size):
+        pass
+
+
+class Petal(object):
+
+    def __init__(self, petal_comp, container):
+        self.petal_comp = petal_comp
+        self._container = container
+        self._use_state = self._create_use_state()
+        self._edit_state = self._create_edit_state()
+        self._cur_state = None
+        self._original_size = None
+        comp = GUI.Window('soGUI/frame/paint/blue.dds')
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.position = (0, 0, 0.1)
+        comp.visible = False
+        comp.filterType = 'LINEAR'
+        comp.materialFX = 'BLEND'
+        comp.isClip = False
+        self._container.addChild(comp, 'image')
+        self.image_comp = comp
+        comp = GUI.Text(u'', 'RobotoCondensedRegular_18.font')
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.position = (0, 0, 0)
+        comp.colour = cc.active_rgba
+        self._container.addChild(comp, 'text')
+        self.text_comp = comp
+        return
+
+    def on_parent_size_changed(self, parent_size):
+        rotation = self.petal_comp.rotate + pi / 2
+        direction = Vector2(cos(rotation), sin(rotation))
+        comp = self._container.text
+        position = direction * 0.6
+        comp.position = (position.x, position.y, comp.position[2])
+        size = parent_size * 0.12
+        position = direction * 0.85
+        self._original_size = (size, size)
+        self.image_comp.width, self.image_comp.height = self._original_size
+        self.image_comp.position = (position.x, position.y, self.image_comp.position[2])
+        self._edit_state.on_parent_size_changed(direction, parent_size)
+        self._use_state.on_parent_size_changed(direction, parent_size)
+        return direction
+
+    def _create_use_state(self):
+        return State(self)
+
+    def _create_edit_state(self):
+        return State(self)
+
+    def can_accept_item_drop(self):
+        return False
+
+    def on_just_something_dropped(self):
+        pass
+
+    def on_show(self):
+        pass
+
+    def on_hide(self):
+        pass
+
+    def _get_state(self, state_type):
+        if state_type == StateType.Edit:
+            return self._edit_state
+        if state_type == StateType.Use:
+            return self._use_state
+
+    def on_enter_state(self, state_type):
+        self._cur_state = self._get_state(state_type)
+        self._cur_state.on_enter()
+
+    def on_exit_state(self, state_type):
+        raise self._cur_state == self._get_state(state_type) or AssertionError
+        self._cur_state.on_exit()
+        self._cur_state = None
+        return
+
+    def apply(self):
+        pass
+
+    def accept_drop(self, slot):
+        pass
+
+    def get_center_text(self):
+        return None
+
+    def handle_drag_start(self):
+        if self._cur_state:
+            self._cur_state.handle_drag_start()
+
+    def handle_drag_stop(self, comp, petal):
+        if self._cur_state:
+            self._cur_state.handle_drag_stop(comp, petal)
+
+
+class ActionPetal(Petal):
+
+    def __init__(self, petal_comp, container, action):
+        Petal.__init__(self, petal_comp, container)
+        self._action = action
+
+    def on_show(self):
+        self._update_binding()
+
+    def _update_binding(self):
+        action_key = BWPersonality.settings.keyBindings.getKeyBindForAction(self._action)
+        if action_key:
+            self.text_comp.text = u'[{0}]'.format(action_key)
+            self.text_comp.visible = True
+        else:
+            self.text_comp.visible = False
+
+    def get_item(self):
+        if not self.item_id:
+            return None
+        else:
+            return ItemsUtils.GetComplexItemByID(BigWorld.player(), self._item_id)
+
+    def get_center_text(self):
+        item = self.get_item()
+        if not item:
+            return None
+        else:
+            item_type = item['complexItemType']
+            item_class = ItemsCatalog.GetItemClass(item_type)
+            item_name = ItemsUtils.GetItemName(item_type)
+            if item_class == ItemsCatalog.WEAPON:
+                weapon = clweapon.ClWeapon(item, parent_entity=BigWorld.player())
+                loaded_munition_type = weapon.getAmmoType()
+                munition_type_string = loaded_munition_type and ItemsUtils.GetItemName(loaded_munition_type, fGetShortName=True) or ''
+                item_name += u'\n' + lc('Inventory.client.NUM_ARMED').format(weapon.getAmmoNumber() or 0, munition_type_string)
+            else:
+                count = ItemsUtils.GetDisplayValue(item)
+                if count:
+                    item_name += u'\n{0} {1}'.format(count, lc('GUI.circle_menu.pieces'))
+            return item_name
+
+
+class WeaponPetalState(State):
+
+    def on_enter(self):
+        State.on_enter(self)
+        self.update_visual()
+
+    def on_item_changed(self):
+        self.update_visual()
+
+    def update_visual(self):
+        pass
+
+
+class WeaponPeatalEditState(WeaponPetalState):
+
+    def update_visual(self):
+        self._petal.image_comp.textureName = 'soGUI/frame/perks/Zamok.dds'
+        self._petal.image_comp.visible = True
+        self._petal.text_comp.colour = cc.inactive_rgba
+
+
+class WeaponPetalUseState(WeaponPetalState):
+
+    def update_visual(self):
+        if self._petal.item_id:
+            item = ItemsUtils.GetComplexItemByID(BigWorld.player(), self._petal.item_id)
+            if item:
+                icon_name = ItemsUtils.GetIconName(item, item['complexItemType'])
+                self._petal.image_comp.textureName = icon_name
+                self._petal.image_comp.visible = True
+            else:
+                self._petal.image_comp.visible = False
+                BWPersonality.GUICore.actionBarEvent(soActionBar.EVENT_REMOVE, self._petal._slot_index)
+        else:
+            self._petal.image_comp.visible = False
+        self._petal.text_comp.colour = cc.active_rgba
+
+
+class WeaponPetal(ActionPetal):
+
+    class FakeEvent:
+
+        def __init__(self, down):
+            self._down = down
+
+        def isKeyDown(self):
+            return self._down
+
+        def isRepeatedEvent(self):
+            return False
+
+    def __init__(self, petal_comp, container, action, weapon_key):
+        self._weapon_key = weapon_key
+        ActionPetal.__init__(self, petal_comp, container, action)
+        self._item_id = None
+        return
+
+    def on_tick(self):
+        weapon = BigWorld.player().ActiveWeaponSet2[self._weapon_key]
+        self.item_id = weapon['itemID']
+
+    def apply(self):
+        if self.item_id:
+            p = BigWorld.player()
+            p.EquipWeaponEvent(self._weapon_key, WeaponPetal.FakeEvent(True))
+            p.EquipWeaponEvent(self._weapon_key, WeaponPetal.FakeEvent(False))
+
+    def _create_edit_state(self):
+        return WeaponPeatalEditState(self)
+
+    def _create_use_state(self):
+        return WeaponPetalUseState(self)
+
+    @property
+    def item_id(self):
+        return self._item_id
+
+    @item_id.setter
+    def item_id(self, value):
+        if self._item_id == value:
+            return
+        self._item_id = value
+        self._cur_state.on_item_changed()
+
+
+class ItemPetalEditState(State):
+
+    def __init__(self, petal):
+        State.__init__(self, petal)
+        comp = GUI.Window('soGUI/frame/paint/blue.dds')
+        comp.visible = False
+        comp.materialFX = 'BLEND'
+        comp.filterType = 'LINEAR'
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = (100, 100)
+        self._petal._container.addChild(comp)
+        self._petal.dragProxy = comp
+        self._proxy = self._petal.dragProxy
+
+    def handle_drag_start(self):
+        if not self._petal.get_item():
+            return
+        else:
+            comp = self._petal.dragProxy
+            comp.visible = True
+            comp.texture = self._petal.image_comp.texture
+            comp.width, comp.height = comp.texture.width, comp.texture.height
+            soDraggableComponent.handleDragStartEvent(self._petal, None)
+            return
+
+    def handle_drag_stop(self, comp, petal):
+        self._petal.dragProxy.visible = False
+        soDraggableComponent.handleDragStopEvent(self._petal, None)
+        if petal:
+            if not petal.can_accept_item_drop():
+                return
+            if petal != self._petal:
+                BWPersonality.GUICore.actionBarEvent(soActionBar.EVENT_MOVE, [self._petal._slot_index, petal._slot_index])
+            petal.on_just_something_dropped()
+        else:
+            item = self._petal.get_item()
+            if not item:
+                return
+            BWPersonality.GUICore.actionBarEvent(soActionBar.EVENT_REMOVE, self._petal._slot_index)
+        return
+
+    def on_exit(self):
+        self._petal.dragProxy.visible = False
+        soDraggableComponent.handleDragStopEvent(self._petal, None)
+        return
+
+
+class ItemPetal(ActionPetal, soDraggableComponent):
+
+    def __init__(self, petal_comp, container, action, slot_index):
+        soDraggableComponent.__init__(self, container, centerDProxy=True)
+        ActionPetal.__init__(self, petal_comp, container, action)
+        self._slot_index = slot_index
+        self._item_id = None
+        self._animate_coroutine = None
+        comp = GUI.Simple('soGUI/items/marker_green.dds')
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = (25, 25)
+        comp.materialFX = 'BLEND'
+        comp.visible = False
+        comp.position = (1, 1, 0.2)
+        self.image_comp.addChild(comp, 'marker')
+        return
+
+    def set_item(self, item):
+        if item:
+            item_id = item['complexItemID']
+            if self._item_id != item_id:
+                self._stop_animate_drop()
+                self._item_id = item_id
+                if item:
+                    item_type = item['complexItemType']
+                    icon_name = ItemsUtils.GetIconName(item, item_type)
+                    self.image_comp.textureName = icon_name
+                    self.image_comp.visible = True
+                else:
+                    self.image_comp.visible = False
+            self.image_comp.marker.visible = self._item_id and BigWorld.player().it_is_active_gadget(self._item_id)
+
+    def apply(self):
+        if not self._item_id:
+            return
+        BigWorld.player().actionBarEvent(soActionBar.EVENT_USE, self._slot_index)
+
+    def _create_edit_state(self):
+        return ItemPetalEditState(self)
+
+    def can_accept_item_drop(self):
+        return True
+
+    def on_just_something_dropped(self):
+        self._stop_animate_drop()
+        if self._item_id:
+            self._start_animate_drop()
+
+    def _start_animate_drop(self):
+        self._stop_animate_drop()
+        self._animate_coroutine = self._run_animate_coroutine()
+        self._animate_coroutine.run()
+
+    @BWMemberCoroutine
+    def _run_animate_coroutine(self):
+        comp = self.image_comp
+        comp.width, comp.height = self._original_size
+        duration = 0.2
+        min_size = 0.7
+        start_time = BigWorld.time()
+        stop_time = start_time + duration
+        while BigWorld.time() <= stop_time:
+            ratio = (BigWorld.time() - start_time) / duration
+            factor = 1 - sin(ratio * pi)
+            factor = linear_map(factor, 0, 1, min_size, 1)
+            comp.width, comp.height = self._original_size[0] * factor, self._original_size[1] * factor
+            yield BWWaitForPeriod(0)
+
+        comp.width, comp.height = self._original_size
+        self._animate_coroutine = None
+        return
+
+    def _stop_animate_drop(self):
+        if self._original_size:
+            self.image_comp.width, self.image_comp.height = self._original_size
+        if self._animate_coroutine:
+            self._animate_coroutine.stop()
+        self._animate_coroutine = None
+        return
+
+    def on_show(self):
+        ActionPetal.on_show(self)
+        self._stop_animate_drop()
+
+    def on_hide(self):
+        ActionPetal.on_hide(self)
+        self._stop_animate_drop()
+
+    @property
+    def item_id(self):
+        return self._item_id
+
+    def accept_drop(self, slot):
+        if slot:
+            item_data = slot.itemData
+            return item_data or None
+        else:
+            prev_item_id, prev_item_type = (None, None)
+            if self._item_id:
+                prev_item = self.get_item()
+                if prev_item:
+                    prev_item_id = prev_item['complexItemID']
+                    prev_item_type = prev_item['complexItemType']
+            BWPersonality.GUICore.inventoryEvent(INV_CONST.A_TOQUICKBAR, [item_data,
+             self._slot_index,
+             prev_item_id,
+             prev_item_type])
+            self.on_just_something_dropped()
+            return None

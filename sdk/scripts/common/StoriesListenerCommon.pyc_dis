@@ -1,0 +1,105 @@
+# Embedded file name: ./common/StoriesListenerCommon.py
+import pyson
+import ResMgr
+STORIES_DATA_PATH = 'scripts/common/data/Stories.pyson'
+STORIES_DATA = pyson.loads(ResMgr.openSection(STORIES_DATA_PATH).asBinary)['items']
+OPENING_FREE, OPENING_FIRST, OPENING_LAST = xrange(3)
+_stories_groups = None
+
+class StoriesListenerCommon:
+
+    def has_story(self, story_id):
+        index_array = story_id / 64
+        index_story = story_id - index_array * 64
+        if len(self.famousStories) <= index_array:
+            return False
+        return self.famousStories[index_array] & 1 << index_story
+
+    def use_story(self, story_id):
+        if self.has_story(story_id):
+            return False
+        if not self.can_use(story_id):
+            return False
+        self.set_story(story_id)
+        return True
+
+    def set_story(self, story_id, silence = False):
+        index_array = story_id / 64
+        index_story = story_id - index_array * 64
+        if len(self.famousStories) <= index_array:
+            for i in xrange(index_array + 1 - len(self.famousStories)):
+                self.famousStories.append(0)
+
+        self.famousStories[index_array] |= 1 << index_story
+        self.on_got_story(story_id)
+        if not silence:
+            self.update_stories(story_id)
+
+    def on_got_story(self, story_id):
+        pass
+
+    def update_stories(self, story_id):
+        pass
+
+    def get_active_stories(self):
+        result = []
+        for index, value in enumerate(self.famousStories):
+            for i in xrange(64):
+                if value & 1 << i:
+                    story_id = index * 64 + i
+                    if story_id in STORIES_DATA:
+                        result.append(story_id)
+
+        return result
+
+    def has_story_group_completed(self, group_id):
+        cur_stories = set(self.get_active_stories())
+        for st_id in self.get_group_stories(group_id):
+            if st_id not in cur_stories:
+                return False
+
+        return True
+
+    def can_use(self, story_id):
+        group_id = STORIES_DATA[story_id].get('Group')
+        if not group_id:
+            return True
+        else:
+            opening = STORIES_DATA[story_id].get('Opening')
+            if opening == OPENING_FIRST:
+                return True
+            if opening == OPENING_LAST:
+                for st_id in self.get_group_stories(group_id):
+                    if STORIES_DATA[st_id].get('Opening') != OPENING_LAST:
+                        if not self.has_story(st_id):
+                            return False
+
+                return True
+            for st_id in self.get_group_stories(group_id):
+                if STORIES_DATA[st_id].get('Opening') == OPENING_FIRST:
+                    return self.has_story(st_id)
+
+            return True
+
+    def get_group_stories(self, group_id):
+        global _stories_groups
+        if _stories_groups is None:
+            _stories_groups = {}
+            for story_id, story_data in STORIES_DATA.items():
+                gr_id = story_data.get('Group')
+                if not gr_id:
+                    continue
+                story_index = story_data['OrderInGroup']
+                if gr_id not in _stories_groups:
+                    _stories_groups[gr_id] = []
+                _stories_groups[gr_id].append((story_index, story_id))
+
+            for gr_id, stories_data in _stories_groups.items():
+                max_index = max((st[0] for st in stories_data))
+                data_array = [None] * max_index
+                for story_index, story_id in stories_data:
+                    data_array[story_index - 1] = story_id
+
+                _stories_groups[gr_id] = data_array
+
+        return _stories_groups.get(group_id, [])

@@ -1,0 +1,477 @@
+# Embedded file name: ./client/UCManager.py
+"""User content manager."""
+import requests
+import os
+import posixpath
+import traceback
+import BigWorld
+import DyeConstant
+from Localization import lc
+import Queue
+from threading import Thread
+import ChatChannelConfig
+from collections import defaultdict
+CHANNEL_CONSTS = ChatChannelConfig.ChannelConsts()
+USER_CONTENT_DIR = '../usercontent'
+USER_UPLOAD_DIR = USER_CONTENT_DIR + '/tmp'
+EMBLEMS_DIR = USER_CONTENT_DIR + '/emblems'
+BASE_URL = 'http://k-mmap.stalker.so:8300/'
+if os.path.isfile('ucshost.txt'):
+    BASE_URL = open('ucshost.txt').read().strip()
+    print 'set BASE_URL:', repr(BASE_URL)
+if BigWorld.component == 'client':
+    if not os.path.isdir(USER_CONTENT_DIR):
+        os.mkdir(USER_CONTENT_DIR)
+    if not os.path.isdir(USER_UPLOAD_DIR):
+        os.mkdir(USER_UPLOAD_DIR)
+    if not os.path.isdir(EMBLEMS_DIR):
+        os.mkdir(EMBLEMS_DIR)
+
+def download(fid):
+    url = BASE_URL + 'download/%s.xdds' % fid
+    print 'UCManager::download ', url
+    r = requests.get(url)
+    if r.status_code == 404:
+        if r.raw:
+            r.raw.release_conn()
+        print '404 for', [url]
+        return
+    if r.status_code == 451:
+        if r.raw:
+            r.raw.release_conn()
+        print '451 for', [url]
+        return
+    try:
+        r.raise_for_status()
+    except:
+        print 'error in ', [url]
+        if r.raw:
+            r.raw.release_conn()
+        raise
+
+    if not os.path.isdir(USER_CONTENT_DIR):
+        os.mkdir(USER_CONTENT_DIR)
+    if not os.path.isdir(EMBLEMS_DIR):
+        os.mkdir(EMBLEMS_DIR)
+    fpath = os.path.join(EMBLEMS_DIR, '%s.xdds' % fid)
+    ftmp = os.path.join(EMBLEMS_DIR, '%s.xdds.dwnl' % fid)
+    with open(ftmp, 'wb') as fd:
+        for chunk in r.iter_content(256):
+            fd.write(chunk)
+
+        if r.raw:
+            r.raw.release_conn()
+    try:
+        os.remove(fpath)
+    except:
+        pass
+
+    os.rename(ftmp, fpath)
+    return fpath
+
+
+def shortStrToList(string):
+    ret = []
+    if not string:
+        return ret
+    for group in string.split(';'):
+        if not group:
+            continue
+        if '-' not in group:
+            ret.append(int(group))
+            continue
+        a, b = group.split('-')
+        for x in xrange(int(a), int(b) + 1):
+            ret.append(x)
+
+    return ret
+
+
+class DownloadThread(Thread):
+
+    def __init__(self, queue, callback):
+        Thread.__init__(self)
+        self.queue = queue
+        self.callback = callback
+
+    def run(self):
+        print 'DownloadThread run'
+        while True:
+            imgID = self.queue.get()
+            print 'DownloadThread get %s' % imgID
+            if not imgID:
+                return
+            downlpath = None
+            try:
+                downlpath = download(imgID)
+            except:
+                traceback.print_exc()
+                continue
+
+            self.callback(imgID, downlpath)
+
+        return
+
+
+class UCManager(object):
+    """docstring for UCManager"""
+    instance = None
+
+    def __new__(cls, *dt, **mp):
+        if cls.instance is None:
+            cls.instance = object.__new__(cls, *dt, **mp)
+        return cls.instance
+
+    def __init__(self):
+        self.idfiles = []
+        self.bannedids = []
+        self.tasksIds = defaultdict(set)
+        self.callbackUnlock = None
+        self.queue = Queue.Queue()
+        self.thr = DownloadThread(self.queue, self.onDownload)
+        self.thr.start()
+        self.checkFiles()
+        return
+
+    def downloadFromUrl(self, url, callback, verify = True):
+        q = Queue.Queue()
+
+        def down_thr():
+            res = None
+            try:
+                r = requests.get(url, verify=verify)
+                if r.status_code != 200:
+                    if r.raw:
+                        r.raw.release_conn()
+                else:
+                    res = r.content
+                if r.raw:
+                    r.raw.release_conn()
+            except:
+                traceback.print_exc()
+
+            q.put(res)
+            return
+
+        def check_res_main():
+            if not q.empty():
+                callback(q.get())
+                return
+            BigWorld.callback(0.3, check_res_main)
+
+        thr = Thread(target=down_thr)
+        thr.start()
+        check_res_main()
+
+    def isBannedEmblem(self, imgID):
+        return imgID in self.bannedids
+
+    def checkFiles(self):
+        self.idfiles = []
+        if not os.path.isdir(EMBLEMS_DIR):
+            os.mkdir(EMBLEMS_DIR)
+        list_dir = os.listdir(EMBLEMS_DIR)
+        for f in list_dir:
+            if f.lower().endswith('dwnl'):
+                p = os.path.join(EMBLEMS_DIR, f)
+                try:
+                    print 'remove', repr(p)
+                    os.remove(p)
+                except Exception as e:
+                    print repr(p), e
+                    traceback.print_exc()
+
+            else:
+                continue
+                base, ext = posixpath.splitext(f)
+                if ext.lower() == '.xdds' and base.isdigit():
+                    self.idfiles.append(int(base))
+
+    def updateImgBannedList(self):
+        r = requests.get(BASE_URL + 'getbanlist')
+        if r.status_code != 200:
+            print 'updateImgBannedList error', r.status_code
+            if r.raw:
+                r.raw.release_conn()
+            return
+        self.bannedids = shortStrToList(r.text)
+        if r.raw:
+            r.raw.release_conn()
+
+    def _askServerListFiles(self):
+        r = requests.get(BASE_URL + 'getidfiles')
+        if r.status_code != 200:
+            print 'UCManager::askServerListFiles error', r.status_code
+            if r.raw:
+                r.raw.release_conn()
+            r.raise_for_status()
+
+        def gener(filesids):
+            allcount = 0
+            current = 0
+            print '_askServerListFiles:', [filesids]
+            for block in filesids.split(';'):
+                if not block:
+                    continue
+                if '-' not in block:
+                    allcount += 1
+                else:
+                    start, end = map(int, block.split('-'))
+                    allcount += end + 1 - start
+
+            print 'UCManager::allcount ', allcount
+            for block in filesids.split(';'):
+                if not block:
+                    continue
+                if '-' not in block:
+                    current += 1
+                    block = int(block)
+                    if block not in self.idfiles:
+                        yield (block, current, allcount)
+                else:
+                    start, end = map(int, block.split('-'))
+                    for fid in xrange(start, end + 1):
+                        current += 1
+                        if fid not in self.idfiles:
+                            yield (fid, current, allcount)
+
+        filesids = r.text
+        if r.raw:
+            r.raw.release_conn()
+        return gener(filesids)
+
+    def startDownload(self, callback_step = None, callback_end = None):
+        try:
+            self.updateImgBannedList()
+        except:
+            traceback.print_exc()
+
+        callback_end('')
+        return
+        self.checkFiles()
+        self._gen = None
+        self._callback_step = callback_step
+        self._callback_end = callback_end
+        try:
+            self._gen = self._askServerListFiles()
+        except:
+            print 'UCManager::startDownload error'
+            traceback.print_exc()
+            if callback_end:
+                callback_end('user content server:connect  error')
+            return
+
+        BigWorld.callback(0.5, self._stepDownload)
+        return
+
+    def _stepDownload(self):
+        try:
+            fid, current, allcount = self._gen.next()
+        except StopIteration:
+            print 'UCManager:: Stop Download'
+            if self._callback_end:
+                self._callback_end('')
+                return
+        except:
+            traceback.print_exc()
+            if self._callback_end:
+                self._callback_end('error download')
+                return
+
+        if self._callback_step:
+            self._callback_step(fid, current, allcount)
+        try:
+            download(fid)
+        except:
+            traceback.print_exc()
+            if self._callback_end:
+                self._callback_end('error download')
+                return
+
+        BigWorld.callback(0.1, self._stepDownload)
+
+    def addDownloadTask(self, imgID, path, feedName, callback):
+        print 'addDownloadTask ', imgID, repr(path), feedName
+        if imgID in self.tasksIds:
+            if callback:
+                self.tasksIds[imgID].add((path, feedName, callback))
+            return
+        self.tasksIds[imgID].add((path, feedName, callback))
+        self.queue.put(imgID)
+
+    def onDownload(self, imgID, downlpath):
+        if not downlpath:
+            return
+        if imgID not in self.tasksIds:
+            print 'imgID %s  not in self.tasksIds' % imgID
+            return
+        tasks_list = self.tasksIds[imgID]
+        del self.tasksIds[imgID]
+        if not tasks_list:
+            return
+
+        def on_res_load(prereqs):
+            texture = prereqs[downlpath]
+            if texture.loadedSuccess:
+                for _, feedName, callback in tasks_list:
+                    if not callback:
+                        continue
+                    callback(imgID, feedName, texture)
+
+            else:
+                for _, feedName, callback in tasks_list:
+                    self.removeSpoiltFile(imgID, downlpath, feedName, callback)
+
+        BigWorld.loadResourceListBG([downlpath], on_res_load)
+
+    def removeSpoiltFile(self, imgID, path, feedName, callback):
+        print 'removeSpoiltFile ', imgID, repr(path), feedName
+        try:
+            if os.path.isfile(path):
+                os.remove(path)
+        except:
+            print 'error os.remove', [path]
+            traceback.print_exc()
+
+        if imgID in self.tasksIds:
+            for path, feedName, callback in self.tasksIds[imgID]:
+                print 'UCManager (file is spoiled): task stopped', path, feedName
+
+            del self.tasksIds[imgID]
+        self.addDownloadTask(imgID, path, feedName, callback)
+
+    def loadImg(self, imgID, callback = None):
+        if not imgID:
+            if callback:
+                callback(imgID, 'feed_disabled', None)
+            return 'feed_disabled'
+        else:
+            feedName = 'feed_embl_%s' % imgID
+            path = EMBLEMS_DIR + '/%s.xdds' % imgID
+            if os.path.isfile(path):
+                if self.isBannedEmblem(imgID):
+                    path = 'soGUI/maps/ucsdata/img_banned.dds'
+
+                def on_res_load(prereqs):
+                    texture = prereqs[path]
+                    if texture.loadedSuccess:
+                        if callback:
+                            callback(imgID, feedName, texture)
+                    else:
+                        self.removeSpoiltFile(imgID, path, feedName, callback)
+
+                BigWorld.loadResourceListBG([path], on_res_load)
+            else:
+                self.addDownloadTask(imgID, path, feedName, callback)
+            return feedName
+
+    _tmp_index = 0
+
+    def converToDDS(self, path):
+        if not os.path.isfile(path):
+            return (False, '', 'missing file')
+        tmpdds = os.path.join(USER_UPLOAD_DIR, 'tmpdds{0}.dds'.format(UCManager._tmp_index))
+        UCManager._tmp_index += 1
+        if BigWorld.convertFileToDDS(path, tmpdds, 'DXT3'):
+            return (True, tmpdds, '')
+        return (False, '', 'error convert image')
+
+    def uploadImage(self, path, imgType = 0, callbackUnlock = None, onUploadImage = None):
+        print 'start uploadImage', [path]
+        self.callbackUnlock = callbackUnlock
+        self._callback_onUploadImage = onUploadImage
+        r = None
+        try:
+            r = requests.get(BASE_URL + 'check')
+            if r.status_code != 200:
+                if r.raw:
+                    r.raw.release_conn()
+                r.raise_for_status()
+            UploadKey = r.text.split('=')[1]
+            if r.raw:
+                r.raw.release_conn()
+        except:
+            traceback.print_exc()
+            if r:
+                if r.raw:
+                    r.raw.release_conn()
+            print 'UCManager::ERROR error connect'
+            return False
+
+        self.__uppath = path
+        BigWorld.player().emblemServerEvent(DyeConstant.EMBL_EVENT_GET_UPLOAD_KEY, '%s|%s' % (imgType, UploadKey.encode('utf8')))
+        return True
+
+    def onBWEmblemEvent(self, event_id, data):
+        if event_id == DyeConstant.EMBL_EVENT_SET_UPLOAD_KEY:
+            files = {'file': open(self.__uppath, 'rb')}
+            data = {'key': data}
+            r = None
+            try:
+                r = requests.post(BASE_URL + 'upv3', params=data, files=files)
+            except:
+                traceback.print_exc()
+                if r:
+                    if r.raw:
+                        r.raw.release_conn()
+                print 'UCManager::ERROR error upload image connect error'
+                self.callbackUnlock()
+                return
+
+            print [r.text]
+            if not r.text.startswith('OK'):
+                if r.raw:
+                    r.raw.release_conn()
+                print 'UCManager::ERROR error upload image ' + r.text
+                self.callbackUnlock()
+                return
+            imgID, key = r.text.split(';', 1)
+            self._lastImgID = imgID[3:]
+            if r.raw:
+                r.raw.release_conn()
+            BigWorld.player().emblemServerEvent(DyeConstant.EMBL_EVENT_GET_UPLOAD_CONFIRM, key.encode('utf8'))
+        elif event_id == DyeConstant.EMBL_EVENT_SET_UPLOAD_CONFIRM:
+            print 'confirm data:', [data]
+            data = {'key': data}
+            r = None
+            try:
+                r = requests.get(BASE_URL + 'confirmv3', params=data)
+            except:
+                if r:
+                    if r.raw:
+                        r.raw.release_conn()
+                print 'UCManager::ERROR error confirm image connect error'
+                self.callbackUnlock()
+                return
+
+            print [r.url]
+            print [r]
+            print [r.text]
+            resp = r.text
+            if r.raw:
+                r.raw.release_conn()
+            if resp.startswith('OK'):
+                msg = lc('colourItemWindow.UPLOAD_OK').format(self._lastImgID.strip())
+                import BWPersonality
+                BWPersonality.GUICore.chatPrint(CHANNEL_CONSTS.GENERAL, msg)
+                if self._callback_onUploadImage:
+                    BigWorld.callback(0.0, lambda : self._callback_onUploadImage(self._lastImgID))
+            else:
+                print 'UCManager::ERROR error confirm image %s' % resp
+            self.callbackUnlock()
+            BigWorld.player().getMyEmblems()
+        elif event_id == DyeConstant.EMBL_EVENT_ERROR:
+            if self.callbackUnlock:
+                self.callbackUnlock()
+            print 'EMBL_EVENT_ERROR:', repr(self.__uppath)
+            print 'UCManager::ERROR', data
+            import BWPersonality
+            BWPersonality.GUICore.chatPrint(CHANNEL_CONSTS.GENERAL, data)
+        else:
+            raise ValueError, data
+        return
+
+
+ucmanager = None
+if BigWorld.component == 'client':
+    ucmanager = UCManager()

@@ -1,0 +1,145 @@
+# Embedded file name: ./client/soGUI/donat_shop/window/auxwins/basewin.py
+import GUI
+from utils import Listenable
+from functools import partial
+from ui.panel import Panel
+from ui.button import Button
+from ui.text import Text
+from ui.transform import pixel_params, clip_params
+from soGUI.StorehouseGUI.ShopUtils import MultilineText
+import sounds_manager as sm
+from soGUI.UtilsGUI.PaintButton import PaintButton
+
+class EventType:
+    OnShow, OnHide = ((r, 'basewin') for r in range(2))
+
+
+class BaseWin(Panel, Listenable):
+
+    def __init__(self, parent_comp, name):
+        Listenable.__init__(self)
+        comp = GUI.Window('textures/default/white.dds')
+        comp.colour = (255, 250, 230, 255)
+        Panel.__init__(self, parent_comp, name, component=comp)
+        self.component.visible = False
+        comp = GUI.Window()
+        self._txt_caption = Text(self.component, 'caption', size=24)
+        hpm = clip_params((0, 1))
+        vpm = pixel_params(0.5, 0, 40, 28)
+        self._txt_caption.set_color((0, 0, 0, 255))
+        self._txt_caption.transform.set_mixed_mode(hpm, vpm)
+        comp = GUI.Window()
+        comp.hpm, comp.vpm = ('CLIP', 'CLIP')
+        comp.wm, comp.hm = ('CLIP', 'PIXEL')
+        comp.ha, comp.va = ('CENTER', 'CENTER')
+        comp.width, comp.height = (1.8, 0)
+        comp.position = (0, 0.3, 0.5)
+        self._txt = MultilineText(comp, u'', 'Shop_24')
+        self._txt.set_color((0, 0, 0, 255))
+        self.component.addChild(comp)
+        self._btns = []
+        self.__callbacks = []
+        for i in range(3):
+            btn = Button(self.component, 'btn' + str(i))
+            btn.hover_sound = 'ui/equip_modification/hover'
+            btn.transform.set_pixel_mode((0.5, 0.5), (0, 1), (220, 40), (0, 0))
+            btn.set_visual('soGUI/frame/buttons/donatbutton.json')
+            btn.component.visible = False
+            btn.on_click = partial(self._on_btn_click, i)
+            self._btns.append(btn)
+
+        comp = GUI.Window()
+        comp.materialFX = 'SOLID'
+        comp.filterType = 'LINEAR'
+        comp.wm, comp.hm = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = (18, 18)
+        comp.ha, comp.va = ('RIGHT', 'TOP')
+        comp.hpm, comp.vpm = ('PIXEL', 'PIXEL')
+        btn = PaintButton(comp, visual_state='soGUI/frame/storehouse/storeImageButton.xml')
+        btn.hover_sound = 'ui/equip_modification/hover'
+        btn.image = 'soGUI/frame/storehouse/x.dds'
+        btn.on_click = self.hide
+        self.component.addChild(comp, 'close_btn')
+        self._close_btn = btn
+
+    def _on_btn_click(self, index):
+        callback, sound = self.__callbacks[index]
+        if callback:
+            callback()
+        sm.playSound(sound or 'ui/menu_click')
+        self.hide()
+
+    def show(self, text, btns_data, caption = None):
+        self.__callbacks[:] = []
+        for btn in self._btns:
+            btn.component.visible = False
+
+        for i, btn_data in enumerate(btns_data):
+            btn = self._btns[i]
+            btn.component.visible = True
+            btn.set_visual(btn_data.get('visual', 'soGUI/frame/buttons/donatbutton.json'))
+            btn.set_text(btn_data.get('text', u''))
+            self.__callbacks.append((btn_data.get('callback'), btn_data.get('sound')))
+
+        if caption:
+            self._txt_caption.component.visible = True
+            self._txt_caption.set_text(caption)
+        else:
+            self._txt_caption.component.visible = False
+        self._txt.component.height = self.component.height
+        self._txt.set_text(text)
+        comp = self._txt.component
+        comp.height = self._txt.height
+        if not self.visible:
+            self.component.visible = True
+            self._on_show()
+
+    def _on_show(self):
+        self._realign_buttons()
+        self.notify_listeners(EventType.OnShow)
+
+    def _realign_buttons(self):
+        count = sum((b.component.visible for b in self._btns))
+        if count == 0:
+            return
+        pixel_ratio = self.transform.pixel_ratio
+        if count == 1:
+            positions = [self.component.width / 2 / pixel_ratio]
+        elif count == 2:
+            disp = 160
+            positions = [disp, self.component.width / pixel_ratio - disp]
+        else:
+            raise NotImplementedError(count)
+        for b in self._btns:
+            if not b.component.visible:
+                continue
+            pos = positions.pop(0)
+            mode = b.transform._mode[1:]
+            mode[3] = (pos, -50)
+            b.transform.set_pixel_mode(*mode)
+
+    def on_size_changed(self):
+        Panel.on_size_changed(self)
+        self._realign_buttons()
+        self._txt.component.height = self.component.height
+        self._txt.do_reposition()
+        self._txt.component.height = self._txt.height
+        self._close_btn.do_reposition()
+        self._close_btn.component.position = (self.component.width - 8, 8, 0.0)
+
+    def hide(self):
+        if not self.visible:
+            return
+        self.component.visible = False
+        self._on_hide()
+
+    def _on_hide(self):
+        self.__callbacks[:] = []
+        for btn in self._btns:
+            btn.component.visible = False
+
+        self.notify_listeners(EventType.OnHide)
+
+    @property
+    def visible(self):
+        return self.component.visible

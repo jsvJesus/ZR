@@ -1,0 +1,443 @@
+# Embedded file name: ./client/soGUI/EntityPickerLayer.py
+"""
+        \xd1\x8d\xd1\x82\xd0\xbe\xd1\x82 \xd0\xbd\xd0\xb5\xd0\xb2\xd0\xb8\xd0\xb4\xd0\xb8\xd0\xbc\xd1\x8b\xd0\xb9 \xd1\x81\xd0\xbb\xd0\xbe\xd0\xb9 \xd1\x80\xd0\xb0\xd1\x81\xd1\x82\xd1\x8f\xd0\xb3\xd0\xb8\xd0\xb2\xd0\xb0\xd0\xb5\xd1\x82\xd1\x81\xd1\x8f \xd0\xbd\xd0\xb0 \xd0\xb2\xd0\xb5\xd1\x81\xd1\x8c \xd1\x8d\xd0\xba\xd1\x80\xd0\xb0\xd0\xbd \xd0\xbf\xd0\xbe\xd0\xb7\xd0\xb0\xd0\xb4\xd0\xb8 \xd0\xb2\xd1\x81\xd0\xb5\xd1\x85 \xd0\xb3\xd1\x83\xd0\xb8 \xd0\xbe\xd0\xba\xd0\xbe\xd0\xbd
+        \xd0\xb8 \xd0\xbf\xd0\xb5\xd1\x80\xd0\xb5\xd1\x85\xd0\xb2\xd0\xb0\xd1\x82\xd1\x8b\xd0\xb2\xd0\xb0\xd0\xb5\xd1\x82 \xd0\xbd\xd0\xb0\xd0\xb6\xd0\xb0\xd1\x82\xd0\xb8\xd0\xb5 \xd0\xbf\xd1\x80\xd0\xb0\xd0\xb2\xd0\xbe\xd0\xb9 \xd0\xbc\xd1\x8b\xd1\x88\xd0\xba\xd0\xbe\xd0\xb9 \xd0\xbf\xd0\xbe \xd1\x81\xd1\x83\xd1\x89\xd0\xbd\xd0\xbe\xd1\x81\xd1\x82\xd1\x8f\xd0\xbc \xd0\xb2 \xd1\x80\xd0\xb5\xd0\xb6\xd0\xb8\xd0\xbc\xd0\xb5 \xd1\x81\xd0\xb2\xd0\xbe\xd0\xb1\xd0\xbe\xd0\xb4\xd0\xbd\xd0\xbe\xd0\xb3\xd0\xbe \xd0\xba\xd1\x83\xd1\x80\xd1\x81\xd0\xbe\xd1\x80\xd0\xb0
+"""
+from Localization import lc
+import BigWorld
+import BWPersonality
+import traceback
+import GUI
+import soGUI
+import random
+import Constants
+import Helpers
+import gui_jokes
+import Helpers.Caps
+import RestrictionsUtils
+from Helpers.PyGUI.PyGUIBase import PyGUIBase
+from Keys import KEY_RIGHTMOUSE
+import ItemsUtils
+import msgbox_templates
+from Math import Matrix, Vector2
+from gui_const import MESSAGEBOX
+from ChatChannelConfig import CHANNEL_CONSTS
+from functools import partial
+import DrawWellUtil
+import ClanSettings
+from utils import profiler
+
+class EntityPickerLayer(PyGUIBase):
+    factoryString = 'soGUI.EntityPickerLayer'
+
+    def __init__(self, component, parent):
+        PyGUIBase.__init__(self, component)
+        component.script = self
+        self.mouse_focus = False
+        self.setupRoot()
+        parent.delChild('EntityPickerLayer')
+        parent.addChild(self.component, 'EntityPickerLayer')
+        self.debug_chunk_item_informer = None
+        try:
+            from __debug.chunk_item_info import ChunkItemInformer
+            self.debug_chunk_item_informer = ChunkItemInformer()
+        except:
+            pass
+
+        return
+
+    def setupRoot(self):
+        cmp = self.component
+        cmp.horizontalPositionMode = cmp.verticalPositionMode = 'CLIP'
+        cmp.widthMode = cmp.heightMode = 'CLIP'
+        cmp.horizontalAnchor = 'CENTER'
+        cmp.verticalAnchor = 'CENTER'
+        cmp.width = cmp.height = 2.0
+        cmp.position = (0.0, 0.0, 1.0)
+        cmp.colour = (255, 255, 255, 255)
+        cmp.materialFX = 'BLEND'
+        cmp.visible = False
+        cmp.focus = True
+        cmp.crossFocus = True
+        cmp.dragFocus = False
+        cmp.moveFocus = True
+        cmp.dropFocus = False
+        cmp.mouseButtonFocus = True
+
+    def show(self):
+        self.component.visible = True
+
+    def hide(self):
+        self.component.visible = False
+        self.last_entity = None
+        return
+
+    def _canInteract(self):
+        mee = BigWorld.player()
+        F2 = BigWorld.isKeyDown(BigWorld.stringToKey('F2'))
+        if mee.clientAccessLevel and F2:
+            return True
+        elif mee.inPVPinstance:
+            return False
+        else:
+            if getattr(mee, 'active_transform', None):
+                if mee.active_transform.isLockInteractObject:
+                    return False
+            force_hillight, target = BigWorld.player().getBestTarget()
+            if target and getattr(target, 'active_transform', False):
+                if target.active_transform.isOtherDisableInteract:
+                    return False
+            return True
+
+    def _actions_for_avatar(self, entity):
+        actions = []
+        mee = BigWorld.player()
+        if mee.position.distSqrTo(entity.position) > Constants.HILITE_AVATARS_DISTANCE ** 2:
+            return actions
+        actions.append(dict(label=lc('GUI.EntContext.PM') + entity.name, callback=partial(BWPersonality.GUICore.putToChat, u'@%s ' % entity.name)))
+        if entity.dead:
+            actions.append(dict(label=lc('PlayerAvatar.client.GIVE_AID_TO_DEAD'), callback=partial(deadUseMedecine, entity), foo_active=partial(isInteractDistAndDead, entity)))
+            actions.append(dict(label=lc('PlayerAvatar.client.KILL_AND_BEAT'), callback=partial(finishDead, entity), foo_active=partial(isInteractDistAndDead, entity)))
+            return actions
+        if entity.can_be_invited_to_party(entity.name):
+            actions.append(dict(label=lc('GUI.EntContext.inviteInGroup'), callback=partial(mee.send_invitation1, entity.name, entity.id)))
+        if not mee.is_black(entity.name):
+            if BigWorld.isKeyDown(BigWorld.stringToKey('F2')) and mee.isAdminAccess():
+                actions.append(dict(label=lc('PlayerAvatar.client.INIT_TRADE') + u' (old)', callback=partial(startExchange, entity), foo_active=partial(isInteractDistWithCollide, entity)))
+            actions.append({'label': lc('Barter.message.propose_title'),
+             'callback': partial(BigWorld.player().propose_barter, entity),
+             'foo_active': partial(isInteractDistWithCollide, entity)})
+        if entity.clanName and mee.clanName and entity.clanName != mee.clanName:
+            if not ClanSettings.is_block_war(entity.clan_level) and not ClanSettings.is_block_war(mee.clan_level):
+                oponent_clan_name = entity.clanName.decode('utf8')
+                cost = ClanSettings.get_diplomacy_cost(mee.clan_level, 'peace')
+
+                def _peace1(opponent, event):
+                    if event != gui_jokes.askUserYesNo.YES:
+                        return
+                    mee.runCommand('/clanpeace %s' % opponent)
+
+                def peace():
+                    gui_jokes.askUserYesNo(lc('GUI.ClanGUI.INVITE_TO_PEACE'), lc('GUI.ClanGUI.ARE_YOU_SURE_PEACE_1').format(oponent_clan_name), partial(_peace1, oponent_clan_name))
+
+                def _war1(opponent, event):
+                    if event != gui_jokes.askUserYesNo.YES:
+                        return
+                    mee.runCommand('/clanwar %s' % opponent)
+
+                def war():
+                    gui_jokes.askUserYesNo(lc('GUI.ClanGUI.INVITE_TO_WAR'), lc('GUI.ClanGUI.ARE_YOU_SURE_WAR').format(oponent_clan_name, cost), partial(_war1, oponent_clan_name))
+
+                if entity.clanName in mee.clanEnemies:
+                    actions.append(dict(label=lc('GUI.EntContext.ClanPeace') % oponent_clan_name, callback=peace))
+                else:
+                    actions.append(dict(label=lc('GUI.EntContext.ClanWar') % oponent_clan_name, callback=war))
+        if not mee.is_friend(entity.name):
+            actions.append(dict(label=lc('GUI.EntContext.AddToFriend'), callback=partial(mee.add_friend_request, entity.name.encode('utf8'))))
+        if not mee.is_black(entity.name):
+            actions.append(dict(label=lc('GUI.EntContext.AddToBlackList'), callback=partial(mee.add_black_request, entity.name.encode('utf8'))))
+        if mee.clanID and not entity.clanName:
+            mee_clan_name = mee.clanName.decode('utf8')
+            actions.append(dict(label=lc('GUI.EntContext.ClanInvite') % mee_clan_name, callback=partial(mee.inviteFriendToClan, entity.name)))
+        return actions
+
+    def show_menu(self, entity = None, position = None):
+        if position is None:
+            position = Vector2(-0.1, 0.1)
+            GUI.mcursor().position = Vector2(0, 0)
+        actions = []
+        title = u''
+        force_hillight, entity = BigWorld.player().getBestTarget()
+        mee = BigWorld.player()
+        if BigWorld.isKeyDown(BigWorld.stringToKey('F2')):
+            F2 = mee.isAdminAccess()
+            if self.debug_chunk_item_informer:
+                self.debug_chunk_item_informer.onSelected(False)
+            if entity and entity.__class__.__name__ == 'Avatar':
+                title = entity.name
+                if entity.dead:
+                    title += '   ' + lc('PlayerAvatar.client.USE_DEAD_TITLE')
+                actions = self._actions_for_avatar(entity)
+                actions.append(dict(label=lc('GUI.EntContext.Report'), callback=partial(BWPersonality.GUICore.show_wimp_win, entity.name)))
+                if F2:
+                    actions.append(dict(label='* /rope %s' % entity.name, callback=partial(mee.runCommand, '/rope %s' % entity.name)))
+                    actions.append(dict(label='* copyname %s' % entity.name, callback=partial(copy, entity.name)))
+                    if mee.clientAccessLevel > 4 and hasattr(mee, '_prev_ft_to'):
+                        label = u'* /setFTto [%s] %s   %s min' % (entity.name, mee._prev_ft_to['transformID'], mee._prev_ft_to['minutes'])
+                        cmd = u'/setFT %s %s %s' % (mee._prev_ft_to['transformID'], entity.id, mee._prev_ft_to['minutes'])
+                        actions.append(dict(label=label, callback=partial(mee.runCommand, cmd)))
+                    if mee.clientAccessLevel >= 3:
+                        actions.append(dict(label=u'* \u043f\u043e\u043a\u0430\u0437\u0430\u0442\u044c \u043e\u0434\u0435\u0436\u0434\u0443', callback=partial(showEquip, entity)))
+                    if mee.clientAccessLevel >= 6 or mee.UserFromMasterPassword:
+                        cmd = u'/screen_cheater %s' % entity.id
+                        actions.append(dict(label=u'* ScreenShot', callback=partial(mee.runCommand, cmd)))
+            elif entity.__class__.__name__ in Constants.CREATURE_CLASSES:
+                if F2:
+                    type_creature = '%s/%s' % (entity.creatureType, entity.creatureSubType)
+                    title = '[%s] %s' % (entity.__class__.__name__, type_creature)
+                    actions.append(dict(label=u'* reload hitboxs', callback=entity.debugReloadHitBoxs))
+                    actions.append(dict(label=u'* reload model', callback=entity.debugReloadModel))
+                    actions.append(dict(label=u'* ' + type_creature, callback=partial(copy, type_creature)))
+            elif entity.__class__.__name__ == 'DrawWell':
+                title = entity.name
+                water_type = mee._getDrawwellWaterType()
+                if water_type != DrawWellUtil.WATER_TYPE_NONE:
+                    if water_type in (DrawWellUtil.WATER_TYPE_DIRTY, DrawWellUtil.WATER_TYPE_CLEAN):
+                        actions.append(dict(label=lc('PlayerAvatar.client.DRINK'), callback=partial(drinkWater, entity.id), foo_active=partial(isInteractDist, entity)))
+                    actions.append(dict(label=lc('PlayerAvatar.client.FILL_WATER'), callback=partial(fillWater, entity.id), foo_active=partial(isDrawWellInteract, entity)))
+                    if entity.can_coin:
+                        actions.append(dict(label=lc('PlayerAvatar.client.COIN_DRAWWELL'), callback=partial(coinDrawwell, entity.id), foo_active=partial(isInteractDist, entity)))
+            elif entity.__class__.__name__ in ('Helicopter', 'Draisine'):
+                if entity.can_interact():
+                    title, entity_actions = entity.get_context_menu_title_and_actions()
+                    actions.extend(entity_actions)
+            elif entity.__class__.__name__ == 'Devil':
+                if F2:
+                    actions.append({'label': u'\u041c\u043e\u043d\u0438\u0442\u043e\u0440\u0438\u043d\u0433',
+                     'callback': entity.monitor.show})
+            elif entity.__class__.__name__ == 'NPC':
+                title = entity.name
+                if Helpers.Caps.CAP_CAN_TALK in entity.targetCaps:
+                    actions.append(dict(label=lc('PlayerAvatar.client.TALK_NPC'), callback=partial(mee.start_talk, entity), foo_active=partial(isInteractDistWithCollide, entity)))
+                    if F2 and mee.clientAccessLevel >= 6:
+                        actions.append(dict(label=u'* \u0424\u043e\u0440\u0441\u0438\u0440\u043e\u0432\u0430\u043d\u043d\u0430\u044f \u0442\u043e\u0440\u0433\u043e\u0432\u043b\u044f', callback=partial(debug_trade_commnad, 'trade', entity)))
+                        actions.append(dict(label=u'* \u0424\u043e\u0440\u0441\u0438\u0440\u043e\u0432\u0430\u0442\u044c \u043f\u0440\u0438\u0445\u043e\u0434-\u0443\u0445\u043e\u0434', callback=partial(debug_trade_commnad, 'incomeoutcome', entity)))
+                        actions.append(dict(label=u'* \u0418\u0437\u043c\u0435\u043d\u0438\u0442\u044c \u0434\u0435\u043d\u044c\u0433\u0438', callback=partial(debug_trade_commnad, 'money', entity)))
+                        actions.append(dict(label=u'* \u0423\u0434\u0430\u043b\u0438\u0442\u044c \u0442\u043e\u0432\u0430\u0440', callback=partial(debug_trade_commnad, 'clear', entity)))
+                if Helpers.Caps.CAP_BASE_TRADE in entity.targetCaps:
+                    actions.append(dict(label=lc('PlayerAvatar.client.TALK_NPC'), callback=partial(BWPersonality.GUICore.donate_auction_screen.show, entity), foo_active=partial(isInteractDistWithCollide, entity)))
+                if entity.dead:
+                    title += '   ' + lc('PlayerAvatar.client.USE_DEAD_TITLE')
+                    if entity.can_revived:
+                        actions.append(dict(label=lc('PlayerAvatar.client.GIVE_AID_TO_DEAD'), callback=partial(deadUseMedecine, entity), foo_active=partial(isInteractDistAndDead, entity)))
+                    else:
+                        actions.append(dict(label=lc('PlayerAvatar.client.GOTO_AND_LOOT'), callback=partial(_gotoEntityAndLoot, entity), foo_active=partial(isInteractDistAndDead, entity)))
+                if F2:
+                    actions.append(dict(label=u'* \u043f\u043e\u043a\u0430\u0437\u0430\u0442\u044c \u043e\u0434\u0435\u0436\u0434\u0443', callback=partial(showEquip, entity)))
+                    actions.append(dict(label='* copy npcName   %s' % entity.npcName, callback=partial(copy, entity.npcName)))
+            elif entity.__class__.__name__ == 'Tank':
+                title, entity_actions = entity.get_context_menu_title_and_actions()
+                actions.extend(entity_actions)
+            elif not entity and F2:
+                actions.append(dict(label=u'* \u041e\u0442\u043a\u0440\u044b\u0442\u044c WorldEditor \u0437\u0434\u0435\u0441\u044c', callback=openWorldEditor))
+                if self.debug_chunk_item_informer:
+                    label = u'* \u0418\u043d\u0444 \u043e\u0431 \u043e\u0431\u044a\u0435\u043a [{0}]'.format(self.debug_chunk_item_informer.getInviStatus())
+                    actions.append(dict(label=label, callback=self.debug_chunk_item_informer.switchInviStatus))
+                    object_type = self.debug_chunk_item_informer.handle()
+                    if object_type:
+                        if self.debug_chunk_item_informer.isModel():
+                            actions.append(dict(label=u'* \u043e\u0442\u043a\u0440\u044b\u0442\u044c \u0432 ModelEditor', callback=self.debug_chunk_item_informer.open_me))
+                            actions.append(dict(label=u'* \u043f\u0435\u0440\u0435\u0437\u0430\u0433\u0440\u0443\u0437\u0438\u0442\u044c', callback=self.debug_chunk_item_informer.item_info.rawObject.reload))
+                        actions.append(dict(label=u'* \u043e\u0442\u043a\u0440\u044b\u0442\u044c \u0432 Explorer', callback=self.debug_chunk_item_informer.explore))
+                        label = u'* \u0418\u043d\u0444\u043e\u0440\u043c\u0430\u0446\u0438\u044f \u043e\u0431 \u043e\u0431\u044a\u0435\u043a\u0442\u0435 [{0}]'.format(self.debug_chunk_item_informer.getShortLabel())
+                        actions.append(dict(label=label, callback=partial(self.debug_chunk_item_informer.onSelected, True)))
+            if entity and F2:
+                actions.append(dict(label=u'* \u041e\u0442\u043a\u0440\u044b\u0442\u044c WorldEditor \u0437\u0434\u0435\u0441\u044c', callback=openWorldEditor))
+                if not title:
+                    title = '[%s]' % entity.__class__.__name__
+                actions.append(dict(label='* debugAQ', callback=partial(BigWorld.debugAQ, entity.model)))
+                actions.append(dict(label='* copy id %s' % entity.id, callback=partial(copy, entity.id)))
+                npcName = getattr(entity, 'npcName', None)
+                if npcName:
+                    actions.append(dict(label=u'\u041e\u0442\u043a\u0440\u044b\u0442\u044c \u043a\u0430\u0440\u0442\u043e\u0447\u043a\u0443 NPC', callback=partial(open_card_editor, npcName)))
+            if getattr(BWPersonality.GUICore, 'cam_editor', None):
+                cam_editor = BWPersonality.GUICore.cam_editor
+                if cam_editor.is_visible():
+                    if entity:
+                        actions.append(dict(label=lc('cam_editor_win.on_see_entity'), callback=partial(cam_editor.on_see_entity, entity.id)))
+                    if not cam_editor.is_set_obj_mode:
+                        text = lc('cam_editor_win.on_see_obj')
+                        actions.append(dict(label=text, callback=cam_editor.on_see_obj))
+            if getattr(BWPersonality.GUICore, 'sfx_helper', None):
+                sfx_helper = BWPersonality.GUICore.sfx_helper
+                if entity and sfx_helper.is_visible():
+                    actions.append(dict(label=u'* \u0432\u044b\u0431\u0440\u0430\u0442\u044c \u044d\u0442\u0443 entity \u0434\u043b\u044f \u0437\u0430\u043f\u0443\u0441\u043a\u0430 SFX', callback=partial(sfx_helper.set_entity_id, entity.id)))
+            return actions or None
+        else:
+            for index, action in enumerate(actions, 1):
+                if index > 9:
+                    break
+                action['bind_key'] = str(index)
+
+            BWPersonality.GUICore.showEntityContextMenu(title, actions, on_cancel=self._on_cancel_menu, position=position, target_matrix=None)
+            return
+
+    def _on_cancel_menu(self):
+        pass
+
+    def handleMouseButtonEvent(self, comp, event):
+        if event.isKeyDown():
+            if event.key == KEY_RIGHTMOUSE:
+                if not self._canInteract():
+                    return False
+                self.show_menu(None, GUI.mcursor().position)
+                return True
+        return False
+
+    def handleMouseEnterEvent(self, cmp):
+        self.mouse_focus = True
+        return True
+
+    def handleMouseLeaveEvent(self, cmp):
+        self.mouse_focus = False
+        return True
+
+    def handleKeyEvent(self, event):
+        return False
+
+
+def isInteractDistWithCollide(entity):
+    skeleton_collider = getattr(entity, 'skeletonCollider', None)
+    if not skeleton_collider:
+        return isInteractDist(entity)
+    else:
+        src = BigWorld.player().get_firing_point()[0]
+        direction = BigWorld.camera().direction
+        if not entity.skeletonCollider.doCollide(src, direction):
+            return isInteractDist(entity)
+        p = entity.skeletonCollider.impactPoint
+        return p.distTo(src) < Constants.INTERACTION_DISTANCE
+
+
+def isInteractDist(entity):
+    if entity.isDestroyed:
+        return False
+    mee = BigWorld.player()
+    if mee.position.distSqrTo(entity.position) < Constants.INTERACTION_DISTANCE ** 2:
+        return True
+    return False
+
+
+def isDrawWellInteract(entity):
+    if not isInteractDist(entity):
+        return False
+    from Items import ItemsCatalog
+    p = BigWorld.player()
+    for item in p.CarryingItems:
+        itemParam = ItemsCatalog.GetItemParam(item['complexItemType'])
+        waterNumberOfSips = itemParam.get('waterNumberOfSips')
+        if itemParam.get('is_fuel_tank') and entity.waterType in (DrawWellUtil.WATER_TYPE_POISON, DrawWellUtil.WATER_TYPE_FLAMETHROWER_FUEL):
+            return True
+        if not waterNumberOfSips:
+            continue
+        sips = ItemsUtils.getWaterSipsPot(item)
+        if sips < 0:
+            continue
+        return True
+
+
+def isInteractDistAndDead(entity):
+    if entity.isDestroyed:
+        return False
+    if not entity.dead:
+        return False
+    mee = BigWorld.player()
+    if mee.position.distSqrTo(entity.position) < Constants.INTERACTION_DISTANCE ** 2:
+        return True
+    return False
+
+
+def copy(text):
+    if isinstance(text, unicode):
+        pass
+    elif isinstance(text, str):
+        text = text.decode('utf-8', 'ignore')
+    else:
+        text = str(text)
+    BigWorld.clipboardSetPlainText(text)
+
+
+def showEquip(entity):
+    BWPersonality.GUICore.showEquipScreenDebug(entity)
+
+
+def drinkWater(entity_id):
+    BigWorld.player().startDrinkTheWaterDrawWall(entity_id)
+
+
+def fillWater(entity_id):
+    BWPersonality.GUICore.showInventory()
+
+
+def coinDrawwell(entity_id):
+    BigWorld.player().on_use_drawwell_coin()
+
+
+def startExchange(entity):
+    if entity.isDestroyed:
+        return
+    mee = BigWorld.player()
+    if mee.dead:
+        return
+    if entity.dead:
+        return
+    mee.StartExchange(entity)
+    BWPersonality.GUICore.setMouseAltState(True, True)
+
+
+def debug_trade_commnad(command, entity):
+    player = BigWorld.player()
+    if command == 'trade':
+        player.on_talk_without_dialog(entity)
+        player.start_buying(entity.id)
+        BWPersonality.GUICore.showInventory(True)
+    elif command == 'money':
+
+        def callback(event, data):
+            if event == MESSAGEBOX.EVENT_BTNPRESS and data['btn'] == MESSAGEBOX.BTN_OK:
+                text = str(data['add_controls']['edit_box'])
+                player.execute_seller_command('money ' + text, entity.id)
+
+        msgbox_templates.input_box_ok_cancel('\xd0\x94\xd0\xb0\xd1\x82\xd1\x8c \xd0\xb4\xd0\xb5\xd0\xbd\xd0\xb5\xd0\xb3', u'\u0414\u0430\u0442\u044c \u0434\u0435\u043d\u0435\u0433', u'\u0421\u043a\u043e\u043b\u044c\u043a\u043e?', callback=callback, default='1')
+    else:
+        player.execute_seller_command(command, entity.id)
+
+
+@profiler
+def openWorldEditor():
+    try:
+        mee = BigWorld.player()
+        space = mee.getSpaceName()
+        view = Matrix(BigWorld.camera().matrix)
+        view.invert()
+        pos = view.translation
+        ypr = (view.yaw, view.pitch, 0)
+        print 'open', space, pos, ypr
+        import __debug.start_world_editor
+        __debug.start_world_editor.OpenWorldEditor(space, pos, ypr)
+    except:
+        traceback.print_exc()
+
+
+def open_card_editor(npc_name):
+    import os
+    import subprocess
+    _root_dir = os.path.dirname(os.path.abspath(__file__))
+    _so_dir = os.path.normpath(os.path.join(_root_dir, '../../../../'))
+    file_path = os.path.join(_so_dir, 'sys/tools/npc_editor/card_editor/main.py')
+    print '[INFO] open_card_editor', [file_path, npc_name]
+    args = 'C:/Python27/python.exe %s %s' % (file_path, npc_name)
+    subprocess.Popen(args, cwd=os.path.dirname(file_path))
+
+
+def deadUseMedecine(entity):
+    if entity.isDestroyed:
+        return
+    if not entity.dead:
+        return
+    mee = BigWorld.player()
+    firstAIDItem = ItemsUtils.GetFirstMedecineItem(mee)
+    if firstAIDItem:
+        item_id = firstAIDItem['complexItemID']
+        mee.useItemOnTarget(item_id, entity)
+
+
+def finishDead(entity):
+    mee = BigWorld.player()
+    mee.goto_finishdead(entity)
+
+
+def _gotoEntityAndLoot(entity):
+    mee = BigWorld.player()
+    mee.gotoEntityAndLoot(entity, None)
+    return

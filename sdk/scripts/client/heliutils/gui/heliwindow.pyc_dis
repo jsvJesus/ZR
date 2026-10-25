@@ -1,0 +1,348 @@
+# Embedded file name: ./client/heliutils/gui/heliwindow.py
+import BigWorld
+import BWPersonality
+import GUI
+from Helpers.PyGUI.PyGUIBase import DragWin, Interceptor
+from soGUI.soButton import soButton
+from Localization import lc
+import colorCodes as CC
+from Math import Vector2
+import Keys
+import RestrictionsUtils
+
+class SeatMode:
+    Occupided, Free, Highlighted, Selected = xrange(4)
+
+
+class Seatplace(Interceptor):
+
+    def __init__(self, vertical):
+        self.seat_mode = SeatMode.Free
+        self.on_hover_callback = lambda seatplace, enter: None
+        self.on_click_callback = lambda seatplace: None
+        self.on_dbl_click_callback = lambda seatplace: None
+        self._prev_click = (Vector2(), 0)
+        texture = 'soGUI/frame/helicopter/Armchair_vert.dds' if vertical else 'soGUI/frame/helicopter/Armchair.dds'
+        highlight_image_comp = GUI.Window(texture)
+        texture = 'soGUI/frame/helicopter/Armchair_vert_full.dds' if vertical else 'soGUI/frame/helicopter/Armchair_full.dds'
+        selected_image_comp = GUI.Window(texture)
+        width = max(highlight_image_comp.texture.width, selected_image_comp.texture.width)
+        height = max(highlight_image_comp.texture.height, selected_image_comp.texture.height)
+        comp = GUI.Window()
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = width, height
+        Interceptor.__init__(self, comp)
+        self.component.script = self
+        comp = highlight_image_comp
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = self.component.width, self.component.height
+        comp.position = (0, 0, 0.5)
+        comp.colour = (255, 255, 255, 125)
+        self.component.addChild(comp, 'frame_image')
+        comp = selected_image_comp
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = self.component.width, self.component.height
+        comp.position = (0, 0, 0.5)
+        self.component.addChild(comp, 'full_image')
+        self._update_content()
+
+    def handleMouseLeaveEvent(self, comp):
+        self.on_hover_callback(self, False)
+        return Interceptor.handleMouseLeaveEvent(self, comp)
+
+    def handleMouseEnterEvent(self, comp):
+        self.on_hover_callback(self, True)
+        return Interceptor.handleMouseEnterEvent(self, comp)
+
+    def handleMouseButtonEvent(self, comp, event):
+        if event.key == Keys.KEY_LEFTMOUSE and event.isKeyDown():
+            self.on_click_callback(self)
+            cur_click = Vector2(event.cursorPosition)
+            if self._prev_click[0].distTo(cur_click) <= 0.05 and BigWorld.time() - self._prev_click[1] < 0.3:
+                self._prev_click = (cur_click, 0)
+                self.on_dbl_click_callback(self)
+            else:
+                self._prev_click = (cur_click, BigWorld.time())
+        return Interceptor.handleMouseButtonEvent(self, comp, event)
+
+    def set_mode(self, mode):
+        self.seat_mode = mode
+        self._update_content()
+
+    def _update_content(self):
+        if self.seat_mode == SeatMode.Occupided:
+            self.component.frame_image.visible = False
+            self.component.full_image.visible = False
+        elif self.seat_mode == SeatMode.Selected:
+            self.component.frame_image.visible = False
+            self.component.full_image.visible = True
+            self.component.full_image.colour = (255, 255, 255, 255)
+        elif self.seat_mode == SeatMode.Highlighted:
+            self.component.frame_image.visible = False
+            self.component.full_image.visible = True
+            self.component.full_image.colour = (255, 255, 255, 125)
+        elif self.seat_mode == SeatMode.Free:
+            self.component.full_image.visible = False
+            self.component.frame_image.visible = True
+        else:
+            RuntimeError
+
+
+class Boxes:
+
+    def __init__(self, component):
+        self.component = component
+        self._boxes = []
+
+        def create_box(position):
+            comp = GUI.Window('soGUI/frame/helicopter/Box.dds')
+            comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+            comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+            comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+            comp.width, comp.height = comp.texture.width, comp.texture.height
+            comp.position = position
+            self.component.addChild(comp)
+            self._boxes.append(comp)
+
+        create_box((297, 295, 0.5))
+        create_box((249, 295, 0.5))
+        create_box((201, 295, 0.5))
+        self.apply_count(0)
+
+    def apply_count(self, count):
+        for i, comp in enumerate(self._boxes):
+            comp.visible = i < count
+            comp.colour = (255, 255, 255, 255) if i + len(self._boxes) < count else (255, 255, 255, 125)
+
+
+class HeliWin(DragWin):
+
+    def __init__(self):
+        self._helicopter = None
+        self._pot_handler = None
+        comp = GUI.Window()
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = (612, 558)
+        comp.position = (100, 100, 0.5)
+        comp.visible = False
+        DragWin.__init__(self, comp)
+        self.component.script = self
+        comp = GUI.Frame2('soGUI/frame/basic_frame_1.dds')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.widthMode, comp.heightMode = ('CLIP', 'CLIP')
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+        comp.width, comp.height = (2, 2)
+        comp.position = (0, 0, 1)
+        comp.materialFX = 'BLEND'
+        self.component.addChild(comp, 'frame')
+        comp = GUI.Window()
+        btn = soButton(comp)
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('RIGHT', 'TOP')
+        comp.width, comp.height = (18, 18)
+        comp.position = (self.component.width - 8, 8, 0.2)
+        self.component.addChild(comp, 'closeBox')
+        btn.onBound()
+        btn.initVSC('soGUI/elements/closeBox.xml')
+        btn.onClick = self.hide
+        comp = GUI.Window()
+        btn = soButton(comp)
+        btn.initVSC('soGUI/elements/button_1.xml')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'BOTTOM')
+        comp.label.font = 'RobotoCondensedRegular_16.font'
+        comp.label.text = lc('Helicopter.gui.cancel')
+        comp.width, comp.height = (143, 25)
+        comp.position = (self.component.width / 2 + 16, self.component.height - 14, 0.1)
+        comp.script.onClick = self.hide
+        self.component.addChild(comp, 'btn_cancel')
+        btn.onBound()
+        comp = GUI.Window()
+        btn = soButton(comp)
+        btn.initVSC('soGUI/elements/button_1.xml')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('RIGHT', 'BOTTOM')
+        comp.label.font = 'RobotoCondensedRegular_16.font'
+        comp.label.text = lc('Helicopter.gui.takeplace')
+        comp.width, comp.height = (143, 25)
+        comp.position = (self.component.width / 2 - 16, self.component.height - 14, 0.1)
+        comp.script.onClick = self._on_take_place_click
+        self.component.addChild(comp, 'btn_takeplace')
+        btn.onBound()
+        self._seat_button = btn
+        comp = GUI.Text(lc('Helicopter.gui.caption0'))
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'BOTTOM')
+        comp.width, comp.height = (300, 25)
+        comp.position = (14, 27, 0.1)
+        comp.colour = CC.active_rgba
+        comp.font = 'RobotoCondensedRegular_16.font'
+        self.component.addChild(comp)
+        comp = GUI.Text(lc('Helicopter.gui.caption1'))
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'BOTTOM')
+        comp.width, comp.height = (300, 25)
+        comp.position = (14, 53, 0.1)
+        comp.colour = CC.inactive_rgba
+        comp.font = 'RobotoCondensedRegular_16.font'
+        self.component.addChild(comp)
+        comp = GUI.Simple('soGUI/frame/helicopter/Helicopter.dds')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+        comp.pixelSnap = True
+        comp.position = (self.component.width / 2, self.component.height / 2, 0.9)
+        comp.width, comp.height = comp.texture.width, comp.texture.height
+        self.component.addChild(comp)
+        self._places = []
+        self._selected = None
+        self._hovered = None
+        index = [0]
+
+        def create_place(vertical, position):
+            index[0] += 1
+            seat_place = Seatplace(vertical)
+            seat_place.index = index[0]
+            seat_place.component.position = position
+            seat_place.on_hover_callback = self._on_place_hover
+            seat_place.on_click_callback = self._on_place_click
+            seat_place.on_dbl_click_callback = self._on_dbl_place_click
+            self.component.addChild(seat_place.component)
+            self._places.append(seat_place)
+
+        create_place(True, (158, 218, 0.2))
+        create_place(False, (214, 208, 0.2))
+        create_place(False, (257, 208, 0.2))
+        create_place(False, (299, 208, 0.2))
+        create_place(False, (342, 208, 0.2))
+        create_place(True, (434, 264, 0.2))
+        self._boxes = Boxes(self.component)
+        return
+
+    def _clear_seats(self):
+        self._selected = None
+        self._hovered = None
+        for i, p in enumerate(self._places):
+            occupied = self._helicopter.seat_ids[i + 1]
+            p.set_mode(SeatMode.Occupided if occupied else SeatMode.Free)
+
+        self._update_seat_button()
+        self._boxes.apply_count(len(self._helicopter.boxes))
+        return
+
+    def _on_place_hover(self, place, enter):
+        if enter:
+            if self._hovered == place:
+                return
+            if self._hovered:
+                self._hovered.set_mode(SeatMode.Free)
+            self._hovered = None
+            if place.seat_mode == SeatMode.Free:
+                self._hovered = place
+            if self._hovered:
+                self._hovered.set_mode(SeatMode.Highlighted)
+        else:
+            if self._hovered:
+                self._hovered.set_mode(SeatMode.Free)
+            self._hovered = None
+        return
+
+    def _on_place_click(self, place):
+        if self._selected == place:
+            return
+        elif place.seat_mode == SeatMode.Occupided:
+            return
+        else:
+            if self._selected:
+                self._selected.set_mode(SeatMode.Free)
+            self._selected = place
+            if self._selected:
+                self._selected.set_mode(SeatMode.Selected)
+            if self._hovered and self._hovered.seat_mode != SeatMode.Highlighted:
+                self._hovered = None
+            self._update_seat_button()
+            return
+
+    def on_seat_changed(self):
+        for i, p in enumerate(self._places):
+            occupied = self._helicopter.seat_ids[i + 1]
+            if occupied:
+                p.set_mode(SeatMode.Occupided)
+            elif p.seat_mode == SeatMode.Occupided:
+                p.set_mode(SeatMode.Free)
+
+        if self._selected and self._selected.seat_mode != SeatMode.Selected:
+            self._selected = None
+        if self._hovered and self._hovered.seat_mode != SeatMode.Highlighted:
+            self._hovered = None
+        self._update_seat_button()
+        return
+
+    def on_boxes_changed(self):
+        self._boxes.apply_count(len(self._helicopter.boxes))
+
+    def _update_seat_button(self):
+        enabled = self._selected and self._selected.seat_mode != SeatMode.Occupided
+        self._seat_button.setDisabledState(not enabled)
+
+    def _on_dbl_place_click(self, place):
+        helicopter = self._helicopter
+        self.hide()
+        self._request_seat(helicopter)
+
+    def _on_take_place_click(self):
+        helicopter = self._helicopter
+        self.hide()
+        self._request_seat(helicopter)
+
+    def _request_seat(self, helicopter):
+        player = BigWorld.player()
+        if player.will_die_on > 0:
+            player.notify_iwannadie()
+            return
+        if player.is_box_moving() or player.waiting_autopickup() or not player.CheckRestriction(RestrictionsUtils.CHANNEL_ITEMS) or player.dead or player.isPlayerJump() or player.physics.inAir or player.binoculing:
+            return
+        player.on_heliseat_requested(helicopter.id)
+        helicopter.cell.request_seat(self._selected.index)
+
+    def show(self, helicopter):
+        if self.component.visible:
+            return
+        self._helicopter = helicopter
+        self.component.visible = True
+        BWPersonality.GUICore.setBestCursor()
+        self._pot_handler = BigWorld.addPot(helicopter.matrix, helicopter.get_interaction_dist() + 0.5, self._on_pot)
+        self._clear_seats()
+        self.onBound()
+
+    def _on_pot(self, entered, handle):
+        if not entered:
+            self.hide()
+
+    def hide(self):
+        if not self.component.visible:
+            return
+        else:
+            self._helicopter = None
+            BigWorld.delPot(self._pot_handler)
+            self._pot_handler = None
+            self.component.visible = False
+            BWPersonality.GUICore.setBestCursor()
+            return
+
+    @property
+    def visible(self):
+        return self.component.visible

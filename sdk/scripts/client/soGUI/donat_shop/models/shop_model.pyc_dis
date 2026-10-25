@@ -1,0 +1,120 @@
+# Embedded file name: ./client/soGUI/donat_shop/models/shop_model.py
+from Localization import lc
+import StoreHouseConst
+from model import Model
+from StoreHouse import getDonateItemOriginalCost, getDonateItemCostPotential
+import BWPersonality
+
+class EventType:
+    OnRec, OnCurrencyChanged, OnMoneyChanged = ((r, 'shop_model') for r in range(3))
+
+
+class RecType:
+    Banner, Item = range(2)
+
+
+class ShopModel(Model):
+
+    def __init__(self):
+        Model.__init__(self)
+        self._pending_recs = None
+        self._got_items = False
+        self.recom = []
+        self._currency = None
+        self.consumables = []
+        return
+
+    def has_item_discount_now(self, item_type):
+        if not self.is_valid(item_type):
+            return False
+        item_data = self.get_item(item_type)
+        if not item_data['promo_discount'] or item_data['promo_cost'] == item_data['original_cost']:
+            return False
+        cur_time = BWPersonality.gpd.server_time
+        if item_data['promo_time_start'] > cur_time:
+            return False
+        if item_data['promo_time_end'] < cur_time:
+            return False
+        return True
+
+    def get_item_actual_cost(self, item_type):
+        if not self.is_valid(item_type):
+            return None
+        else:
+            item_data = self.get_item(item_type)
+            if self.has_item_discount_now(item_type):
+                return item_data['promo_cost']
+            return item_data['original_cost']
+            return None
+
+    def set_items(self, items, currency):
+        self.currency = currency
+        Model.set_items(self, items)
+        self._got_items = True
+        if self._pending_recs:
+            self.update_reccomendations(*self._pending_recs)
+            self._pending_recs = None
+        return
+
+    def _convert_item_format(self, item):
+        item = dict(item)
+        item['uid'] = item['item_type']
+        promo_cost = getDonateItemCostPotential(item, self._currency)
+        original_cost = getDonateItemOriginalCost(item, self._currency)
+        item['promo_cost'] = promo_cost
+        item['original_cost'] = original_cost
+        return item
+
+    def is_valid(self, item_type):
+        item_data = self.get_item(item_type)
+        return item_data and 'original_cost' in item_data
+
+    def _create_broken_item(self, uid):
+        return {'uid': uid,
+         'item_type': uid}
+
+    def update_reccomendations(self, recom, popular, consumables, banner_id):
+        if not self._got_items:
+            self._pending_recs = (recom,
+             popular,
+             consumables,
+             banner_id)
+            return
+        self.recom = [ {'rec_type': RecType.Item,
+         'item_type': rec} for rec in recom ]
+        if banner_id:
+            banner_dds = StoreHouseConst.getDonatBannerPath(banner_id)
+            self.recom.insert(0, {'rec_type': RecType.Banner,
+             'banner': banner_dds})
+        self.pops = popular
+        self.consumables = consumables
+        self.notify_listeners(EventType.OnRec)
+
+    def get_item(self, item_uid):
+        item = Model.get_item(self, item_uid)
+        if not item:
+            return self._create_broken_item(item_uid)
+        return item
+
+    def on_money_changed(self):
+        self.notify_listeners(EventType.OnMoneyChanged)
+
+    @property
+    def currency(self):
+        return self._currency
+
+    @currency.setter
+    def currency(self, value):
+        if self._currency == value:
+            return
+        self._currency = value
+        self.notify_listeners(EventType.OnCurrencyChanged)
+
+
+def get_currency_name(currency):
+    if currency == StoreHouseConst.CURRENCY_PLATINA_NAME:
+        return lc('StoreHouse.shopitem.PLATINA')
+    elif currency:
+        return currency
+    else:
+        return lc('StoreHouse.shopitem.GOLD')

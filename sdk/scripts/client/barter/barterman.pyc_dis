@@ -1,0 +1,187 @@
+# Embedded file name: ./client/barter/barterman.py
+import BigWorld
+import BWPersonality
+from ChatChannelConfig import CHANNEL_CONSTS
+from Localization import lc
+from Constants import BarterNotification as BN, BarterError as BE
+from barter.barterwin import EventType as WinET
+from barter.container import EventType as ContET
+import gui_jokes
+from AvatarItemHolder import SQR_TRADE_RANGE
+from math import sqrt
+from utils import pyFixedToNativePythonType as toPy
+import zlib
+import ItemsUtils
+
+class State:
+    Null, Propose, Active = range(3)
+
+
+class BarterMan:
+    _bartstate = State.Null
+    _bartopponent = None
+    _last_propose_time = 0
+    _check_handler = None
+    _trade_id = None
+
+    def onEnterWorld(self):
+        pass
+
+    def _can_barter(self, opponent):
+        if self.isDestroyed or not opponent or opponent.isDestroyed or self.dead or opponent.dead:
+            return False
+        if opponent.position.distTo(BigWorld.player().position) > sqrt(SQR_TRADE_RANGE):
+            return False
+        return True
+
+    def _can_start_barter(self, opponent):
+        if not self._can_barter(opponent):
+            return False
+        if self._get_barstate() != State.Null:
+            return False
+        if self._bartopponent:
+            return False
+        return True
+
+    def propose_barter(self, opponent):
+        if not self._can_start_barter(opponent):
+            self.putMessage(CHANNEL_CONSTS.SYSTEM, lc('Barter.message.cant'))
+            return
+        if self.inPVPinstance:
+            self.putMessage(CHANNEL_CONSTS.SYSTEM, lc('Avatar.pvp.action_forbidden_pvpspace'))
+            return
+
+        def agree(event):
+            if event == gui_jokes.askUserYesNo.YES:
+                if self._can_start_barter(opponent):
+                    opponent.cell.notify_barter_event(BN.Propose, [], [])
+                    self._set_barstate(State.Propose, opponent)
+
+        text = lc('Barter.message.propose_text').format(opponent.name)
+        gui_jokes.askUserYesNoDelayDeafultNo(lc('Barter.message.propose_title'), text, agree, modal=False)
+        BWPersonality.GUICore.setMouseAltState(True, True)
+
+    def _on_win_event(self, event_type, data):
+        if event_type == WinET.OnClose:
+            self._bartwin.remove_listener(self._on_win_event)
+            if self._bartopponent and not self._bartopponent.isDestroyed:
+                self._bartopponent.cell.notify_barter_event(BN.Cancel, [self.id], [])
+            self._set_barstate(State.Null)
+        elif event_type == WinET.OnComply:
+            opponent_id = self._bartopponent.id
+            trade_id = self._trade_id
+            self._bartwin.hide()
+            item_ids = [ item['complexItemID'] for item in data['items'] ]
+            money = data['money']
+            data_to_serialize = toPy((data['opponent_items'], data['opponent_money']))
+            opponent_data_hash = zlib.crc32(ItemsUtils.serialize_data(data_to_serialize)) & 65535
+            if trade_id:
+                self.cell.comply_barter0(opponent_id, item_ids, money, opponent_data_hash, trade_id)
+
+    def _on_container_event(self, event_type, data):
+        if event_type in (ContET.OnCleared, ContET.OnAdded, ContET.OnRemoved):
+            BigWorld.callback(0, BWPersonality.GUICore.inventoryGUI.update)
+
+    @property
+    def _bartwin(self):
+        return BWPersonality.GUICore.barterwin
+
+    def _show_win_and_subscribe(self, trade_id):
+        self._trade_id = trade_id
+        self._bartwin.show(self._bartopponent)
+        self._bartwin.remove_listener(self._on_win_event)
+        self._bartwin.add_listener(self._on_win_event)
+        self._bartwin.get_player_container().add_listener(self._on_container_event)
+        BWPersonality.GUICore.setBestCursor()
+
+    def notify_barter_event(self, event_type, ints_data, strs_data):
+        if event_type == BN.Propose:
+            opponent = BigWorld.entities.get(ints_data[0])
+            if self._can_start_barter(opponent):
+                self._set_barstate(State.Propose, opponent)
+
+                def agree(event):
+                    if event == gui_jokes.askUserYesNo.YES:
+                        trade_id = strs_data[0]
+                        opponent.cell.notify_barter_event(BN.AgreePropose, [self.id], [trade_id])
+                        self._show_win_and_subscribe(strs_data[0])
+                        self._set_barstate(State.Active, opponent)
+                    else:
+                        opponent.cell.notify_barter_event(BN.RefusePropose, [self.id], [])
+                        self._set_barstate(State.Null)
+
+                text = lc('PlayerAvatar.client.OTHER_PLAYER_OFFERS_BARTER').format(opponent.name)
+                gui_jokes.askUserYesNoDelayDeafultNo(lc('PlayerAvatar.client.BARTER_OFFER'), text, agree, 10.0, modal=False)
+            elif opponent:
+                opponent.cell.notify_barter_event(BN.BadPropose, [], [])
+        elif event_type == BN.BadPropose:
+            self._set_barstate(State.Null)
+            if not (len(ints_data) > 0 and ints_data[0]):
+                error = BE.Common
+                error == BE.BadZone and self.putMessage(CHANNEL_CONSTS.SYSTEM, lc('Inventory.RESTRICT_TRADE'))
+            else:
+                self.putMessage(CHANNEL_CONSTS.SYSTEM, lc('Barter.message.cant'))
+        elif event_type == BN.ServerNotReady:
+            self._set_barstate(State.Null)
+            self.putMessage(CHANNEL_CONSTS.SYSTEM, lc('Barter.message.cant'))
+        elif event_type == BN.RefusePropose:
+            self._set_barstate(State.Null)
+        elif event_type == BN.AgreePropose:
+            opponent = BigWorld.entities.get(ints_data[0])
+            self._show_win_and_subscribe(strs_data[0])
+            self._set_barstate(State.Active, opponent)
+        elif event_type == BN.Cancel:
+            if self._get_barstate() == State.Active:
+                self._show_opponent_cancel_message()
+            self._bartwin.remove_listener(self._on_win_event)
+            self._bartwin.hide()
+            self._set_barstate(State.Null)
+        elif event_type == BN.Black:
+            self.putMessage(CHANNEL_CONSTS.SYSTEM, lc('Barter.message.black'))
+
+    def _show_opponent_cancel_message(self):
+        name = u''
+        if self._bartopponent and not self._bartopponent.isDestroyed:
+            name = self._bartopponent.name
+        title = lc('Inventory.client.exchangeCancelPopupTitle')
+        msg = lc('Inventory.client.exchangeCancelPopupMsg').format(name)
+        gui_jokes.askUserOk(title, msg)
+
+    def _check_pot_tick(self):
+        if not self._bartwin.visible:
+            self._check_handler = None
+            return
+        elif not self._can_barter(self._bartopponent):
+            self._show_opponent_cancel_message()
+            self._check_handler = None
+            self._bartwin.hide()
+            self._set_barstate(State.Null)
+            return
+        else:
+            self._check_handler = BigWorld.callback(0, self._check_pot_tick)
+            return
+
+    def is_item_barter_locked(self, item_id):
+        if not BWPersonality.GUICore.barterwin_visible():
+            return False
+        return self._bartwin.is_item_locked(item_id)
+
+    def _set_barstate(self, state, opponent = None):
+        self._bartstate = state
+        self._last_propose_time = 0
+        if self._bartstate == State.Propose:
+            self._last_propose_time = BigWorld.time()
+        elif self._bartstate == State.Null:
+            self._trade_id = None
+        self._bartopponent = opponent
+        if self._check_handler:
+            BigWorld.cancelCallback(self._check_handler)
+            self._check_handler = None
+        if self._bartstate == State.Active:
+            self._check_handler = BigWorld.callback(0, self._check_pot_tick)
+        return
+
+    def _get_barstate(self):
+        if self._bartstate == State.Propose and BigWorld.time() - self._last_propose_time > 10.0:
+            self._set_barstate(State.Null)
+        return self._bartstate

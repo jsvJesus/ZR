@@ -1,0 +1,273 @@
+# Embedded file name: ./client/devil_utils/animation_controller.py
+import traceback
+import BigWorld
+from cdevil_utils.dutils import ServerEventType as SET, FartState, Stage, idle_animations, strike_params, MAX_MUSHROOM_HEALTH
+import AnimationCaps
+from FX.persistent_ext_bg import loadPersistentExtAsync, PersistentExt
+import FX
+import math_bw
+from Helpers.BWCoroutine import BWMemberCoroutine, BWWaitForPeriod, BWWaitForCondition, BWCoroutineTimeoutException
+sfx_mush_1 = 'sfx/Mob/brutor_nushroom/brutor_pain_explosion_front.xml'
+sfx_mush_2 = 'sfx/Mob/brutor_nushroom/brutor_pain_explosion_back.xml'
+
+class AnimationController:
+
+    def __init__(self, parent_entity):
+        self._entity = parent_entity
+        self._gesture_queue = None
+        self._die_action_played = False
+        self._protected = False
+        self._bellied = False
+        self._fart_sfx_active = None
+        self._fart_sfx_passive = None
+        self._subscribed_model = None
+        self._aggro_trigger = None
+        self._heal_max_trigger = None
+        self._win_counter_trigger = None
+        return
+
+    def on_enter_world(self):
+        self._update_protection()
+        self._update_belly()
+        if self._entity.state_index == Stage.Flowers:
+            self._entity.model.boss_healing()
+        sfx_name_active = 'sfx/Mob/brutor_nushroom/brutor_mushroom_farting.xml'
+        sfx_name_passive = 'sfx/Mob/brutor_nushroom/brutor_mushroom_farting.xml'
+
+        def on_load(prereqs):
+            if not self._has_valid_model():
+                return
+            self._fart_sfx_active = PersistentExt(sfx_name_active, prereqs)
+            self._fart_sfx_active.attach(self._entity.model)
+            self._fart_sfx_passive = PersistentExt(sfx_name_passive, prereqs)
+            self._fart_sfx_passive.attach(self._entity.model)
+            self._update_fartvisual()
+
+        loadPersistentExtAsync([sfx_name_active, sfx_name_passive], on_load)
+
+    def subscribe_to_model(self, model):
+        if self._subscribed_model:
+            self._subscribed_model.cue('DropMushroom', None)
+            self._subscribed_model.cue('PainNextStage', None)
+        self._subscribed_model = model
+        if self._subscribed_model:
+            self._subscribed_model.cue('DropMushroom', self._on_drop_mushrom_cue)
+            self._subscribed_model.cue('PainNextStage', self._on_aggro_cue)
+        return
+
+    def _on_drop_mushrom_cue(self):
+        self._aggro_trigger = True
+        if self._has_valid_model():
+            FX.bufferedOneShotEffect(sfx_mush_1, self._entity.model)
+            FX.bufferedOneShotEffect(sfx_mush_2, self._entity.model)
+
+    def on_stage_started(self, stage_index, prev_stage_index):
+        if not self._entity.model:
+            return
+        agressive = self._entity.state_index not in (Stage.Undefined, Stage.Wait)
+        AnimationCaps.setCap(self._entity.model, 'Aggressive', agressive)
+        if self._entity.state_index == Stage.Wait:
+            self._entity.model.boss_inactive()
+        else:
+            self._entity.model.boss_inactive.stop()
+        if self._entity.state_index == Stage.Dead:
+            self._show_death(False)
+
+    def _has_valid_model(self):
+        return bool(self._entity and not self._entity.isDestroyed and self._entity.model)
+
+    @BWMemberCoroutine
+    def _death_coroutine(self):
+        yield BWWaitForPeriod(2.0)
+        if self._has_valid_model():
+            self._entity.model.boss_die().boss_dead()
+
+    def _on_aggro_cue(self):
+        self._aggro_trigger = True
+
+    def _health_ratio(self):
+        return math_bw.clamp(self._entity.mushroom_health / MAX_MUSHROOM_HEALTH)
+
+    @BWMemberCoroutine
+    def _stage_pain_coroutine(self):
+        if not self._has_valid_model():
+            return
+        else:
+            apply_ratio = self._health_ratio()
+            self._entity._mushrooms_controller.override_mushroom_factor(apply_ratio)
+            self._entity.model.brutor_pain_next_stage()
+            self._aggro_trigger = None
+            self._heal_max_trigger = None
+            try:
+                yield BWWaitForCondition(lambda : self._aggro_trigger, 3.0, 0)
+            except BWCoroutineTimeoutException:
+                self._entity._mushrooms_controller.override_mushroom_factor(None)
+                print '  Devil animation (ERROR): no cue found'
+                traceback.print_stack()
+                return
+
+            desired_ratio = 1
+            start_heal = BigWorld.time()
+            while not self._heal_max_trigger:
+                move_speed = 0.5
+                apply_ratio = math_bw.move_towards(apply_ratio, desired_ratio, BigWorld.getTimeDelta() * move_speed)
+                self._entity._mushrooms_controller.override_mushroom_factor(apply_ratio)
+                yield BWWaitForPeriod(0)
+                if BigWorld.time() - start_heal > 3.0:
+                    print '  Devil animation (ERROR): no heal max signal'
+                    traceback.print_stack()
+                    break
+
+            self._entity._mushrooms_controller.override_mushroom_factor(None)
+            return
+
+    @BWMemberCoroutine
+    def _lose_pain_coroutine(self):
+        if not self._has_valid_model():
+            return
+        else:
+            self._entity.model.boss_pain()
+            win_counter = self._entity.win_counter
+            apply_ratio = self._health_ratio()
+            self._entity._mushrooms_controller.override_win_counter(win_counter)
+            self._entity._mushrooms_controller.override_mushroom_factor(apply_ratio)
+            self._aggro_trigger = None
+            self._win_counter_trigger = None
+            self._heal_max_trigger = None
+            try:
+                yield BWWaitForCondition(lambda : self._aggro_trigger, 5.0, 0)
+            except BWCoroutineTimeoutException:
+                self._entity._mushrooms_controller.override_win_counter(None)
+                self._entity._mushrooms_controller.override_mushroom_factor(None)
+                print '  Devil animation (ERROR): no cue found'
+                traceback.print_stack()
+                return
+
+            self._entity._mushrooms_controller.override_win_counter(win_counter + 1)
+            self._entity._mushrooms_controller.override_mushroom_factor(1)
+            try:
+                yield BWWaitForCondition(lambda : self._heal_max_trigger, 5.0, 0)
+            except BWCoroutineTimeoutException:
+                print '  Devil animation (ERROR): no heal max signal'
+                traceback.print_stack()
+
+            self._entity._mushrooms_controller.override_win_counter(None)
+            self._entity._mushrooms_controller.override_mushroom_factor(None)
+            return
+
+    def on_wincounter_changed(self):
+        self._win_counter_trigger = True
+
+    def _show_death(self, smooth):
+        if self._die_action_played:
+            return
+        self._die_action_played = True
+        if smooth:
+            self._death_coroutine().run()
+        else:
+            self._entity.model.boss_dead()
+
+    def debug_animation(self, animation):
+        anim = getattr(self._entity.model, animation, None)
+        if anim:
+            anim()
+        return
+
+    def belly_mode_changed(self):
+        self._update_belly()
+
+    def protection_mode_changed(self):
+        self._update_protection()
+
+    def fartstate_changed(self):
+        self._update_fartvisual()
+
+    def _update_fartvisual(self):
+        if self._entity.isDestroyed or self._fart_sfx_active is None:
+            return
+        else:
+            if self._entity.fartstate == FartState.Active:
+                self._fart_sfx_active.go()
+                self._fart_sfx_passive.stop()
+            elif self._entity.fartstate == FartState.Passive:
+                self._fart_sfx_passive.go()
+                self._fart_sfx_active.stop()
+            else:
+                self._fart_sfx_active.stop()
+                self._fart_sfx_passive.stop()
+            return
+
+    def _update_belly(self):
+        if not self._entity.model:
+            return
+        if self._entity.belly_open:
+            if not self._bellied:
+                self._bellied = True
+                self._entity.model.brutor_stomach_active()
+        elif self._bellied:
+            self._bellied = False
+            self._entity.model.brutor_stomach_active.stop()
+
+    def _update_protection(self):
+        if not self._entity.model:
+            return
+        if self._entity.protection_mode:
+            if not self._protected:
+                self._protected = True
+                self._entity.model.boss_defence_belly()
+        elif self._protected:
+            self._protected = False
+            self._entity.model.boss_defence_belly.stop()
+
+    def on_server_event(self, event_type, ints):
+        if self._entity.isDestroyed:
+            return
+        else:
+            model = self._entity.model
+            if model:
+                if event_type == SET.OnStrike:
+                    strike_type = ints[0]
+                    action = strike_params[strike_type]['action']
+                    getattr(model, action)()
+                elif event_type == SET.OnPain:
+                    if self._entity.state_index == Stage.Stage4:
+                        self._lose_pain_coroutine().run()
+                    else:
+                        self._stage_pain_coroutine().run()
+                elif event_type == SET.OnFlowerStart:
+                    model.boss_healing()
+                elif event_type == SET.OnHealMax:
+                    self._heal_max_trigger = True
+                elif event_type == SET.OnFlowerStop:
+                    model.boss_healing.stop()
+                elif event_type == SET.OnFlowerDamage:
+                    model.boss_sit_hit()
+                elif event_type == SET.OnDieStart:
+                    self._show_death(True)
+                elif event_type == SET.OnAwoke:
+                    model.boss_wakeup()
+                elif event_type == SET.OnStartWait:
+                    if self._gesture_queue:
+                        self._gesture_queue.stop()
+                        self._gesture_queue = None
+                    idle_animation_index = ints[0]
+                    if idle_animation_index > 0:
+                        gesture = idle_animations[idle_animation_index]
+                        self._gesture_queue = getattr(model, gesture)()
+                elif event_type == SET.OnStopWait:
+                    if self._gesture_queue:
+                        self._gesture_queue.stop()
+                        self._gesture_queue = None
+            return
+
+    def release(self):
+        self.subscribe_to_model(None)
+        if self._fart_sfx_active:
+            self._fart_sfx_active.stop()
+            self._fart_sfx_active.detach()
+            self._fart_sfx_active = None
+        if self._fart_sfx_passive:
+            self._fart_sfx_passive.stop()
+            self._fart_sfx_passive.detach()
+            self._fart_sfx_passive = None
+        return

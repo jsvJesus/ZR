@@ -1,0 +1,109 @@
+# Embedded file name: ./client/ui/panel.py
+import BigWorld
+import Keys
+import GUI
+from Helpers.PyGUI.PyGUIBase import Interceptor
+from transform import Transform
+from observable import Observable
+
+class EventType:
+    Drag, StartDrag, StopDrag, MouseEnter, MouseLeave, Scale, OnModeApplied, OnSizeChanged = xrange(8)
+
+
+class Panel(Interceptor, Observable):
+
+    def __init__(self, parent_component, name, depth = 0.5, component = None):
+        Observable.__init__(self)
+        if not component:
+            component = GUI.Window()
+        component.position[2] = depth
+        if parent_component:
+            parent_component.addChild(component, name)
+        component.materialFX = 'SOLID'
+        Interceptor.__init__(self, component, intercept_buttons=False, intercept_moving=False, interscept_keys=False)
+        self.component.script = self
+        self._last_down_pos = (None, None)
+        self.transform = Transform(component)
+        self._draggable = False
+        self._scalable = False
+        self._drag_pos = None
+        return
+
+    def set_draggable(self, value = True):
+        self.change_interseption(intercept_buttons=value, intercept_moving=value)
+        self._draggable = value
+
+    def set_scalable(self):
+        self._scalable = True
+
+    def handleMouseEnterEvent(self, comp):
+        self.on_event(EventType.MouseEnter)
+        return False
+
+    def handleMouseLeaveEvent(self, comp):
+        self.on_event(EventType.MouseLeave)
+        return False
+
+    def on_standard_click(self, event):
+        pass
+
+    def handleMouseButtonEvent(self, component, event):
+        cur_pos = self.component.screenToLocal(event.cursorPosition)
+        if event.key == Keys.KEY_LEFTMOUSE:
+            if event.isKeyDown():
+                self._last_down_pos = (cur_pos, event.cursorPosition)
+            elif self._last_down_pos[0]:
+                loc_pos_delta = (cur_pos - self._last_down_pos[0]).length
+                world_pos_delta = (event.cursorPosition - self._last_down_pos[1]).length
+                if loc_pos_delta < 0.5 and world_pos_delta == 0:
+                    self._last_down_pos = (None, None)
+                    self.on_standard_click(event)
+                    return True
+        if not self._draggable:
+            return False
+        else:
+            self._drag_pos = None
+            if event.key == Keys.KEY_LEFTMOUSE:
+                if event.isKeyDown():
+                    self._drag_pos = cur_pos
+                    self.on_event(EventType.StartDrag)
+                    self._drag_tick()
+            return True
+
+    def handleMouseEvent(self, component, event):
+        if not self._scalable:
+            return False
+        if event.dz:
+            scale_pos = self.component.screenToLocal(event.cursorPosition)
+            scale = 1.0 + event.dz * 0.001
+            self.transform.scale(scale_pos, scale)
+            self.on_event(EventType.Scale)
+        return True
+
+    def _drag_tick(self):
+        if not BigWorld.isKeyDown(Keys.KEY_LEFTMOUSE):
+            self._drag_pos = None
+        if not self._drag_pos:
+            self.on_event(EventType.StopDrag)
+            return
+        else:
+            cursor_pos = GUI.mcursor().position
+            width, height = BigWorld.screenSize()
+            x = (cursor_pos[0] + 1.0) * 0.5 * width
+            y = (cursor_pos[1] + 1.0) * 0.5 * height
+            self.transform.set_screen_pos(self._drag_pos[0], self._drag_pos[1], x, y)
+            self.on_event(EventType.Drag)
+            BigWorld.callback(0, self._drag_tick)
+            return
+
+    def on_size_changed(self):
+        self.on_event(EventType.OnSizeChanged)
+
+    def on_mode_applied(self):
+        self.on_event(EventType.OnModeApplied)
+
+    def debug_colorise(self, color):
+        self.component.textureName = 'soGUI/frame/paint/check.dds'
+        self.component.materialFX = 'BLEND'
+        self.component.filterType = 'POINT'
+        self.component.colour = color

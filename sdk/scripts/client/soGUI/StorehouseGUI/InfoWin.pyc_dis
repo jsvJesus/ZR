@@ -1,0 +1,320 @@
+# Embedded file name: ./client/soGUI/StorehouseGUI/InfoWin.py
+import BigWorld
+from Helpers.PyGUI.PyGUIBase import PyGUIBase, Interceptor
+import GUI
+from soGUI.StorehouseGUI.ShopUtils import ComplexAmountButton, PaintButton, FontWrapper
+from Localization import lc
+import item_info_text_generator
+import re
+import BWPersonality
+from soGUI.soHyperLinkComponent import soHyperLinkComponent as HyperLink
+from soGUI.UtilsGUI.ScrollBar import ScrollBar
+from soGUI.BB_Viewer import BB_Viewer
+import ItemsUtils
+from soGUI.UtilsGUI.TextScaler import TextScaler
+from Items import ItemsCatalog
+import utils
+import sounds_manager as sm
+
+class InfoBBViewer(BB_Viewer):
+
+    def __init__(self, *args, **kwargs):
+        BB_Viewer.__init__(self, *args, **kwargs)
+        self.on_show_item = lambda item: None
+
+    def _on_show_item(self, item):
+        self._bb_win.hide()
+        self.on_show_item(item['complexItemType'])
+
+
+class InfoContent(Interceptor):
+    INTERFACE_ID = 'soGUI.StorehouseGUI.InfoContent'
+
+    def __init__(self, component):
+        component.script = self
+        self.on_back_click = lambda : None
+        self.on_close_click = lambda : None
+        self.on_show_item = lambda : None
+        self._bb_viewer = None
+        Interceptor.__init__(self, component)
+        self._repositioners = []
+        self._setup_content()
+        return
+
+    def _setup_content(self):
+        comp = GUI.Window()
+        self.complex_button = ComplexAmountButton(comp)
+        self.complex_button.text = lc('StoreHouse.infowin.TO_BIN')
+        self.component.addChild(comp, 'buybutton')
+        self._repositioners.append(self.complex_button)
+        comp = GUI.Window()
+        comp.materialFX = 'SOLID'
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width = 540
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.position = (22, 34, 0.5)
+        self.component.addChild(comp, 'info_text')
+
+        class ScrollCompWrapper:
+
+            def __init__(self, component):
+                self.component = component
+                component.script = self
+
+            def do_reposition(self):
+                pass
+
+            def text_height(self):
+                return self.component.height
+
+            def disp(self):
+                return 0
+
+        base_comp = comp
+        self._scroll_comp = GUI.Window()
+        ScrollCompWrapper(self._scroll_comp)
+        self._scroll_comp.materialFX = 'SOLID'
+        self._scroll_comp.widthMode = 'CLIP'
+        self._scroll = ScrollBar(base_comp, self._scroll_comp, self.component, True)
+        self._scroll.set_line_pos(0.94)
+        comp = GUI.Text(u'')
+        comp.colour = (100, 0, 0, 255)
+        self._repositioners.append(TextScaler(comp, 'RobotoCondensedRegular_18'))
+        comp.widthMode, comp.heightMode = ('CLIP', 'PIXEL')
+        comp.width = 2
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'CENTER')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'PIXEL')
+        comp.position = (-1, 0, 0.4)
+        self._scroll_comp.addChild(comp, 'header_background')
+        comp = GUI.Window()
+        comp.materialFX = 'SOLID'
+        comp.widthMode, comp.heightMode = ('CLIP', 'PIXEL')
+        comp.width = 2
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'TOP')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'PIXEL')
+        comp.position = (0, 0, 0.5)
+        self._scroll_comp.addChild(comp, 'text_background')
+        self._info_text = FontWrapper(self._scroll_comp.text_background, 'RobotoCondensedRegular_18', color='000000000255')
+        self._info_text.INTERFACE_ID = 'soGUI.StorehouseGUI.InfoContent'
+        self._info_text.manual_color = True
+        comp = GUI.Window()
+        comp.materialFX = 'SOLID'
+        comp.filterType = 'LINEAR'
+        button = PaintButton(comp, visual_state='soGUI/frame/storehouse/storeImageButton.xml')
+        button.hover_sound = None
+        button.image = 'soGUI/frame/storehouse/x.png'
+        button.on_click = lambda : self.on_close_click()
+        self._repositioners.append(button)
+        self.component.addChild(comp, 'close_button')
+        comp = GUI.Window()
+        comp.materialFX = 'SOLID'
+        comp.filterType = 'LINEAR'
+        self._back_button = PaintButton(comp, visual_state='soGUI/frame/storehouse/storeImageButton.xml')
+        self._back_button.image = 'soGUI/frame/storehouse/btn_back.tga'
+        self._back_button.on_click = lambda : self.on_back_click()
+        comp = self._back_button.component
+        comp.horizontalAnchor, comp.verticalAnchor = ('LEFT', 'TOP')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width, comp.height = (30, 30)
+        comp.position = (comp.width * 0.3, comp.height * 0.3, 0.6)
+        self._repositioners.append(self._back_button)
+        self.component.addChild(comp, 'back_button')
+        return
+
+    def set_item_text(self, complex_item, show_button, show_cbutton, show_back):
+        if complex_item:
+            complex_item = utils.PY(complex_item)
+            ItemsUtils.nullifyTimeItem(complex_item)
+        self.complex_button.visible = show_button
+        if self.component.parent.script._cbutton:
+            self.component.cbutton.visible = show_cbutton
+        self._back_button.visible = show_back
+        self.component.info_text.height = 1.6 if show_button or show_cbutton else 1.7
+        self._scroll.set_bar_limits(0.85, -0.75 if show_button or show_cbutton else -0.85)
+        if BigWorld.isKeyDown(BigWorld.stringToKey('F2')):
+            is_debug_info = BigWorld.player().isAdminAccess()
+            color = u'<color=000000000255>'
+            text_color_highlight = u'<color=200000000255>'
+            text = item_info_text_generator.GetItemInfoText(None, complex_item['complexItemType'], complex_item, isDebugInfo=is_debug_info, color=color, text_color_highlight=text_color_highlight, fromshop=True)
+            if self._bb_viewer:
+                self._scroll_comp.delChild('bb_viewer')
+            if hasattr(self._scroll_comp, 'bb_win'):
+                self._scroll_comp.delChild(self._scroll_comp.bb_win)
+            item_params = ItemsCatalog.GetItemParam(complex_item['complexItemType'])
+            self._bb_viewer = None
+            if item_params.get('isBlackBox'):
+                bb_viewer = InfoBBViewer(complex_item['complexItemType'], self._scroll_comp, '\\c000000FF;', '\\c46422CFF;', 'RobotoCondensedRegular_16.font', self.INTERFACE_ID)
+                bb_viewer.on_show_item = bb_viewer.component and (lambda item: self.on_show_item(item))
+                comp = bb_viewer.component
+                comp.widthMode, comp.heightMode = ('CLIP', 'PIXEL')
+                comp.width = 2
+                comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'TOP')
+                comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'PIXEL')
+                comp.position = (0, 0, 0.5)
+                self._bb_viewer = comp
+                self._scroll_comp.addChild(comp, 'bb_viewer')
+        text = re.compile('<color.*>').sub('', text, 1).rstrip()
+        self._info_text.set_text(text)
+        self._scroll_comp.header_background.text = ItemsUtils.GetItemName(complex_item['complexItemType'])
+        self.do_reposition()
+        return
+
+    def do_reposition(self):
+        parent_mode = (self.component.widthMode, self.component.heightMode)
+        self.component.widthMode, self.component.heightMode = ('PIXEL', 'PIXEL')
+        comp = self.complex_button.component
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'BOTTOM')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'PIXEL')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'PIXEL')
+        comp.width = BigWorld.screenWidth() * 0.135
+        comp.height = comp.width * 0.18
+        comp.position = (0, self.component.height - 24, 0.5)
+        self.component.info_text.height = self.component.height - 34 - 22 - 34 - comp.height
+        comp = self.component.close_button
+        comp.widthMode, comp.heightMode = ('PIXEL', 'CLIP')
+        comp.height = 0.06
+        comp.heightMode = 'PIXEL'
+        comp.width = comp.height
+        comp.horizontalAnchor, comp.verticalAnchor = ('RIGHT', 'TOP')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('PIXEL', 'PIXEL')
+        space = 8
+        comp.position = (self.component.width - space, space, 0.3)
+        self.component.widthMode, self.component.heightMode = parent_mode
+        for r in self._repositioners:
+            r.do_reposition()
+
+        comp = self._scroll_comp
+        comp.heightMode = 'PIXEL'
+        comp.height = 0
+        self._scroll.do_reposition()
+        self._info_text.do_reposition()
+        header = self._scroll_comp.header_background
+        background = self._scroll_comp.text_background
+        header_height = header.height * 1.5
+        header.position[1] = header_height / 2
+        background.position[1] = header_height
+        background.height = self._info_text.height
+        if self._bb_viewer:
+            self._bb_viewer.position[1] = background.position[1] + background.height
+            self._bb_viewer.horizontalPositionMode = 'PIXEL'
+            self._bb_viewer.horizontalAnchor = 'LEFT'
+            self._bb_viewer.position[0] = -6
+            bb_viewer_height = self._bb_viewer.height
+        else:
+            bb_viewer_height = 0
+        self._scroll_comp.height = background.height + header_height + bb_viewer_height
+        self._scroll.do_reposition()
+
+
+class InfoWin(PyGUIBase):
+    instance = None
+
+    def __init__(self, component):
+        component.script = self
+        component.mouseButtonFocus = True
+        component.crossFocus = True
+        PyGUIBase.__init__(self, component)
+        InfoWin.instance = self
+        self._cbutton = None
+        self._setup_content()
+        self.hide()
+        return
+
+    def _setup_content(self):
+        comp = GUI.Window('textures/default/white.dds')
+        comp.horizontalAnchor, comp.verticalAnchor = ('CENTER', 'CENTER')
+        comp.horizontalPositionMode, comp.verticalPositionMode = ('CLIP', 'CLIP')
+        comp.widthMode, comp.heightMode = ('PIXEL', 'CLIP')
+        comp.width, comp.height = (600, 1.21)
+        comp.position = (0, -0.12, 0.5)
+        comp.colour = (255, 250, 230, 255)
+        comp.materialFX = 'SOLID'
+        self._content = InfoContent(comp)
+        self._content.on_show_item = self._append
+        self._content.on_close_click = self.hide
+        self._content.on_back_click = self._back
+        self.component.addChild(comp, 'content')
+
+    def handleMouseButtonEvent(self, comp, event):
+        return True
+
+    def handleMouseClickEvent(self, comp):
+        self.hide()
+        return True
+
+    def _back(self):
+        del self._history[-1]
+        need_buy_button = self._has_buy_button and len(self._history) == 1
+        need_cbutton = self._has_cbutton and len(self._history) == 1
+        self._content.set_item_text(self._history[-1], need_buy_button, need_cbutton, len(self._history) > 1)
+
+    def _on_link_event(self, event, data):
+        if event != HyperLink.EVENT_CLICK or data[1] != 'soGUI.StorehouseGUI.InfoContent':
+            return
+        tag = 'INFO:TYPE:'
+        if tag not in data[0]:
+            raise NotImplementedError
+        sm.playSound('ui/menu_click')
+        self._append(int(data[0][len(tag):]))
+
+    def _append(self, item_type):
+        fake_item = ItemsUtils.CreateFakeItem(item_type, True)
+        self._history.append(fake_item)
+        self._content.set_item_text(fake_item, False, False, True)
+
+    def show_cbutton(self, item_type, bin_model, shop_model):
+        if not self._cbutton:
+            from soGUI.donat_shop.window.shop_tab.shop_item_view import CounterButton
+            self._cbutton = CounterButton(self._content.component, 'cbutton', bin_model, shop_model, None, depth=0.9)
+            self._cbutton.set_visual('soGUI/frame/buttons/donatbutton.json')
+            self._cbutton.transform.set_pixel_mode((0.5, 1), (0.5, 1), (0, 0))
+
+            def on_click():
+                bin_model.add_item_type(self._cbutton._item_type)
+
+            self._cbutton.on_click = on_click
+        self._cbutton.set_item_type(item_type)
+        self.show(item_type, has_cbutton=True)
+        self._align_cbutton()
+        return
+
+    def show(self, item_type, link_button = None, has_cbutton = False, complex_item = None):
+        if self.visible:
+            return
+        self._has_buy_button = bool(link_button)
+        self._has_cbutton = has_cbutton
+        BWPersonality.GUICore.addListener('hlinkEvent', self._on_link_event)
+        self.component.visible = True
+        if link_button:
+            link_button.link(self._content.complex_button)
+        complex_item = complex_item or ItemsUtils.CreateFakeItem(item_type, True)
+        self._history = [complex_item]
+        self._content.set_item_text(complex_item, self._has_buy_button, self._has_cbutton, False)
+
+    def hide(self):
+        if not self.visible:
+            return
+        BWPersonality.GUICore.removeListener('hlinkEvent', self._on_link_event)
+        self.component.visible = False
+        self._content.complex_button.unlink()
+
+    def _align_cbutton(self):
+        if self._cbutton:
+            pixel_ratio = self._cbutton.transform.pixel_ratio
+            mode = self._cbutton.transform._mode[1:]
+            width = BigWorld.screenWidth() * 0.135 / pixel_ratio
+            height = width * 0.18
+            mode[2] = (width, height)
+            pos_y = (self._content.component.height - 24) / pixel_ratio
+            mode[3] = (0, pos_y)
+            self._cbutton.transform.set_pixel_mode(*mode)
+
+    def do_reposition(self):
+        self._content.do_reposition()
+        self._align_cbutton()
+
+    @property
+    def visible(self):
+        return self.component.visible
