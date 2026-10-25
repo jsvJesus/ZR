@@ -6,6 +6,7 @@ public sealed class AssetPaths
     public string ImportLevels => Path.Combine(Root, "import", "levels");
     public string Levels => Path.Combine(Root, "levels");
     public string Materials => Path.Combine(Root, "materials");
+    public string Shaders => Path.Combine(Root, "shaders");
 
     public AssetPaths(string root) => Root = Path.GetFullPath(root);
 

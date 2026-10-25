@@ -12,6 +12,9 @@ namespace Editor.Viewport
 
     public sealed class FreeCamera
     {
+        public const float MinimumSpeed = 1f;
+        public const float MaximumSpeed = 5000f;
+
         public Vector3 Position { get; private set; } =
             new Vector3(0f, 4f, -12f);
 
@@ -63,8 +66,8 @@ namespace Editor.Viewport
 
             Speed = Math.Clamp(
                 Speed * MathF.Pow(1.2f, steps),
-                1f,
-                100f);
+                MinimumSpeed,
+                MaximumSpeed);
         }
 
         public void Move(
@@ -130,7 +133,7 @@ namespace Editor.Viewport
             Position = new Vector3(pose.X, pose.Y, pose.Z);
             Yaw = pose.Yaw;
             Pitch = Math.Clamp(pose.Pitch, -1.50f, 1.50f);
-            Speed = Math.Clamp(pose.Speed, 1f, 100f);
+            Speed = Math.Clamp(pose.Speed, MinimumSpeed, MaximumSpeed);
         }
     }
 }

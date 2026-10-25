@@ -2,7 +2,7 @@ using System.IO;
 using System.Numerics;
 using System.Runtime.InteropServices;
 using SharpDX;
-using SharpDX.D3DCompiler;
+using Editor.Rendering.Shaders;
 using SharpDX.Direct3D11;
 using SharpDX.DXGI;
 using ZoneReborn.World.Assets;
@@ -32,7 +32,7 @@ internal sealed class TerrainOverviewResources : IDisposable
     private Buffer _constants = null!;
     private int _indexCount;
 
-    public TerrainOverviewResources(Device device, LoadedLevel level)
+    public TerrainOverviewResources(Device device, LoadedLevel level, AssetPaths assets)
     {
         _device = device;
         _level = level;
@@ -64,13 +64,9 @@ internal sealed class TerrainOverviewResources : IDisposable
                     Vector3.Normalize(new Vector3(-dx / spacingX, 1, -dz / spacingZ)));
             }
             _vertices = Buffer.Create(device, BindFlags.VertexBuffer, vertices);
-            using var stream = typeof(TerrainOverviewResources).Assembly.GetManifestResourceStream(
-                "Editor.Viewport.Terrain.Shaders.TerrainOverview.hlsl")
-                ?? throw new InvalidOperationException("Embedded Terrain overview shader was not found.");
-            using var reader = new StreamReader(stream);
-            string source = reader.ReadToEnd();
-            using var vertexCode = ShaderBytecode.Compile(source, "VSMain", "vs_4_0");
-            using var pixelCode = ShaderBytecode.Compile(source, "PSMain", "ps_4_0");
+            var shaders = new ShaderCompiler(assets);
+            using var vertexCode = shaders.Compile("Terrain/TerrainOverview.hlsl", "VSMain", "vs_4_0");
+            using var pixelCode = shaders.Compile("Terrain/TerrainOverview.hlsl", "PSMain", "ps_4_0");
             _vertexShader = new VertexShader(device, vertexCode.Bytecode);
             _pixelShader = new PixelShader(device, pixelCode.Bytecode);
             _layout = new InputLayout(device, vertexCode.Bytecode, new[]

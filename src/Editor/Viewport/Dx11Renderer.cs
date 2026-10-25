@@ -1,7 +1,7 @@
 using System.Numerics;
 using System.Runtime.InteropServices;
 using SharpDX;
-using SharpDX.D3DCompiler;
+using Editor.Rendering.Shaders;
 using SharpDX.Direct3D;
 using SharpDX.Direct3D11;
 using SharpDX.DXGI;
@@ -16,40 +16,6 @@ namespace Editor.Viewport
 {
     public sealed class Dx11Renderer : IDisposable
     {
-        private const string ShaderSource = """
-            cbuffer CameraBuffer : register(b0)
-            {
-                row_major float4x4 ViewProjection;
-            };
-
-            struct VertexInput
-            {
-                float3 Position : POSITION;
-                float4 Color : COLOR;
-            };
-
-            struct PixelInput
-            {
-                float4 Position : SV_POSITION;
-                float4 Color : COLOR;
-            };
-
-            PixelInput VSMain(VertexInput input)
-            {
-                PixelInput output;
-                output.Position = mul(
-                    float4(input.Position, 1.0f),
-                    ViewProjection);
-                output.Color = input.Color;
-                return output;
-            }
-
-            float4 PSMain(PixelInput input) : SV_TARGET
-            {
-                return input.Color;
-            }
-            """;
-
         private Device _device = null!;
         private DeviceContext _context = null!;
         private SwapChain _swapChain = null!;
@@ -111,46 +77,36 @@ namespace Editor.Viewport
 
             _context = _device.ImmediateContext;
 
-            var vertexCode = ShaderBytecode.Compile(
-                ShaderSource,
-                "VSMain",
-                "vs_4_0");
+            var shaders = new ShaderCompiler(AssetPaths.FromApplication());
+            using var vertexCode = shaders.Compile("Viewport/Grid.hlsl", "VSMain", "vs_4_0");
+            using var pixelCode = shaders.Compile("Viewport/Grid.hlsl", "PSMain", "ps_4_0");
 
-            var pixelCode = ShaderBytecode.Compile(
-                ShaderSource,
-                "PSMain",
-                "ps_4_0");
+            _vertexShader = new VertexShader(
+                _device,
+                vertexCode.Bytecode);
 
-            using (vertexCode.Bytecode)
-            using (pixelCode.Bytecode)
-            {
-                _vertexShader = new VertexShader(
-                    _device,
-                    vertexCode.Bytecode);
+            _pixelShader = new PixelShader(
+                _device,
+                pixelCode.Bytecode);
 
-                _pixelShader = new PixelShader(
-                    _device,
-                    pixelCode.Bytecode);
+            _inputLayout = new InputLayout(
+                _device,
+                vertexCode.Bytecode,
+                [
+                    new InputElement(
+                        "POSITION",
+                        0,
+                        Format.R32G32B32_Float,
+                        0,
+                        0),
 
-                _inputLayout = new InputLayout(
-                    _device,
-                    vertexCode.Bytecode,
-                    [
-                        new InputElement(
-                            "POSITION",
-                            0,
-                            Format.R32G32B32_Float,
-                            0,
-                            0),
-
-                        new InputElement(
-                            "COLOR",
-                            0,
-                            Format.R32G32B32A32_Float,
-                            12,
-                            0)
-                    ]);
-            }
+                    new InputElement(
+                        "COLOR",
+                        0,
+                        Format.R32G32B32A32_Float,
+                        12,
+                        0)
+                ]);
 
             var vertices = CreateGrid();
 

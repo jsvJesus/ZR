@@ -62,3 +62,4 @@
 - Overview geometry added for whole-map visibility; detailed tile edges use transition skirts.
 - XML source parsed and git diff --check reviewed; no build, test, shader compilation or application launch.
 - No generated levels have been published by this session; conversion runs through the new Editor import command.
+- User follow-up: all HLSL sources live in `bin/packs/shaders`, organised by Viewport and Terrain; renderers read files through the shared ShaderCompiler, with no embedded resources or inline HLSL.

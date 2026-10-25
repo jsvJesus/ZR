@@ -4,7 +4,7 @@ cbuffer TerrainBuffer : register(b0)
     float4 Camera;
     float4 WorldExtent;
     float4 Layer;
-    float4 Pass;
+    float4 LayerPassParameters;
 };
 
 Texture2D Diffuse : register(t0);
@@ -43,8 +43,8 @@ float4 PSMain(PixelInput input) : SV_TARGET
     float2 tileUv = (4 + saturate(input.TileUv) * 248) / 256;
     float sum = WeightSum.Sample(TileSampler, tileUv).r;
     float3 mask = LayerMask.Sample(TileSampler, tileUv).rgb;
-    float channel = Pass.y < 0.5 ? mask.r : (Pass.y < 1.5 ? mask.g : mask.b);
-    float weight = Pass.x > 0.5 ? max(1 - sum, 0) : channel / max(sum, 1);
+    float channel = LayerPassParameters.y < 0.5 ? mask.r : (LayerPassParameters.y < 1.5 ? mask.g : mask.b);
+    float weight = LayerPassParameters.x > 0.5 ? max(1 - sum, 0) : channel / max(sum, 1);
 
     float2 uv = input.World.xz / WorldExtent.xy * Layer.xy;
     float3 color = Diffuse.Sample(MaterialSampler, uv).rgb;
@@ -59,5 +59,5 @@ float4 PSMain(PixelInput input) : SV_TARGET
     float diffuse = 0.36 + 0.64 * saturate(dot(normal, light));
     float3 view = normalize(Camera.xyz - input.World);
     float specular = pow(saturate(dot(normal, normalize(light + view))), 24) * saturate(Layer.w) * 0.14;
-    return float4((color * diffuse + specular) * weight, Pass.x > 0.5 ? 1 : 0);
+    return float4((color * diffuse + specular) * weight, LayerPassParameters.x > 0.5 ? 1 : 0);
 }

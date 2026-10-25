@@ -64,7 +64,7 @@ namespace Editor.Viewport
         public float CameraSpeed
         {
             get => _camera.Speed;
-            set => _camera.Speed = Math.Clamp(value, 1f, 100f);
+            set => _camera.Speed = Math.Clamp(value, FreeCamera.MinimumSpeed, FreeCamera.MaximumSpeed);
         }
 
         public DxViewportHost()

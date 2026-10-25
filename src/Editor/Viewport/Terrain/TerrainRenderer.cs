@@ -3,7 +3,7 @@ using System.IO;
 using System.Numerics;
 using System.Runtime.InteropServices;
 using SharpDX;
-using SharpDX.D3DCompiler;
+using Editor.Rendering.Shaders;
 using SharpDX.Direct3D;
 using SharpDX.Direct3D11;
 using SharpDX.DXGI;
@@ -51,13 +51,9 @@ internal sealed class TerrainRenderer : IDisposable
         try
         {
             _materials = new TerrainMaterialCache(device, assets);
-            using var sourceStream = typeof(TerrainRenderer).Assembly.GetManifestResourceStream(
-                "Editor.Viewport.Terrain.Shaders.Terrain.hlsl")
-                ?? throw new InvalidOperationException("Embedded Terrain shader was not found.");
-            using var reader = new StreamReader(sourceStream);
-            string source = reader.ReadToEnd();
-            using var vertex = ShaderBytecode.Compile(source, "VSMain", "vs_4_0");
-            using var pixel = ShaderBytecode.Compile(source, "PSMain", "ps_4_0");
+            var shaders = new ShaderCompiler(assets);
+            using var vertex = shaders.Compile("Terrain/Terrain.hlsl", "VSMain", "vs_4_0");
+            using var pixel = shaders.Compile("Terrain/Terrain.hlsl", "PSMain", "ps_4_0");
             _vertexShader = new VertexShader(device, vertex.Bytecode);
             _pixelShader = new PixelShader(device, pixel.Bytecode);
             _layout = new InputLayout(device, vertex.Bytecode, new[]
@@ -99,7 +95,7 @@ internal sealed class TerrainRenderer : IDisposable
             blend.RenderTarget[0].AlphaBlendOperation = BlendOperation.Add;
             blend.RenderTarget[0].RenderTargetWriteMask = ColorWriteMaskFlags.All;
             _add = new BlendState(device, blend);
-            _overview = new TerrainOverviewResources(device, level);
+            _overview = new TerrainOverviewResources(device, level, assets);
         }
         catch
         {
@@ -202,7 +198,7 @@ internal sealed class TerrainRenderer : IDisposable
         bool isBase, ref Constants constants)
     {
         constants.Layer = new Vector4(layer.ScaleU, layer.ScaleV, layer.NormalUvMultiplier, layer.Specular);
-        constants.Pass = new Vector4(isBase ? 1 : 0, isBase ? 0 : (layer.Index - 1) % 3, 0, 0);
+        constants.LayerPassParameters = new Vector4(isBase ? 1 : 0, isBase ? 0 : (layer.Index - 1) % 3, 0, 0);
         _context.UpdateSubresource(ref constants, _constants);
         _context.PixelShader.SetShaderResource(0, _materials.Get(layer.DiffuseTexture, false).View);
         _context.PixelShader.SetShaderResource(1, _materials.Get(layer.NormalTexture, true).View);
@@ -246,6 +242,6 @@ internal sealed class TerrainRenderer : IDisposable
         public Vector4 Camera;
         public Vector4 WorldExtent;
         public Vector4 Layer;
-        public Vector4 Pass;
+        public Vector4 LayerPassParameters;
     }
 }
