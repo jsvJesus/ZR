@@ -6,6 +6,9 @@ using SharpDX.Direct3D;
 using SharpDX.Direct3D11;
 using SharpDX.DXGI;
 using SharpDX.Mathematics.Interop;
+using Editor.Viewport.Terrain;
+using ZoneReborn.World.Assets;
+using ZoneReborn.World.Levels.Models;
 using Buffer = SharpDX.Direct3D11.Buffer;
 using Device = SharpDX.Direct3D11.Device;
 
@@ -51,6 +54,9 @@ namespace Editor.Viewport
         private DeviceContext _context = null!;
         private SwapChain _swapChain = null!;
         private RenderTargetView? _target;
+        private Texture2D? _depthTexture;
+        private DepthStencilView? _depthTarget;
+        private TerrainRenderer? _terrain;
 
         private VertexShader _vertexShader = null!;
         private PixelShader _pixelShader = null!;
@@ -220,6 +226,27 @@ namespace Editor.Viewport
             _target = new RenderTargetView(
                 _device,
                 backBuffer);
+
+            _depthTexture = new Texture2D(_device, new Texture2DDescription
+            {
+                Width = _width,
+                Height = _height,
+                ArraySize = 1,
+                MipLevels = 1,
+                Format = Format.D32_Float,
+                SampleDescription = new SampleDescription(1, 0),
+                Usage = ResourceUsage.Default,
+                BindFlags = BindFlags.DepthStencil
+            });
+            _depthTarget = new DepthStencilView(_device, _depthTexture);
+        }
+
+        public void SetLevel(LoadedLevel level, AssetPaths assets)
+        {
+            var terrain = new TerrainRenderer(_device, _context, level, assets);
+            _context.ClearState();
+            _terrain?.Dispose();
+            _terrain = terrain;
         }
 
         private void Resize(int width, int height)
@@ -238,6 +265,10 @@ namespace Editor.Viewport
 
             _target?.Dispose();
             _target = null;
+            _depthTarget?.Dispose();
+            _depthTarget = null;
+            _depthTexture?.Dispose();
+            _depthTexture = null;
 
             _swapChain.ResizeBuffers(
                 2,
@@ -270,7 +301,8 @@ namespace Editor.Viewport
                 return;
             }
 
-            _context.OutputMerger.SetRenderTargets(_target);
+            _context.OutputMerger.SetRenderTargets(_depthTarget, _target);
+            _context.ClearDepthStencilView(_depthTarget!, DepthStencilClearFlags.Depth, 1f, 0);
 
             _context.Rasterizer.SetViewport(
                 0,
@@ -286,17 +318,19 @@ namespace Editor.Viewport
                     0.105f,
                     1f));
 
+            var view = CreateViewMatrix(camera);
+
+            var projection = CreateProjectionMatrix(
+                1.05f,
+                (float)_width / _height,
+                0.5f,
+                _terrain?.FarPlane ?? 1000f);
+
+            var viewProjection = view * projection;
+            _terrain?.Render(camera, viewProjection);
+
             if (showGrid)
             {
-                var view = CreateViewMatrix(camera);
-
-                var projection = CreateProjectionMatrix(
-                    1.05f,
-                    (float)_width / _height,
-                    0.1f,
-                    1000f);
-
-                var viewProjection = view * projection;
 
                 _context.UpdateSubresource(
                     ref viewProjection,
@@ -387,6 +421,9 @@ namespace Editor.Viewport
         {
             _context?.ClearState();
 
+            _terrain?.Dispose();
+            _depthTarget?.Dispose();
+            _depthTexture?.Dispose();
             _target?.Dispose();
             _cameraBuffer?.Dispose();
             _gridBuffer?.Dispose();

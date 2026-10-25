@@ -4,6 +4,8 @@ using System.Runtime.InteropServices;
 using Avalonia.Controls;
 using Avalonia.Platform;
 using Avalonia.Threading;
+using ZoneReborn.World.Assets;
+using ZoneReborn.World.Levels.Models;
 
 namespace Editor.Viewport
 {
@@ -39,6 +41,8 @@ namespace Editor.Viewport
         private readonly WindowProcedure _windowProcedure;
 
         private Dx11Renderer? _renderer;
+        private LoadedLevel? _level;
+        private AssetPaths? _assets;
 
         private nint _windowHandle;
         private nint _previousProcedure;
@@ -119,6 +123,8 @@ namespace Editor.Viewport
                 }
 
                 _renderer = new Dx11Renderer(_windowHandle);
+                if (_level != null && _assets != null)
+                    _renderer.SetLevel(_level, _assets);
 
                 _lastFrameTime = Stopwatch.GetTimestamp();
                 _timer.Start();
@@ -251,6 +257,15 @@ namespace Editor.Viewport
             _pressedKeys.Clear();
 
             CameraChanged?.Invoke(_camera.Pose);
+        }
+
+        public void SetLevel(LoadedLevel level, AssetPaths assets)
+        {
+            _renderer?.SetLevel(level, assets);
+            _level = level;
+            _assets = assets;
+            _lastFrameTime = Stopwatch.GetTimestamp();
+            _timer.Start();
         }
 
         private nint ProcessWindowMessage(
