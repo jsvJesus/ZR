@@ -11,6 +11,7 @@ namespace Editor.Viewport
     {
         private const uint WsChild = 0x40000000;
         private const uint WsVisible = 0x10000000;
+        private const uint SsNotify = 0x00000100;
 
         private const uint WmSetFocus = 0x0007;
         private const uint WmKillFocus = 0x0008;
@@ -83,7 +84,8 @@ namespace Editor.Viewport
                 0,
                 "STATIC",
                 "",
-                WsChild | WsVisible,
+                // STATIC returns HTTRANSPARENT without SS_NOTIFY, bypassing our mouse handlers.
+                WsChild | WsVisible | SsNotify,
                 0,
                 0,
                 1,
