@@ -1,5 +1,4 @@
 using System.Runtime.InteropServices;
-using Microsoft.Xna.Framework;
 using SharpDX;
 using SharpDX.D3DCompiler;
 using SharpDX.Direct3D;
