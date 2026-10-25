@@ -173,13 +173,13 @@ namespace Editor.Viewport
 
             const int extent = 100;
 
-            var regular = new Color4(
+            var regular = new RawColor4(
                 0.20f, 0.25f, 0.32f, 1f);
 
-            var xAxis = new Color4(
+            var xAxis = new RawColor4(
                 0.75f, 0.24f, 0.26f, 1f);
 
-            var zAxis = new Color4(
+            var zAxis = new RawColor4(
                 0.20f, 0.45f, 0.80f, 1f);
 
             for (int index = -extent; index <= extent; index++)
@@ -288,12 +288,9 @@ namespace Editor.Viewport
 
             if (showGrid)
             {
-                var view = Matrix.LookAtLH(
-                    camera.Position,
-                    camera.Position + camera.LookDirection,
-                    Vector3.UnitY);
+                var view = CreateViewMatrix(camera);
 
-                var projection = Matrix.PerspectiveFovLH(
+                var projection = CreateProjectionMatrix(
                     1.05f,
                     (float)_width / _height,
                     0.1f,
@@ -332,6 +329,60 @@ namespace Editor.Viewport
             _swapChain.Present(1, PresentFlags.None);
         }
 
+        private static Matrix CreateViewMatrix(FreeCamera camera)
+        {
+            var forward = Vector3.Normalize(camera.LookDirection);
+
+            var right = Vector3.Normalize(
+                Vector3.Cross(Vector3.UnitY, forward));
+
+            var up = Vector3.Cross(forward, right);
+            var position = camera.Position;
+
+            return new Matrix
+            {
+                M11 = right.X,
+                M12 = up.X,
+                M13 = forward.X,
+                M14 = 0f,
+
+                M21 = right.Y,
+                M22 = up.Y,
+                M23 = forward.Y,
+                M24 = 0f,
+
+                M31 = right.Z,
+                M32 = up.Z,
+                M33 = forward.Z,
+                M34 = 0f,
+
+                M41 = -Vector3.Dot(right, position),
+                M42 = -Vector3.Dot(up, position),
+                M43 = -Vector3.Dot(forward, position),
+                M44 = 1f
+            };
+        }
+
+        private static Matrix CreateProjectionMatrix(
+            float fieldOfView,
+            float aspectRatio,
+            float nearPlane,
+            float farPlane)
+        {
+            float scaleY = 1f / MathF.Tan(fieldOfView * 0.5f);
+            float scaleX = scaleY / aspectRatio;
+            float depth = farPlane / (farPlane - nearPlane);
+
+            return new Matrix
+            {
+                M11 = scaleX,
+                M22 = scaleY,
+                M33 = depth,
+                M34 = 1f,
+                M43 = -nearPlane * depth
+            };
+        }
+
         public void Dispose()
         {
             _context?.ClearState();
@@ -352,9 +403,9 @@ namespace Editor.Viewport
         private readonly struct GridVertex
         {
             public readonly Vector3 Position;
-            public readonly Color4 Color;
+            public readonly RawColor4 Color;
 
-            public GridVertex(Vector3 position, Color4 color)
+            public GridVertex(Vector3 position, RawColor4 color)
             {
                 Position = position;
                 Color = color;

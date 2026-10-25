@@ -22,14 +22,9 @@ namespace Editor
                 Viewport.CameraSpeed = (float)args.NewValue;
             };
 
-            GridCheck.Checked += (_, _) =>
+            GridCheck.IsCheckedChanged += (_, _) =>
             {
-                Viewport.ShowGrid = true;
-            };
-
-            GridCheck.Unchecked += (_, _) =>
-            {
-                Viewport.ShowGrid = false;
+                Viewport.ShowGrid = GridCheck.IsChecked == true;
             };
 
             UpdateCamera(Viewport.CameraPose);
