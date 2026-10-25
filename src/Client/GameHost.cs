@@ -1,14 +1,11 @@
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
-using Myra;
-using Myra.Graphics2D.UI;
 
 namespace Client
 {
     public sealed class GameHost : Game
     {
         private readonly GraphicsDeviceManager _graphics;
-        private Desktop? _desktop;
 
         public GameHost()
         {
@@ -23,18 +20,9 @@ namespace Client
             IsMouseVisible = true;
         }
 
-        protected override void LoadContent()
-        {
-            base.LoadContent();
-
-            MyraEnvironment.Game = this;
-            _desktop = new Desktop();
-        }
-
         protected override void Draw(GameTime gameTime)
         {
             GraphicsDevice.Clear(new Color(18, 21, 27));
-            _desktop?.Render();
 
             base.Draw(gameTime);
         }
