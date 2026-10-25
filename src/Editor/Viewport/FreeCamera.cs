@@ -1,4 +1,4 @@
-using SharpDX;
+using System.Numerics;
 
 namespace Editor.Viewport
 {
@@ -120,7 +120,7 @@ namespace Editor.Viewport
 
             if (direction.LengthSquared() > 0.0001f)
             {
-                direction.Normalize();
+                direction = Vector3.Normalize(direction);
                 Position += direction * Speed * deltaTime;
             }
         }

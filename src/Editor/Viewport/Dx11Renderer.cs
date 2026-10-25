@@ -1,3 +1,4 @@
+using System.Numerics;
 using System.Runtime.InteropServices;
 using SharpDX;
 using SharpDX.D3DCompiler;
@@ -156,7 +157,7 @@ namespace Editor.Viewport
 
             _cameraBuffer = new Buffer(
                 _device,
-                Utilities.SizeOf<Matrix>(),
+                Utilities.SizeOf<Matrix4x4>(),
                 ResourceUsage.Default,
                 BindFlags.ConstantBuffer,
                 CpuAccessFlags.None,
@@ -328,7 +329,7 @@ namespace Editor.Viewport
             _swapChain.Present(1, PresentFlags.None);
         }
 
-        private static Matrix CreateViewMatrix(FreeCamera camera)
+        private static Matrix4x4 CreateViewMatrix(FreeCamera camera)
         {
             var forward = Vector3.Normalize(camera.LookDirection);
 
@@ -338,7 +339,7 @@ namespace Editor.Viewport
             var up = Vector3.Cross(forward, right);
             var position = camera.Position;
 
-            return new Matrix
+            return new Matrix4x4
             {
                 M11 = right.X,
                 M12 = up.X,
@@ -362,7 +363,7 @@ namespace Editor.Viewport
             };
         }
 
-        private static Matrix CreateProjectionMatrix(
+        private static Matrix4x4 CreateProjectionMatrix(
             float fieldOfView,
             float aspectRatio,
             float nearPlane,
@@ -372,7 +373,7 @@ namespace Editor.Viewport
             float scaleX = scaleY / aspectRatio;
             float depth = farPlane / (farPlane - nearPlane);
 
-            return new Matrix
+            return new Matrix4x4
             {
                 M11 = scaleX,
                 M22 = scaleY,
