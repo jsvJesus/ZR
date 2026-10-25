@@ -1,5 +1,6 @@
 using Avalonia.Controls;
 using Avalonia.Interactivity;
+using Editor.Viewport;
 
 namespace Editor
 {
@@ -8,6 +9,9 @@ namespace Editor
         public MainWindow()
         {
             InitializeComponent();
+
+            CameraSpeedSlider.Minimum = (double)FreeCamera.MinimumSpeed;
+            CameraSpeedSlider.Maximum = (double)FreeCamera.MaximumSpeed;
 
             Viewport.CameraChanged += UpdateCamera;
             Viewport.RendererError += ShowRendererError;
