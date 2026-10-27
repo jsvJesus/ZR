@@ -6,6 +6,7 @@ public readonly record struct VectorKey(float Time, Vector3 Value);
 public readonly record struct RotationKey(float Time, Quaternion Value);
 public sealed record AnimationChannel(VectorKey[] Scale, VectorKey[] Position, RotationKey[] Rotation)
 {
+    public Vector3 SamplePosition(float frame) => VectorAt(Position, frame);
     public Matrix4x4 Sample(float frame)
     {
         var s = VectorAt(Scale, frame);

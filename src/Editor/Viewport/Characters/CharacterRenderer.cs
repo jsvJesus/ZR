@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.InteropServices;
 using Editor.Rendering.Shaders;
@@ -9,6 +8,7 @@ using SharpDX.Direct3D11;
 using SharpDX.DXGI;
 using ZoneReborn.World.Assets;
 using ZoneReborn.World.Characters;
+using ZoneReborn.World.Characters.Locomotion;
 using ZoneReborn.World.Textures.Dds;
 using Buffer = SharpDX.Direct3D11.Buffer;
 using Device = SharpDX.Direct3D11.Device;
@@ -22,7 +22,7 @@ internal sealed class CharacterRenderer : IDisposable
     private readonly CharacterPose _pose;
     private readonly CharacterAsset _asset;
     private readonly List<(Buffer Vertices, Buffer Indices, TerrainTexture Texture)> _meshes = [];
-    private readonly long _started = Stopwatch.GetTimestamp();
+    private readonly CharacterLocomotion _locomotion;
     private VertexShader _vertex = null!;
     private PixelShader _pixel = null!;
     private InputLayout _layout = null!;
@@ -31,12 +31,12 @@ internal sealed class CharacterRenderer : IDisposable
     private RasterizerState _rasterizer = null!;
     private DepthStencilState _depth = null!;
     private BlendState _alpha = null!;
-    public Vector3 Position { get; }
-    public float Yaw { get; }
+    public Vector3 Position => _locomotion.Position;
+    public float Yaw => _locomotion.Yaw;
 
-    public CharacterRenderer(Device device, DeviceContext context, AssetPaths assets, CharacterAsset asset, Vector3 position, float yaw)
+    public CharacterRenderer(Device device, DeviceContext context, AssetPaths assets, CharacterAsset asset, CharacterLocomotion locomotion)
     {
-        _context = context; _asset = asset; _pose = new(asset); Position = position; Yaw = yaw;
+        _context = context; _asset = asset; _locomotion = locomotion; _pose = locomotion.Animator.Pose;
         try
         {
             var compiler = new ShaderCompiler(assets);
@@ -79,7 +79,6 @@ internal sealed class CharacterRenderer : IDisposable
 
     public void Render(Matrix4x4 viewProjection)
     {
-        _pose.Update(Stopwatch.GetElapsedTime(_started).TotalSeconds);
         var constants = new Constants { World = Matrix4x4.CreateRotationY(Yaw)
             * Matrix4x4.CreateTranslation(Position + new Vector3(0, _pose.FloorOffset, 0)), ViewProjection = viewProjection };
         _context.UpdateSubresource(ref constants, _constants);

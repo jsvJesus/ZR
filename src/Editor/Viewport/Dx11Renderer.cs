@@ -9,6 +9,7 @@ using SharpDX.Mathematics.Interop;
 using Editor.Viewport.Terrain;
 using Editor.Viewport.Characters;
 using ZoneReborn.World.Characters;
+using ZoneReborn.World.Characters.Locomotion;
 using ZoneReborn.World.Assets;
 using ZoneReborn.World.Levels.Models;
 using Buffer = SharpDX.Direct3D11.Buffer;
@@ -208,9 +209,9 @@ namespace Editor.Viewport
             _terrain = terrain;
         }
 
-        public void SetCharacter(AssetPaths assets, CharacterAsset asset, System.Numerics.Vector3 position, float yaw)
+        public void SetCharacter(AssetPaths assets, CharacterAsset asset, CharacterLocomotion locomotion)
         {
-            var character = new CharacterRenderer(_device, _context, assets, asset, position, yaw);
+            var character = new CharacterRenderer(_device, _context, assets, asset, locomotion);
             ClearCharacter();
             _character = character;
         }

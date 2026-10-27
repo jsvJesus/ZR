@@ -1,5 +1,6 @@
 using System.Numerics;
 using ZoneReborn.World.Characters;
+using ZoneReborn.World.Characters.Locomotion;
 using ZoneReborn.World.Terrain;
 
 namespace Editor.Viewport;
@@ -10,12 +11,15 @@ public sealed partial class DxViewportHost
     private CancellationTokenSource? _playLoad;
     private ThirdPersonCamera? _orbit;
     private TerrainSurface? _surface;
-    private Vector3 _playerPosition;
+    private CharacterLocomotion? _player;
+    private bool _jumpRequested;
+    private bool _toggleCrouchRequested;
     private CameraPose _savedCamera;
 
     public bool IsPlaying => _orbit != null;
     public bool IsStarting => _playLoad != null;
     public event Action? PlayStateChanged;
+    public event Action<LocomotionSnapshot>? LocomotionChanged;
 
     public async Task StartPlayAsync()
     {
@@ -39,12 +43,15 @@ public sealed partial class DxViewportHost
                     throw new InvalidOperationException("Камера находится вне Terrain. Подлетите к месту появления на уровне.");
                 var asset = CharacterLoader.Load(assets, cancellation.Token);
                 cancellation.Token.ThrowIfCancellationRequested();
-                return (Asset: asset, Surface: surface, Position: new Vector3(saved.X, height, saved.Z));
+                var player = new CharacterLocomotion(asset, surface, new Vector3(saved.X, height, saved.Z), saved.Yaw);
+                return (Asset: asset, Surface: surface, Player: player);
             }, cancellation.Token);
             if (cancellation.IsCancellationRequested || !ReferenceEquals(_playLoad, cancellation)
                 || !ReferenceEquals(_renderer, renderer) || !ReferenceEquals(_level, level)) return;
-            renderer.SetCharacter(assets, loaded.Asset, loaded.Position, saved.Yaw);
-            _playerPosition = loaded.Position;
+            renderer.SetCharacter(assets, loaded.Asset, loaded.Player);
+            _player = loaded.Player;
+            _jumpRequested = false;
+            _toggleCrouchRequested = false;
             _surface = loaded.Surface;
             _orbit = new ThirdPersonCamera(saved.Yaw);
             UpdatePlayCamera();
@@ -71,6 +78,9 @@ public sealed partial class DxViewportHost
         _renderer?.ClearCharacter();
         _orbit = null;
         _surface = null;
+        _player = null;
+        _jumpRequested = false;
+        _toggleCrouchRequested = false;
         _pressedKeys.Clear();
         if (_rotating) { _rotating = false; ReleaseCapture(); }
         if (active)
@@ -83,8 +93,26 @@ public sealed partial class DxViewportHost
 
     private void UpdatePlayCamera()
     {
-        if (_orbit == null || _surface == null) return;
-        var p = _orbit.Position(_playerPosition, _surface);
+        if (_orbit == null || _surface == null || _player == null) return;
+        var p = _orbit.Position(_player.CameraAnchor, _surface, _player.CameraHeight);
         _playCamera.Restore(new(p.X, p.Y, p.Z, _orbit.Yaw, _orbit.Pitch, _camera.Speed));
+    }
+
+    private void UpdatePlayer(float deltaTime)
+    {
+        if (_player == null || _orbit == null) return;
+        var movement = new Vector2((IsPressed(KeyD) ? 1 : 0) - (IsPressed(KeyA) ? 1 : 0),
+            (IsPressed(KeyW) ? 1 : 0) - (IsPressed(KeyS) ? 1 : 0));
+        _player.Update(deltaTime, new CharacterInput(movement, IsPressed(KeyAlt), IsPressed(KeyShift),
+            IsPressed(KeyControl), _jumpRequested, _toggleCrouchRequested), _orbit.Yaw);
+        _jumpRequested = false;
+        _toggleCrouchRequested = false;
+    }
+
+    private void ReleasePlayerInput()
+    {
+        _jumpRequested = false;
+        _toggleCrouchRequested = false;
+        _player?.ReleaseInput();
     }
 }

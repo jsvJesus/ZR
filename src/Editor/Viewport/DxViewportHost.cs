@@ -19,6 +19,8 @@ namespace Editor.Viewport
         private const uint WmKillFocus = 0x0008;
         private const uint WmKeyDown = 0x0100;
         private const uint WmKeyUp = 0x0101;
+        private const uint WmSysKeyDown = 0x0104;
+        private const uint WmSysKeyUp = 0x0105;
         private const uint WmMouseMove = 0x0200;
         private const uint WmLeftDown = 0x0201;
         private const uint WmRightDown = 0x0204;
@@ -34,6 +36,9 @@ namespace Editor.Viewport
         private const int KeyD = 0x44;
         private const int KeySpace = 0x20;
         private const int KeyShift = 0x10;
+        private const int KeyControl = 0x11;
+        private const int KeyAlt = 0x12;
+        private const int KeyC = 0x43;
 
         private readonly FreeCamera _camera = new();
         private readonly HashSet<int> _pressedKeys = new();
@@ -207,6 +212,7 @@ namespace Editor.Viewport
 
             try
             {
+                if (IsPlaying) UpdatePlayer(deltaTime);
                 if (!IsPlaying && !IsStarting) _camera.Move(
                     IsPressed(KeyW),
                     IsPressed(KeyS),
@@ -239,7 +245,8 @@ namespace Editor.Viewport
 
                 if (_frameCounter % 4 == 0)
                 {
-                    CameraChanged?.Invoke(_camera.Pose);
+                    CameraChanged?.Invoke(IsPlaying ? _playCamera.Pose : _camera.Pose);
+                    if (IsPlaying && _player != null) LocomotionChanged?.Invoke(_player.Snapshot);
                 }
             }
             catch (Exception ex)
@@ -319,21 +326,28 @@ namespace Editor.Viewport
                     return nint.Zero;
 
                 case WmKeyDown:
+                case WmSysKeyDown:
                     if ((int)wParam == 0x1B && (IsPlaying || IsStarting))
                     {
                         StopPlay();
                         return nint.Zero;
                     }
-                    if (IsMovementKey((int)wParam))
+                    if (IsMovementKey((int)wParam) && ((int)wParam != KeyAlt || IsPlaying))
                     {
-                        _pressedKeys.Add((int)wParam);
+                        bool firstPress = _pressedKeys.Add((int)wParam);
+                        if (IsPlaying && firstPress)
+                        {
+                            if ((int)wParam == KeySpace) _jumpRequested = true;
+                            if ((int)wParam == KeyC) _toggleCrouchRequested = true;
+                        }
                         return nint.Zero;
                     }
 
                     break;
 
                 case WmKeyUp:
-                    if (IsMovementKey((int)wParam))
+                case WmSysKeyUp:
+                    if (IsMovementKey((int)wParam) && ((int)wParam != KeyAlt || IsPlaying))
                     {
                         _pressedKeys.Remove((int)wParam);
                         return nint.Zero;
@@ -343,6 +357,7 @@ namespace Editor.Viewport
 
                 case WmKillFocus:
                     _pressedKeys.Clear();
+                    ReleasePlayerInput();
 
                     if (_rotating)
                     {
@@ -387,6 +402,9 @@ namespace Editor.Viewport
                    key == KeyS ||
                    key == KeyD ||
                    key == KeySpace ||
+                   key == KeyControl ||
+                   key == KeyAlt ||
+                   key == KeyC ||
                    key == KeyShift;
         }
 

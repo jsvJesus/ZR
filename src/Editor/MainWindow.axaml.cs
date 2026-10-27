@@ -16,6 +16,7 @@ namespace Editor
             Viewport.CameraChanged += UpdateCamera;
             Viewport.RendererError += ShowRendererError;
             Viewport.PlayStateChanged += UpdatePlayControls;
+            Viewport.LocomotionChanged += UpdateLocomotionInfo;
 
             CameraSpeedSlider.ValueChanged += (_, args) =>
             {

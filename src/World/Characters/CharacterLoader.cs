@@ -2,6 +2,7 @@ using System.Numerics;
 using ZoneReborn.World.Assets;
 using ZoneReborn.World.Characters.Formats;
 using ZoneReborn.World.Textures.Dds;
+using ZoneReborn.World.Characters.Locomotion;
 
 namespace ZoneReborn.World.Characters;
 
@@ -81,6 +82,9 @@ public static class CharacterLoader
                 foreach (var child in node.All("node")) AddNode(child, index);
             }
         }
-        return new(meshes.ToArray(), animation, frameRate);
+        return new(meshes.ToArray(), animation, frameRate)
+        {
+            Locomotion = LocomotionLibrary.Read(assets, model, cancellationToken)
+        };
     }
 }
