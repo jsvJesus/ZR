@@ -10,9 +10,10 @@ public sealed class CharacterAnimator
     private bool _loop;
     public CharacterPose Pose { get; }
     public CharacterAction Current { get; private set; }
-    public float Frame => Current.Clip.FirstFrame + (_loop ? _time % Current.Clip.Duration : Math.Min(_time, Current.Clip.Duration)) * Current.Clip.FrameRate * Current.Clip.Direction;
+    public float Frame => Current.Clip.IsStatic ? Current.Clip.FirstFrame
+        : Current.Clip.FirstFrame + (_loop ? _time % Current.Clip.Duration : Math.Min(_time, Current.Clip.Duration)) * Current.Clip.FrameRate * Current.Clip.Direction;
     public float RelativeFrame => (Frame - Current.Clip.FirstFrame) * Current.Clip.Direction;
-    public float Phase => RelativeFrame / Current.Clip.FrameCount;
+    public float Phase => Current.Clip.IsStatic ? 0 : RelativeFrame / Current.Clip.FrameCount;
     public float Elapsed { get; private set; }
     public bool Complete => !_loop && _time >= Current.Clip.Duration;
     public Vector3 RootDelta { get; private set; }
@@ -48,6 +49,14 @@ public sealed class CharacterAnimator
     {
         float before = Frame;
         Elapsed += deltaTime;
+        if (Current.Clip.IsStatic)
+        {
+            _time = Math.Min(_time + deltaTime, Current.Clip.Duration);
+            RootDelta = Vector3.Zero;
+            YawDelta = 0;
+            _blendTime += deltaTime;
+            return;
+        }
         float scale = Current.ScalePlaybackSpeed && Current.Movement && Current.Clip.NaturalSpeed > 0.01f
             ? Math.Clamp(speed / Current.Clip.NaturalSpeed, 0.05f, 3f) : 1;
         float oldTime = _time;

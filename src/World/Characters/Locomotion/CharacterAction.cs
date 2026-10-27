@@ -8,9 +8,11 @@ public sealed record AnimationCue(float Frame, string Name);
 public sealed record CharacterClip(string Name, SourceAnimation Animation, float FrameRate,
     float FirstFrame, float LastFrame, AnimationCue[] Cues, IReadOnlyDictionary<string, int> NodePriorities)
 {
+    public bool IsStatic => FirstFrame == LastFrame;
     public float Direction => LastFrame >= FirstFrame ? 1 : -1;
     public float FrameCount => MathF.Abs(LastFrame - FirstFrame);
-    public float Duration => FrameCount / FrameRate;
+    // A held pose still occupies one playback tick; its authored frame never advances.
+    public float Duration => (IsStatic ? 1 : FrameCount) / FrameRate;
     public Vector3 RootPosition(float frame) => Animation.Channels.TryGetValue("Root", out var channel)
         ? channel.SamplePosition(frame) : Vector3.Zero;
     public float NaturalSpeed

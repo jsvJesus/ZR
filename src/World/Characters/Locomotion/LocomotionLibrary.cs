@@ -56,7 +56,7 @@ public sealed class LocomotionLibrary
                 if (!animations.TryGetValue(path, out var animation)) animations.Add(path, animation = AnimationReader.Read(path));
                 float first = Number(a, "firstFrame", 0), last = Number(a, "lastFrame", animation.Frames);
                 float fps = Number(a, "frameRate", 30);
-                if (first < 0 || last < 0 || first > animation.Frames || last > animation.Frames || first == last || fps <= 0)
+                if (first < 0 || last < 0 || first > animation.Frames || last > animation.Frames || fps <= 0)
                     throw new InvalidDataException($"Invalid frame range for {animationName}.");
                 var cues = a.Find("cues")?.All("entry").Select(c => new AnimationCue(Number(c, "time", 0), c.String("name")))
                     .Where(c => c.Frame >= Math.Min(first, last) && c.Frame <= Math.Max(first, last))
