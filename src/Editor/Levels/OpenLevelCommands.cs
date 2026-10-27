@@ -11,7 +11,7 @@ public sealed partial class MainWindow
 {
     private async void OpenLevel_Click(object? sender, RoutedEventArgs e)
     {
-        if (_importCancellation != null) return;
+        if (_importCancellation != null || _levelOpening || Viewport.IsPlaying || Viewport.IsStarting) return;
         try
         {
             var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
@@ -32,16 +32,26 @@ public sealed partial class MainWindow
 
     private async Task OpenLevelAsync(string path)
     {
-        var level = await _workspace.OpenAsync(path);
-        if (_isClosing) return;
-        Viewport.SetLevel(level, _workspace.Assets);
-        _level = level;
-        var camera = level.Manifest.Camera;
-        Viewport.SetCamera(new(camera.X, camera.Y, camera.Z, camera.Yaw, camera.Pitch, camera.Speed));
-        LevelNameText.Text = $"Уровень: {level.Manifest.Name}";
-        TerrainLevelInfo.Text = $"{level.Manifest.Terrain.SamplesX} × {level.Manifest.Terrain.SamplesZ} • {level.Layers.Count} слоёв";
-        TerrainLayersList.ItemsSource = level.Layers.Select(layer => layer.Name).ToArray();
-        StatusText.Text = $"Открыт {level.Manifest.Name}";
+        _levelOpening = true;
+        SetLevelCommandsBusy(_importCancellation != null);
+        try
+        {
+            var level = await _workspace.OpenAsync(path);
+            if (_isClosing) return;
+            Viewport.SetLevel(level, _workspace.Assets);
+            _level = level;
+            var camera = level.Manifest.Camera;
+            Viewport.SetCamera(new(camera.X, camera.Y, camera.Z, camera.Yaw, camera.Pitch, camera.Speed));
+            LevelNameText.Text = $"Уровень: {level.Manifest.Name}";
+            TerrainLevelInfo.Text = $"{level.Manifest.Terrain.SamplesX} × {level.Manifest.Terrain.SamplesZ} • {level.Layers.Count} слоёв";
+            TerrainLayersList.ItemsSource = level.Layers.Select(layer => layer.Name).ToArray();
+            StatusText.Text = $"Открыт {level.Manifest.Name}";
+        }
+        finally
+        {
+            _levelOpening = false;
+            if (!_isClosing) UpdatePlayControls();
+        }
     }
 
 }

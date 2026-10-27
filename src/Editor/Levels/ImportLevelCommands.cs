@@ -11,7 +11,7 @@ public sealed partial class MainWindow
 {
     private async void ImportLevel_Click(object? sender, RoutedEventArgs e)
     {
-        if (_importCancellation != null) return;
+        if (_importCancellation != null || _levelOpening || Viewport.IsPlaying || Viewport.IsStarting) return;
         try
         {
             var folders = await StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions
@@ -36,7 +36,7 @@ public sealed partial class MainWindow
 
     private async void ImportAllLevels_Click(object? sender, RoutedEventArgs e)
     {
-        if (_importCancellation != null) return;
+        if (_importCancellation != null || _levelOpening || Viewport.IsPlaying || Viewport.IsStarting) return;
         try { await ImportLevelsAsync(_workspace.FindSources()); }
         catch (Exception exception) { StatusText.Text = $"Ошибка импорта: {exception.Message}"; }
     }

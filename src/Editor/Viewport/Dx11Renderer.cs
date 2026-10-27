@@ -7,6 +7,8 @@ using SharpDX.Direct3D11;
 using SharpDX.DXGI;
 using SharpDX.Mathematics.Interop;
 using Editor.Viewport.Terrain;
+using Editor.Viewport.Characters;
+using ZoneReborn.World.Characters;
 using ZoneReborn.World.Assets;
 using ZoneReborn.World.Levels.Models;
 using Buffer = SharpDX.Direct3D11.Buffer;
@@ -23,6 +25,7 @@ namespace Editor.Viewport
         private Texture2D? _depthTexture;
         private DepthStencilView? _depthTarget;
         private TerrainRenderer? _terrain;
+        private CharacterRenderer? _character;
 
         private VertexShader _vertexShader = null!;
         private PixelShader _pixelShader = null!;
@@ -205,6 +208,20 @@ namespace Editor.Viewport
             _terrain = terrain;
         }
 
+        public void SetCharacter(AssetPaths assets, CharacterAsset asset, System.Numerics.Vector3 position, float yaw)
+        {
+            var character = new CharacterRenderer(_device, _context, assets, asset, position, yaw);
+            ClearCharacter();
+            _character = character;
+        }
+
+        public void ClearCharacter()
+        {
+            _context.ClearState();
+            _character?.Dispose();
+            _character = null;
+        }
+
         private void Resize(int width, int height)
         {
             if (width < 1 || height < 1)
@@ -243,7 +260,8 @@ namespace Editor.Viewport
             FreeCamera camera,
             int width,
             int height,
-            bool showGrid)
+            bool showGrid,
+            bool playing = false)
         {
             if (width <= 0 || height <= 0)
             {
@@ -277,9 +295,9 @@ namespace Editor.Viewport
             var view = CreateViewMatrix(camera);
 
             var projection = CreateProjectionMatrix(
-                1.05f,
+                playing ? 0.78f : 1.05f,
                 (float)_width / _height,
-                0.5f,
+                playing ? 0.08f : 0.5f,
                 _terrain?.FarPlane ?? 1000f);
 
             var viewProjection = view * projection;
@@ -316,6 +334,7 @@ namespace Editor.Viewport
                 _context.Draw(_vertexCount, 0);
             }
 
+            _character?.Render(viewProjection);
             _swapChain.Present(1, PresentFlags.None);
         }
 
@@ -378,6 +397,7 @@ namespace Editor.Viewport
             _context?.ClearState();
 
             _terrain?.Dispose();
+            _character?.Dispose();
             _depthTarget?.Dispose();
             _depthTexture?.Dispose();
             _target?.Dispose();

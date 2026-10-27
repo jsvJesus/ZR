@@ -8,11 +8,13 @@ namespace Editor
         private void SetMode(
             string category,
             string name,
-            string description)
+            string description,
+            bool showTerrainMaterials = false)
         {
             CurrentModeText.Text = $"{category} / {name}";
             ModeTitle.Text = name;
             ModeDetails.Text = description;
+            TerrainMaterialsPanel.IsVisible = showTerrainMaterials;
             StatusText.Text = $"Выбран раздел: {name}";
         }
 
@@ -31,7 +33,8 @@ namespace Editor
         private void TerrainMaterials_Click(object? sender, RoutedEventArgs e)
         {
             SetMode("Level editor", "Текстуры поверхности",
-                "Настройка материалов игрового ландшафта.");
+                "Настройка материалов игрового ландшафта.",
+                showTerrainMaterials: true);
         }
 
         private void Vegetation_Click(object? sender, RoutedEventArgs e)

@@ -13,13 +13,16 @@ public sealed partial class MainWindow
     private LoadedLevel? _level;
     private CancellationTokenSource? _importCancellation;
     private bool _isClosing;
+    private bool _levelOpening;
 
     private void SetLevelCommandsBusy(bool busy)
     {
-        ImportLevelMenu.IsEnabled = !busy;
-        ImportAllLevelsMenu.IsEnabled = !busy;
-        OpenLevelMenu.IsEnabled = !busy;
-        SaveLevelMenu.IsEnabled = !busy;
+        bool locked = busy || _levelOpening || Viewport.IsPlaying || Viewport.IsStarting;
+        ImportLevelMenu.IsEnabled = !locked;
+        ImportAllLevelsMenu.IsEnabled = !locked;
+        OpenLevelMenu.IsEnabled = !locked;
+        SaveLevelMenu.IsEnabled = !locked;
+        PlayButton.IsEnabled = _level != null && !busy && !_levelOpening;
         CancelImportMenu.IsEnabled = busy;
     }
 }

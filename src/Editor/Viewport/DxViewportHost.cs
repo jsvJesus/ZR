@@ -9,7 +9,7 @@ using ZoneReborn.World.Levels.Models;
 
 namespace Editor.Viewport
 {
-    public sealed class DxViewportHost : NativeControlHost
+    public sealed partial class DxViewportHost : NativeControlHost
     {
         private const uint WsChild = 0x40000000;
         private const uint WsVisible = 0x10000000;
@@ -159,6 +159,7 @@ namespace Editor.Viewport
         protected override void DestroyNativeControlCore(
             IPlatformHandle control)
         {
+            StopPlay();
             _timer.Stop();
             _pressedKeys.Clear();
 
@@ -206,7 +207,7 @@ namespace Editor.Viewport
 
             try
             {
-                _camera.Move(
+                if (!IsPlaying && !IsStarting) _camera.Move(
                     IsPressed(KeyW),
                     IsPressed(KeyS),
                     IsPressed(KeyA),
@@ -224,11 +225,13 @@ namespace Editor.Viewport
 
                     if (width > 0 && height > 0)
                     {
+                        UpdatePlayCamera();
                         _renderer.Render(
-                            _camera,
+                            IsPlaying ? _playCamera : _camera,
                             width,
                             height,
-                            ShowGrid);
+                            ShowGrid && !IsPlaying,
+                            IsPlaying);
                     }
                 }
 
@@ -241,7 +244,8 @@ namespace Editor.Viewport
             }
             catch (Exception ex)
             {
-                _timer.Stop();
+                if (IsPlaying) StopPlay();
+                else _timer.Stop();
                 RendererError?.Invoke(ex.Message);
             }
         }
@@ -261,6 +265,7 @@ namespace Editor.Viewport
 
         public void SetLevel(LoadedLevel level, AssetPaths assets)
         {
+            StopPlay();
             _renderer?.SetLevel(level, assets);
             _level = level;
             _assets = assets;
@@ -307,12 +312,18 @@ namespace Editor.Viewport
                     int wheelDelta = unchecked(
                         (short)((wParam.ToInt64() >> 16) & 0xFFFF));
 
-                    _camera.ChangeSpeed(wheelDelta);
+                    if (IsPlaying) _orbit!.Zoom(wheelDelta);
+                    else if (!IsStarting) _camera.ChangeSpeed(wheelDelta);
                     CameraChanged?.Invoke(_camera.Pose);
 
                     return nint.Zero;
 
                 case WmKeyDown:
+                    if ((int)wParam == 0x1B && (IsPlaying || IsStarting))
+                    {
+                        StopPlay();
+                        return nint.Zero;
+                    }
                     if (IsMovementKey((int)wParam))
                     {
                         _pressedKeys.Add((int)wParam);
@@ -361,9 +372,8 @@ namespace Editor.Viewport
 
             if (_rotating)
             {
-                _camera.Rotate(
-                    x - _mouseX,
-                    y - _mouseY);
+                if (IsPlaying) _orbit!.Rotate(x - _mouseX, y - _mouseY);
+                else if (!IsStarting) _camera.Rotate(x - _mouseX, y - _mouseY);
             }
 
             _mouseX = x;

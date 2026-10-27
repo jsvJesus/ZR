@@ -11,7 +11,7 @@ public sealed partial class MainWindow
 {
     private async void SaveLevel_Click(object? sender, RoutedEventArgs e)
     {
-        if (_level == null || _importCancellation != null)
+        if (_level == null || _importCancellation != null || _levelOpening || Viewport.IsPlaying || Viewport.IsStarting)
         {
             StatusText.Text = "Сначала откройте преобразованный уровень.";
             return;

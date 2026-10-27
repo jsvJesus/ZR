@@ -15,6 +15,7 @@ namespace Editor
 
             Viewport.CameraChanged += UpdateCamera;
             Viewport.RendererError += ShowRendererError;
+            Viewport.PlayStateChanged += UpdatePlayControls;
 
             CameraSpeedSlider.ValueChanged += (_, args) =>
             {
@@ -31,6 +32,7 @@ namespace Editor
             {
                 _isClosing = true;
                 _importCancellation?.Cancel();
+                Viewport.StopPlay();
             };
         }
 
