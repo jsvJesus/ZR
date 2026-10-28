@@ -9,6 +9,7 @@ namespace Editor
         public MainWindow()
         {
             InitializeComponent();
+            RoadPanel.Attach(Viewport);
 
             CameraSpeedSlider.Minimum = (double)FreeCamera.MinimumSpeed;
             CameraSpeedSlider.Maximum = (double)FreeCamera.MaximumSpeed;
