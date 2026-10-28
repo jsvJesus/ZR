@@ -6,6 +6,7 @@ using Avalonia.Platform;
 using Avalonia.Threading;
 using ZoneReborn.World.Assets;
 using ZoneReborn.World.Levels.Models;
+using Editor.Roads;
 
 namespace Editor.Viewport
 {
@@ -59,6 +60,9 @@ namespace Editor.Viewport
 
         private bool _rotating;
 
+        private RoadDocument? _roadDocument;
+        private string? _selectedRoadId;
+
         public event Action<CameraPose>? CameraChanged;
         public event Action<string>? RendererError;
 
@@ -78,6 +82,38 @@ namespace Editor.Viewport
 
             _timer.Interval = TimeSpan.FromMilliseconds(16);
             _timer.Tick += OnFrame;
+        }
+
+        public void SetRoads(
+            RoadDocument? document,
+            string? selectedRoadId)
+        {
+            _roadDocument = document;
+            _selectedRoadId = selectedRoadId;
+
+            _renderer?.SetRoads(
+                _roadDocument,
+                _selectedRoadId);
+        }
+
+        public void FocusRoad(RoadData road)
+        {
+            if (road.Points.Count == 0)
+            {
+                return;
+            }
+
+            RoadControlPoint point = road.Points[0];
+
+            _camera.Restore(new CameraPose(
+                point.X,
+                point.Y + 65f,
+                point.Z - 130f,
+                0f,
+                -0.42f,
+                80f));
+
+            CameraChanged?.Invoke(_camera.Pose);
         }
 
         protected override IPlatformHandle CreateNativeControlCore(
@@ -130,6 +166,10 @@ namespace Editor.Viewport
                 _renderer = new Dx11Renderer(_windowHandle);
                 if (_level != null && _assets != null)
                     _renderer.SetLevel(_level, _assets);
+
+                _renderer.SetRoads(
+                    _roadDocument,
+                    _selectedRoadId);
 
                 _lastFrameTime = Stopwatch.GetTimestamp();
                 _timer.Start();

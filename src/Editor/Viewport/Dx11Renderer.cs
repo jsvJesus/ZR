@@ -17,7 +17,7 @@ using Device = SharpDX.Direct3D11.Device;
 
 namespace Editor.Viewport
 {
-    public sealed class Dx11Renderer : IDisposable
+    public sealed partial class Dx11Renderer : IDisposable
     {
         private Device _device = null!;
         private DeviceContext _context = null!;
@@ -131,6 +131,7 @@ namespace Editor.Viewport
                 0);
 
             CreateRenderTarget();
+            InitializeRoadGraphics();
         }
 
         private static GridVertex[] CreateGrid()
@@ -336,6 +337,7 @@ namespace Editor.Viewport
             }
 
             _character?.Render(viewProjection);
+            DrawRoadGraphics(camera);
             _swapChain.Present(1, PresentFlags.None);
         }
 
@@ -395,6 +397,7 @@ namespace Editor.Viewport
 
         public void Dispose()
         {
+            DisposeRoadGraphics();
             _context?.ClearState();
 
             _terrain?.Dispose();
