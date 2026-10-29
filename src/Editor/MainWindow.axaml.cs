@@ -9,7 +9,6 @@ namespace Editor
         public MainWindow()
         {
             InitializeComponent();
-            RoadPanel.Attach(Viewport);
 
             CameraSpeedSlider.Minimum = (double)FreeCamera.MinimumSpeed;
             CameraSpeedSlider.Maximum = (double)FreeCamera.MaximumSpeed;
@@ -36,13 +35,6 @@ namespace Editor
                 _importCancellation?.Cancel();
                 Viewport.StopPlay();
             };
-        }
-
-        private void Roads_Click(
-            object? sender,
-            RoutedEventArgs e)
-        {
-            RoadPanel.IsVisible = true;
         }
 
         private void Exit_Click(object? sender, RoutedEventArgs e) => Close();
