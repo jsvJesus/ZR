@@ -31,7 +31,9 @@ public sealed record CharacterClip(string Name, SourceAnimation Animation, float
         }
 
         var forward = Vector3.TransformNormal(
-            Vector3.UnitZ,
+            // The exported Root uses local Y as forward; local Z maps to world up.
+            // Projecting local Z onto XZ measures float noise instead of the turn heading.
+            Vector3.UnitY,
             channel.Sample(frame)
         );
 
