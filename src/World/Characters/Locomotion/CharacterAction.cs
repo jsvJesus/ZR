@@ -25,9 +25,16 @@ public sealed record CharacterClip(string Name, SourceAnimation Animation, float
     }
     public float RootYaw(float frame)
     {
-        if (!Animation.Channels.TryGetValue("Root", out var channel)) return 0;
-        // The source rig's local Y axis points forward after the export basis transform.
-        var forward = Vector3.TransformNormal(Vector3.UnitY, channel.Sample(frame));
+        if (!Animation.Channels.TryGetValue("Root", out var channel))
+        {
+            return 0;
+        }
+
+        var forward = Vector3.TransformNormal(
+            Vector3.UnitZ,
+            channel.Sample(frame)
+        );
+
         return MathF.Atan2(forward.X, forward.Z);
     }
 }
@@ -54,5 +61,9 @@ public sealed record CharacterAction(string Name, CharacterClip Clip, ActionMatc
 {
     public bool Stop => StopLeft || StopRight;
     public bool Turn => Name.StartsWith("turn_", StringComparison.Ordinal);
-    public bool ExtractRoot => Movement || Impacting || Turn;
+    public bool ExtractRoot =>
+        Movement ||
+        Impacting ||
+        Turn ||
+        Name.Contains("jump_", StringComparison.OrdinalIgnoreCase);
 }

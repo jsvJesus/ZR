@@ -9,7 +9,7 @@ public sealed partial class CharacterLocomotion
     private float _verticalVelocity;
     private float _jumpPeak;
     private float _landingRemaining;
-    private bool _stationaryImpulse;
+    private bool _jumpImpulseApplied;
 
     private void QueueJump(CharacterInput input)
     {
@@ -30,7 +30,7 @@ public sealed partial class CharacterLocomotion
         State = AnimState.JumpTakeoff;
         _jumpPeak = Position.Y;
         _verticalVelocity = 0;
-        _stationaryImpulse = false;
+        _jumpImpulseApplied = false;
         _lastMovingSpeed = 0;
         Animator.Play(_library.Actions[_jump!.Up], false);
         // avatar_jump unlocks vertical camera LOCK_CAM_TIME=0.5 after the takeoff action.
@@ -86,31 +86,37 @@ public sealed partial class CharacterLocomotion
             _velocity = Vector2.Zero;
             if (!_surface.TryGetHeight(candidate.X, candidate.Z, out ground)) throw new InvalidOperationException("Персонаж покинул Terrain.");
         }
-        if (takeoff && _jump != JumpDefinition.Stationary)
+        if (takeoff && !_jumpImpulseApplied)
         {
-            candidate.Y += promotion.Y;
-            _verticalVelocity = promotion.Y / dt;
+            var clip = actionBefore.Clip;
+
+            var cue = clip.Cues.FirstOrDefault(
+                c => c.Name == "cJump"
+            );
+
+            bool reachedCue = cue == null ||
+                              (Animator.Frame - cue.Frame) * clip.Direction >= 0 ||
+                              Animator.Complete;
+
+            if (reachedCue)
+            {
+                _verticalVelocity = MathF.Sqrt(
+                    2f *
+                    LocomotionSettings.Gravity *
+                    LocomotionSettings.JumpHeight
+                );
+
+                _jumpImpulseApplied = true;
+            }
         }
-        else
+
+        if (!takeoff || _jumpImpulseApplied)
         {
-            if (takeoff && !_stationaryImpulse)
-            {
-                var cue = actionBefore.Clip.Cues.FirstOrDefault(c => c.Name == "cJump");
-                if (Animator.Frame >= (cue?.Frame ?? actionBefore.Clip.FirstFrame))
-                {
-                    // The native idle impulse is not in the decompiled PlayerAvatar.
-                    // Derive height from the original running takeoff rather than inventing a second jump height.
-                    var reference = _library.Actions[JumpDefinition.Right.Up].Clip;
-                    float height = Math.Max(0.1f, reference.RootPosition(reference.LastFrame).Y - reference.RootPosition(reference.FirstFrame).Y);
-                    _verticalVelocity = MathF.Sqrt(2 * LocomotionSettings.Gravity * height);
-                    _stationaryImpulse = true;
-                }
-            }
-            if (!takeoff || _stationaryImpulse)
-            {
-                candidate.Y += _verticalVelocity * dt - 0.5f * LocomotionSettings.Gravity * dt * dt;
-                _verticalVelocity -= LocomotionSettings.Gravity * dt;
-            }
+            candidate.Y +=
+                _verticalVelocity * dt -
+                0.5f * LocomotionSettings.Gravity * dt * dt;
+
+            _verticalVelocity -= LocomotionSettings.Gravity * dt;
         }
         // Reject the upward part of an unwalkable bank instead of teleporting onto it mid-jump.
         if (ground > candidate.Y + 0.15f)
@@ -119,10 +125,14 @@ public sealed partial class CharacterLocomotion
             _velocity = Vector2.Zero;
             _surface.TryGetHeight(candidate.X, candidate.Z, out ground);
         }
-        if (takeoff && !Animator.Complete && !_stationaryImpulse && candidate.Y < ground)
+        if (takeoff && !Animator.Complete && candidate.Y < ground)
+        {
             candidate.Y = ground;
+        }
         _jumpPeak = Math.Max(_jumpPeak, candidate.Y);
-        if (candidate.Y <= ground && _verticalVelocity <= 0 && (!takeoff || Animator.Complete || _stationaryImpulse))
+        if (candidate.Y <= ground &&
+            _verticalVelocity <= 0 &&
+            (!takeoff || Animator.Complete))
         {
             Position = candidate with { Y = ground };
             Land(input);

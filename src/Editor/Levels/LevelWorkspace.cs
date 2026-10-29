@@ -35,7 +35,8 @@ public sealed class LevelWorkspace
             return network;
         }, cancellationToken);
         await RoadEditStorage.LoadAsync(level.Directory, roads, cancellationToken);
-        return level with { Roads = roads };
+        var vegetation = await ZoneReborn.World.Vegetation.VegetationStorage.LoadAsync(level.Directory, Assets, cancellationToken);
+        return level with { Roads = roads, Vegetation = vegetation };
     }
 
     public static async Task SaveCameraAsync(LoadedLevel level, LevelCamera camera)

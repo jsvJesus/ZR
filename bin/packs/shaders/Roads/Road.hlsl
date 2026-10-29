@@ -1,7 +1,7 @@
 cbuffer RoadConstants : register(b0)
 {
     row_major float4x4 ViewProjection;
-    float4 Parameters; // selection, normal-map present, specular-power-map present, draw pass
+    float4 Parameters; // selection, normal-map present, specular-power-map present
     float4 CameraPosition;
     float4 SpecularParameters; // strength, gloss
 };
@@ -30,23 +30,14 @@ PixelInput VSMain(VertexInput input)
 }
 float4 PSDepth(PixelInput input) : SV_TARGET
 {
-    // Transparent edges must let the lower road contribute to the later color blend.
+    // Runs after all road color layers. Transparent edges do not hide later scene objects.
     clip(Diffuse.Sample(RoadSampler, input.Uv).a - 0.999f);
     return 0;
 }
 float4 PSMain(PixelInput input) : SV_TARGET
 {
     float4 color = Diffuse.Sample(RoadSampler, input.Uv);
-    if (Parameters.w < 1.5f)
-    {
-        clip(color.a - 0.999f);
-        color.a = 1;
-    }
-    else
-    {
-        if (color.a >= 0.999f) discard;
-        clip(color.a - 0.02f);
-    }
+    clip(color.a - 0.02f);
     float3 n = dot(input.Normal, input.Normal) > 0.000001f ? normalize(input.Normal) : float3(0, 1, 0);
     float3 dp1 = ddx(input.WorldPosition), dp2 = ddy(input.WorldPosition);
     float2 duv1 = ddx(input.Uv), duv2 = ddy(input.Uv);

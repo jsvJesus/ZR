@@ -16,6 +16,7 @@ public sealed partial class CharacterLocomotion
     private float _lastMovingSpeed;
     private float _turnStartYaw;
     private float _turnSign;
+    private float _turnAmount;
     private float _cameraHeight = 1.15f;
     private float _cameraBaseY;
     private float _cameraLockRemaining;
@@ -92,15 +93,44 @@ public sealed partial class CharacterLocomotion
         }
         if (IsTurning)
         {
-            if (moving) State = _crouched ? AnimState.CrouchIdle : AnimState.Idle;
+            if (moving)
+            {
+                State = _crouched ? AnimState.CrouchIdle : AnimState.Idle;
+            }
             else
             {
                 Animator.Advance(dt, 0);
+
                 var clip = Animator.Current.Clip;
-                float curve = MathF.Abs(Wrap(clip.RootYaw(Animator.Frame) - clip.RootYaw(clip.FirstFrame)));
-                float total = MathF.Abs(Wrap(clip.RootYaw(clip.LastFrame) - clip.RootYaw(clip.FirstFrame)));
-                Yaw = Wrap(_turnStartYaw + _turnSign * (total > 0.05f ? curve : MathF.PI / 2 * Animator.Phase));
-                if (Animator.Complete) State = _crouched ? AnimState.CrouchIdle : AnimState.Idle;
+
+                float firstYaw = clip.RootYaw(clip.FirstFrame);
+                float currentYaw = clip.RootYaw(Animator.Frame);
+                float lastYaw = clip.RootYaw(clip.LastFrame);
+
+                float traveled = MathF.Abs(Wrap(currentYaw - firstYaw));
+                float total = MathF.Abs(Wrap(lastYaw - firstYaw));
+
+                float progress = total > 0.05f
+                    ? Math.Clamp(traveled / total, 0, 1)
+                    : Animator.Phase;
+
+                Yaw = Wrap(
+                    _turnStartYaw +
+                    _turnSign * _turnAmount * progress
+                );
+
+                if (Animator.Complete)
+                {
+                    Yaw = Wrap(
+                        _turnStartYaw +
+                        _turnSign * _turnAmount
+                    );
+
+                    State = _crouched
+                        ? AnimState.CrouchIdle
+                        : AnimState.Idle;
+                }
+
                 return;
             }
         }
@@ -129,7 +159,14 @@ public sealed partial class CharacterLocomotion
                 return;
             }
         }
-        if (moving) Yaw = ApproachAngle(Yaw, cameraYaw, LocomotionSettings.BodyTwistSpeed * dt);
+        if (moving)
+        {
+            Yaw = ApproachAngle(
+                Yaw,
+                cameraYaw,
+                LocomotionSettings.MovingTurnSpeed * dt
+            );
+        }
         float speed = moving ? LocomotionSettings.Speed(input.Move, input.Walk, _crouched, input.Sprint) : 0;
         var forward = new Vector2(MathF.Sin(cameraYaw), MathF.Cos(cameraYaw));
         var right = new Vector2(forward.Y, -forward.X);
@@ -165,14 +202,29 @@ public sealed partial class CharacterLocomotion
         if (!moving && actualSpeed < 0.1f && State != AnimState.JumpWaiting)
         {
             float angle = Wrap(cameraYaw - Yaw);
-            // new_turn.py: unarmed STAY 90 degrees / CROUCH 65 degrees.
-            if (MathF.Abs(angle) > (_crouched ? 65 : 90) * MathF.PI / 180)
+
+            float threshold = _crouched
+                ? LocomotionSettings.CrouchTurnThreshold
+                : LocomotionSettings.StandingTurnThreshold;
+
+            if (MathF.Abs(angle) > threshold)
             {
-                _turnStartYaw = Yaw; _turnSign = MathF.Sign(angle);
+                _turnStartYaw = Yaw;
+                _turnSign = MathF.Sign(angle);
+                _turnAmount = MathF.Min(
+                    MathF.Abs(angle),
+                    LocomotionSettings.MaximumTurnAngle
+                );
+
                 string name = $"turn_{(angle > 0 ? "right" : "left")}90_{(_crouched ? "crouch" : "stay")}_unarmed";
-                State = angle > 0 ? AnimState.TurningRight : AnimState.TurningLeft;
+
+                State = angle > 0
+                    ? AnimState.TurningRight
+                    : AnimState.TurningLeft;
+
                 Animator.Play(_library.Actions[name], false);
                 Animator.Advance(dt, 0);
+
                 return;
             }
         }
@@ -198,19 +250,53 @@ public sealed partial class CharacterLocomotion
 
     private void UpdateBodyTwist(float dt, float cameraYaw)
     {
-        float target = Animator.FeetYaw;
-        if (!Grounded || IsTurning || IsPostureTransition) target = 0;
-        else if (_velocity.LengthSquared() > 0.01f && Animator.Current.Movement && Animator.Current.FeetFollowDirection)
+        float feetTarget = 0;
+
+        if (Grounded &&
+            !IsTurning &&
+            !IsPostureTransition &&
+            _velocity.LengthSquared() > 0.01f &&
+            Animator.Current.Movement &&
+            Animator.Current.FeetFollowDirection)
         {
             var clip = Animator.Current.Clip;
-            var natural = clip.RootPosition(clip.LastFrame) - clip.RootPosition(clip.FirstFrame);
+
+            var natural = clip.RootPosition(clip.LastFrame) -
+                          clip.RootPosition(clip.FirstFrame);
+
             float naturalYaw = MathF.Atan2(natural.X, natural.Z);
-            target = Math.Clamp(Wrap(MathF.Atan2(_velocity.X, _velocity.Y) - Yaw - naturalYaw), -1.4f, 1.4f);
+
+            float movementYaw = MathF.Atan2(
+                _velocity.X,
+                _velocity.Y
+            );
+
+            feetTarget = Math.Clamp(
+                Wrap(movementYaw - Yaw - naturalYaw),
+                -LocomotionSettings.MaximumFootYaw,
+                LocomotionSettings.MaximumFootYaw
+            );
         }
-        // player_speed_settings.MODEL_SMOOTH: STAY_FOOT_TWIST=19, STAY_BODY_TWIST=15.
-        Animator.FeetYaw = ApproachAngle(Animator.FeetYaw, target, 19 * dt);
-        float torsoTarget = Grounded ? Math.Clamp(Wrap(cameraYaw - Yaw - Animator.FeetYaw), -85 * MathF.PI / 180, 85 * MathF.PI / 180) : 0;
-        Animator.TorsoYaw = ApproachAngle(Animator.TorsoYaw, torsoTarget, LocomotionSettings.BodyTwistSpeed * dt);
+
+        Animator.FeetYaw = ApproachAngle(
+            Animator.FeetYaw,
+            feetTarget,
+            19f * dt
+        );
+
+        float torsoTarget = Grounded
+            ? Math.Clamp(
+                Wrap(cameraYaw - Yaw - Animator.FeetYaw),
+                -LocomotionSettings.MaximumTorsoYaw,
+                LocomotionSettings.MaximumTorsoYaw
+            )
+            : 0;
+
+        Animator.TorsoYaw = ApproachAngle(
+            Animator.TorsoYaw,
+            torsoTarget,
+            LocomotionSettings.BodyTwistSpeed * dt
+        );
     }
 
     private bool MoveOnGround(Vector2 displacement)

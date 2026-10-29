@@ -30,6 +30,16 @@ public static class LocomotionSettings
     public const float PostureTransitionSpeed = 0.3f;
     public const float HardLandingHeight = 1.5f;
 
+    public const float DegreesToRadians = MathF.PI / 180f;
+    public const float MovingTurnSpeed = 240f * DegreesToRadians;
+    public const float StandingTurnThreshold = 60f * DegreesToRadians;
+    public const float CrouchTurnThreshold = 45f * DegreesToRadians;
+    public const float MaximumTurnAngle = 75f * DegreesToRadians;
+    public const float MaximumFootYaw = 35f * DegreesToRadians;
+    public const float MaximumTorsoYaw = 70f * DegreesToRadians;
+
+    public const float JumpHeight = 0.9f;
+
     public static float Speed(Vector2 move, bool walk, bool crouch, bool sprint)
     {
         if (sprint && !crouch && !walk && move.Y > 0) return 6.3f;

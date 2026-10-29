@@ -123,17 +123,23 @@ namespace Editor.Viewport.Roads
             _context.VertexShader.Set(_vertex); _context.VertexShader.SetConstantBuffer(0, _constants);
             _context.PixelShader.SetConstantBuffer(0, _constants);
             _context.PixelShader.SetSampler(0, _sampler);
-            // Establish opaque depth, then opaque color in priority order. Blend edges last so a
-            // later lower road cannot erase the transparent edge of an elevated surface.
-            for (int pass = 0; pass < 3; pass++)
-            {
-                _context.PixelShader.Set(pass == 0 ? _depthPixel : _pixel);
-                _context.Rasterizer.State = pass == 0 ? _rasterizer : _colorRasterizer;
-                _context.OutputMerger.SetDepthStencilState(pass == 0 ? _depth : _depthRead);
-                _context.OutputMerger.SetBlendState(pass == 0 ? _depthOnly : _blend);
-                foreach (var item in _visible)
-                    DrawSegment(item, camera, viewProjection, playing, pass);
-            }
+            // Compose against Terrain depth only. No road may populate depth before all color
+            // layers have finished: even a tiny height difference would defeat draw_priority.
+            _context.PixelShader.Set(_pixel);
+            _context.Rasterizer.State = _colorRasterizer;
+            _context.OutputMerger.SetDepthStencilState(_depthRead);
+            _context.OutputMerger.SetBlendState(_blend);
+            foreach (var item in _visible)
+                DrawSegment(item, camera, viewProjection, playing);
+
+            // Publish opaque road depth AFTER compositing, for characters/objects drawn later.
+            // This pass cannot change the selected material at road junctions.
+            _context.PixelShader.Set(_depthPixel);
+            _context.Rasterizer.State = _rasterizer;
+            _context.OutputMerger.SetDepthStencilState(_depth);
+            _context.OutputMerger.SetBlendState(_depthOnly);
+            foreach (var item in _visible)
+                DrawSegment(item, camera, viewProjection, playing);
             _context.PixelShader.SetShaderResource(0, null);
             _context.PixelShader.SetShaderResource(1, null);
             _context.PixelShader.SetShaderResource(2, null);
@@ -143,7 +149,7 @@ namespace Editor.Viewport.Roads
             _context.Rasterizer.State = null;
         }
 
-        private void DrawSegment(SegmentResources item, Vector3 camera, Matrix4x4 viewProjection, bool playing, int pass)
+        private void DrawSegment(SegmentResources item, Vector3 camera, Matrix4x4 viewProjection, bool playing)
         {
             var segment = item.Segment;
             var material = RoadMaterials.Find(_network, segment.Material);
@@ -164,7 +170,7 @@ namespace Editor.Viewport.Roads
             {
                 ViewProjection = viewProjection,
                 Parameters = new Vector4(!playing && item.Road == SelectedRoad && segment == SelectedSegment ? 1 : 0,
-                    normal != null ? 1 : 0, power != null ? 1 : 0, pass),
+                    normal != null ? 1 : 0, power != null ? 1 : 0, 0),
                 CameraPosition = new Vector4(camera, 0),
                 SpecularParameters = new Vector4(color.SpecularStrength, color.Gloss, 0, 0)
             };
