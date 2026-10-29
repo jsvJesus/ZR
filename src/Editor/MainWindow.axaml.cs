@@ -38,6 +38,13 @@ namespace Editor
             };
         }
 
+        private void Roads_Click(
+            object? sender,
+            RoutedEventArgs e)
+        {
+            RoadPanel.IsVisible = true;
+        }
+
         private void Exit_Click(object? sender, RoutedEventArgs e) => Close();
     }
 }
