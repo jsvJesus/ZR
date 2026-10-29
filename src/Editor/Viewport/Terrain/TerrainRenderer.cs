@@ -18,7 +18,7 @@ using Vector4 = System.Numerics.Vector4;
 
 namespace Editor.Viewport.Terrain;
 
-internal sealed class TerrainRenderer : IDisposable
+internal sealed partial class TerrainRenderer : IDisposable
 {
     private const int Capacity = 64;
     private readonly Device _device;

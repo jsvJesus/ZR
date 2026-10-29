@@ -290,6 +290,7 @@ namespace Editor.Viewport
             {
                 case WmLeftDown:
                     SetFocus(window);
+                    if (TreeEditingEnabled) { HandleTreePointer(ReadX(lParam), ReadY(lParam)); return nint.Zero; }
                     PickRoadSegment(ReadX(lParam), ReadY(lParam));
                     return nint.Zero;
 

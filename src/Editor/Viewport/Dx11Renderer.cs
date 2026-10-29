@@ -9,6 +9,7 @@ using SharpDX.Mathematics.Interop;
 using Editor.Viewport.Terrain;
 using Editor.Viewport.Characters;
 using Editor.Viewport.Roads;
+using Editor.Viewport.Vegetation;
 using ZoneReborn.World.Roads;
 using ZoneReborn.World.Characters;
 using ZoneReborn.World.Characters.Locomotion;
@@ -30,6 +31,7 @@ namespace Editor.Viewport
         private TerrainRenderer? _terrain;
         private CharacterRenderer? _character;
         private RoadRenderer? _roads;
+        private TreeRenderer? _trees;
 
         private VertexShader _vertexShader = null!;
         private PixelShader _pixelShader = null!;
@@ -210,11 +212,24 @@ namespace Editor.Viewport
             RoadRenderer roads;
             try { roads = new RoadRenderer(_device, _context, assets, level.Roads, terrain); }
             catch { terrain.Dispose(); throw; }
+            TreeRenderer trees;
+            try { trees = new TreeRenderer(_device, _context, assets, level.Vegetation); }
+            catch { roads.Dispose(); terrain.Dispose(); throw; }
             _context.ClearState();
             _terrain?.Dispose();
             _roads?.Dispose();
+            _trees?.Dispose();
             _terrain = terrain;
             _roads = roads;
+            _trees = trees;
+        }
+
+        public void SelectTree(Guid? id) { if (_trees != null) _trees.Selected = id; }
+
+        public bool PickTerrain(Vector3 origin, Vector3 direction, out Vector3 position)
+        {
+            position = default;
+            return _terrain != null && _terrain.PickSurface(origin, direction, out position);
         }
 
         public void SelectRoadSegment(SourceRoad? road, RoadSegment? segment)
@@ -324,6 +339,7 @@ namespace Editor.Viewport
             var viewProjection = view * projection;
             _terrain?.Render(camera, viewProjection);
             _roads?.Render(camera.Position, viewProjection, _terrain?.FarPlane ?? 10000, playing);
+            _trees?.Render(camera, viewProjection, playing);
 
             if (showGrid)
             {
@@ -420,6 +436,7 @@ namespace Editor.Viewport
 
             _terrain?.Dispose();
             _roads?.Dispose();
+            _trees?.Dispose();
             _character?.Dispose();
             _depthTarget?.Dispose();
             _depthTexture?.Dispose();
