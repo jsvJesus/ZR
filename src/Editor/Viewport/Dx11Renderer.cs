@@ -213,7 +213,7 @@ namespace Editor.Viewport
             try { roads = new RoadRenderer(_device, _context, assets, level.Roads, terrain); }
             catch { terrain.Dispose(); throw; }
             TreeRenderer trees;
-            try { trees = new TreeRenderer(_device, _context, assets, level.Vegetation); }
+            try { trees = new TreeRenderer(_device, _context, assets, level.Vegetation, terrain); }
             catch { roads.Dispose(); terrain.Dispose(); throw; }
             _context.ClearState();
             _terrain?.Dispose();
@@ -225,6 +225,7 @@ namespace Editor.Viewport
         }
 
         public void SelectTree(Guid? id) { if (_trees != null) _trees.Selected = id; }
+        public Matrix4x4 TreeWorld(ZoneReborn.World.Vegetation.TreeInstance tree) => TreeRenderer.World(tree, _terrain);
 
         public bool PickTerrain(Vector3 origin, Vector3 direction, out Vector3 position)
         {

@@ -4,6 +4,23 @@ namespace Editor.Viewport.Terrain
 {
     internal sealed partial class TerrainRenderer
     {
+        public bool SurfaceHeight(float x, float z, out float height)
+        {
+            height = 0;
+            var d = Descriptor;
+            if (x < 0 || z < 0 || x > d.WorldSizeX || z > d.WorldSizeZ) return false;
+            int tx = Math.Clamp((int)(x / (d.CellSize * 256)), 0, d.TilesX - 1);
+            int tz = Math.Clamp((int)(z / (d.CellSize * 256)), 0, d.TilesZ - 1);
+            var grid = GetSurfaceGrid(tx, tz);
+            int ix = Math.Clamp((int)((x - grid.MinX) / grid.StepX), 0, grid.Side - 2);
+            int iz = Math.Clamp((int)((z - grid.MinZ) / grid.StepZ), 0, grid.Side - 2);
+            var a = grid.Positions[iz * grid.Side + ix]; var b = grid.Positions[iz * grid.Side + ix + 1];
+            var c = grid.Positions[(iz + 1) * grid.Side + ix]; var e = grid.Positions[(iz + 1) * grid.Side + ix + 1];
+            height = ZoneReborn.World.Terrain.TerrainSurface.Interpolate(a.Y, b.Y, c.Y, e.Y,
+                (x - a.X) / (b.X - a.X), (z - a.Z) / (c.Z - a.Z));
+            return true;
+        }
+
         public bool PickSurface(Vector3 origin, Vector3 direction, out Vector3 position)
         {
             position = default;

@@ -30,6 +30,9 @@ namespace ZoneReborn.World.Vegetation
             Vector3 minimum = Vector(reader), maximum = Vector(reader);
             if (minimum.X > maximum.X || minimum.Y > maximum.Y || minimum.Z > maximum.Z)
                 throw new InvalidDataException("Некорректные границы дерева.");
+            // The cache stores generated geometry with Z negated, but retains the native bbox.
+            float oldMinimumZ = minimum.Z;
+            minimum.Z = -maximum.Z; maximum.Z = -oldMinimumZ;
             _ = Scalar(reader); _ = Scalar(reader); // Native leaf rock/rustle factors.
             var parts = new List<TreePart>();
             for (int part = 0; part < 3; part++)
@@ -95,6 +98,19 @@ namespace ZoneReborn.World.Vegetation
             _ = Texture(reader, assets); _ = Texture(reader, assets);
             if (stream.Position != stream.Length) throw new InvalidDataException("Неизвестные данные в конце CTREE.");
             if (parts.Count == 0) throw new InvalidDataException("В CTREE отсутствует геометрия дерева.");
+            foreach (var part in parts)
+            foreach (var vertex in part.Vertices)
+            {
+                float radius = 0;
+                if (vertex.Leaf.X >= 0)
+                {
+                    float dx = (0.5f + MathF.Abs(vertex.Card.Z)) * vertex.Card.X;
+                    float dy = (0.5f + MathF.Abs(vertex.Card.W)) * vertex.Card.Y;
+                    radius = MathF.Sqrt(dx * dx + dy * dy);
+                }
+                minimum = Vector3.Min(minimum, vertex.Position - new Vector3(radius));
+                maximum = Vector3.Max(maximum, vertex.Position + new Vector3(radius));
+            }
             return new(file, minimum, maximum, parts.ToArray());
         }
 

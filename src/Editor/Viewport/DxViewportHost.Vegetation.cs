@@ -25,7 +25,8 @@ namespace Editor.Viewport
             if (IsPlaying || IsStarting || _level == null || !_level.Vegetation.Assets.TryGetValue(tree.Model, out var asset)) return;
             float height = Math.Max(2, asset.Maximum.Y - asset.Minimum.Y) * tree.Scale;
             float distance = Math.Clamp(height * 1.7f, 5, 500);
-            SetCamera(new(tree.X, tree.Y + height * 0.6f + distance * 0.35f, tree.Z - distance,
+            float y = _renderer?.TreeWorld(tree).M42 ?? tree.Y;
+            SetCamera(new(tree.X, y + height * 0.6f + distance * 0.35f, tree.Z - distance,
                 0, -MathF.Atan(0.35f), Math.Clamp(distance, 8, 250)));
         }
 
@@ -61,7 +62,7 @@ namespace Editor.Viewport
                     foreach (var tree in _level.Vegetation.Instances)
                     {
                         if (!_level.Vegetation.Assets.TryGetValue(tree.Model, out var asset) ||
-                            !Matrix4x4.Invert(TreeRenderer.World(tree), out var inverse)) continue;
+                            !Matrix4x4.Invert(_renderer.TreeWorld(tree), out var inverse)) continue;
                         var localOrigin = Vector3.Transform(_camera.Position, inverse);
                         var localDirection = Vector3.TransformNormal(direction, inverse);
                         if (ViewportPicking.Box(localOrigin, localDirection, asset.Minimum, asset.Maximum, out float distance, out _) && distance < nearest)

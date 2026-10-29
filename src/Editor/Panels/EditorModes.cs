@@ -10,7 +10,8 @@ namespace Editor
             string name,
             string description,
             bool showTerrainMaterials = false,
-            bool showRoadSegments = false)
+            bool showRoadSegments = false,
+            bool showVegetation = false)
         {
             CurrentModeText.Text = $"{category} / {name}";
             ModeTitle.Text = name;
@@ -18,6 +19,8 @@ namespace Editor
             TerrainMaterialsPanel.IsVisible = showTerrainMaterials;
             RoadSegmentsPanel.IsVisible = showRoadSegments;
             RoadSegmentsPanel.RefreshHighlight();
+            VegetationPanel.IsVisible = showVegetation;
+            VegetationPanel.RefreshMode();
             StatusText.Text = $"Выбран раздел: {name}";
         }
 
@@ -49,7 +52,7 @@ namespace Editor
         private void Vegetation_Click(object? sender, RoutedEventArgs e)
         {
             SetMode("Level editor", "Растительность",
-                "Размещение травы, кустарников и деревьев.");
+                "Каталог SpeedTree и размещение деревьев на уровне.", showVegetation: true);
         }
 
         private void Lighting_Click(object? sender, RoutedEventArgs e)

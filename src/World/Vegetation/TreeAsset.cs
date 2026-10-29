@@ -31,6 +31,8 @@ namespace ZoneReborn.World.Vegetation
         public float Z { get; set; }
         public float Yaw { get; set; }
         public float Scale { get; set; } = 1;
+        public bool FollowTerrain { get; set; } = true;
+        public float HeightOffset { get; set; }
         public override string ToString() => $"{Path.GetFileNameWithoutExtension(Model)} · {X:F1}, {Z:F1}";
     }
 

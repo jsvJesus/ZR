@@ -22,6 +22,7 @@ namespace Editor.Viewport.Vegetation
         private readonly Device _device;
         private readonly DeviceContext _context;
         private readonly VegetationScene _scene;
+        private readonly TerrainRenderer _terrain;
         private readonly Dictionary<string, ModelResources> _models = new(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, TerrainTexture> _textures = new(StringComparer.OrdinalIgnoreCase);
         private VertexShader _vertex = null!;
@@ -33,9 +34,9 @@ namespace Editor.Viewport.Vegetation
         private DepthStencilState _depth = null!;
         public Guid? Selected { get; set; }
 
-        public TreeRenderer(Device device, DeviceContext context, AssetPaths assets, VegetationScene scene)
+        public TreeRenderer(Device device, DeviceContext context, AssetPaths assets, VegetationScene scene, TerrainRenderer terrain)
         {
-            _device = device; _context = context; _scene = scene;
+            _device = device; _context = context; _scene = scene; _terrain = terrain;
             try
             {
                 var compiler = new ShaderCompiler(assets);
@@ -75,7 +76,8 @@ namespace Editor.Viewport.Vegetation
             foreach (var tree in _scene.Instances)
             {
                 if (!_scene.Assets.TryGetValue(tree.Model, out var asset)) continue;
-                var position = new Vector3(tree.X, tree.Y, tree.Z);
+                var world = World(tree, _terrain);
+                var position = new Vector3(world.M41, world.M42, world.M43);
                 float radius = Math.Max(asset.Minimum.Length(), asset.Maximum.Length()) * tree.Scale;
                 float distance = Vector3.Distance(position, camera.Position);
                 if (distance > 1800 + radius || Vector3.Dot(position - camera.Position, forward) < -radius) continue;
@@ -85,7 +87,7 @@ namespace Editor.Viewport.Vegetation
                     _models.Add(tree.Model, model);
                 }
                 float height = Math.Max(1, asset.Maximum.Y - asset.Minimum.Y) * tree.Scale;
-                var constants = new Constants { World = World(tree), ViewProjection = viewProjection,
+                var constants = new Constants { World = world, ViewProjection = viewProjection,
                     CameraRight = new Vector4(right, tree.Scale), CameraUp = new Vector4(up, 0) };
                 for (int i = 0; i < asset.Parts.Length; i++)
                 {
@@ -109,8 +111,14 @@ namespace Editor.Viewport.Vegetation
             _context.OutputMerger.SetDepthStencilState(null); _context.Rasterizer.State = null;
         }
 
-        internal static Matrix4x4 World(TreeInstance tree) => Matrix4x4.CreateScale(tree.Scale)
-            * Matrix4x4.CreateRotationY(tree.Yaw * MathF.PI / 180) * Matrix4x4.CreateTranslation(tree.X, tree.Y, tree.Z);
+        internal static Matrix4x4 World(TreeInstance tree, TerrainRenderer? terrain)
+        {
+            float y = tree.Y;
+            if (tree.FollowTerrain && terrain != null && terrain.SurfaceHeight(tree.X, tree.Z, out float ground))
+                y = ground + tree.HeightOffset;
+            return Matrix4x4.CreateScale(tree.Scale) * Matrix4x4.CreateRotationY(tree.Yaw * MathF.PI / 180)
+                * Matrix4x4.CreateTranslation(tree.X, y, tree.Z);
+        }
 
         private TerrainTexture Texture(string path, bool normal)
         {

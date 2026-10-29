@@ -12,6 +12,8 @@ namespace Editor
             RoadSegmentsPanel.Attach(Viewport);
             Viewport.RoadSegmentPicked += RoadSegmentsPanel.Select;
             RoadSegmentsPanel.BusyChanged += UpdatePlayControls;
+            VegetationPanel.Attach(Viewport, _workspace.Assets);
+            VegetationPanel.BusyChanged += UpdatePlayControls;
 
             CameraSpeedSlider.Minimum = (double)FreeCamera.MinimumSpeed;
             CameraSpeedSlider.Maximum = (double)FreeCamera.MaximumSpeed;
@@ -32,34 +34,36 @@ namespace Editor
             };
 
             UpdateCamera(Viewport.CameraPose);
-            Closing += SaveRoadsBeforeClosing;
+            Closing += SaveChangesBeforeClosing;
             Closed += (_, _) =>
             {
                 _isClosing = true;
                 _importCancellation?.Cancel();
+                VegetationPanel.CancelLoading();
                 Viewport.StopPlay();
             };
         }
 
         private void Exit_Click(object? sender, RoutedEventArgs e) => Close();
 
-        private bool _savingRoadsOnClose;
-        private bool _roadsSavedForClose;
+        private bool _savingChangesOnClose;
+        private bool _changesSavedForClose;
 
-        private async void SaveRoadsBeforeClosing(object? sender, WindowClosingEventArgs e)
+        private async void SaveChangesBeforeClosing(object? sender, WindowClosingEventArgs e)
         {
-            if (_roadsSavedForClose || !RoadSegmentsPanel.HasPendingChanges) return;
+            if (_changesSavedForClose || (!RoadSegmentsPanel.HasPendingChanges && !VegetationPanel.HasPendingChanges)) return;
             e.Cancel = true;
-            if (_savingRoadsOnClose) return;
-            _savingRoadsOnClose = true;
+            if (_savingChangesOnClose) return;
+            _savingChangesOnClose = true;
             try
             {
                 await RoadSegmentsPanel.SavePendingAsync();
-                _roadsSavedForClose = true;
+                await VegetationPanel.SavePendingAsync();
+                _changesSavedForClose = true;
                 Avalonia.Threading.Dispatcher.UIThread.Post(Close);
             }
-            catch (Exception exception) { StatusText.Text = $"Не удалось сохранить дороги перед закрытием: {exception.Message}"; }
-            finally { _savingRoadsOnClose = false; }
+            catch (Exception exception) { StatusText.Text = $"Не удалось сохранить изменения уровня перед закрытием: {exception.Message}"; }
+            finally { _savingChangesOnClose = false; }
         }
     }
 }

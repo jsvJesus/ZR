@@ -19,9 +19,10 @@ public sealed partial class MainWindow
         try
         {
             await RoadSegmentsPanel.SavePendingAsync();
+            await VegetationPanel.SavePendingAsync();
             var camera = Viewport.CameraPose;
             await LevelWorkspace.SaveCameraAsync(_level, new(camera.X, camera.Y, camera.Z, camera.Yaw, camera.Pitch, camera.Speed));
-            if (!_isClosing) StatusText.Text = "Позиция камеры и изменения дорог сохранены.";
+            if (!_isClosing) StatusText.Text = "Камера, дороги и растительность сохранены.";
         }
         catch (Exception exception)
         {

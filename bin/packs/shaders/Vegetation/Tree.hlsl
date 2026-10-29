@@ -56,9 +56,14 @@ float4 PSMain(PixelInput input, bool front : SV_IsFrontFace) : SV_TARGET
     if (Parameters.z > 0.5f && dot(t, t) > 0.000001f && abs(determinant) > 0.000001f)
     {
         t = normalize(t * (determinant < 0 ? -1 : 1));
-        float3 b = normalize(cross(n, t)) * (determinant < 0 ? -1 : 1);
-        float3 map = NormalMap.Sample(TreeSampler, input.Uv).xyz * 2 - 1;
-        n = normalize(t * map.x + b * map.y + n * map.z);
+        float3 b = cross(n, t);
+        if (dot(b, b) > 0.000001f)
+        {
+            b = normalize(b) * (determinant < 0 ? -1 : 1);
+            float3 map = NormalMap.Sample(TreeSampler, input.Uv).xyz * 2 - 1;
+            float3 mapped = t * map.x + b * map.y + n * map.z;
+            if (dot(mapped, mapped) > 0.000001f) n = normalize(mapped);
+        }
     }
     if (!front) n = -n;
     float light = 0.48f + 0.52f * saturate(dot(n, normalize(float3(-0.4f, 0.8f, -0.5f))));

@@ -37,11 +37,13 @@ public sealed partial class MainWindow
         try
         {
             await RoadSegmentsPanel.SavePendingAsync();
+            await VegetationPanel.SavePendingAsync();
             var level = await _workspace.OpenAsync(path);
             if (_isClosing) return;
             Viewport.SetLevel(level, _workspace.Assets);
             _level = level;
             RoadSegmentsPanel.Bind(level, _workspace.Assets);
+            VegetationPanel.Bind(level);
             var camera = level.Manifest.Camera;
             Viewport.SetCamera(new(camera.X, camera.Y, camera.Z, camera.Yaw, camera.Pitch, camera.Speed));
             LevelNameText.Text = $"Уровень: {level.Manifest.Name}";
