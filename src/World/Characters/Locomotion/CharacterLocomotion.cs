@@ -144,6 +144,7 @@ public sealed partial class CharacterLocomotion
         Grounded &&
         !IsLanding &&
         !IsPostureTransition &&
+        !IsTurning &&
         State != AnimState.Stopping &&
         State != AnimState.JumpWaiting;
 
@@ -208,6 +209,22 @@ public sealed partial class CharacterLocomotion
             _velocity = Vector2.Zero;
             Animator.Advance(dt, 0);
             return;
+        }
+
+        if (IsTurning)
+        {
+            if (moving)
+            {
+                State = _crouched
+                    ? AnimState.CrouchIdle
+                    : AnimState.Idle;
+            }
+            else
+            {
+                _velocity = Vector2.Zero;
+                AdvanceTurn(dt);
+                return;
+            }
         }
 
         if (State == AnimState.Stopping)
@@ -380,6 +397,17 @@ public sealed partial class CharacterLocomotion
             return;
         }
 
+        if (!moving &&
+            actualSpeed < 0.1f &&
+            State != AnimState.JumpWaiting)
+        {
+            if (TryStartTurn(cameraYaw))
+            {
+                AdvanceTurn(dt);
+                return;
+            }
+        }
+
         var action = _matcher.Select(
             actualSpeed,
             direction,
@@ -468,6 +496,7 @@ public sealed partial class CharacterLocomotion
         float feetTarget = 0;
 
         if (Grounded &&
+            !IsTurning &&
             !IsPostureTransition &&
             moving &&
             Animator.Current.Movement &&
@@ -475,8 +504,9 @@ public sealed partial class CharacterLocomotion
         {
             var clip = Animator.Current.Clip;
 
-            var natural = clip.RootPosition(clip.LastFrame) -
-                          clip.RootPosition(clip.FirstFrame);
+            var natural =
+                clip.RootPosition(clip.LastFrame) -
+                clip.RootPosition(clip.FirstFrame);
 
             float naturalYaw = MathF.Atan2(
                 natural.X,
@@ -495,44 +525,34 @@ public sealed partial class CharacterLocomotion
             );
         }
 
-        float feetSpeed = Grounded ? 19f : 5f;
-
         Animator.FeetYaw = ApproachAngle(
             Animator.FeetYaw,
             feetTarget,
-            feetSpeed * dt
-        );
-
-        float cameraAngle = Wrap(
-            cameraYaw - Yaw - Animator.FeetYaw
+            19f * dt
         );
 
         float torsoTarget = 0;
 
         if (Grounded && !IsPostureTransition)
         {
-            float maxYaw = LocomotionSettings.MaximumTorsoYaw;
-            float freeLookLimit = 100f *
-                                  LocomotionSettings.DegreesToRadians;
+            float delta = Wrap(
+                cameraYaw - Yaw - Animator.FeetYaw
+            );
 
-            // Release the torso when the camera moves behind the body.
-            // This avoids a sudden 180-degree torso flip.
-            if (moving || MathF.Abs(cameraAngle) <= freeLookLimit)
-            {
-                torsoTarget = Math.Clamp(
-                    cameraAngle,
-                    -maxYaw,
-                    maxYaw
-                );
-            }
+            float maximumTwist =
+                45f * LocomotionSettings.DegreesToRadians;
+
+            torsoTarget = Math.Clamp(
+                delta,
+                -maximumTwist,
+                maximumTwist
+            );
         }
-
-        float torsoSpeed = Grounded ? 6f : 4f;
 
         Animator.TorsoYaw = ApproachAngle(
             Animator.TorsoYaw,
             torsoTarget,
-            torsoSpeed * dt
+            6f * dt
         );
     }
 
