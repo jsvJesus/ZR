@@ -16,6 +16,7 @@ internal sealed class TerrainTexture : IDisposable
         image.Format switch
         {
             DdsPixelFormat.Bc1 => Format.BC1_UNorm,
+            DdsPixelFormat.Bc2 => Format.BC2_UNorm,
             DdsPixelFormat.Bc3 => Format.BC3_UNorm,
             DdsPixelFormat.Rgba8 => Format.R8G8B8A8_UNorm,
             _ => throw new InvalidDataException("Unsupported Terrain texture format.")

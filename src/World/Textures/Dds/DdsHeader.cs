@@ -72,8 +72,9 @@ namespace ZoneReborn.World.Textures.Dds
                     format = fourCc switch
                     {
                         0x31545844 => DdsPixelFormat.Bc1,
+                        0x33545844 => DdsPixelFormat.Bc2,
                         0x35545844 => DdsPixelFormat.Bc3,
-                        _ => throw new InvalidDataException($"Unsupported DDS FourCC 0x{fourCc:X8}; expected DXT1, DXT5, or DX10.")
+                        _ => throw new InvalidDataException($"Unsupported DDS FourCC 0x{fourCc:X8}; expected DXT1, DXT3, DXT5, or DX10.")
                     };
                 }
             }
@@ -119,11 +120,12 @@ namespace ZoneReborn.World.Textures.Dds
             return dxgiFormat switch
             {
                 71 => (DdsPixelFormat.Bc1, null),
+                74 => (DdsPixelFormat.Bc2, null),
                 77 => (DdsPixelFormat.Bc3, null),
                 28 => (DdsPixelFormat.Rgba8, DdsUncompressedLayout.Create(32, 0xff, 0xff00, 0xff0000, 0xff000000)),
                 87 => (DdsPixelFormat.Rgba8, DdsUncompressedLayout.Create(32, 0xff0000, 0xff00, 0xff, 0xff000000)),
                 88 => (DdsPixelFormat.Rgba8, DdsUncompressedLayout.Create(32, 0xff0000, 0xff00, 0xff, 0)),
-                _ => throw new InvalidDataException($"Unsupported DDS DXGI format {dxgiFormat}; expected BC1_UNORM, BC3_UNORM, or an 8-bit UNORM RGB format.")
+                _ => throw new InvalidDataException($"Unsupported DDS DXGI format {dxgiFormat}; expected BC1_UNORM, BC2_UNORM, BC3_UNORM, or an 8-bit UNORM RGB format.")
             };
         }
 

@@ -62,7 +62,7 @@ public sealed class LevelImporter(AssetPaths assets)
                 new LevelImportReport(1, $"import/levels/{name}", DateTimeOffset.UtcNow, tiles.Count,
                     configuration.Layers.Count,
                     ["Импортированы высоты, исходные нормали, маски и слои Terrain.",
-                     "Дороги, водные плоскости и объекты сцены в этот импорт не входят.",
+                     "Дороги читаются из исходных DAT при открытии уровня; вода и объекты сцены в этот импорт не входят.",
                      "Модель освещения редактора отличается от исходного движка."]), cancellationToken);
             string minimap = Path.Combine(source, "minimap.dds");
             if (File.Exists(minimap)) File.Copy(minimap, Path.Combine(staging, "minimap.dds"));

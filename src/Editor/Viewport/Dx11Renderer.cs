@@ -8,6 +8,8 @@ using SharpDX.DXGI;
 using SharpDX.Mathematics.Interop;
 using Editor.Viewport.Terrain;
 using Editor.Viewport.Characters;
+using Editor.Viewport.Roads;
+using ZoneReborn.World.Roads;
 using ZoneReborn.World.Characters;
 using ZoneReborn.World.Characters.Locomotion;
 using ZoneReborn.World.Assets;
@@ -27,6 +29,7 @@ namespace Editor.Viewport
         private DepthStencilView? _depthTarget;
         private TerrainRenderer? _terrain;
         private CharacterRenderer? _character;
+        private RoadRenderer? _roads;
 
         private VertexShader _vertexShader = null!;
         private PixelShader _pixelShader = null!;
@@ -204,10 +207,27 @@ namespace Editor.Viewport
         public void SetLevel(LoadedLevel level, AssetPaths assets)
         {
             var terrain = new TerrainRenderer(_device, _context, level, assets);
+            RoadRenderer roads;
+            try { roads = new RoadRenderer(_device, _context, assets, level.Roads, terrain); }
+            catch { terrain.Dispose(); throw; }
             _context.ClearState();
             _terrain?.Dispose();
+            _roads?.Dispose();
             _terrain = terrain;
+            _roads = roads;
         }
+
+        public void SelectRoadSegment(SourceRoad? road, RoadSegment? segment)
+        {
+            if (_roads == null) return;
+            _roads.SelectedRoad = road;
+            _roads.SelectedSegment = segment;
+        }
+
+        public void ReloadRoadTextures() => _roads?.ReloadTextures();
+
+        public (SourceRoad Road, RoadSegment Segment)? PickRoadSegment(Vector3 origin, Vector3 direction) =>
+            _roads?.Pick(origin, direction);
 
         public void SetCharacter(AssetPaths assets, CharacterAsset asset, CharacterLocomotion locomotion)
         {
@@ -303,6 +323,7 @@ namespace Editor.Viewport
 
             var viewProjection = view * projection;
             _terrain?.Render(camera, viewProjection);
+            _roads?.Render(camera.Position, viewProjection, _terrain?.FarPlane ?? 10000, playing);
 
             if (showGrid)
             {
@@ -398,6 +419,7 @@ namespace Editor.Viewport
             _context?.ClearState();
 
             _terrain?.Dispose();
+            _roads?.Dispose();
             _character?.Dispose();
             _depthTarget?.Dispose();
             _depthTexture?.Dispose();

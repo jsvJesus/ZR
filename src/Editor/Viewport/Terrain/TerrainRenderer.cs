@@ -41,6 +41,10 @@ internal sealed class TerrainRenderer : IDisposable
     private BlendState _add = null!;
 
     public float FarPlane => Math.Max(1000, Math.Max(_level.Manifest.Terrain.WorldSizeX, _level.Manifest.Terrain.WorldSizeZ) * 1.5f);
+    public TerrainDescriptor Descriptor => _level.Manifest.Terrain;
+
+    public TerrainSurfaceGrid GetSurfaceGrid(int tileX, int tileZ) =>
+        _tiles.TryGetValue((tileX, tileZ), out var tile) ? tile.Surface : _overview.GetSurfaceGrid(tileX, tileZ);
 
     public TerrainRenderer(Device device, DeviceContext context, LoadedLevel level, AssetPaths assets)
     {
@@ -168,11 +172,12 @@ internal sealed class TerrainRenderer : IDisposable
         foreach (var reference in nearest)
         {
             if (!_tiles.TryGetValue((reference.X, reference.Z), out var tile)) continue;
-            tile.SkirtEdges = 0;
-            if (reference.Z > 0 && !_tiles.ContainsKey((reference.X, reference.Z - 1))) tile.SkirtEdges |= 1;
-            if (reference.Z + 1 < descriptor.TilesZ && !_tiles.ContainsKey((reference.X, reference.Z + 1))) tile.SkirtEdges |= 2;
-            if (reference.X > 0 && !_tiles.ContainsKey((reference.X - 1, reference.Z))) tile.SkirtEdges |= 4;
-            if (reference.X + 1 < descriptor.TilesX && !_tiles.ContainsKey((reference.X + 1, reference.Z))) tile.SkirtEdges |= 8;
+            int skirtEdges = 0;
+            if (reference.Z > 0 && !_tiles.ContainsKey((reference.X, reference.Z - 1))) skirtEdges |= 1;
+            if (reference.Z + 1 < descriptor.TilesZ && !_tiles.ContainsKey((reference.X, reference.Z + 1))) skirtEdges |= 2;
+            if (reference.X > 0 && !_tiles.ContainsKey((reference.X - 1, reference.Z))) skirtEdges |= 4;
+            if (reference.X + 1 < descriptor.TilesX && !_tiles.ContainsKey((reference.X + 1, reference.Z))) skirtEdges |= 8;
+            tile.UpdateLodEdges(_context, skirtEdges);
             _context.InputAssembler.SetVertexBuffers(0, new VertexBufferBinding(tile.Vertices, Utilities.SizeOf<TerrainVertex>(), 0));
             _context.InputAssembler.SetIndexBuffer(tile.Indices, Format.R32_UInt, 0);
             _context.PixelShader.SetShaderResource(2, tile.Normals.View);

@@ -11,8 +11,8 @@ internal readonly record struct TerrainVertex(Vector3 Position, Vector2 TileUv);
 internal static class TerrainMeshBuilder
 {
     // Every tile uses the same sampling step, including its shared border vertices.
-    private const int Step = 4;
-    private const int Side = 256 / Step + 1;
+    internal const int Step = 4;
+    internal const int Side = 256 / Step + 1;
 
     public static (TerrainVertex[] Vertices, int[] Indices, int MainIndexCount, int EdgeIndexCount) Build(TerrainDescriptor descriptor,
         TerrainTileData tile, TerrainTileData? right, TerrainTileData? bottom, TerrainTileData? diagonal,

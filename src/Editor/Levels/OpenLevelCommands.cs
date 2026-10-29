@@ -36,16 +36,19 @@ public sealed partial class MainWindow
         SetLevelCommandsBusy(_importCancellation != null);
         try
         {
+            await RoadSegmentsPanel.SavePendingAsync();
             var level = await _workspace.OpenAsync(path);
             if (_isClosing) return;
             Viewport.SetLevel(level, _workspace.Assets);
             _level = level;
+            RoadSegmentsPanel.Bind(level, _workspace.Assets);
             var camera = level.Manifest.Camera;
             Viewport.SetCamera(new(camera.X, camera.Y, camera.Z, camera.Yaw, camera.Pitch, camera.Speed));
             LevelNameText.Text = $"Уровень: {level.Manifest.Name}";
             TerrainLevelInfo.Text = $"{level.Manifest.Terrain.SamplesX} × {level.Manifest.Terrain.SamplesZ} • {level.Layers.Count} слоёв";
             TerrainLayersList.ItemsSource = level.Layers.Select(layer => layer.Name).ToArray();
-            StatusText.Text = $"Открыт {level.Manifest.Name}";
+            StatusText.Text = $"Открыт {level.Manifest.Name} · дорог: {level.Roads.Roads.Count}"
+                + (level.Roads.Warnings.Count > 0 ? $" · замечаний по дорогам: {level.Roads.Warnings.Count}" : "");
         }
         finally
         {

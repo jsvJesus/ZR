@@ -24,6 +24,7 @@ internal sealed class TerrainOverviewResources : IDisposable
     private readonly int _step;
     private readonly ushort[] _heights;
     private readonly HashSet<(int X, int Z)> _covered = [];
+    private readonly Dictionary<(int X, int Z), TerrainSurfaceGrid> _surfaceGrids = [];
     private VertexShader _vertexShader = null!;
     private PixelShader _pixelShader = null!;
     private InputLayout _layout = null!;
@@ -106,6 +107,24 @@ internal sealed class TerrainOverviewResources : IDisposable
         // Match the overview's actual triangle diagonal, rather than a bilinear surface.
         return u + v <= 1 ? a + (b - a) * u + (c - a) * v
             : d + (c - d) * (1 - u) + (b - d) * (1 - v);
+    }
+
+    public TerrainSurfaceGrid GetSurfaceGrid(int tileX, int tileZ)
+    {
+        if (_surfaceGrids.TryGetValue((tileX, tileZ), out var cached)) return cached;
+        var terrain = _level.Manifest.Terrain;
+        int side = 256 / _step + 1;
+        var positions = new Vector3[side * side];
+        for (int z = 0; z < side; z++)
+        for (int x = 0; x < side; x++)
+        {
+            int gx = tileX * 256 / _step + x, gz = tileZ * 256 / _step + z;
+            positions[z * side + x] = new Vector3(Math.Min(gx * _step, terrain.SamplesX - 1) * terrain.CellSize,
+                terrain.DecodeHeight(_heights[gz * _width + gx]), Math.Min(gz * _step, terrain.SamplesZ - 1) * terrain.CellSize);
+        }
+        var grid = new TerrainSurfaceGrid(positions, side);
+        _surfaceGrids.Add((tileX, tileZ), grid);
+        return grid;
     }
 
     private void RebuildIndices()

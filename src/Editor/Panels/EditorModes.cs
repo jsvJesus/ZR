@@ -9,12 +9,15 @@ namespace Editor
             string category,
             string name,
             string description,
-            bool showTerrainMaterials = false)
+            bool showTerrainMaterials = false,
+            bool showRoadSegments = false)
         {
             CurrentModeText.Text = $"{category} / {name}";
             ModeTitle.Text = name;
             ModeDetails.Text = description;
             TerrainMaterialsPanel.IsVisible = showTerrainMaterials;
+            RoadSegmentsPanel.IsVisible = showRoadSegments;
+            RoadSegmentsPanel.RefreshHighlight();
             StatusText.Text = $"Выбран раздел: {name}";
         }
 
@@ -22,6 +25,12 @@ namespace Editor
         {
             SetMode("Level editor", "Terrain",
                 "Редактирование игрового ландшафта.");
+        }
+
+        private void RoadSegments_Click(object? sender, RoutedEventArgs e)
+        {
+            SetMode("Level editor", "Road Segments",
+                "Сегменты исходных дорог, общие узлы и материалы.", showRoadSegments: true);
         }
 
         private void Heights_Click(object? sender, RoutedEventArgs e)

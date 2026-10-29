@@ -290,6 +290,7 @@ namespace Editor.Viewport
             {
                 case WmLeftDown:
                     SetFocus(window);
+                    PickRoadSegment(ReadX(lParam), ReadY(lParam));
                     return nint.Zero;
 
                 case WmRightDown:

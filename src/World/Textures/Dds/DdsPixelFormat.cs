@@ -4,6 +4,7 @@ namespace ZoneReborn.World.Textures.Dds
     {
         Bc1,
         Bc3,
-        Rgba8
+        Rgba8,
+        Bc2
     }
 }
