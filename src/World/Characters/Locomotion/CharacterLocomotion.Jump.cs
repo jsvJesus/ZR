@@ -48,7 +48,7 @@ public sealed partial class CharacterLocomotion
         State = AnimState.JumpWaiting;
     }
 
-    private void BeginTakeoff()
+    private void BeginTakeoff(CharacterInput input)
     {
         _jump ??= JumpDefinition.Stationary;
 
@@ -60,7 +60,9 @@ public sealed partial class CharacterLocomotion
         _jumpImpulseApplied = false;
         _lastMovingSpeed = 0;
 
-        if (_jump == JumpDefinition.Stationary)
+        // A/D/S use the in-place animation set, but still carry movement.
+        // Only a jump without directional input starts with zero momentum.
+        if (_jump == JumpDefinition.Stationary && input.Move.LengthSquared() <= 0.001f)
         {
             _velocity = Vector2.Zero;
         }
@@ -94,14 +96,31 @@ public sealed partial class CharacterLocomotion
     {
         _jump ??= JumpDefinition.Fall;
 
+        // Air states bypass ground steering; update facing before root promotion.
+        if (input.Move.LengthSquared() > 0.001f)
+        {
+            Yaw = Wrap(cameraYaw);
+        }
+
         bool takeoff = State == AnimState.JumpTakeoff;
         var actionBefore = Animator.Current;
+        var takeoffClip = actionBefore.Clip;
+        bool authoredTakeoff = takeoff && actionBefore.IgnoreGravity
+            && takeoffClip.RootPosition(takeoffClip.LastFrame).Y
+                - takeoffClip.RootPosition(takeoffClip.FirstFrame).Y > 0.01f;
 
         Animator.Advance(dt, _velocity.Length());
 
-        // Horizontal movement is handled by character physics.
-        // Animation RootDelta is not applied again.
         var horizontal = _velocity * dt;
+
+        if (authoredTakeoff)
+        {
+            // animation_jump_config.vel_or_imp selects the greater displacement,
+            // rather than adding physics and the impacting animation twice.
+            var root = Vector3.TransformNormal(Animator.RootDelta, Matrix4x4.CreateRotationY(Yaw));
+            var promotion = new Vector2(root.X, root.Z);
+            if (promotion.LengthSquared() > horizontal.LengthSquared()) horizontal = promotion;
+        }
 
         if (!takeoff)
         {
@@ -165,9 +184,9 @@ public sealed partial class CharacterLocomotion
             }
         }
 
-        // Apply the same vertical impulse for every jump type.
-        // An animation cue determines when the feet leave the ground.
-        if (takeoff && !_jumpImpulseApplied)
+        // The running takeoff supplies its own ascent and disables gravity.
+        // Only clips without vertical root motion need a physical impulse.
+        if (takeoff && !authoredTakeoff && !_jumpImpulseApplied)
         {
             var clip = actionBefore.Clip;
 
@@ -199,12 +218,16 @@ public sealed partial class CharacterLocomotion
             }
         }
 
-        // Physics controls vertical motion for the entire jump.
-        candidate.Y +=
-            _verticalVelocity * dt -
-            0.5f * LocomotionSettings.Gravity * dt * dt;
-
-        _verticalVelocity -= LocomotionSettings.Gravity * dt;
+        if (authoredTakeoff)
+        {
+            candidate.Y += Animator.RootDelta.Y;
+            _verticalVelocity = 0;
+        }
+        else
+        {
+            candidate.Y += _verticalVelocity * dt - 0.5f * LocomotionSettings.Gravity * dt * dt;
+            _verticalVelocity -= LocomotionSettings.Gravity * dt;
+        }
 
         // Do not allow the character to climb an unwalkable
         // slope by pushing horizontally into it during a jump.
@@ -227,9 +250,11 @@ public sealed partial class CharacterLocomotion
             candidate.Y
         );
 
+        if (authoredTakeoff) candidate.Y = Math.Max(ground, candidate.Y);
+
         // Landing is controlled by collision and vertical
         // velocity, not by the length of the takeoff animation.
-        if (candidate.Y <= ground &&
+        if (!authoredTakeoff && candidate.Y <= ground &&
             _verticalVelocity <= 0)
         {
             Position = candidate with { Y = ground };
@@ -302,6 +327,13 @@ public sealed partial class CharacterLocomotion
             _library.Actions[action],
             false
         );
+
+        // The in-place landing is not covered by animation_jump_config's run
+        // recovery timers. Play its authored range instead of cutting it at 0.4s.
+        if (!hard && _jump == JumpDefinition.Stationary)
+        {
+            _landingRemaining = Animator.Current.Clip.Duration;
+        }
 
         if (!moving || hard)
         {

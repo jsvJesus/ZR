@@ -56,6 +56,7 @@ public sealed partial class DxViewportHost
             _orbit = new ThirdPersonCamera(saved.Yaw);
             UpdatePlayCamera();
             if (_windowHandle != nint.Zero) SetFocus(_windowHandle);
+            UpdatePlayMouseCapture();
         }
         catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
         catch
@@ -73,6 +74,7 @@ public sealed partial class DxViewportHost
     public void StopPlay()
     {
         bool active = IsPlaying || IsStarting;
+        ReleasePlayMouse(true);
         _playLoad?.Cancel();
         _playLoad = null;
         _renderer?.ClearCharacter();

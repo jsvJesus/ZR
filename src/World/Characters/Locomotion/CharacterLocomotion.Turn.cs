@@ -4,7 +4,6 @@ public sealed partial class CharacterLocomotion
 {
     private float _turnStartYaw;
     private float _turnSign;
-    private float _turnAmount;
     private float _turnProgress;
 
     private bool IsTurning =>
@@ -23,21 +22,20 @@ public sealed partial class CharacterLocomotion
             ? LocomotionSettings.CrouchTurnThreshold
             : LocomotionSettings.StandingTurnThreshold;
 
-        if (MathF.Abs(angle) <= threshold)
+        if (MathF.Abs(angle) + 0.00001f < threshold)
         {
             return false;
         }
 
         _turnStartYaw = Yaw;
         _turnSign = MathF.Sign(angle);
-        _turnAmount = MathF.Min(MathF.Abs(angle), MathF.PI / 2f);
         _turnProgress = 0;
 
-        string posture = _crouched ? "crouch" : "stay";
+        string posture = _crouched ? "crouch_unarmed" : "stay_incombat";
         string direction = angle > 0 ? "right" : "left";
 
         string actionName =
-            $"turn_{direction}90_{posture}_unarmed";
+            $"turn_{direction}45_{posture}";
 
         if (!_library.Actions.TryGetValue(actionName, out var action))
         {
@@ -53,7 +51,7 @@ public sealed partial class CharacterLocomotion
         return true;
     }
 
-    private void AdvanceTurn(float dt)
+    private void AdvanceTurn(float dt, float cameraYaw)
     {
         Animator.Advance(dt, 0);
 
@@ -71,7 +69,7 @@ public sealed partial class CharacterLocomotion
         if (MathF.Abs(total) > 0.05f)
         {
             progress = Math.Clamp(
-                MathF.Abs(traveled / total),
+                traveled / total,
                 0f,
                 1f
             );
@@ -90,7 +88,7 @@ public sealed partial class CharacterLocomotion
 
         Yaw = Wrap(
             _turnStartYaw +
-            _turnSign * _turnAmount * _turnProgress
+            _turnSign * LocomotionSettings.TurnAngle * _turnProgress
         );
 
         if (!Animator.Complete)
@@ -100,12 +98,15 @@ public sealed partial class CharacterLocomotion
 
         Yaw = Wrap(
             _turnStartYaw +
-            _turnSign * _turnAmount
+            _turnSign * LocomotionSettings.TurnAngle
         );
 
         State = _crouched
             ? AnimState.CrouchIdle
             : AnimState.Idle;
+
+        // Continue a large turn without inserting an idle clip between steps.
+        if (TryStartTurn(cameraYaw)) return;
 
         string idleName = _crouched
             ? "idle_0_crouch_unarmed"

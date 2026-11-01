@@ -212,6 +212,7 @@ namespace Editor.Viewport
 
             try
             {
+                if (IsPlaying) UpdatePlayMouseCapture();
                 if (IsPlaying) UpdatePlayer(deltaTime);
                 if (!IsPlaying && !IsStarting) _camera.Move(
                     IsPressed(KeyW),
@@ -296,6 +297,7 @@ namespace Editor.Viewport
 
                 case WmRightDown:
                     SetFocus(window);
+                    if (IsPlaying) return nint.Zero;
                     SetCapture(window);
 
                     _rotating = true;
@@ -305,6 +307,7 @@ namespace Editor.Viewport
                     return nint.Zero;
 
                 case WmRightUp:
+                    if (IsPlaying) return nint.Zero;
                     _rotating = false;
                     ReleaseCapture();
                     return nint.Zero;
@@ -316,6 +319,19 @@ namespace Editor.Viewport
                 case WmMouseMove:
                     HandleMouseMove(lParam);
                     return nint.Zero;
+
+                case WmInput:
+                    ReadPlayMouse(lParam);
+                    // WM_INPUT requires DefWindowProc to release the system input buffer.
+                    return DefWindowProc(window, message, wParam, lParam);
+
+                case WmSetCursor:
+                    if (_playMouseCaptured && IsPlaying)
+                    {
+                        SetCursor(nint.Zero);
+                        return (nint)1;
+                    }
+                    break;
 
                 case WmMouseWheel:
                     int wheelDelta = unchecked(
@@ -358,6 +374,7 @@ namespace Editor.Viewport
                     break;
 
                 case WmKillFocus:
+                    ReleasePlayMouse(false);
                     _pressedKeys.Clear();
                     ReleasePlayerInput();
 
@@ -384,13 +401,13 @@ namespace Editor.Viewport
 
         private void HandleMouseMove(nint lParam)
         {
+            if (IsPlaying) return; // Player look is relative raw input, independent of mouse buttons.
             int x = ReadX(lParam);
             int y = ReadY(lParam);
 
             if (_rotating)
             {
-                if (IsPlaying) _orbit!.Rotate(x - _mouseX, y - _mouseY);
-                else if (!IsStarting) _camera.Rotate(x - _mouseX, y - _mouseY);
+                if (!IsStarting) _camera.Rotate(x - _mouseX, y - _mouseY);
             }
 
             _mouseX = x;

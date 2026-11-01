@@ -43,6 +43,7 @@ public sealed class CharacterPose
     private readonly Dictionary<CharacterRig, Matrix4x4[]> _rigs;
     private readonly Dictionary<CharacterRig, Matrix4x4[]> _locals;
     private readonly Dictionary<CharacterRig, Matrix4x4[]> _blendFrom;
+    private readonly Dictionary<CharacterRig, int[]> _priorities;
     private readonly Vector3 _rootReference;
 
     public SkinnedVertex[][] Vertices { get; }
@@ -68,6 +69,11 @@ public sealed class CharacterPose
         _blendFrom = _rigs.Keys.ToDictionary(
             rig => rig,
             rig => new Matrix4x4[rig.Nodes.Length]
+        );
+
+        _priorities = _rigs.Keys.ToDictionary(
+            rig => rig,
+            rig => new int[rig.Nodes.Length]
         );
 
         _rootReference = asset.Animation.Channels.TryGetValue(
@@ -102,8 +108,9 @@ public sealed class CharacterPose
         );
     }
 
-    public void BeginBlend()
+    public void CaptureBlend(CharacterAction action, float frame, float blend, float baseTime)
     {
+        Evaluate(action.Clip.Animation, frame, action, blend, baseTime: baseTime, skin: false);
         foreach (var rig in _rigs.Keys)
         {
             _locals[rig].CopyTo(
@@ -118,7 +125,8 @@ public sealed class CharacterPose
         float frame,
         float blend,
         float feetYaw = 0,
-        float torsoYaw = 0)
+        float torsoYaw = 0,
+        float baseTime = 0)
     {
         Evaluate(
             action.Clip.Animation,
@@ -126,7 +134,8 @@ public sealed class CharacterPose
             action,
             blend,
             feetYaw,
-            torsoYaw
+            torsoYaw,
+            baseTime
         );
     }
 
@@ -136,18 +145,39 @@ public sealed class CharacterPose
         CharacterAction? action,
         float blend,
         float feetYaw = 0,
-        float torsoYaw = 0)
+        float torsoYaw = 0,
+        float baseTime = 0,
+        bool skin = true)
     {
+        CharacterClip? baseClip = action?.Turn == true && action.Track != 0
+            ? _asset.Locomotion?.Actions[action.Name.Contains("_crouch_", StringComparison.Ordinal)
+                ? "idle_0_crouch_unarmed" : "idle_0_stay_unarmed"].Clip
+            : null;
+        float baseFrame = baseClip == null ? 0 : baseClip.FirstFrame
+            + baseTime % baseClip.Duration * baseClip.FrameRate * baseClip.Direction;
+
         foreach (var (rig, matrices) in _rigs)
         {
+            var priorities = _priorities[rig];
             for (int i = 0; i < rig.Nodes.Length; i++)
             {
                 var node = rig.Nodes[i];
 
-                var local = animation.Channels.TryGetValue(
+                int priority = node.Parent < 0 ? 0 : priorities[node.Parent];
+                if (action != null && action.Clip.NodePriorities.TryGetValue(node.Name, out int authoredPriority))
+                    priority = authoredPriority;
+                priorities[i] = priority;
+
+                // Turn actions are overlays. A zero-priority subtree (Hips/Spine,
+                // arms, attachments) continues the unarmed idle underneath it.
+                bool useBase = baseClip != null && priority <= 0;
+                var source = useBase ? baseClip!.Animation : animation;
+                float sourceFrame = useBase ? baseFrame : frame;
+
+                var local = source.Channels.TryGetValue(
                     node.Name,
                     out var channel)
-                        ? channel.Sample(frame)
+                        ? channel.Sample(sourceFrame)
                         : node.Local;
 
                 if (node.Name == "Root" &&
@@ -168,7 +198,9 @@ public sealed class CharacterPose
                             MathF.Tau
                         );
 
+                        var reference = local.Translation;
                         local *= Matrix4x4.CreateRotationY(-yaw);
+                        local.Translation = reference;
                     }
                 }
 
@@ -206,6 +238,8 @@ public sealed class CharacterPose
                 }
             }
         }
+
+        if (!skin) return;
 
         for (int meshIndex = 0;
              meshIndex < _asset.Meshes.Length;

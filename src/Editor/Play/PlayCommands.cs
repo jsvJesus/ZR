@@ -19,7 +19,7 @@ namespace Editor
                 StatusText.Text = "Загрузка персонажа…";
                 await Viewport.StartPlayAsync();
                 if (!_isClosing) StatusText.Text = Viewport.IsPlaying
-                    ? "Play: WASD — бег, Alt — ходьба, Shift — спринт, Ctrl/C — присед, Space — прыжок, Esc — Stop."
+                    ? "Play: мышь — обзор, WASD — бег, Alt — ходьба, Shift — спринт, Ctrl/C — присед, Space — прыжок, Esc — Stop."
                     : "Play остановлен.";
             }
             catch (Exception exception)

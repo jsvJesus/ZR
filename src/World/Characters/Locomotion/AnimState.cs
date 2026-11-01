@@ -31,10 +31,9 @@ public static class LocomotionSettings
     public const float HardLandingHeight = 1.5f;
 
     public const float DegreesToRadians = MathF.PI / 180f;
-    public const float MovingTurnSpeed = 240f * DegreesToRadians;
-    public const float StandingTurnThreshold = 60f * DegreesToRadians;
+    public const float StandingTurnThreshold = 45f * DegreesToRadians;
     public const float CrouchTurnThreshold = 45f * DegreesToRadians;
-    public const float MaximumTurnAngle = 75f * DegreesToRadians;
+    public const float TurnAngle = 45f * DegreesToRadians;
     public const float MaximumFootYaw = 35f * DegreesToRadians;
     public const float MaximumTorsoYaw = 70f * DegreesToRadians;
 

@@ -8,6 +8,11 @@ public sealed class ActionMatcher
     public CharacterAction Select(float speed, float directionDegrees, IReadOnlySet<int> caps, CharacterAction current)
     {
         var candidate = _library.MovementActions.FirstOrDefault(a => a.Trigger!.Matches(speed, directionDegrees, 0, caps));
+        // Stabilize overlapping directions within a gait, while still allowing
+        // speed changes to select walk/run/sprint in the model's authored order.
+        if (candidate != null && current.Movement && !current.Stop && !current.Turn && current.Track == 0
+            && Gait(current) == Gait(candidate)
+            && current.Trigger?.Matches(speed, directionDegrees, 0, caps) == true) return current;
         if (candidate != null) return candidate;
         // A non-degenerate cancel region can retain an action across a trigger gap.
         if (!current.Stop && current.Cancel is { } cancel && cancel.MaxSpeed > cancel.MinSpeed
@@ -17,6 +22,12 @@ public sealed class ActionMatcher
         float cardinal = MathF.Abs(directionDegrees) <= 45 ? 0 : MathF.Abs(directionDegrees) >= 135 ? 180 : directionDegrees > 0 ? 90 : -90;
         return _library.MovementActions.FirstOrDefault(a => a.Trigger!.Matches(speed, cardinal, 0, caps))
             ?? _library.Actions[caps.Contains((int)AnimationCap.Crouching) ? "idle_0_crouch_unarmed" : "idle_0_stay_unarmed"];
+    }
+
+    private static string Gait(CharacterAction action)
+    {
+        int separator = action.Name.IndexOf('_');
+        return separator < 0 ? action.Name : action.Name[..separator];
     }
 
     public CharacterAction? Stop(float speed, float directionDegrees, IReadOnlySet<int> caps, SupportFoot foot, float previousTime) =>

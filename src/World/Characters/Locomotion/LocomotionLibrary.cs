@@ -27,8 +27,10 @@ public sealed class LocomotionLibrary
         string[] explicitActions =
         [
             "pose_stay_to_crouch_unarmed", "pose_crouch_to_stay_unarmed",
-            "turn_left90_stay_unarmed", "turn_right90_stay_unarmed",
-            "turn_left90_crouch_unarmed", "turn_right90_crouch_unarmed",
+            // The standing 45-degree clips are on the combat turn track.
+            // Their node priorities keep the upper body on the unarmed base pose.
+            "turn_left45_stay_incombat", "turn_right45_stay_incombat",
+            "turn_left45_crouch_unarmed", "turn_right45_crouch_unarmed",
             JumpDefinition.HardLanding
         ];
         var required = new HashSet<string>(explicitActions, StringComparer.Ordinal);

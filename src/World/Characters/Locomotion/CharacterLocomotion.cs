@@ -15,6 +15,7 @@ public sealed partial class CharacterLocomotion
     private bool _crouched;
     private float _lastDirection;
     private float _lastMovingSpeed;
+    private float _lastCameraYaw;
     private float _cameraHeight = 1.15f;
     private float _cameraBaseY;
 
@@ -51,6 +52,7 @@ public sealed partial class CharacterLocomotion
 
         Position = position;
         Yaw = yaw;
+        _lastCameraYaw = yaw;
         _cameraBaseY = position.Y;
 
         Animator = new CharacterAnimator(asset);
@@ -79,6 +81,27 @@ public sealed partial class CharacterLocomotion
         }
 
         bool wantsCrouch = input.Crouch || _crouchToggle;
+
+        float cameraDelta = Wrap(cameraYaw - _lastCameraYaw);
+        _lastCameraYaw = cameraYaw;
+
+        if (Grounded && !IsPostureTransition && !IsLanding && input.Move.LengthSquared() > 0.001f)
+        {
+            // Camera steering changes the movement basis, not the local gait.
+            // Transport velocity into that basis before accelerating, so a camera
+            // turn alone does not slow sprint or select a strafe/back run.
+            if (Animator.Current.Movement)
+            {
+                float sine = MathF.Sin(cameraDelta);
+                float cosine = MathF.Cos(cameraDelta);
+                _velocity = new Vector2(
+                    _velocity.X * cosine + _velocity.Y * sine,
+                    _velocity.Y * cosine - _velocity.X * sine
+                );
+            }
+
+            Yaw = Wrap(cameraYaw);
+        }
 
         if (input.JumpPressed &&
             Grounded &&
@@ -181,7 +204,7 @@ public sealed partial class CharacterLocomotion
 
                 if (_jumpWait <= 0)
                 {
-                    BeginTakeoff();
+                    BeginTakeoff(input);
                     UpdateAir(dt, input, cameraYaw);
                     return;
                 }
@@ -222,7 +245,7 @@ public sealed partial class CharacterLocomotion
             else
             {
                 _velocity = Vector2.Zero;
-                AdvanceTurn(dt);
+                AdvanceTurn(dt, cameraYaw);
                 return;
             }
         }
@@ -237,22 +260,7 @@ public sealed partial class CharacterLocomotion
             }
             else
             {
-                Animator.Advance(dt, 0);
-
-                var promotion = Vector3.TransformNormal(
-                    Animator.RootDelta,
-                    Matrix4x4.CreateRotationY(Yaw + Animator.FeetYaw)
-                );
-
-                MoveOnGround(new Vector2(promotion.X, promotion.Z));
-
-                _velocity = Vector2.Zero;
-
-                if (!Grounded)
-                {
-                    BeginFall();
-                }
-
+                AdvanceStop(dt);
                 return;
             }
         }
@@ -278,20 +286,17 @@ public sealed partial class CharacterLocomotion
                 _velocity = Vector2.Zero;
 
                 Animator.Play(stop, false);
-                Animator.Advance(dt, 0);
+                AdvanceStop(dt);
                 return;
             }
         }
 
-        // Camera rotation alone does not rotate the character.
-        // Body orientation follows camera only during movement.
-        if (moving)
+        // Moving yaw uses the same view basis as velocity and action matching.
+        // The 45-degree turn track is used only on the spot.
+        // Landing keeps its authored root displacement in the landing direction.
+        if (moving && !IsLanding)
         {
-            Yaw = ApproachAngle(
-                Yaw,
-                cameraYaw,
-                LocomotionSettings.MovingTurnSpeed * dt
-            );
+            Yaw = Wrap(cameraYaw);
         }
 
         float speed = moving
@@ -332,8 +337,18 @@ public sealed partial class CharacterLocomotion
         );
 
         var previousPosition = Position;
+        var displacement = _velocity * dt;
 
-        if (!MoveOnGround(_velocity * dt))
+        if (IsLanding)
+        {
+            Animator.Advance(dt, _velocity.Length());
+            var root = Vector3.TransformNormal(Animator.RootDelta, Matrix4x4.CreateRotationY(Yaw));
+            var promotion = new Vector2(root.X, root.Z);
+            if (Animator.Current.Impacting && promotion.LengthSquared() > displacement.LengthSquared())
+                displacement = promotion;
+        }
+
+        if (!MoveOnGround(displacement))
         {
             _velocity = Vector2.Zero;
         }
@@ -366,8 +381,6 @@ public sealed partial class CharacterLocomotion
 
         if (IsLanding)
         {
-            Animator.Advance(dt, actualSpeed);
-
             _landingRemaining -= dt;
 
             if (_landingRemaining <= 0)
@@ -403,7 +416,7 @@ public sealed partial class CharacterLocomotion
         {
             if (TryStartTurn(cameraYaw))
             {
-                AdvanceTurn(dt);
+                AdvanceTurn(dt, cameraYaw);
                 return;
             }
         }
@@ -459,6 +472,18 @@ public sealed partial class CharacterLocomotion
         Animator.Advance(dt, actualSpeed);
     }
 
+    private void AdvanceStop(float dt)
+    {
+        Animator.Advance(dt, 0);
+        var promotion = Vector3.TransformNormal(
+            Animator.RootDelta,
+            Matrix4x4.CreateRotationY(Yaw + Animator.FeetYaw)
+        );
+        MoveOnGround(new Vector2(promotion.X, promotion.Z));
+        _velocity = Vector2.Zero;
+        if (!Grounded) BeginFall();
+    }
+
     private void SetCrouch(bool value)
     {
         _crouched = value;
@@ -482,6 +507,8 @@ public sealed partial class CharacterLocomotion
             ? AnimState.Crouching
             : AnimState.StandingUp;
 
+        _lastMovingSpeed = 0;
+
         string action = value
             ? "pose_stay_to_crouch_unarmed"
             : "pose_crouch_to_stay_unarmed";
@@ -493,7 +520,8 @@ public sealed partial class CharacterLocomotion
     {
         bool moving = _velocity.LengthSquared() > 0.01f;
 
-        float feetTarget = 0;
+        float feetTarget = State == AnimState.Stopping && Animator.Current.FeetFollowDirection
+            ? Animator.FeetYaw : 0;
 
         if (Grounded &&
             !IsTurning &&
