@@ -5,6 +5,7 @@ using Avalonia.Media;
 using Editor.Viewport;
 using ZoneReborn.World.Assets;
 using ZoneReborn.World.Characters;
+using ZoneReborn.World.Characters.Locomotion;
 
 namespace Editor.Characters;
 
@@ -21,6 +22,9 @@ public sealed class CharacterEditorPanel : UserControl
     private readonly Button _equip = Button("Надеть");
     private readonly Button _remove = Button("Снять выбранное");
     private readonly Button _reset = Button("Стандартный комплект");
+    private readonly Button _drawWeapon = Button("Взять оружие в руки");
+    private readonly Button _holsterWeapon = Button("Убрать оружие");
+    private readonly TextBlock _weaponState = Text("Оружие не надето.");
     private CharacterEquipmentCatalog? _catalog;
     private DxViewportHost? _viewport;
     private AssetPaths? _assets;
@@ -45,9 +49,12 @@ public sealed class CharacterEditorPanel : UserControl
         root.Children.Add(_equip);
         root.Children.Add(Title("НАДЕТО НА ПЕРСОНАЖЕ"));
         root.Children.Add(_equippedList);
+        root.Children.Add(_weaponState);
+        root.Children.Add(_drawWeapon);
+        root.Children.Add(_holsterWeapon);
         root.Children.Add(_remove);
         root.Children.Add(_reset);
-        root.Children.Add(Text("Оружие отображается в походном положении. Комплект сохраняется для следующего Play."));
+        root.Children.Add(Text("В Play: H — достать / убрать оружие. Комплект сохраняется для следующего Play."));
         root.Children.Add(_status);
         Content = root;
         _catalogList.ItemTemplate = ItemTemplate(false);
@@ -73,6 +80,8 @@ public sealed class CharacterEditorPanel : UserControl
         {
             if (_catalog != null) await ApplyAsync(_catalog.DefaultOutfit);
         };
+        _drawWeapon.Click += (_, _) => _viewport?.SetCharacterWeaponInHands(true);
+        _holsterWeapon.Click += (_, _) => _viewport?.SetCharacterWeaponInHands(false);
         RefreshState();
     }
 
@@ -82,6 +91,7 @@ public sealed class CharacterEditorPanel : UserControl
         _assets = assets;
         viewport.PlayStateChanged += RefreshState;
         viewport.LevelChanged += RefreshState;
+        viewport.CharacterWeaponChanged += RefreshState;
     }
 
     public void SetActive(bool active)
@@ -193,7 +203,9 @@ public sealed class CharacterEditorPanel : UserControl
     private void SelectionChanged()
     {
         _details.Text = _catalogList.SelectedItem is CharacterEquipmentItem item
-            ? $"{item.Name}\n{item.Category} · #{item.TypeId}" : "Выберите вещь в каталоге.";
+            ? $"{item.Name}\n{item.Category} · #{item.TypeId}" + (item.Weapon is { } weapon
+                ? $"\n{weapon.TypeName} · тип {weapon.GunType}\n{(weapon.WeaponSlot == 2 ? "Кобура" : "Крепление на спине")}" : "")
+            : "Выберите вещь в каталоге.";
         RefreshState();
     }
 
@@ -211,13 +223,27 @@ public sealed class CharacterEditorPanel : UserControl
     private void RefreshState()
     {
         bool viewing = _viewport?.IsCharacterEditing == true && _viewport.IsPlaying;
+        var state = _viewport?.CurrentCharacterWeaponState;
+        bool requestedHeld = _viewport?.CharacterWeaponRequestedHeld == true;
+        bool weaponChanging = state != null && (state is not (CharacterWeaponState.Holstered or CharacterWeaponState.Held)
+            || requestedHeld != (state == CharacterWeaponState.Held));
         _summary.Text = viewing ? "Персонаж на открытом уровне. Выбирайте экипировку справа."
             : _viewport?.HasLoadedLevel == true ? "Покажите персонажа на текущем уровне."
             : "Откройте уровень для просмотра персонажа.";
         _show.IsEnabled = IsActive && !IsBusy && !viewing && _viewport?.HasLoadedLevel == true;
-        _equip.IsEnabled = viewing && !IsBusy && _catalogList.SelectedItem is CharacterEquipmentItem;
-        _remove.IsEnabled = viewing && !IsBusy && _equippedList.SelectedItem is CharacterEquipmentItem;
-        _reset.IsEnabled = viewing && !IsBusy && _catalog != null;
+        _equip.IsEnabled = viewing && !IsBusy && !weaponChanging && _catalogList.SelectedItem is CharacterEquipmentItem;
+        _remove.IsEnabled = viewing && !IsBusy && !weaponChanging && _equippedList.SelectedItem is CharacterEquipmentItem;
+        _reset.IsEnabled = viewing && !IsBusy && !weaponChanging && _catalog != null;
+        _drawWeapon.IsEnabled = viewing && !IsBusy && state == CharacterWeaponState.Holstered && !requestedHeld;
+        _holsterWeapon.IsEnabled = viewing && !IsBusy && state == CharacterWeaponState.Held && requestedHeld;
+        _weaponState.Text = state switch
+        {
+            CharacterWeaponState.Holstered => requestedHeld ? "Подготовка Equip…" : "Оружие убрано.",
+            CharacterWeaponState.EquippingIn or CharacterWeaponState.EquippingOut => "Equip — достаёт оружие…",
+            CharacterWeaponState.Held => requestedHeld ? "Оружие в руках." : "Подготовка Dequip…",
+            CharacterWeaponState.HolsteringIn or CharacterWeaponState.HolsteringOut => "Dequip — убирает оружие…",
+            _ => "Оружие не надето. Выберите его в каталоге."
+        };
         _category.IsEnabled = !IsBusy;
         _search.IsEnabled = !IsBusy;
         _catalogList.IsEnabled = !IsBusy;

@@ -11,7 +11,7 @@ public sealed partial class CharacterLocomotion
 
     private bool TryStartTurn(float cameraYaw)
     {
-        if (!Grounded || IsLanding || IsPostureTransition)
+        if (!Grounded || IsLanding || IsPostureTransition || Weapon.IsChanging)
         {
             return false;
         }
@@ -108,12 +108,8 @@ public sealed partial class CharacterLocomotion
         // Continue a large turn without inserting an idle clip between steps.
         if (TryStartTurn(cameraYaw)) return;
 
-        string idleName = _crouched
-            ? "idle_0_crouch_unarmed"
-            : "idle_0_stay_unarmed";
-
         Animator.Play(
-            _library.Actions[idleName],
+            _matcher.Idle(_caps),
             true
         );
     }

@@ -16,7 +16,14 @@ public sealed record CharacterRig(SkeletonNode[] Nodes)
     public bool Animate { get; init; } = true;
 }
 
-public sealed record CharacterAttachment(CharacterRig AvatarRig, int AvatarNode, Matrix4x4 InverseOrigin);
+public sealed record CharacterAttachment(CharacterRig AvatarRig, int AvatarNode, Matrix4x4 InverseOrigin)
+{
+    public CharacterWeaponAnchors? Weapon { get; init; }
+}
+
+public sealed record CharacterWeaponAnchors(int AvatarHand, int AvatarGun,
+    Matrix4x4 InverseHand, Matrix4x4 InverseGun, Matrix4x4 GunPivot,
+    Matrix4x4 RightHand, Matrix4x4? LeftHand, bool Legacy);
 
 public sealed record CharacterMesh(
     SourceVertex[] Vertices,
@@ -29,6 +36,7 @@ public sealed record CharacterMesh(
 {
     public CharacterAttachment? Attachment { get; init; }
     public Vector4 DiffuseColor { get; init; } = Vector4.One;
+    public CharacterSurfaceMaterial Surface { get; init; } = new();
 }
 
 public sealed record CharacterAsset(
@@ -38,16 +46,18 @@ public sealed record CharacterAsset(
 {
     public LocomotionLibrary? Locomotion { get; init; }
     public CharacterRig? AvatarRig { get; init; }
+    public CharacterWeaponDefinition? Weapon { get; init; }
 }
 
 [StructLayout(LayoutKind.Sequential)]
 public readonly record struct SkinnedVertex(
     Vector3 Position,
     Vector3 Normal,
-    Vector2 Uv
+    Vector2 Uv,
+    Vector2 Uv2
 );
 
-public sealed class CharacterPose
+public sealed partial class CharacterPose
 {
     private readonly CharacterAsset _asset;
     private readonly Dictionary<CharacterRig, Matrix4x4[]> _rigs;
@@ -58,6 +68,7 @@ public sealed class CharacterPose
 
     public SkinnedVertex[][] Vertices { get; }
     public float FloorOffset { get; }
+    public CharacterWeaponController? Weapon { get; set; }
 
     public CharacterPose(CharacterAsset asset)
     {
@@ -92,6 +103,8 @@ public sealed class CharacterPose
             out var root)
                 ? root.SamplePosition(0)
                 : Vector3.Zero;
+
+        InitializeWeaponPose();
 
         Vertices = asset.Meshes
             .Select(mesh => new SkinnedVertex[mesh.Vertices.Length])
@@ -165,8 +178,7 @@ public sealed class CharacterPose
         bool skin = true)
     {
         CharacterClip? baseClip = action?.Turn == true && action.Track != 0
-            ? _asset.Locomotion?.Actions[action.Name.Contains("_crouch_", StringComparison.Ordinal)
-                ? "idle_0_crouch_unarmed" : "idle_0_stay_unarmed"].Clip
+            ? _asset.Locomotion?.Actions[$"idle_0_{(action.Name.Contains("_crouch_", StringComparison.Ordinal) ? "crouch" : "stay")}_{(Weapon?.Armed == true ? "incombat" : "unarmed")}"].Clip
             : null;
         float baseFrame = baseClip == null ? 0 : baseClip.FirstFrame
             + baseTime % baseClip.Duration * baseClip.FrameRate * baseClip.Direction;
@@ -265,6 +277,8 @@ public sealed class CharacterPose
 
         if (!skin) return;
 
+        ApplyWeaponPose(feetYaw, torsoYaw);
+
         for (int meshIndex = 0;
              meshIndex < _asset.Meshes.Length;
              meshIndex++)
@@ -275,6 +289,7 @@ public sealed class CharacterPose
             var target = Vertices[meshIndex];
             var attachment = mesh.Attachment;
             var attachmentTransform = attachment == null ? Matrix4x4.Identity
+                : attachment.Weapon != null ? _weaponTransform
                 : attachment.InverseOrigin * _rigs[attachment.AvatarRig][attachment.AvatarNode];
 
             for (int i = 0; i < target.Length; i++)
@@ -320,7 +335,8 @@ public sealed class CharacterPose
                     normal.LengthSquared() > 0.00001f
                         ? Vector3.Normalize(normal)
                         : Vector3.UnitY,
-                    vertex.Uv
+                    vertex.Uv,
+                    vertex.Uv2
                 );
             }
         }

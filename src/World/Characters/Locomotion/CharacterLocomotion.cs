@@ -20,6 +20,7 @@ public sealed partial class CharacterLocomotion
     private float _cameraBaseY;
 
     public CharacterAnimator Animator { get; }
+    public CharacterWeaponController Weapon { get; }
     public Vector3 Position { get; private set; }
     public float Yaw { get; private set; }
     public AnimState State { get; private set; } = AnimState.Idle;
@@ -56,6 +57,8 @@ public sealed partial class CharacterLocomotion
         _cameraBaseY = position.Y;
 
         Animator = new CharacterAnimator(asset);
+        Weapon = new CharacterWeaponController(asset.Weapon, _library);
+        Animator.Pose.Weapon = Weapon;
     }
 
     public void Update(float deltaTime, CharacterInput input, float cameraYaw)
@@ -82,6 +85,11 @@ public sealed partial class CharacterLocomotion
 
         bool wantsCrouch = input.Crouch || _crouchToggle;
 
+        Weapon.Advance(deltaTime, IsFreeGroundState && wantsCrouch == _crouched && !input.JumpPressed,
+            _crouched, input.Sprint && input.Move.Y > 0 && !input.Walk);
+        UpdateWeaponCaps();
+        if (Weapon.IsChanging) wantsCrouch = _crouched;
+
         float cameraDelta = Wrap(cameraYaw - _lastCameraYaw);
         _lastCameraYaw = cameraYaw;
 
@@ -107,6 +115,7 @@ public sealed partial class CharacterLocomotion
             Grounded &&
             !_crouched &&
             !wantsCrouch &&
+            !Weapon.IsChanging &&
             IsFreeGroundState)
         {
             QueueJump(input);
@@ -136,6 +145,7 @@ public sealed partial class CharacterLocomotion
             (Position.Y - _cameraBaseY) *
             (1f - MathF.Exp(-8f * deltaTime));
 
+        Weapon.UpdatePose(deltaTime, Animator.Current, !Grounded || IsLanding);
         Animator.EvaluatePose();
     }
 
@@ -510,10 +520,33 @@ public sealed partial class CharacterLocomotion
         _lastMovingSpeed = 0;
 
         string action = value
-            ? "pose_stay_to_crouch_unarmed"
-            : "pose_crouch_to_stay_unarmed";
+            ? $"pose_stay_to_crouch_{(Weapon.Armed ? "incombat" : "unarmed")}"
+            : $"pose_crouch_to_stay_{(Weapon.Armed ? "incombat" : "unarmed")}";
 
         Animator.Play(_library.Actions[action], false);
+    }
+
+    public void RestoreWeaponInHands()
+    {
+        Weapon.RestoreHeld();
+        UpdateWeaponCaps();
+        Animator.Play(_matcher.Idle(_caps), true);
+        Animator.EvaluatePose();
+    }
+
+    private void UpdateWeaponCaps()
+    {
+        _caps.Remove((int)AnimationCap.Unarmed);
+        _caps.Remove((int)AnimationCap.AutogunArmed);
+        _caps.Remove((int)AnimationCap.Bored);
+        _caps.Remove((int)AnimationCap.WeaponRightHand);
+        _caps.Add((int)(Weapon.Armed ? AnimationCap.AutogunArmed : AnimationCap.Unarmed));
+        if (!Weapon.Armed) return;
+        if (Weapon.Relaxed) _caps.Add((int)AnimationCap.Bored);
+        // The original cap identifies the weapon's bored sprint family, rather
+        // than the previous frame's hand profile or temporary airborne carry.
+        if (Weapon.Relaxed && Weapon.Definition?.ResolveProfile(false, true, true, inCombat: false).ToAttachWeapon == "Right")
+            _caps.Add((int)AnimationCap.WeaponRightHand);
     }
 
     private void UpdateBodyTwist(float dt, float cameraYaw)

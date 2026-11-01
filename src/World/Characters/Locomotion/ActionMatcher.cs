@@ -21,7 +21,15 @@ public sealed class ActionMatcher
         // Preserve a sensible ground pose if the source's directional intervals have a gap.
         float cardinal = MathF.Abs(directionDegrees) <= 45 ? 0 : MathF.Abs(directionDegrees) >= 135 ? 180 : directionDegrees > 0 ? 90 : -90;
         return _library.MovementActions.FirstOrDefault(a => a.Trigger!.Matches(speed, cardinal, 0, caps))
-            ?? _library.Actions[caps.Contains((int)AnimationCap.Crouching) ? "idle_0_crouch_unarmed" : "idle_0_stay_unarmed"];
+            ?? Idle(caps);
+    }
+
+    public CharacterAction Idle(IReadOnlySet<int> caps)
+    {
+        string posture = caps.Contains((int)AnimationCap.Crouching) ? "crouch" : "stay";
+        string mode = caps.Contains((int)AnimationCap.AutogunArmed)
+            ? caps.Contains((int)AnimationCap.Bored) ? "bored" : "incombat" : "unarmed";
+        return _library.Actions[$"idle_0_{posture}_{mode}"];
     }
 
     private static string Gait(CharacterAction action)

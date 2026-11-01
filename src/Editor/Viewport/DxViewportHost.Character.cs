@@ -15,12 +15,31 @@ public sealed partial class DxViewportHost
     private CancellationTokenSource? _characterChange;
     private int _characterEditorVersion;
     private bool _characterEditorOwnsPlay;
+    private CharacterWeaponState? _lastCharacterWeaponState;
 
     public bool IsCharacterEditing { get; private set; }
     public bool HasLoadedLevel => _level != null;
     public CharacterOutfit? CurrentCharacterOutfit => _characterOutfit;
     public string? CharacterEquipmentWarning { get; private set; }
     public event Action? LevelChanged;
+    public event Action? CharacterWeaponChanged;
+    public CharacterWeaponState? CurrentCharacterWeaponState => _player?.Weapon is { Definition: not null } weapon ? weapon.State : null;
+    public bool CharacterWeaponRequestedHeld => _player?.Weapon.RequestedHeld == true;
+
+    public void SetCharacterWeaponInHands(bool held)
+    {
+        if (_characterChange != null || _player?.Weapon.Definition == null) return;
+        _player.Weapon.Request(held);
+        CharacterWeaponChanged?.Invoke();
+    }
+
+    private void PublishCharacterWeaponState()
+    {
+        var state = CurrentCharacterWeaponState;
+        if (state == _lastCharacterWeaponState) return;
+        _lastCharacterWeaponState = state;
+        CharacterWeaponChanged?.Invoke();
+    }
 
     public async Task<CharacterEquipmentCatalog> LoadCharacterCatalogAsync(AssetPaths assets, CancellationToken token)
     {
@@ -114,11 +133,26 @@ public sealed partial class DxViewportHost
         _characterChange = cancellation;
         try
         {
+            bool wantedHeld = player.Weapon.RequestedHeld;
+            bool sameWeapon = template.Weapon?.TypeId == outfit.WeaponType;
+            // Changing the selected model must let the old weapon finish returning to its holster.
+            if (!sameWeapon && player.Weapon.Definition != null)
+            {
+                player.Weapon.Request(false);
+                await WaitForWeaponHolsterAsync(player, cancellation.Token);
+            }
+            position = player.Position;
+            yaw = player.Yaw;
             var parts = catalog.Compose(outfit);
             var loaded = await Task.Run(() =>
             {
                 var asset = CharacterLoader.Rebuild(assets, parts, template, cancellation.Token);
                 var replacement = new CharacterLocomotion(asset, surface, position, yaw);
+                if (wantedHeld)
+                {
+                    if (sameWeapon) replacement.RestoreWeaponInHands();
+                    else replacement.Weapon.Request(true);
+                }
                 cancellation.Token.ThrowIfCancellationRequested();
                 return (Asset: asset, Player: replacement);
             }, cancellation.Token);
@@ -131,6 +165,7 @@ public sealed partial class DxViewportHost
             _characterAsset = loaded.Asset;
             _player = loaded.Player;
             _characterOutfit = outfit;
+            PublishCharacterWeaponState();
             try { CharacterOutfitStore.Write(assets, outfit); }
             catch (Exception exception) when (exception is System.IO.IOException or UnauthorizedAccessException)
             {
@@ -141,5 +176,19 @@ public sealed partial class DxViewportHost
         {
             if (ReferenceEquals(_characterChange, cancellation)) _characterChange = null;
         }
+    }
+
+    private async Task WaitForWeaponHolsterAsync(CharacterLocomotion player, CancellationToken token)
+    {
+        if (player.Weapon.State == CharacterWeaponState.Holstered) return;
+        var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        void Changed()
+        {
+            if (!ReferenceEquals(_player, player)) completion.TrySetCanceled();
+            else if (player.Weapon.State == CharacterWeaponState.Holstered) completion.TrySetResult();
+        }
+        CharacterWeaponChanged += Changed;
+        try { Changed(); await completion.Task.WaitAsync(token); }
+        finally { CharacterWeaponChanged -= Changed; }
     }
 }

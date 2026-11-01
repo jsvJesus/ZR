@@ -75,11 +75,14 @@ public sealed class CharacterEquipmentCatalog
                 foreach (string model in models.Concat(alternatives.SelectMany(pair => pair.Models)).Distinct(StringComparer.OrdinalIgnoreCase))
                     ValidateModel(assets, model, context);
                 string script = Text(Get(data, "_script_name_", ""), context);
-                string category = isWeapon ? "Оружие" : Category(slots);
+                var weaponDefinition = isWeapon ? CharacterWeaponDefinition.Read(data, type, context) : null;
+                int categoryId = weaponDefinition?.CategoryId ?? Integer(Get(data, "Category", 42L), context);
+                string category = weaponDefinition != null
+                    ? $"{WeaponCategory(categoryId)} / {weaponDefinition.TypeName}" : Category(slots);
                 string name = DisplayName(data, script, models, category, type, context);
                 var item = new CharacterEquipmentItem(type, name, category, slots, models, tints, isWeapon,
                     overrides.ToArray(), alternatives.ToArray(), OptionalText(data, "SetEquip", context),
-                    Get(data, "SetEquipMain", false) is true);
+                    Get(data, "SetEquipMain", false) is true, categoryId, weaponDefinition);
                 if (!all.TryAdd(type, item)) throw new InvalidDataException($"{context}: повторный TypeID.");
             }
         }
@@ -166,10 +169,11 @@ public sealed class CharacterEquipmentCatalog
             foreach (string model in weapon.ModelNames)
             {
                 ValidateModel(_assets, model, $"Оружие {weaponType}");
-                // The original M1911 exports a pistol origin only; its avatar anchor has the same name.
-                string attachment = model.Equals("characters2/weapons/pistol/colt/m1911_lod1.model", StringComparison.OrdinalIgnoreCase)
-                    ? "HP_Pistol" : "HP_weaponback";
-                result.Add(new(model, weapon.Tints.Count == 0 ? NoTints : weapon.Tints, attachment, attachment));
+                string attachment = "HP_" + (weapon.Weapon?.HolsterNode ?? "weaponback");
+                result.Add(new(model, weapon.Tints.Count == 0 ? NoTints : weapon.Tints, attachment, attachment)
+                {
+                    Weapon = weapon.Weapon
+                });
             }
         }
         return result.ToArray();
@@ -228,6 +232,13 @@ public sealed class CharacterEquipmentCatalog
         126 => "Броня", 127 => "Рюкзаки", 128 => "Ступни", 129 => "Руки", 130 => "Волосы", 131 => "Усы",
         132 => "Бороды", 133 => "Пояса", _ => $"Слот {slot}"
     }).Distinct());
+
+    private static string WeaponCategory(int category) => category switch
+    {
+        1 => "Пистолеты", 2 => "Пистолеты-пулемёты", 3 => "Гладкоствольное оружие",
+        4 => "Тяжёлое оружие", 5 => "Нарезное оружие", 6 => "Пулемёты", 7 => "Гранатомёты",
+        _ => "Прочее оружие"
+    };
 
     private static object? Required(Dictionary<object, object?> data, string key, string context) =>
         data.TryGetValue(key, out var value) ? value : throw new InvalidDataException($"{context}: отсутствует {key}.");

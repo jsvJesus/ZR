@@ -4,7 +4,10 @@ using System.Text;
 
 namespace ZoneReborn.World.Characters.Formats;
 
-public readonly record struct SourceVertex(Vector3 Position, Vector3 Normal, Vector2 Uv, int Bone0, int Bone1, int Bone2, Vector3 Weights);
+public readonly record struct SourceVertex(Vector3 Position, Vector3 Normal, Vector2 Uv, int Bone0, int Bone1, int Bone2, Vector3 Weights)
+{
+    public Vector2 Uv2 { get; init; } = Uv;
+}
 public readonly record struct PrimitiveGroup(int StartIndex, int TriangleCount, int StartVertex, int VertexCount);
 
 public static class PrimitiveReader
@@ -69,6 +72,18 @@ public static class PrimitiveReader
         }
         // .mvertices appends morph targets after the base vertex stream. Default face uses the base shape.
         return vertices;
+    }
+
+    public static void ApplySecondaryUv(SourceVertex[] vertices, byte[] bytes)
+    {
+        if (bytes.Length != checked(vertices.Length * 8)) throw new InvalidDataException("Invalid secondary UV stream length.");
+        for (int i = 0; i < vertices.Length; i++)
+        {
+            float u = BinaryPrimitives.ReadSingleLittleEndian(bytes.AsSpan(i * 8));
+            float v = BinaryPrimitives.ReadSingleLittleEndian(bytes.AsSpan(i * 8 + 4));
+            if (!float.IsFinite(u) || !float.IsFinite(v)) throw new InvalidDataException("Invalid secondary UV coordinate.");
+            vertices[i] = vertices[i] with { Uv2 = new(u, v) };
+        }
     }
 
     public static (int[] Indices, PrimitiveGroup[] Groups) Indices(byte[] bytes)

@@ -84,6 +84,23 @@ public static class CharacterLoader
                 if (!Matrix4x4.Invert(BindGlobals(rig)[origin], out var inverseOrigin))
                     throw new InvalidDataException($"Non-invertible attachment origin '{originName}' in {modelPath}.");
                 attachment = new(avatarRig, anchor, inverseOrigin);
+                if (selection.Weapon != null)
+                {
+                    var globals = BindGlobals(rig);
+                    bool legacy = !nodeIndices.ContainsKey("HP_Rhand");
+                    string rightName = legacy ? "HP_effectorright" : "HP_Rhand";
+                    if (!nodeIndices.TryGetValue(rightName, out int right))
+                        throw new InvalidDataException($"Missing weapon hand target in {modelPath}.");
+                    var rightHand = globals[right];
+                    var gunOrigin = nodeIndices.TryGetValue("HP_GUNR", out int gun) ? globals[gun] : rightHand;
+                    var pivot = nodeIndices.TryGetValue("HP_GUNRW", out int gunPivot) ? globals[gunPivot] : gunOrigin;
+                    string leftName = legacy ? "HP_effectorleft" : "HP_Lhand";
+                    Matrix4x4? leftHand = nodeIndices.TryGetValue(leftName, out int left) ? globals[left] : null;
+                    if (!Matrix4x4.Invert(rightHand, out var inverseHand) || !Matrix4x4.Invert(gunOrigin, out var inverseGun))
+                        throw new InvalidDataException($"Non-invertible weapon hand target in {modelPath}.");
+                    attachment = attachment with { Weapon = new(avatarNodes["HP_Rhand"], avatarNodes["HP_GUNR"],
+                        inverseHand, inverseGun, pivot, rightHand, leftHand, legacy) };
+                }
             }
             // Parent normally names the next LOD; never append its geometry.
             string primitivesPath = Path.ChangeExtension(WithExtension(visualPath, ".visual"), ".primitives");
@@ -103,6 +120,8 @@ public static class CharacterLoader
                         ? i : throw new InvalidDataException($"Unknown palette node '{n.Text}' in {modelPath}.")).ToArray();
                     if (palette.Length == 0) throw new InvalidDataException($"Empty skin palette in {modelPath}.");
                     var vertices = PrimitiveReader.Vertices(Section(geometry.String("vertices")), out bool rigid);
+                    var uv2 = geometry.All("stream").FirstOrDefault(stream => stream.Text.EndsWith(".uv2", StringComparison.OrdinalIgnoreCase));
+                    if (uv2 != null) PrimitiveReader.ApplySecondaryUv(vertices, Section(uv2.Text));
                     if (rigid && palette.Length != 1) throw new InvalidDataException($"Rigid geometry requires one palette node in {modelPath}.");
                     foreach (var vertex in vertices)
                         if ((uint)vertex.Bone0 >= palette.Length || (uint)vertex.Bone1 >= palette.Length || (uint)vertex.Bone2 >= palette.Length)
@@ -122,11 +141,15 @@ public static class CharacterLoader
                         var group = groups[groupIndex];
                         if ((long)group.StartVertex + group.VertexCount > vertices.Length)
                             throw new InvalidDataException($"Primitive vertex range exceeds geometry in {modelPath}.");
-                        bool alpha = material.String("fx").Contains("alpha", StringComparison.OrdinalIgnoreCase);
+                        var surface = ReadSurface(material);
+                        foreach (string texture in new[] { surface.ColourMaskPath, surface.DiffuseMaskPath, surface.OpacityMaskPath }.OfType<string>())
+                            if (validatedTextures.Add(texture)) DdsReader.Read(texture);
+                        bool alpha = surface.UsesAlpha && !Boolean(material, "alphaTestEnable", false);
                         meshes.Add(new(vertices, indices.AsSpan(group.StartIndex, checked(group.TriangleCount * 3)).ToArray(), diffusePath, rig, palette, alpha)
                         {
                             Attachment = attachment,
-                            DiffuseColor = ColourMultiplier(material)
+                            DiffuseColor = BaseColour(material),
+                            Surface = surface
                         });
                     }
                 }
@@ -136,7 +159,40 @@ public static class CharacterLoader
         }
         cancellationToken.ThrowIfCancellationRequested();
         if (meshes.Count == 0) throw new InvalidDataException("The character selection has no visible geometry.");
-        return new(meshes.ToArray(), animation, frameRate) { AvatarRig = avatarRig };
+        return new(meshes.ToArray(), animation, frameRate) { AvatarRig = avatarRig,
+            Weapon = selections.Select(part => part.Weapon).FirstOrDefault(weapon => weapon != null) };
+
+        CharacterSurfaceMaterial ReadSurface(PackedSection material)
+        {
+            string fx = material.String("fx");
+            bool colourise = fx.Contains("colourise", StringComparison.OrdinalIgnoreCase);
+            bool hair = fx.Contains("/hair_", StringComparison.OrdinalIgnoreCase);
+            bool alpha = fx.Contains("alpha", StringComparison.OrdinalIgnoreCase);
+            bool alphaTest = Boolean(material, "alphaTestEnable", false);
+            float scale = Scalar(material, "gScale", 1);
+            float rotation = Scalar(material, "gRotateMask", 0) * MathF.PI / 180f;
+            string? Texture(string name)
+            {
+                string path = Property(material, name)?.String("Texture") ?? "";
+                return string.IsNullOrWhiteSpace(path) ? null : Resolve(path);
+            }
+            return new()
+            {
+                ColourMaskPath = colourise ? Texture("MaskForColourise") : null,
+                DiffuseMaskPath = colourise ? Texture("MaskForDiffuse") : null,
+                OpacityMaskPath = hair ? Texture("hairMask") : null,
+                ColourR = Colour(material, "colouriseR"), ColourG = Colour(material, "colouriseG"),
+                ColourB = Colour(material, "colouriseB"), ColourA = Colour(material, "colouriseA"),
+                PatternScaleShift = new(scale * Scalar(material, "gScaleU", 1), scale * Scalar(material, "gScaleV", 1),
+                    Scalar(material, "gShiftMaskU", 0), Scalar(material, "gShiftMaskV", 0)),
+                PatternRotation = new(MathF.Cos(rotation), MathF.Sin(rotation)),
+                ColourByUv2 = fx.Contains("colourise_by_uv2", StringComparison.OrdinalIgnoreCase),
+                OpacityScaleShift = new(Scalar(material, "hairScaleU", 1), 1, 0, Scalar(material, "hairShiftV", 0)),
+                DoubleSided = Boolean(material, "doubleSided", false),
+                UsesAlpha = alpha || alphaTest,
+                AlphaCutoff = alphaTest ? Math.Clamp(Scalar(material, "alphaReference", 128) / 255f, 0, 1) : alpha ? 0.001f : 0
+            };
+        }
     }
 
     private static string WithExtension(string path, string extension)
@@ -214,20 +270,30 @@ public static class CharacterLoader
     private static string Diffuse(PackedSection material) =>
         material.All("property").FirstOrDefault(property => property.Text == "diffuseMap")?.String("Texture") ?? "";
 
-    private static Vector4 ColourMultiplier(PackedSection material)
+    private static PackedSection? Property(PackedSection material, string name) =>
+        material.All("property").FirstOrDefault(property => property.Text == name);
+
+    private static bool Boolean(PackedSection material, string name, bool fallback) =>
+        Property(material, name)?.Find("Bool")?.Value is bool value ? value : fallback;
+
+    private static float Scalar(PackedSection material, string name, float fallback)
     {
-        string Texture(string name) => material.All("property").FirstOrDefault(property => property.Text == name)
-            ?.String("Texture").Replace('\\', '/') ?? "";
-        // These source masks are constant red and white. Support their uniform
-        // colour multiplier without guessing the missing engine's mask shaders.
-        if (!Texture("MaskForColourise").Equals("textures/default/colorise_argb_red.dds", StringComparison.OrdinalIgnoreCase)
-            || !Texture("MaskForDiffuse").Equals("textures/default/white.dds", StringComparison.OrdinalIgnoreCase))
-            return Vector4.One;
-        var color = material.All("property").FirstOrDefault(property => property.Text == "colouriseR")?.Find("Vector4")?.Floats;
-        if (color == null) return Vector4.One;
-        if (color.Length != 4) throw new InvalidDataException("Invalid material colouriseR vector.");
-        return new(color[0], color[1], color[2], 1);
+        var property = Property(material, name);
+        if (property?.Find("Float")?.Value is float[] values) return values.Single();
+        return property?.Find("Int") is { } integer ? Convert.ToSingle(integer.Value) : fallback;
     }
+
+    private static Vector4 Colour(PackedSection material, string name)
+    {
+        var color = Property(material, name)?.Find("Vector4")?.Floats;
+        if (color == null) return Vector4.One;
+        if (color.Length != 4) throw new InvalidDataException($"Invalid material {name} vector.");
+        return new(color[0], color[1], color[2], color[3]);
+    }
+
+    private static Vector4 BaseColour(PackedSection material) =>
+        material.String("fx").Contains("/hair_", StringComparison.OrdinalIgnoreCase) ? Colour(material, "hairColour")
+        : material.String("fx").Contains("/head_", StringComparison.OrdinalIgnoreCase) ? Colour(material, "skinColour") : Vector4.One;
 
     private static bool IsRendered(PackedSection material) =>
         !material.String("identifier").Contains("NoRender", StringComparison.OrdinalIgnoreCase)

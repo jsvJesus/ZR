@@ -373,7 +373,9 @@ namespace Editor.Viewport
                 _context.Draw(_vertexCount, 0);
             }
 
-            _character?.Render(viewProjection);
+            var characterView = view;
+            characterView.Translation = Vector3.Zero;
+            _character?.Render(characterView * projection, camera.Position);
             _swapChain.Present(1, PresentFlags.None);
         }
 

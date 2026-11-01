@@ -56,6 +56,7 @@ public sealed partial class DxViewportHost
             renderer.SetCharacter(assets, loaded.Asset, loaded.Player);
             _characterAsset = loaded.Asset;
             _player = loaded.Player;
+            PublishCharacterWeaponState();
             _jumpRequested = false;
             _toggleCrouchRequested = false;
             _surface = loaded.Surface;
@@ -92,6 +93,7 @@ public sealed partial class DxViewportHost
         _orbit = null;
         _surface = null;
         _player = null;
+        PublishCharacterWeaponState();
         _characterAsset = null;
         _jumpRequested = false;
         _toggleCrouchRequested = false;
@@ -119,6 +121,7 @@ public sealed partial class DxViewportHost
         {
             // Finish airborne/stop motion, then idle without turning toward the inspection camera.
             _player.Update(deltaTime, default, _player.Yaw);
+            PublishCharacterWeaponState();
             _jumpRequested = false;
             _toggleCrouchRequested = false;
             return;
@@ -127,6 +130,7 @@ public sealed partial class DxViewportHost
             (IsPressed(KeyW) ? 1 : 0) - (IsPressed(KeyS) ? 1 : 0));
         _player.Update(deltaTime, new CharacterInput(movement, IsPressed(KeyAlt), IsPressed(KeyShift),
             IsPressed(KeyControl), _jumpRequested, _toggleCrouchRequested), _orbit.Yaw);
+        PublishCharacterWeaponState();
         _jumpRequested = false;
         _toggleCrouchRequested = false;
     }

@@ -33,10 +33,15 @@ public sealed class LocomotionLibrary
             "turn_left45_crouch_unarmed", "turn_right45_crouch_unarmed",
             JumpDefinition.HardLanding
         ];
-        var required = new HashSet<string>(explicitActions, StringComparer.Ordinal);
+        var requiredActions = new HashSet<string>(explicitActions, StringComparer.Ordinal);
+        requiredActions.UnionWith(["pose_stay_to_crouch_incombat", "pose_crouch_to_stay_incombat"]);
+        foreach (string holster in new[] { "weaponback", "weaponback2", "Pistol" })
+            foreach (string verb in new[] { "equipweapon", "unEquipweapon" })
+                foreach (string phase in new[] { "in", "out" })
+                    requiredActions.Add($"{verb}_{holster}_{phase}");
         foreach (var jump in new[] { JumpDefinition.Right, JumpDefinition.Left, JumpDefinition.Fall, JumpDefinition.Stationary })
-            required.UnionWith([jump.Up, jump.Fly, jump.FlyHigh, jump.DownMove, jump.DownStop]);
-        var availableCaps = new HashSet<int> { (int)AnimationCap.Unarmed, (int)AnimationCap.Crouching };
+            requiredActions.UnionWith([jump.Up, jump.Fly, jump.FlyHigh, jump.DownMove, jump.DownStop]);
+        var availableCaps = new HashSet<int> { 0, 1, 2, 16, 17, 24 };
         foreach (var section in model.All("action"))
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -44,12 +49,13 @@ public sealed class LocomotionLibrary
             var match = section.Find("match");
             var trigger = ReadMatch(match?.Find("trigger"));
             int track = (int)Number(section, "track", 0);
-            // Exclude weapon, water, crawl and NPC tracks from the currently unarmed playable character.
-            bool compatible = trigger != null && trigger.CapsOn.Contains((int)AnimationCap.Unarmed)
+            // Keep the original model order for both unarmed and armed action matching.
+            bool compatible = trigger != null && trigger.CapsOn.Any(cap => cap is 0 or 1 or 16)
                 && trigger.CapsOn.All(availableCaps.Contains) && track == 0;
             compatible |= trigger != null && (Flag(match, "stopLeftAction") || Flag(match, "stopRightAction"))
-                && trigger.CapsOn.All(availableCaps.Contains) && !trigger.CapsOff.Contains((int)AnimationCap.Unarmed) && track == 0;
-            if (!compatible && !required.Contains(name)) continue;
+                && trigger.CapsOn.All(availableCaps.Contains) && track == 0;
+            compatible |= name.StartsWith("handgrip_", StringComparison.Ordinal) && (track is 10 or 11);
+            if (!compatible && !requiredActions.Contains(name)) continue;
             string animationName = section.String("animation");
             if (!clips.TryGetValue(animationName, out var clip))
             {
@@ -58,7 +64,11 @@ public sealed class LocomotionLibrary
                 if (!animations.TryGetValue(path, out var animation)) animations.Add(path, animation = AnimationReader.Read(path));
                 float first = Number(a, "firstFrame", 0), last = Number(a, "lastFrame", animation.Frames);
                 float fps = Number(a, "frameRate", 30);
-                if (first < 0 || last < 0 || first > animation.Frames || last > animation.Frames || fps <= 0)
+                // Track 12 exports held tails up to five frames past the source;
+                // one finger pose is authored at frame 2 in a one-frame file.
+                // Sampling holds the final key while keeping the authored timing/direction.
+                bool heldTail = (track is 10 or 11 or 12) && Math.Max(first, last) <= animation.Frames + 5;
+                if (first < 0 || last < 0 || (!heldTail && (first > animation.Frames || last > animation.Frames)) || fps <= 0)
                     throw new InvalidDataException($"Invalid frame range for {animationName}.");
                 var cues = a.Find("cues")?.All("entry").Select(c => new AnimationCue(Number(c, "time", 0), c.String("name")))
                     .Where(c => c.Frame >= Math.Min(first, last) && c.Frame <= Math.Max(first, last))
@@ -74,7 +84,8 @@ public sealed class LocomotionLibrary
                 Number(match, "prevActionPlayTime", 0), track, Flag(match, "feetFollowDirection"));
             if (!actions.TryAdd(name, action)) throw new InvalidDataException($"Duplicate locomotion action {name}.");
         }
-        foreach (string name in required.Append("idle_0_stay_unarmed").Append("idle_0_crouch_unarmed"))
+        foreach (string name in requiredActions.Concat(new[] { "idle_0_stay_unarmed", "idle_0_crouch_unarmed",
+            "idle_0_stay_incombat", "idle_0_crouch_incombat", "idle_0_stay_bored", "idle_0_crouch_bored" }))
             if (!actions.ContainsKey(name)) throw new InvalidDataException($"Missing locomotion action {name}.");
         return new(actions);
     }

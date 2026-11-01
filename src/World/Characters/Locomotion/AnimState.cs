@@ -10,7 +10,7 @@ public enum AnimState
 }
 
 // Numeric IDs are the original scripts/common/capabilities.xml values.
-public enum AnimationCap { Unarmed = 0, AutogunArmed = 1, Crouching = 2, Injured = 3, Aiming = 4, Dead = 5, Crawl = 14, Bored = 16, Tired = 17 }
+public enum AnimationCap { Unarmed = 0, AutogunArmed = 1, Crouching = 2, Injured = 3, Aiming = 4, Dead = 5, Crawl = 14, Bored = 16, Tired = 17, WeaponRightHand = 24 }
 public enum SupportFoot { Left, Right }
 
 public readonly record struct CharacterInput(
@@ -19,7 +19,7 @@ public readonly record struct CharacterInput(
 public readonly record struct LocomotionSnapshot(
     AnimState State, string Action, float Frame, float Speed, bool Grounded, bool Crouched);
 
-// Ported from player_speed_settings.pyc_dis; no weapon is equipped in editor Play.
+// Ported from player_speed_settings.pyc_dis.
 public static class LocomotionSettings
 {
     public const float Gravity = 9.8f;

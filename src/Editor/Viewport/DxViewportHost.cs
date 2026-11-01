@@ -39,6 +39,7 @@ namespace Editor.Viewport
         private const int KeyControl = 0x11;
         private const int KeyAlt = 0x12;
         private const int KeyC = 0x43;
+        private const int KeyH = 0x48;
 
         private readonly FreeCamera _camera = new();
         private readonly HashSet<int> _pressedKeys = new();
@@ -351,6 +352,11 @@ namespace Editor.Viewport
                         StopPlay();
                         return nint.Zero;
                     }
+                    if ((int)wParam == KeyH && IsPlaying && !IsCharacterEditing)
+                    {
+                        if (_pressedKeys.Add(KeyH)) SetCharacterWeaponInHands(!CharacterWeaponRequestedHeld);
+                        return nint.Zero;
+                    }
                     if (IsMovementKey((int)wParam) && ((int)wParam != KeyAlt || IsPlaying))
                     {
                         bool firstPress = _pressedKeys.Add((int)wParam);
@@ -366,6 +372,11 @@ namespace Editor.Viewport
 
                 case WmKeyUp:
                 case WmSysKeyUp:
+                    if ((int)wParam == KeyH)
+                    {
+                        _pressedKeys.Remove(KeyH);
+                        return nint.Zero;
+                    }
                     if (IsMovementKey((int)wParam) && ((int)wParam != KeyAlt || IsPlaying))
                     {
                         _pressedKeys.Remove((int)wParam);
