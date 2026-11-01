@@ -34,6 +34,10 @@ public sealed partial class DxViewportHost
         PlayStateChanged?.Invoke();
         try
         {
+            if (_characterCatalog == null && Editor.Characters.CharacterOutfitStore.Exists(assets))
+                await LoadCharacterCatalogAsync(assets, cancellation.Token);
+            cancellation.Token.ThrowIfCancellationRequested();
+            var parts = _characterOutfit == null ? null : _characterCatalog?.Compose(_characterOutfit);
             var saved = _savedCamera;
             var loaded = await Task.Run(() =>
             {
@@ -41,7 +45,8 @@ public sealed partial class DxViewportHost
                 var surface = new TerrainSurface(level);
                 if (!surface.TryGetHeight(saved.X, saved.Z, out float height))
                     throw new InvalidOperationException("Камера находится вне Terrain. Подлетите к месту появления на уровне.");
-                var asset = CharacterLoader.Load(assets, cancellation.Token);
+                var asset = parts == null ? CharacterLoader.Load(assets, cancellation.Token)
+                    : CharacterLoader.Load(assets, parts, cancellation.Token);
                 cancellation.Token.ThrowIfCancellationRequested();
                 var player = new CharacterLocomotion(asset, surface, new Vector3(saved.X, height, saved.Z), saved.Yaw);
                 return (Asset: asset, Surface: surface, Player: player);
@@ -49,13 +54,14 @@ public sealed partial class DxViewportHost
             if (cancellation.IsCancellationRequested || !ReferenceEquals(_playLoad, cancellation)
                 || !ReferenceEquals(_renderer, renderer) || !ReferenceEquals(_level, level)) return;
             renderer.SetCharacter(assets, loaded.Asset, loaded.Player);
+            _characterAsset = loaded.Asset;
             _player = loaded.Player;
             _jumpRequested = false;
             _toggleCrouchRequested = false;
             _surface = loaded.Surface;
             _orbit = new ThirdPersonCamera(saved.Yaw);
             UpdatePlayCamera();
-            if (_windowHandle != nint.Zero) SetFocus(_windowHandle);
+            if (!IsCharacterEditing && _windowHandle != nint.Zero) SetFocus(_windowHandle);
             UpdatePlayMouseCapture();
         }
         catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
@@ -74,6 +80,11 @@ public sealed partial class DxViewportHost
     public void StopPlay()
     {
         bool active = IsPlaying || IsStarting;
+        bool editing = IsCharacterEditing;
+        ++_characterEditorVersion;
+        _characterChange?.Cancel();
+        IsCharacterEditing = false;
+        _characterEditorOwnsPlay = false;
         ReleasePlayMouse(true);
         _playLoad?.Cancel();
         _playLoad = null;
@@ -81,6 +92,7 @@ public sealed partial class DxViewportHost
         _orbit = null;
         _surface = null;
         _player = null;
+        _characterAsset = null;
         _jumpRequested = false;
         _toggleCrouchRequested = false;
         _pressedKeys.Clear();
@@ -89,8 +101,8 @@ public sealed partial class DxViewportHost
         {
             _camera.Restore(_savedCamera);
             CameraChanged?.Invoke(_camera.Pose);
-            PlayStateChanged?.Invoke();
         }
+        if (active || editing) PlayStateChanged?.Invoke();
     }
 
     private void UpdatePlayCamera()
@@ -103,6 +115,14 @@ public sealed partial class DxViewportHost
     private void UpdatePlayer(float deltaTime)
     {
         if (_player == null || _orbit == null) return;
+        if (IsCharacterEditing)
+        {
+            // Finish airborne/stop motion, then idle without turning toward the inspection camera.
+            _player.Update(deltaTime, default, _player.Yaw);
+            _jumpRequested = false;
+            _toggleCrouchRequested = false;
+            return;
+        }
         var movement = new Vector2((IsPressed(KeyD) ? 1 : 0) - (IsPressed(KeyA) ? 1 : 0),
             (IsPressed(KeyW) ? 1 : 0) - (IsPressed(KeyS) ? 1 : 0));
         _player.Update(deltaTime, new CharacterInput(movement, IsPressed(KeyAlt), IsPressed(KeyShift),

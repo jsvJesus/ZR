@@ -7,6 +7,7 @@ namespace Editor
     {
         private async void Play_Click(object? sender, RoutedEventArgs e)
         {
+            if (CharacterPanel.IsActive) return;
             if (Viewport.IsPlaying || Viewport.IsStarting)
             {
                 Viewport.StopPlay();
@@ -34,10 +35,11 @@ namespace Editor
             bool active = Viewport.IsPlaying || Viewport.IsStarting;
             PlayButton.Content = active ? "■ Stop" : "▶ Play";
             PlayButton.IsEnabled = _level != null && _importCancellation == null && !_levelOpening;
-            PlayHint.Text = active ? "WASD · Alt — шаг · Shift — спринт · Ctrl — присед · Space — прыжок" : "Персонаж появится на Terrain под камерой";
+            PlayHint.Text = CharacterPanel.IsActive ? "Character Editor · ПКМ — осмотр · колесо — расстояние"
+                : active ? "WASD · Alt — шаг · Shift — спринт · Ctrl — присед · Space — прыжок" : "Персонаж появится на Terrain под камерой";
             CameraSpeedSlider.IsEnabled = !active;
-            FreeNavigationHints.IsVisible = !active;
-            PlayNavigationHints.IsVisible = active;
+            PlayNavigationHints.IsVisible = active && !CharacterPanel.IsActive;
+            FreeNavigationHints.IsVisible = !active && !CharacterPanel.IsActive;
             if (!active) AnimStateInfo.Text = "";
             SetLevelCommandsBusy(_importCancellation != null);
         }

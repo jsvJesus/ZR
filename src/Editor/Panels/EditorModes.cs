@@ -11,7 +11,8 @@ namespace Editor
             string description,
             bool showTerrainMaterials = false,
             bool showRoadSegments = false,
-            bool showVegetation = false)
+            bool showVegetation = false,
+            bool showCharacterEditor = false)
         {
             CurrentModeText.Text = $"{category} / {name}";
             ModeTitle.Text = name;
@@ -21,7 +22,18 @@ namespace Editor
             RoadSegmentsPanel.RefreshHighlight();
             VegetationPanel.IsVisible = showVegetation;
             VegetationPanel.RefreshMode();
+            CharacterPanel.IsVisible = showCharacterEditor;
+            CharacterPanel.SetActive(showCharacterEditor);
+            UpdatePlayControls();
             StatusText.Text = $"Выбран раздел: {name}";
+        }
+
+        private async void CharacterEditor_Click(object? sender, RoutedEventArgs e)
+        {
+            if (_isClosing || _levelOpening || _importCancellation != null) return;
+            SetMode("Character Editor", "Экипировка персонажа",
+                "Одежда, снаряжение и оружие на персонаже текущего уровня.", showCharacterEditor: true);
+            await CharacterPanel.ActivateAsync();
         }
 
         private void Terrain_Click(object? sender, RoutedEventArgs e)

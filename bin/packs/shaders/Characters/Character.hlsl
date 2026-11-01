@@ -2,6 +2,7 @@ cbuffer CharacterConstants : register(b0)
 {
     row_major float4x4 World;
     row_major float4x4 ViewProjection;
+    float4 DiffuseColor;
 };
 Texture2D Diffuse : register(t0);
 SamplerState SurfaceSampler : register(s0);
@@ -20,5 +21,5 @@ float4 PSMain(PixelInput input) : SV_TARGET
     float4 color = Diffuse.Sample(SurfaceSampler, input.Uv);
     clip(color.a - 0.08f);
     float light = 0.48f + 0.52f * saturate(dot(normalize(input.Normal), normalize(float3(-0.4f, 0.8f, -0.5f))));
-    return float4(color.rgb * light, color.a);
+    return float4(color.rgb * DiffuseColor.rgb * light, color.a);
 }

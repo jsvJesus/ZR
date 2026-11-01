@@ -14,6 +14,8 @@ namespace Editor
             RoadSegmentsPanel.BusyChanged += UpdatePlayControls;
             VegetationPanel.Attach(Viewport, _workspace.Assets);
             VegetationPanel.BusyChanged += UpdatePlayControls;
+            CharacterPanel.Attach(Viewport, _workspace.Assets);
+            CharacterPanel.BusyChanged += UpdatePlayControls;
 
             CameraSpeedSlider.Minimum = (double)FreeCamera.MinimumSpeed;
             CameraSpeedSlider.Maximum = (double)FreeCamera.MaximumSpeed;
@@ -40,6 +42,7 @@ namespace Editor
                 _isClosing = true;
                 _importCancellation?.Cancel();
                 VegetationPanel.CancelLoading();
+                CharacterPanel.SetActive(false);
                 Viewport.StopPlay();
             };
         }

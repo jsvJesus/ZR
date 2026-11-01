@@ -81,11 +81,11 @@ internal sealed class CharacterRenderer : IDisposable
     {
         var constants = new Constants { World = Matrix4x4.CreateRotationY(Yaw)
             * Matrix4x4.CreateTranslation(Position + new Vector3(0, _pose.FloorOffset, 0)), ViewProjection = viewProjection };
-        _context.UpdateSubresource(ref constants, _constants);
         _context.InputAssembler.InputLayout = _layout;
         _context.InputAssembler.PrimitiveTopology = PrimitiveTopology.TriangleList;
         _context.VertexShader.Set(_vertex); _context.PixelShader.Set(_pixel);
         _context.VertexShader.SetConstantBuffer(0, _constants);
+        _context.PixelShader.SetConstantBuffer(0, _constants);
         _context.PixelShader.SetSampler(0, _sampler);
         _context.Rasterizer.State = _rasterizer;
         _context.OutputMerger.SetDepthStencilState(_depth);
@@ -93,6 +93,8 @@ internal sealed class CharacterRenderer : IDisposable
         foreach (int i in Enumerable.Range(0, _meshes.Count).OrderBy(i => _asset.Meshes[i].Alpha))
         {
             var mesh = _meshes[i];
+            constants.DiffuseColor = _asset.Meshes[i].DiffuseColor;
+            _context.UpdateSubresource(ref constants, _constants);
             _context.UpdateSubresource(_pose.Vertices[i], mesh.Vertices);
             _context.InputAssembler.SetVertexBuffers(0, new VertexBufferBinding(mesh.Vertices, 32, 0));
             _context.InputAssembler.SetIndexBuffer(mesh.Indices, Format.R32_UInt, 0);
@@ -114,5 +116,10 @@ internal sealed class CharacterRenderer : IDisposable
         _constants?.Dispose(); _layout?.Dispose(); _pixel?.Dispose(); _vertex?.Dispose();
     }
     [StructLayout(LayoutKind.Sequential)]
-    private struct Constants { public Matrix4x4 World; public Matrix4x4 ViewProjection; }
+    private struct Constants
+    {
+        public Matrix4x4 World;
+        public Matrix4x4 ViewProjection;
+        public System.Numerics.Vector4 DiffuseColor;
+    }
 }

@@ -17,12 +17,13 @@ public sealed partial class MainWindow
 
     private void SetLevelCommandsBusy(bool busy)
     {
-        bool locked = busy || _levelOpening || Viewport.IsPlaying || Viewport.IsStarting || RoadSegmentsPanel.IsSaving || VegetationPanel.IsSaving;
+        bool locked = busy || _levelOpening || Viewport.IsPlaying || Viewport.IsStarting || RoadSegmentsPanel.IsSaving || VegetationPanel.IsSaving || CharacterPanel.IsBusy;
         ImportLevelMenu.IsEnabled = !locked;
         ImportAllLevelsMenu.IsEnabled = !locked;
         OpenLevelMenu.IsEnabled = !locked;
         SaveLevelMenu.IsEnabled = !locked;
-        PlayButton.IsEnabled = _level != null && !busy && !_levelOpening && !RoadSegmentsPanel.IsSaving && !VegetationPanel.IsSaving;
+        PlayButton.IsEnabled = _level != null && !busy && !_levelOpening && !RoadSegmentsPanel.IsSaving && !VegetationPanel.IsSaving && !CharacterPanel.IsActive;
+        CharacterEditorMenu.IsEnabled = !busy && !_levelOpening && !RoadSegmentsPanel.IsSaving && !VegetationPanel.IsSaving;
         RoadSegmentsPanel.IsEnabled = !locked;
         VegetationPanel.IsEnabled = !locked;
         VegetationPanel.RefreshMode();

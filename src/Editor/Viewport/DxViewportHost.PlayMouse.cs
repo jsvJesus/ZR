@@ -22,7 +22,7 @@ namespace Editor.Viewport
 
         private void UpdatePlayMouseCapture()
         {
-            if (!IsPlaying || !HasPlayMouseFocus || !GetClientRect(_windowHandle, out var bounds)
+            if (!IsPlaying || IsCharacterEditing || !HasPlayMouseFocus || !GetClientRect(_windowHandle, out var bounds)
                 || bounds.Right <= bounds.Left || bounds.Bottom <= bounds.Top)
             {
                 if (_playMouseCaptured)

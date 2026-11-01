@@ -279,6 +279,7 @@ namespace Editor.Viewport
             _assets = assets;
             _lastFrameTime = Stopwatch.GetTimestamp();
             _timer.Start();
+            LevelChanged?.Invoke();
         }
 
         private nint ProcessWindowMessage(
@@ -297,7 +298,7 @@ namespace Editor.Viewport
 
                 case WmRightDown:
                     SetFocus(window);
-                    if (IsPlaying) return nint.Zero;
+                    if (IsPlaying && !IsCharacterEditing) return nint.Zero;
                     SetCapture(window);
 
                     _rotating = true;
@@ -307,7 +308,7 @@ namespace Editor.Viewport
                     return nint.Zero;
 
                 case WmRightUp:
-                    if (IsPlaying) return nint.Zero;
+                    if (IsPlaying && !IsCharacterEditing) return nint.Zero;
                     _rotating = false;
                     ReleaseCapture();
                     return nint.Zero;
@@ -353,7 +354,7 @@ namespace Editor.Viewport
                     if (IsMovementKey((int)wParam) && ((int)wParam != KeyAlt || IsPlaying))
                     {
                         bool firstPress = _pressedKeys.Add((int)wParam);
-                        if (IsPlaying && firstPress)
+                        if (IsPlaying && !IsCharacterEditing && firstPress)
                         {
                             if ((int)wParam == KeySpace) _jumpRequested = true;
                             if ((int)wParam == KeyC) _toggleCrouchRequested = true;
@@ -401,13 +402,14 @@ namespace Editor.Viewport
 
         private void HandleMouseMove(nint lParam)
         {
-            if (IsPlaying) return; // Player look is relative raw input, independent of mouse buttons.
+            if (IsPlaying && !IsCharacterEditing) return; // Play consumes relative raw mouse input.
             int x = ReadX(lParam);
             int y = ReadY(lParam);
 
             if (_rotating)
             {
-                if (!IsStarting) _camera.Rotate(x - _mouseX, y - _mouseY);
+                if (IsCharacterEditing && _orbit != null) _orbit.Rotate(x - _mouseX, y - _mouseY);
+                else if (!IsStarting) _camera.Rotate(x - _mouseX, y - _mouseY);
             }
 
             _mouseX = x;

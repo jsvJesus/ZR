@@ -11,7 +11,12 @@ public sealed record SkeletonNode(
     Matrix4x4 Local
 );
 
-public sealed record CharacterRig(SkeletonNode[] Nodes);
+public sealed record CharacterRig(SkeletonNode[] Nodes)
+{
+    public bool Animate { get; init; } = true;
+}
+
+public sealed record CharacterAttachment(CharacterRig AvatarRig, int AvatarNode, Matrix4x4 InverseOrigin);
 
 public sealed record CharacterMesh(
     SourceVertex[] Vertices,
@@ -20,7 +25,11 @@ public sealed record CharacterMesh(
     CharacterRig Rig,
     int[] Palette,
     bool Alpha
-);
+)
+{
+    public CharacterAttachment? Attachment { get; init; }
+    public Vector4 DiffuseColor { get; init; } = Vector4.One;
+}
 
 public sealed record CharacterAsset(
     CharacterMesh[] Meshes,
@@ -28,6 +37,7 @@ public sealed record CharacterAsset(
     float FrameRate)
 {
     public LocomotionLibrary? Locomotion { get; init; }
+    public CharacterRig? AvatarRig { get; init; }
 }
 
 [StructLayout(LayoutKind.Sequential)]
@@ -55,6 +65,7 @@ public sealed class CharacterPose
 
         _rigs = asset.Meshes
             .Select(m => m.Rig)
+            .Concat(asset.AvatarRig is { } avatarRig ? new[] { avatarRig } : Array.Empty<CharacterRig>())
             .Distinct()
             .ToDictionary(
                 rig => rig,
@@ -88,9 +99,13 @@ public sealed class CharacterPose
 
         Update(0);
 
-        FloorOffset = -Vertices
-            .SelectMany(vertices => vertices)
-            .Min(vertex => vertex.Position.Y);
+        // Attached equipment must never move the avatar's ground reference.
+        FloorOffset = -Enumerable.Range(0, asset.Meshes.Length)
+            .Where(index => asset.Meshes[index].Attachment == null)
+            .SelectMany(index => Vertices[index])
+            .Select(vertex => vertex.Position.Y)
+            .DefaultIfEmpty(0)
+            .Min();
     }
 
     public void Update(double seconds)
@@ -162,6 +177,15 @@ public sealed class CharacterPose
             for (int i = 0; i < rig.Nodes.Length; i++)
             {
                 var node = rig.Nodes[i];
+
+                // An attachment uses its own exported bind skeleton. Matching
+                // names such as Root must not pick up avatar animation channels.
+                if (!rig.Animate)
+                {
+                    _locals[rig][i] = node.Local;
+                    matrices[i] = node.Parent < 0 ? node.Local : node.Local * matrices[node.Parent];
+                    continue;
+                }
 
                 int priority = node.Parent < 0 ? 0 : priorities[node.Parent];
                 if (action != null && action.Clip.NodePriorities.TryGetValue(node.Name, out int authoredPriority))
@@ -249,6 +273,9 @@ public sealed class CharacterPose
 
             var matrices = _rigs[mesh.Rig];
             var target = Vertices[meshIndex];
+            var attachment = mesh.Attachment;
+            var attachmentTransform = attachment == null ? Matrix4x4.Identity
+                : attachment.InverseOrigin * _rigs[attachment.AvatarRig][attachment.AvatarNode];
 
             for (int i = 0; i < target.Length; i++)
             {
@@ -281,6 +308,12 @@ public sealed class CharacterPose
                     vertex.Weights.Y +
                     Vector3.TransformNormal(vertex.Normal, c) *
                     vertex.Weights.Z;
+
+                if (attachment != null)
+                {
+                    position = Vector3.Transform(position, attachmentTransform);
+                    normal = Vector3.TransformNormal(normal, attachmentTransform);
+                }
 
                 target[i] = new SkinnedVertex(
                     position,

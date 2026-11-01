@@ -37,12 +37,15 @@ public static class PrimitiveReader
         return sections;
     }
 
-    public static SourceVertex[] Vertices(byte[] bytes)
+    public static SourceVertex[] Vertices(byte[] bytes) => Vertices(bytes, out _);
+
+    public static SourceVertex[] Vertices(byte[] bytes, out bool rigid)
     {
         if (bytes.Length < 68) throw new InvalidDataException("Truncated vertex header.");
         using var reader = new SourceBinary(bytes);
         string format = Encoding.ASCII.GetString(reader.ReadBytes(64)).Split('\0')[0];
-        int stride = format switch { "xyznuviiiwwtb" => 37, "xyznuviiiww" => 29,
+        rigid = format == "xyznuvtb";
+        int stride = format switch { "xyznuviiiwwtb" => 37, "xyznuviiiww" => 29, "xyznuvtb" => 32,
             _ => throw new InvalidDataException($"Unsupported source vertex format: {format}") };
         int count = reader.Count(stride);
         var vertices = new SourceVertex[count];
@@ -51,6 +54,12 @@ public static class PrimitiveReader
             var position = reader.Vector();
             var normal = UnpackNormal(reader.ReadUInt32());
             var uv = new Vector2(reader.Scalar(), reader.Scalar());
+            if (rigid)
+            {
+                vertices[i] = new(position, normal, uv, 0, 0, 0, Vector3.UnitX);
+                reader.BaseStream.Position += 8; // Packed tangent and binormal.
+                continue;
+            }
             int a = reader.ReadByte(), b = reader.ReadByte(), c = reader.ReadByte();
             int w0 = reader.ReadByte(), w1 = reader.ReadByte();
             if (a % 3 != 0 || b % 3 != 0 || c % 3 != 0 || w0 + w1 > 255)
