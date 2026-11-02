@@ -9,7 +9,6 @@ using SharpDX.Direct3D11;
 using SharpDX.DXGI;
 using ZoneReborn.World.Assets;
 using ZoneReborn.World.Levels.Models;
-using ZoneReborn.World.Terrain;
 using ZoneReborn.World.Terrain.Models;
 using ZoneReborn.World.Terrain.Storage;
 using Buffer = SharpDX.Direct3D11.Buffer;
@@ -28,7 +27,6 @@ internal sealed partial class TerrainRenderer : IDisposable
     private readonly Dictionary<(int X, int Z), TerrainTileReference> _references;
     private readonly Dictionary<(int X, int Z), TerrainTileResources> _tiles = [];
     private readonly HashSet<(int X, int Z)> _failed = [];
-    private readonly Dictionary<(int X, int Z), TerrainHoleMask> _holes = [];
     private TerrainMaterialCache _materials = null!;
     private TerrainOverviewResources _overview = null!;
     private VertexShader _vertexShader = null!;
@@ -56,21 +54,6 @@ internal sealed partial class TerrainRenderer : IDisposable
         _references = level.Manifest.Tiles.ToDictionary(tile => (tile.X, tile.Z));
         try
         {
-            if (level.Layers.Any(layer => layer.IsHole))
-                foreach (var reference in level.Manifest.Tiles)
-                {
-                    try
-                    {
-                        var tile = Read(reference.X, reference.Z)!;
-                        var holes = TerrainHoleMask.Create(tile, level.Layers);
-                        if (holes != null) _holes.Add((tile.X, tile.Z), holes);
-                    }
-                    catch (Exception exception) when (exception is IOException or InvalidDataException or UnauthorizedAccessException or ArgumentException)
-                    {
-                        _failed.Add((reference.X, reference.Z));
-                        Trace.TraceError("Terrain tile {0}, {1}: {2}", reference.X, reference.Z, exception.Message);
-                    }
-                }
             _materials = new TerrainMaterialCache(device, assets);
             var shaders = new ShaderCompiler(assets);
             using var vertex = shaders.Compile("Terrain/Terrain.hlsl", "VSMain", "vs_4_0");
@@ -116,7 +99,7 @@ internal sealed partial class TerrainRenderer : IDisposable
             blend.RenderTarget[0].AlphaBlendOperation = BlendOperation.Add;
             blend.RenderTarget[0].RenderTargetWriteMask = ColorWriteMaskFlags.All;
             _add = new BlendState(device, blend);
-            _overview = new TerrainOverviewResources(device, level, assets, _holes);
+            _overview = new TerrainOverviewResources(device, level, assets);
         }
         catch
         {
@@ -152,7 +135,7 @@ internal sealed partial class TerrainRenderer : IDisposable
                 var tile = Read(reference.X, reference.Z)!;
                 _tiles.Add(key, new TerrainTileResources(_device, descriptor, tile,
                     Read(tile.X + 1, tile.Z), Read(tile.X, tile.Z + 1), Read(tile.X + 1, tile.Z + 1),
-                    _level.Layers, _overview.SampleHeight, _holes.GetValueOrDefault(key)));
+                    _level.Layers.Count, _overview.SampleHeight));
             }
             catch (Exception exception) when (exception is IOException or InvalidDataException or UnauthorizedAccessException or ArgumentException)
             {
@@ -206,8 +189,7 @@ internal sealed partial class TerrainRenderer : IDisposable
             _context.OutputMerger.SetDepthStencilState(_depthRead);
             foreach (byte index in tile.ActiveLayers)
             {
-                if (index == 0 || index >= _level.Layers.Count || _level.Layers[index].IsHole ||
-                    !tile.Masks.TryGetValue((index - 1) / 3, out var mask)) continue;
+                if (index == 0 || index >= _level.Layers.Count || !tile.Masks.TryGetValue((index - 1) / 3, out var mask)) continue;
                 DrawLayer(tile, _level.Layers[index], mask, false, ref constants);
             }
         }

@@ -1,7 +1,6 @@
 using System.Buffers.Binary;
 using System.Numerics;
 using System.Runtime.InteropServices;
-using ZoneReborn.World.Terrain;
 using ZoneReborn.World.Terrain.Models;
 
 namespace Editor.Viewport.Terrain;
@@ -12,12 +11,12 @@ internal readonly record struct TerrainVertex(Vector3 Position, Vector2 TileUv);
 internal static class TerrainMeshBuilder
 {
     // Every tile uses the same sampling step, including its shared border vertices.
-    internal const int Step = TerrainHoleMask.Step;
+    internal const int Step = 4;
     internal const int Side = 256 / Step + 1;
 
     public static (TerrainVertex[] Vertices, int[] Indices, int MainIndexCount, int EdgeIndexCount) Build(TerrainDescriptor descriptor,
         TerrainTileData tile, TerrainTileData? right, TerrainTileData? bottom, TerrainTileData? diagonal,
-        Func<int, int, float> overviewHeight, TerrainHoleMask? holes)
+        Func<int, int, float> overviewHeight)
     {
         var vertices = new TerrainVertex[Side * Side];
         for (int z = 0; z < Side; z++)
@@ -41,14 +40,13 @@ internal static class TerrainMeshBuilder
         for (int z = 0; z < Side - 1; z++)
         for (int x = 0; x < Side - 1; x++)
         {
-            if (holes?.Intersects(x * Step, z * Step) == true) continue;
             int a = z * Side + x, b = a + 1, c = a + Side, d = c + 1;
             indices[offset++] = a; indices[offset++] = c; indices[offset++] = b;
             indices[offset++] = b; indices[offset++] = c; indices[offset++] = d;
         }
-        int mainIndexCount = offset;
+        int mainIndexCount = indices.Length;
         var allVertices = vertices.ToList();
-        var allIndices = indices.Take(mainIndexCount).ToList();
+        var allIndices = indices.ToList();
         // Each edge has its own draw range. Only edges touching the overview are rendered.
         for (int edge = 0; edge < 4; edge++)
         {
@@ -77,10 +75,6 @@ internal static class TerrainMeshBuilder
             for (int index = 0; index < Side - 1; index++)
             {
                 int a = first + index * 2, b = a + 2, c = a + 1, d = a + 3;
-                int cellX = edge < 2 ? index : edge == 2 ? 0 : Side - 2;
-                int cellZ = edge >= 2 ? index : edge == 0 ? 0 : Side - 2;
-                // Keep fixed skirt draw ranges, but omit faces beside a hole.
-                if (holes?.Intersects(cellX * Step, cellZ * Step) == true) b = c = d = a;
                 allIndices.Add(a); allIndices.Add(c); allIndices.Add(b);
                 allIndices.Add(b); allIndices.Add(c); allIndices.Add(d);
             }
@@ -88,10 +82,10 @@ internal static class TerrainMeshBuilder
         return (allVertices.ToArray(), allIndices.ToArray(), mainIndexCount, (Side - 1) * 6);
     }
 
-    public static float[] BuildWeightSum(TerrainTileData tile, IReadOnlyList<TerrainLayer> layers)
+    public static float[] BuildWeightSum(TerrainTileData tile, int layerCount)
     {
         var sum = new float[256 * 256];
-        var active = tile.ActiveLayers.Where(index => index < layers.Count && !layers[index].IsHole).ToHashSet();
+        var active = tile.ActiveLayers.ToHashSet();
         foreach (var mask in tile.Masks)
         {
             for (int blockZ = 0; blockZ < 64; blockZ++)
@@ -110,9 +104,9 @@ internal static class TerrainMeshBuilder
                     var value = ((bits >> ((z * 4 + x) * 2)) & 3) switch { 0 => a, 1 => b, 2 => c, _ => d };
                     int firstLayer = mask.Group * 3 + 1;
                     float weight = 0;
-                    if (firstLayer < layers.Count && active.Contains((byte)firstLayer)) weight += value.X;
-                    if (firstLayer + 1 < layers.Count && active.Contains((byte)(firstLayer + 1))) weight += value.Y;
-                    if (firstLayer + 2 < layers.Count && active.Contains((byte)(firstLayer + 2))) weight += value.Z;
+                    if (firstLayer < layerCount && active.Contains((byte)firstLayer)) weight += value.X;
+                    if (firstLayer + 1 < layerCount && active.Contains((byte)(firstLayer + 1))) weight += value.Y;
+                    if (firstLayer + 2 < layerCount && active.Contains((byte)(firstLayer + 2))) weight += value.Z;
                     sum[(blockZ * 4 + z) * 256 + blockX * 4 + x] += weight;
                 }
             }

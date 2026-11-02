@@ -7,7 +7,6 @@ using SharpDX.Direct3D11;
 using SharpDX.DXGI;
 using ZoneReborn.World.Assets;
 using ZoneReborn.World.Levels.Models;
-using ZoneReborn.World.Terrain;
 using ZoneReborn.World.Terrain.Storage;
 using Buffer = SharpDX.Direct3D11.Buffer;
 using Device = SharpDX.Direct3D11.Device;
@@ -25,7 +24,6 @@ internal sealed class TerrainOverviewResources : IDisposable
     private readonly int _step;
     private readonly ushort[] _heights;
     private readonly HashSet<(int X, int Z)> _covered = [];
-    private readonly IReadOnlyDictionary<(int X, int Z), TerrainHoleMask> _holes;
     private readonly Dictionary<(int X, int Z), TerrainSurfaceGrid> _surfaceGrids = [];
     private VertexShader _vertexShader = null!;
     private PixelShader _pixelShader = null!;
@@ -35,12 +33,10 @@ internal sealed class TerrainOverviewResources : IDisposable
     private Buffer _constants = null!;
     private int _indexCount;
 
-    public TerrainOverviewResources(Device device, LoadedLevel level, AssetPaths assets,
-        IReadOnlyDictionary<(int X, int Z), TerrainHoleMask> holes)
+    public TerrainOverviewResources(Device device, LoadedLevel level, AssetPaths assets)
     {
         _device = device;
         _level = level;
-        _holes = holes;
         var terrain = level.Manifest.Terrain;
         var overview = TerrainOverviewReader.Read(AssetPathResolver.Resolve(level.Directory, level.Manifest.OverviewFile));
         _width = overview.Width;
@@ -126,7 +122,7 @@ internal sealed class TerrainOverviewResources : IDisposable
             positions[z * side + x] = new Vector3(Math.Min(gx * _step, terrain.SamplesX - 1) * terrain.CellSize,
                 terrain.DecodeHeight(_heights[gz * _width + gx]), Math.Min(gz * _step, terrain.SamplesZ - 1) * terrain.CellSize);
         }
-        var grid = new TerrainSurfaceGrid(positions, side, _holes.GetValueOrDefault((tileX, tileZ)));
+        var grid = new TerrainSurfaceGrid(positions, side);
         _surfaceGrids.Add((tileX, tileZ), grid);
         return grid;
     }
@@ -138,8 +134,6 @@ internal sealed class TerrainOverviewResources : IDisposable
         for (int x = 0; x < _width - 1; x++)
         {
             if (_covered.Contains((x * _step / 256, z * _step / 256))) continue;
-            if (_holes.TryGetValue((x * _step / 256, z * _step / 256), out var holes) &&
-                holes.Intersects(x * _step % 256, z * _step % 256, _step)) continue;
             int a = z * _width + x, b = a + 1, c = a + _width, d = c + 1;
             indices.Add(a); indices.Add(c); indices.Add(b);
             indices.Add(b); indices.Add(c); indices.Add(d);

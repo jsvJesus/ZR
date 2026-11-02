@@ -36,12 +36,12 @@ public static class LevelReader
         }
         var layers = await LevelJson.ReadAsync<List<TerrainLayer>>(
             AssetPathResolver.Resolve(directory, manifest.LayersFile), cancellationToken);
-        if (layers.Count is < 1 or > 255 || layers[0].IsHole || layers.Where((layer, index) => layer.Index != index).Any())
+        if (layers.Count is < 1 or > 255 || layers.Where((layer, index) => layer.Index != index).Any())
             throw new InvalidDataException("Некорректный порядок слоёв Terrain.");
         foreach (var layer in layers)
         {
             if (string.IsNullOrWhiteSpace(layer.Name) ||
-                (!layer.IsHole && (string.IsNullOrWhiteSpace(layer.DiffuseTexture) || string.IsNullOrWhiteSpace(layer.NormalTexture))) ||
+                string.IsNullOrWhiteSpace(layer.DiffuseTexture) || string.IsNullOrWhiteSpace(layer.NormalTexture) ||
                 !float.IsFinite(layer.ScaleU) || layer.ScaleU <= 0 ||
                 !float.IsFinite(layer.ScaleV) || layer.ScaleV <= 0 ||
                 !float.IsFinite(layer.NormalUvMultiplier) || layer.NormalUvMultiplier <= 0 ||
