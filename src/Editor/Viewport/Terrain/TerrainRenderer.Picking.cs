@@ -14,6 +14,7 @@ namespace Editor.Viewport.Terrain
             var grid = GetSurfaceGrid(tx, tz);
             int ix = Math.Clamp((int)((x - grid.MinX) / grid.StepX), 0, grid.Side - 2);
             int iz = Math.Clamp((int)((z - grid.MinZ) / grid.StepZ), 0, grid.Side - 2);
+            if (grid.IsHole(ix, iz)) return false;
             var a = grid.Positions[iz * grid.Side + ix]; var b = grid.Positions[iz * grid.Side + ix + 1];
             var c = grid.Positions[(iz + 1) * grid.Side + ix]; var e = grid.Positions[(iz + 1) * grid.Side + ix + 1];
             height = ZoneReborn.World.Terrain.TerrainSurface.Interpolate(a.Y, b.Y, c.Y, e.Y,
@@ -41,8 +42,11 @@ namespace Editor.Viewport.Terrain
                 var a = grid.Positions[iz * grid.Side + ix]; var b = grid.Positions[iz * grid.Side + ix + 1];
                 var c = grid.Positions[(iz + 1) * grid.Side + ix]; var e = grid.Positions[(iz + 1) * grid.Side + ix + 1];
                 float closest = float.MaxValue;
-                if (ViewportPicking.Triangle(origin, direction, a, b, c, out float first)) closest = first;
-                if (ViewportPicking.Triangle(origin, direction, e, c, b, out float second)) closest = Math.Min(closest, second);
+                if (!grid.IsHole(ix, iz))
+                {
+                    if (ViewportPicking.Triangle(origin, direction, a, b, c, out float first)) closest = first;
+                    if (ViewportPicking.Triangle(origin, direction, e, c, b, out float second)) closest = Math.Min(closest, second);
+                }
                 if (closest >= near && closest <= far && closest >= distance - 0.01f)
                 {
                     position = origin + direction * closest; return true;

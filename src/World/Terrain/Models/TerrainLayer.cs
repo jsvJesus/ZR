@@ -11,6 +11,9 @@ namespace ZoneReborn.World.Terrain.Models
         public float NormalUvMultiplier { get; init; } = 1;
         public float Specular { get; init; }
         public string MaterialType { get; init; } = "";
+
+        [System.Text.Json.Serialization.JsonIgnore]
+        public bool IsHole => string.Equals(MaterialType, "Hole", StringComparison.OrdinalIgnoreCase);
     }
 }
 

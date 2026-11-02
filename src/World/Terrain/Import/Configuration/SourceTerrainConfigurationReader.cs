@@ -38,14 +38,15 @@ public static class SourceTerrainConfigurationReader
         {
             Index = index,
             Name = Required(layer, "name").Trim(),
-            DiffuseTexture = MaterialPathResolver.FromSource(assets, Required(layer, "map_diffuse")),
-            NormalTexture = MaterialPathResolver.FromSource(assets, Required(layer, "map_normal")),
+            DiffuseTexture = ResolveLayerTexture(layer, "map_diffuse", assets),
+            NormalTexture = ResolveLayerTexture(layer, "map_normal", assets),
             ScaleU = ReadFloat(layer, "scale_u", positive: true),
             ScaleV = ReadFloat(layer, "scale_v", positive: true),
             NormalUvMultiplier = ReadFloat(layer, "normal_uv_mult", positive: true),
             Specular = ReadFloat(layer, "specular"),
             MaterialType = layer.GetValueOrDefault("mat_type", "")
         }).ToArray();
+        if (layers[0].IsHole) throw new InvalidDataException("Базовый слой Terrain не может иметь тип Hole.");
         return new SourceTerrainConfiguration(directory, terrain, layers);
     }
 
@@ -68,5 +69,10 @@ public static class SourceTerrainConfigurationReader
     private static string ResolveOptional(Dictionary<string, string> values, string key, AssetPaths assets) =>
         values.TryGetValue(key, out string? value) && !string.IsNullOrWhiteSpace(value)
             ? MaterialPathResolver.FromSource(assets, value) : "";
+
+    private static string ResolveLayerTexture(Dictionary<string, string> layer, string key, AssetPaths assets) =>
+        string.Equals(layer.GetValueOrDefault("mat_type"), "Hole", StringComparison.OrdinalIgnoreCase)
+            ? ResolveOptional(layer, key, assets)
+            : MaterialPathResolver.FromSource(assets, Required(layer, key));
 }
 

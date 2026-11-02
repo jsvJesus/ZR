@@ -1,5 +1,6 @@
 using SharpDX;
 using SharpDX.Direct3D11;
+using ZoneReborn.World.Terrain;
 using ZoneReborn.World.Terrain.Models;
 using Buffer = SharpDX.Direct3D11.Buffer;
 using Device = SharpDX.Direct3D11.Device;
@@ -12,6 +13,7 @@ internal sealed class TerrainTileResources : IDisposable
     private readonly int _tileX;
     private readonly int _tileZ;
     private readonly Func<int, int, float> _overviewHeight;
+    private readonly TerrainHoleMask? _holes;
     private TerrainVertex[] _sourceVertices = [];
     public Buffer Vertices { get; private set; } = null!;
     public Buffer Indices { get; private set; } = null!;
@@ -25,23 +27,24 @@ internal sealed class TerrainTileResources : IDisposable
     public TerrainSurfaceGrid Surface { get; private set; } = null!;
 
     public TerrainTileResources(Device device, TerrainDescriptor descriptor, TerrainTileData tile,
-        TerrainTileData? right, TerrainTileData? bottom, TerrainTileData? diagonal, int layerCount,
-        Func<int, int, float> overviewHeight)
+        TerrainTileData? right, TerrainTileData? bottom, TerrainTileData? diagonal, IReadOnlyList<TerrainLayer> layers,
+        Func<int, int, float> overviewHeight, TerrainHoleMask? holes)
     {
         _descriptor = descriptor; _tileX = tile.X; _tileZ = tile.Z; _overviewHeight = overviewHeight;
+        _holes = holes;
         ActiveLayers = tile.ActiveLayers.Distinct().Order().ToArray();
         try
         {
-            var mesh = TerrainMeshBuilder.Build(descriptor, tile, right, bottom, diagonal, overviewHeight);
+            var mesh = TerrainMeshBuilder.Build(descriptor, tile, right, bottom, diagonal, overviewHeight, holes);
             _sourceVertices = mesh.Vertices;
             Surface = new TerrainSurfaceGrid(mesh.Vertices.Take(TerrainMeshBuilder.Side * TerrainMeshBuilder.Side)
-                .Select(v => v.Position).ToArray(), TerrainMeshBuilder.Side);
+                .Select(v => v.Position).ToArray(), TerrainMeshBuilder.Side, holes);
             Vertices = Buffer.Create(device, BindFlags.VertexBuffer, mesh.Vertices);
             Indices = Buffer.Create(device, BindFlags.IndexBuffer, mesh.Indices);
             IndexCount = mesh.MainIndexCount;
             EdgeIndexCount = mesh.EdgeIndexCount;
             Normals = TerrainTexture.Bc1(device, tile.Normals);
-            WeightSum = TerrainTexture.WeightSum(device, TerrainMeshBuilder.BuildWeightSum(tile, layerCount));
+            WeightSum = TerrainTexture.WeightSum(device, TerrainMeshBuilder.BuildWeightSum(tile, layers));
             foreach (var mask in tile.Masks) Masks.Add(mask.Group, TerrainTexture.Bc1(device, mask.Data));
         }
         catch
@@ -88,7 +91,7 @@ internal sealed class TerrainTileResources : IDisposable
             }
         }
         context.UpdateSubresource(vertices, Vertices);
-        Surface = new TerrainSurfaceGrid(vertices.Take(mainCount).Select(v => v.Position).ToArray(), side);
+        Surface = new TerrainSurfaceGrid(vertices.Take(mainCount).Select(v => v.Position).ToArray(), side, _holes);
         SkirtEdges = edges;
     }
 
