@@ -455,6 +455,13 @@ public sealed partial class CharacterLocomotion
             Animator.Current
         );
 
+        if (_crouched &&
+            Weapon.InHands &&
+            action.Name == "run_forward_crouch_incombat")
+        {
+            action = _library.Actions["walk_forward_crouch_incombat"];
+        }
+
         bool preservePhase =
             Animator.Current.Movement &&
             action.Movement;
