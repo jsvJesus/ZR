@@ -10,6 +10,7 @@ using Editor.Viewport.Terrain;
 using Editor.Viewport.Characters;
 using Editor.Viewport.Roads;
 using Editor.Viewport.Vegetation;
+using Editor.Viewport.Scene;
 using ZoneReborn.World.Roads;
 using ZoneReborn.World.Characters;
 using ZoneReborn.World.Characters.Locomotion;
@@ -32,6 +33,7 @@ namespace Editor.Viewport
         private CharacterRenderer? _character;
         private RoadRenderer? _roads;
         private TreeRenderer? _trees;
+        private SceneRenderer? _objects;
 
         private VertexShader _vertexShader = null!;
         private PixelShader _pixelShader = null!;
@@ -215,13 +217,21 @@ namespace Editor.Viewport
             TreeRenderer trees;
             try { trees = new TreeRenderer(_device, _context, assets, level.Vegetation, terrain); }
             catch { roads.Dispose(); terrain.Dispose(); throw; }
+            SceneRenderer? objects = null;
+            try
+            {
+                if (level.Objects != null) objects = new SceneRenderer(_device, _context, assets, level.Objects);
+            }
+            catch { trees.Dispose(); roads.Dispose(); terrain.Dispose(); throw; }
             _context.ClearState();
             _terrain?.Dispose();
             _roads?.Dispose();
             _trees?.Dispose();
+            _objects?.Dispose();
             _terrain = terrain;
             _roads = roads;
             _trees = trees;
+            _objects = objects;
         }
 
         public void SelectTree(Guid? id) { if (_trees != null) _trees.Selected = id; }
@@ -340,6 +350,7 @@ namespace Editor.Viewport
             var viewProjection = view * projection;
             _terrain?.Render(camera, viewProjection);
             _roads?.Render(camera.Position, viewProjection, _terrain?.FarPlane ?? 10000, playing);
+            _objects?.Render(camera, viewProjection, _terrain?.FarPlane ?? 10000);
             _trees?.Render(camera, viewProjection, playing);
 
             if (showGrid)
@@ -376,6 +387,7 @@ namespace Editor.Viewport
             var characterView = view;
             characterView.Translation = Vector3.Zero;
             _character?.Render(characterView * projection, camera.Position);
+            _objects?.RenderTransparent(camera, viewProjection);
             _swapChain.Present(1, PresentFlags.None);
         }
 
@@ -440,6 +452,7 @@ namespace Editor.Viewport
             _terrain?.Dispose();
             _roads?.Dispose();
             _trees?.Dispose();
+            _objects?.Dispose();
             _character?.Dispose();
             _depthTarget?.Dispose();
             _depthTexture?.Dispose();

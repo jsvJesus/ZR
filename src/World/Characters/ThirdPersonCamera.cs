@@ -21,11 +21,12 @@ namespace ZoneReborn.World.Characters
         {
             var pivot = player + new Vector3(0, height, 0);
             var back = -new Vector3(MathF.Sin(Yaw) * MathF.Cos(Pitch), MathF.Sin(Pitch), MathF.Cos(Yaw) * MathF.Cos(Pitch));
+            float maximum = surface.CameraDistance(pivot, back, Distance);
             float clearDistance = 0;
-            int steps = (int)MathF.Ceiling(Distance / 0.08f);
+            int steps = Math.Max(1, (int)MathF.Ceiling(maximum / 0.08f));
             for (int i = 1; i <= steps; i++)
             {
-                float t = Distance * i / steps;
+                float t = maximum * i / steps;
                 var probe = pivot + back * t;
                 if (surface.TryGetHeight(probe.X, probe.Z, out float terrainHeight) && probe.Y < terrainHeight + 0.15f)
                     break;

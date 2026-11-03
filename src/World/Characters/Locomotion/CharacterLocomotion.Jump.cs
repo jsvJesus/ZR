@@ -163,9 +163,10 @@ public sealed partial class CharacterLocomotion
             horizontal.Y
         );
 
-        if (!_surface.TryGetHeight(
+        if (!GroundBelow(
             candidate.X,
             candidate.Z,
+            Position.Y + 0.15f,
             out float ground))
         {
             candidate.X = Position.X;
@@ -173,9 +174,10 @@ public sealed partial class CharacterLocomotion
 
             _velocity = Vector2.Zero;
 
-            if (!_surface.TryGetHeight(
+            if (!GroundBelow(
                 candidate.X,
                 candidate.Z,
+                Position.Y + 0.15f,
                 out ground))
             {
                 throw new InvalidOperationException(
@@ -213,7 +215,7 @@ public sealed partial class CharacterLocomotion
             {
                 // Keep the character on the terrain during
                 // the anticipation frames of the jump.
-                Position = candidate with { Y = ground };
+                Position = _surface.MoveCharacter(Position, candidate with { Y = ground }, CollisionHeight);
                 return;
             }
         }
@@ -238,11 +240,22 @@ public sealed partial class CharacterLocomotion
 
             _velocity = Vector2.Zero;
 
-            _surface.TryGetHeight(
+            GroundBelow(
                 candidate.X,
                 candidate.Z,
+                Position.Y + 0.15f,
                 out ground
             );
+        }
+
+        // Capture descent before collision can zero an upward velocity at a ceiling.
+        bool descending = !authoredTakeoff && _verticalVelocity <= 0 && candidate.Y <= Position.Y;
+        if (_surface.HasSceneObjects)
+        {
+            float requestedY = candidate.Y;
+            candidate = _surface.MoveCharacter(Position, candidate, CollisionHeight);
+            if (candidate.Y < requestedY - 0.001f && _verticalVelocity > 0) _verticalVelocity = 0;
+            GroundBelow(candidate.X, candidate.Z, Math.Max(Position.Y, candidate.Y) + 0.02f, out ground);
         }
 
         _jumpPeak = Math.Max(
@@ -250,14 +263,14 @@ public sealed partial class CharacterLocomotion
             candidate.Y
         );
 
-        if (authoredTakeoff) candidate.Y = Math.Max(ground, candidate.Y);
+        if (authoredTakeoff && _surface.TryGetHeight(candidate.X, candidate.Z, out float terrainGround))
+            candidate.Y = Math.Max(terrainGround, candidate.Y);
 
         // Landing is controlled by collision and vertical
         // velocity, not by the length of the takeoff animation.
-        if (!authoredTakeoff && candidate.Y <= ground &&
-            _verticalVelocity <= 0)
+        if (descending && TryGroundSupport(candidate, _surface.HasSceneObjects ? 0.02f : 0, 0.15f, out var landingSupport))
         {
-            Position = candidate with { Y = ground };
+            Position = landingSupport;
             Land(input);
             return;
         }

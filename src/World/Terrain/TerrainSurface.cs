@@ -1,3 +1,4 @@
+using System.Numerics;
 using ZoneReborn.World.Assets;
 using ZoneReborn.World.Levels.Models;
 using ZoneReborn.World.Terrain.Models;
@@ -21,6 +22,41 @@ public sealed class TerrainSurface
     public bool TryGetHeight(float x, float z, out float height) => TryGetHeight(x, z, 4, out height);
 
     public bool TryGetSourceHeight(float x, float z, out float height) => TryGetHeight(x, z, 1, out height);
+
+    public bool HasSceneObjects => _level.Objects?.Instances.Count > 0;
+
+    // Editing and road attachment keep using the terrain-only queries above.
+    // Gameplay selects the floor beneath the feet, rather than a roof above the player.
+    public bool TryGetGround(float x, float z, float maximumY, out float height)
+    {
+        bool found = TryGetHeight(x, z, out height);
+        if (_level.Objects is { } objects &&
+            objects.Collision.TryGround(x, z, maximumY, found ? height : -1e7f, out float modelHeight, 0.32f))
+        {
+            height = found ? Math.Max(height, modelHeight) : modelHeight;
+            found = true;
+        }
+        return found;
+    }
+
+    public Vector3 MoveCharacter(Vector3 from, Vector3 target, float height) =>
+        _level.Objects?.Collision.MoveCapsule(from, target, 0.32f, height) ?? target;
+
+    public bool CanOccupy(Vector3 feet, float height) =>
+        _level.Objects?.Collision.CanOccupy(feet, 0.32f, height) ?? true;
+
+    public bool TrySnapToObject(Vector3 feet, float height, float maximumDrop, out Vector3 supported)
+    {
+        supported = feet;
+        return _level.Objects is { } objects &&
+            objects.Collision.TrySnapDown(feet, 0.32f, height, maximumDrop, out supported);
+    }
+
+    public float CameraDistance(Vector3 origin, Vector3 direction, float maximum)
+    {
+        return _level.Objects is { } objects && objects.Collision.Raycast(origin, direction, maximum, out float distance)
+            ? Math.Max(0, distance - 0.15f) : maximum;
+    }
 
     private bool TryGetHeight(float x, float z, int step, out float height)
     {

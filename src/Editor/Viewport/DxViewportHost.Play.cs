@@ -43,8 +43,11 @@ public sealed partial class DxViewportHost
             {
                 cancellation.Token.ThrowIfCancellationRequested();
                 var surface = new TerrainSurface(level);
-                if (!surface.TryGetHeight(saved.X, saved.Z, out float height))
+                level.Objects?.Preload(new Vector3(saved.X, saved.Y, saved.Z), 40, cancellation.Token);
+                if (!surface.TryGetGround(saved.X, saved.Z, saved.Y, out float height))
                     throw new InvalidOperationException("Камера находится вне Terrain. Подлетите к месту появления на уровне.");
+                if (!surface.CanOccupy(new Vector3(saved.X, height, saved.Z), 1.75f))
+                    throw new InvalidOperationException("Недостаточно места для персонажа. Переместите камеру на свободный участок.");
                 var asset = parts == null ? CharacterLoader.Load(assets, cancellation.Token)
                     : CharacterLoader.Load(assets, parts, cancellation.Token);
                 cancellation.Token.ThrowIfCancellationRequested();

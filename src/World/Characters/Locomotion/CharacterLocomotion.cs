@@ -84,6 +84,7 @@ public sealed partial class CharacterLocomotion
         }
 
         bool wantsCrouch = input.Crouch || _crouchToggle;
+        if (_crouched && !wantsCrouch && !_surface.CanOccupy(Position, StandingHeight)) wantsCrouch = true;
 
         Weapon.Advance(deltaTime, IsFreeGroundState && wantsCrouch == _crouched && !input.JumpPressed,
             _crouched, input.Sprint && input.Move.Y > 0 && !input.Walk);
@@ -619,6 +620,7 @@ public sealed partial class CharacterLocomotion
 
     private bool MoveOnGround(Vector2 displacement)
     {
+        if (_surface.HasSceneObjects) return MoveAmongObjects(displacement);
         var candidate = Position + new Vector3(
             displacement.X,
             0,

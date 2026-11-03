@@ -50,7 +50,9 @@ public sealed partial class MainWindow
             TerrainLevelInfo.Text = $"{level.Manifest.Terrain.SamplesX} × {level.Manifest.Terrain.SamplesZ} • {level.Layers.Count} слоёв";
             TerrainLayersList.ItemsSource = level.Layers.Select(layer => layer.Name).ToArray();
             StatusText.Text = $"Открыт {level.Manifest.Name} · дорог: {level.Roads.Roads.Count}"
-                + (level.Roads.Warnings.Count > 0 ? $" · замечаний по дорогам: {level.Roads.Warnings.Count}" : "");
+                + $" · моделей: {level.Objects?.Instances.Count ?? 0}"
+                + (level.Roads.Warnings.Count > 0 ? $" · замечаний по дорогам: {level.Roads.Warnings.Count}" : "")
+                + (level.Objects?.Warnings.IsEmpty == false ? $" · замечаний по моделям: {level.Objects.Warnings.Count}" : "");
         }
         finally
         {

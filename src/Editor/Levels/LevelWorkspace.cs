@@ -4,6 +4,7 @@ using ZoneReborn.World.Levels.Import;
 using ZoneReborn.World.Levels.Models;
 using ZoneReborn.World.Levels.Storage;
 using ZoneReborn.World.Roads;
+using ZoneReborn.World.Scene;
 
 namespace Editor.Levels;
 
@@ -36,7 +37,8 @@ public sealed class LevelWorkspace
         }, cancellationToken);
         await RoadEditStorage.LoadAsync(level.Directory, roads, cancellationToken);
         var vegetation = await ZoneReborn.World.Vegetation.VegetationStorage.LoadAsync(level.Directory, Assets, cancellationToken);
-        return level with { Roads = roads, Vegetation = vegetation };
+        var objects = await Task.Run(() => SourceSceneReader.Read(source, Assets, cancellationToken), cancellationToken);
+        return level with { Roads = roads, Vegetation = vegetation, Objects = objects };
     }
 
     public static async Task SaveCameraAsync(LoadedLevel level, LevelCamera camera)
