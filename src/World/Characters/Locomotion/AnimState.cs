@@ -71,13 +71,20 @@ public static class LocomotionSettings
 
     public const float CrouchSpeed = 1.2f;
     public const float CrouchWalkSpeed = 1.4f;
+    public const float AimSpeed = 1.8f;
 
     public static float Speed(
         Vector2 move,
         bool walk,
         bool crouch,
-        bool sprint)
+        bool sprint,
+        bool aiming = false)
     {
+        if (aiming)
+        {
+            return crouch ? CrouchSpeed : AimSpeed;
+        }
+
         if (crouch)
         {
             return walk ? CrouchWalkSpeed : CrouchSpeed;

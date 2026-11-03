@@ -12,6 +12,7 @@ public sealed class SceneData
     private readonly SceneInstance[] _sources;
     private readonly Dictionary<string, SceneInstance> _originals;
     private readonly Dictionary<string, SceneInstance> _current;
+    private readonly List<string> _addedOrder = [];
     private readonly List<SceneInstance> _instances = [];
     private readonly Dictionary<string, int> _instanceSlots = new(StringComparer.Ordinal);
     private readonly List<Change> _history = [];
@@ -54,6 +55,45 @@ public sealed class SceneData
     }
 
     public SceneInstance? Find(string id) => _current.GetValueOrDefault(id);
+
+    public SceneInstance AddObject(string model, Matrix4x4 world)
+    {
+        RequireEditable();
+        if (_current.Count >= 1_000_000) throw new InvalidOperationException("Достигнут лимит объектов уровня.");
+        if (_addedOrder.Count(_current.ContainsKey) >= SceneEditStorage.MaximumAddedObjects)
+            throw new InvalidOperationException("Достигнут лимит добавленных объектов уровня.");
+        string id = "added/" + Guid.NewGuid().ToString("N");
+        var added = PrepareAddedInstance(id, model, world, requireLoaded: true);
+        _addedOrder.Add(id);
+        Record(new(null, added));
+        return added;
+    }
+
+    internal SceneInstance PrepareAddedInstance(string id, string model, Matrix4x4 world, bool requireLoaded)
+    {
+        SceneObjectTransform.ValidateWorld(world);
+        string file = SourceModelReader.Normalize(model);
+        SceneModel geometry;
+        if (requireLoaded)
+        {
+            if (!Models.TryGet(file, out geometry))
+                throw new InvalidOperationException("Сначала дождитесь загрузки выбранной модели.");
+        }
+        else geometry = Models.Get(file) ?? throw new InvalidDataException($"Не удалось прочитать модель {file}.");
+        ScenePhysicsMesh? physical;
+        if (requireLoaded)
+        {
+            if (!Physics.TryGet(file, out physical))
+                throw new InvalidOperationException("Сначала дождитесь чтения коллизии выбранной модели.");
+        }
+        else physical = Physics.Get(file);
+        var local = physical == null ? geometry.Bounds : SceneTriangleTree.Union(geometry.Bounds, physical.Bounds);
+        var instance = new SceneInstance(file, Matrix4x4.Identity, Matrix4x4.Identity, local, physical != null)
+        {
+            Id = id, IsAdded = true, LocalBounds = local, VisualLocalBounds = geometry.Bounds
+        };
+        return Transform(instance, world);
+    }
 
     /// <summary>A mouse gesture previews many matrices but commits one history entry.</summary>
     public void BeginTransformPreview(string id)
@@ -121,7 +161,8 @@ public sealed class SceneData
         RequireEditable();
         if (!CanUndo) return false;
         var change = _history[--_historyPosition];
-        _current[change.Before.Id] = change.Before;
+        if (change.Before == null) _current.Remove(change.After!.Id);
+        else _current[change.Before.Id] = change.Before;
         PublishChange();
         return true;
     }
@@ -146,7 +187,7 @@ public sealed class SceneData
 
     private void Apply(Change change)
     {
-        if (change.After == null) _current.Remove(change.Before.Id);
+        if (change.After == null) _current.Remove(change.Before!.Id);
         else _current[change.After.Id] = change.After;
     }
 
@@ -176,19 +217,29 @@ public sealed class SceneData
         return instance with { World = world, InverseWorld = inverse, Bounds = bounds };
     }
 
-    internal void LoadOverrides(IReadOnlyList<(string Id, SceneInstance? Instance)> changes)
+    internal void LoadOverrides(IReadOnlyList<(string Id, SceneInstance? Instance)> changes,
+        IReadOnlyList<SceneInstance>? added = null)
     {
+        _current.Clear();
+        foreach (var source in _sources) _current.Add(source.Id, source);
+        _addedOrder.Clear();
         foreach (var change in changes)
         {
             if (change.Instance == null) _current.Remove(change.Id);
             else _current[change.Id] = change.Instance;
         }
+        if (added != null)
+            foreach (var instance in added)
+            {
+                _current.Add(instance.Id, instance);
+                _addedOrder.Add(instance.Id);
+            }
         RebuildIndex();
         _history.Clear(); _historyPosition = 0;
         _revision = _savedRevision = 0;
     }
 
-    internal (long Revision, SceneObjectOverride[] Edits) CaptureEdits()
+    internal (long Revision, SceneObjectOverride[] Edits, SceneAddedObject[] Added) CaptureEdits()
     {
         RequireEditable();
         var edits = new List<SceneObjectOverride>();
@@ -202,7 +253,11 @@ public sealed class SceneData
                 Deleted = current == null, World = current == null ? null : SceneEditStorage.MatrixValues(current.World)
             });
         }
-        return (_revision, edits.ToArray());
+        var added = _addedOrder.Select(Find).OfType<SceneInstance>().Select(instance => new SceneAddedObject
+        {
+            Id = instance.Id, Model = instance.Model, World = SceneEditStorage.MatrixValues(instance.World)
+        }).ToArray();
+        return (_revision, edits.ToArray(), added);
     }
 
     internal void MarkSaved(long revision) => _savedRevision = revision;
@@ -216,6 +271,12 @@ public sealed class SceneData
             _instanceSlots[instance.Id] = _instances.Count;
             _instances.Add(instance);
         }
+        foreach (string id in _addedOrder)
+            if (_current.TryGetValue(id, out var instance))
+            {
+                _instanceSlots[id] = _instances.Count;
+                _instances.Add(instance);
+            }
         foreach (var instance in _instances) Index(instance);
         RefreshCollision();
     }
@@ -277,5 +338,5 @@ public sealed class SceneData
     }
 
     private static int Cell(float value) => (int)MathF.Floor(value / CellSize);
-    private readonly record struct Change(SceneInstance Before, SceneInstance? After);
+    private readonly record struct Change(SceneInstance? Before, SceneInstance? After);
 }

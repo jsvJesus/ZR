@@ -16,6 +16,7 @@ namespace Editor
             bool showCharacterEditor = false)
         {
             if (Viewport.IsObjectDragging) return;
+            ObjectsPanel.CancelLibraryLoad();
             CurrentModeText.Text = $"{category} / {name}";
             ModeTitle.Text = name;
             ModeDetails.Text = description;
@@ -26,6 +27,7 @@ namespace Editor
             VegetationPanel.RefreshMode();
             ObjectsPanel.IsVisible = showObjects;
             ObjectsPanel.RefreshMode();
+            if (showObjects) ObjectsPanel.ResumeLibrary();
             CharacterPanel.IsVisible = showCharacterEditor;
             CharacterPanel.SetActive(showCharacterEditor);
             UpdatePlayControls();
@@ -105,7 +107,7 @@ namespace Editor
         private void Placement_Click(object? sender, RoutedEventArgs e)
         {
             SetMode("Objects editor", "Размещение объектов",
-                "Добавление и размещение объектов.");
+                "Добавление и размещение объектов.", showObjects: true);
         }
 
         private void ObjectProperties_Click(object? sender, RoutedEventArgs e)

@@ -20,6 +20,14 @@ public sealed class SceneModelCache
 
     internal void SetSourceDirectory(string directory) => _materials = new(_assets, directory, _warning);
 
+    public void Store(SceneModel model)
+    {
+        ArgumentNullException.ThrowIfNull(model);
+        var value = new Lazy<SceneModel?>(() => model, LazyThreadSafetyMode.ExecutionAndPublication);
+        _ = value.Value;
+        _entries[Key(model.File)] = new Entry(value) { Started = 1 };
+    }
+
     public SceneModel? Get(string file)
     {
         Entry entry = EntryFor(file);
@@ -61,7 +69,7 @@ public sealed class SceneModelCache
     {
         try { return SourceModelReader.Read(_assets, file, _materials, _warning); }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidDataException
-            or FormatException or OverflowException or ArgumentException)
+            or FormatException or OverflowException or ArgumentException or System.Xml.XmlException)
         {
             _warning($"Model {file}: {error.Message}");
             return null;

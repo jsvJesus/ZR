@@ -30,6 +30,7 @@ internal sealed class SceneRenderer : IDisposable
     private readonly Device _device;
     private readonly DeviceContext _context;
     private readonly SceneData _scene;
+    private readonly bool _objectPreview;
     private readonly Dictionary<string, ModelResources> _models = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, TextureResources> _textures = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, Task<TextureResult>> _pendingTextures = new(StringComparer.OrdinalIgnoreCase);
@@ -55,9 +56,9 @@ internal sealed class SceneRenderer : IDisposable
     private long _modelBytes, _textureBytes, _frame;
     private bool _disposed, _preparedFrame;
 
-    public SceneRenderer(Device device, DeviceContext context, AssetPaths assets, SceneData scene)
+    public SceneRenderer(Device device, DeviceContext context, AssetPaths assets, SceneData scene, bool objectPreview = false)
     {
-        _device = device; _context = context; _scene = scene;
+        _device = device; _context = context; _scene = scene; _objectPreview = objectPreview;
         try
         {
             var compiler = new ShaderCompiler(assets);
@@ -119,11 +120,13 @@ internal sealed class SceneRenderer : IDisposable
         _frame++;
         _visibleObjects.Clear();
         // Hard visibility bounds also bound the number of spatial cells visited on large maps.
-        float distance = float.IsFinite(farPlane) ? Math.Clamp(farPlane, 1, 1800) : 1800;
+        float distance = float.IsFinite(farPlane) ? (_objectPreview ? Math.Max(farPlane, 1) : Math.Clamp(farPlane, 1, 1800)) : 1800;
         var extent = new Vector3(distance);
         var planes = FrustumPlanes(viewProjection);
         var groups = new Dictionary<(string Model, bool Mirrored), DrawGroup>();
-        foreach (var instance in _scene.Query(new(camera.Position - extent, camera.Position + extent)))
+        IEnumerable<SceneInstance> candidates = _objectPreview ? _scene.Instances
+            : _scene.Query(new(camera.Position - extent, camera.Position + extent));
+        foreach (var instance in candidates)
         {
             float radius = instance.Bounds.Radius;
             float distanceSquared = Vector3.DistanceSquared(camera.Position, instance.Bounds.Center);
@@ -211,7 +214,11 @@ internal sealed class SceneRenderer : IDisposable
     }
 
     public SceneInstance? Pick(Vector3 origin, Vector3 direction, float maximumDistance)
+        => Pick(origin, direction, maximumDistance, out _);
+
+    public SceneInstance? Pick(Vector3 origin, Vector3 direction, float maximumDistance, out float hitDistance)
     {
+        hitDistance = float.PositiveInfinity;
         if (_disposed || !float.IsFinite(maximumDistance) || maximumDistance <= 0) return null;
         float nearest = Math.Min(maximumDistance, 1800);
         var end = origin + direction * nearest;
@@ -237,6 +244,7 @@ internal sealed class SceneRenderer : IDisposable
             nearest = distance;
             picked = instance;
         }
+        if (picked != null) hitDistance = nearest;
         return picked;
     }
 

@@ -130,7 +130,9 @@ namespace Editor.Viewport
                 }
 
                 _renderer = new Dx11Renderer(_windowHandle);
-                if (_level != null && _assets != null)
+                if (_objectPreview != null && _assets != null)
+                    _renderer.SetObjectPreview(_assets, _objectPreview);
+                else if (_level != null && _assets != null)
                     _renderer.SetLevel(_level, _assets);
                 _renderer.SelectObject(ObjectEditingEnabled && !IsPlaying && !IsStarting ? _selectedObjectId : null);
 
@@ -168,6 +170,7 @@ namespace Editor.Viewport
             IPlatformHandle control)
         {
             CancelObjectDrag();
+            CancelObjectPlacement();
             StopPlay();
             _timer.Stop();
             _pressedKeys.Clear();
@@ -239,7 +242,7 @@ namespace Editor.Viewport
                         UpdatePlayCamera();
                         _renderer.SelectObject(ObjectEditingEnabled && !IsPlaying && !IsStarting ? _selectedObjectId : null);
                         _renderer.SetObjectGizmo(ObjectTransformMode, _objectDrag?.Axis ?? _hoveredObjectAxis,
-                            ObjectEditingEnabled && !IsPlaying && !IsStarting && !_rotating && _level?.Objects?.CanSave == true);
+                            ObjectEditingEnabled && !IsObjectPlacing && !IsPlaying && !IsStarting && !_rotating && _level?.Objects?.CanSave == true);
                         _renderer.Render(
                             IsPlaying ? _playCamera : _camera,
                             width,
@@ -282,8 +285,10 @@ namespace Editor.Viewport
         public void SetLevel(LoadedLevel level, AssetPaths assets)
         {
             CancelObjectDrag();
+            CancelObjectPlacement();
             StopPlay();
             _renderer?.SetLevel(level, assets);
+            _objectPreview = null;
             _level = level;
             _assets = assets;
             SelectObject(null);
@@ -305,6 +310,7 @@ namespace Editor.Viewport
                     SetFocus(window);
                     if (ObjectEditingEnabled)
                     {
+                        if (IsObjectPlacing) { PlaceObject(ReadX(lParam), ReadY(lParam)); return nint.Zero; }
                         if (!BeginObjectDrag(ReadX(lParam), ReadY(lParam))) PickObject(ReadX(lParam), ReadY(lParam));
                         return nint.Zero;
                     }

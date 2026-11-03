@@ -25,6 +25,7 @@ public sealed partial class DxViewportHost
     public async Task StartPlayAsync()
     {
         if (IsPlaying || IsStarting) return;
+        CancelObjectPlacement();
         var renderer = _renderer ?? throw new InvalidOperationException("Viewport ещё не готов.");
         var level = _level ?? throw new InvalidOperationException("Сначала откройте уровень.");
         var assets = _assets ?? throw new InvalidOperationException("Не найдены ресурсы проекта.");

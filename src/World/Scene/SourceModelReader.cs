@@ -18,6 +18,8 @@ public static class SourceModelReader
     {
         cancellationToken.ThrowIfCancellationRequested();
         string path = Resolve(assets, file);
+        if (Path.GetExtension(path).Equals(".model", StringComparison.OrdinalIgnoreCase))
+            return BigWorldModelReader.Read(assets, file, cancellationToken, warning);
         using var stream = File.OpenRead(path);
         Span<byte> signature = stackalloc byte[4];
         stream.ReadExactly(signature);
@@ -84,6 +86,8 @@ public static class SourceModelReader
     {
         cancellationToken.ThrowIfCancellationRequested();
         string path = Resolve(assets, file);
+        if (Path.GetExtension(path).Equals(".model", StringComparison.OrdinalIgnoreCase))
+            return BigWorldModelReader.ReadBounds(assets, file, cancellationToken);
         if (!File.Exists(path)) throw new FileNotFoundException("SCO model was not found.", path);
         string binary = Path.ChangeExtension(path, ".scb");
         if (File.Exists(binary))
@@ -223,16 +227,23 @@ public static class SourceModelReader
         string normalized = file.Trim().Replace('\\', '/');
         if (normalized.StartsWith("packs/", StringComparison.OrdinalIgnoreCase)) normalized = normalized[6..];
         if (normalized.StartsWith("data/objectsdepot/", StringComparison.OrdinalIgnoreCase)) normalized = "models/" + normalized[18..];
-        if (!normalized.StartsWith("models/", StringComparison.OrdinalIgnoreCase))
-            throw new InvalidDataException("Expected a models/ or data/objectsdepot/ asset path.");
+        if (!normalized.StartsWith("models/", StringComparison.OrdinalIgnoreCase)
+            && !normalized.StartsWith("objects/", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException("Expected a models/, objects/ or data/objectsdepot/ asset path.");
+        if (normalized.Split('/').Any(part => part is ".." or "." || part.Length == 0) || normalized.Contains(':'))
+            throw new InvalidDataException("Invalid scene model asset path.");
         return normalized;
     }
 
     internal static string Resolve(AssetPaths assets, string file)
     {
         string normalized = Normalize(file);
-        if (!Path.GetExtension(normalized).Equals(".sco", StringComparison.OrdinalIgnoreCase))
-            throw new InvalidDataException("Only SCO scene models are supported.");
+        bool source = normalized.StartsWith("models/", StringComparison.OrdinalIgnoreCase)
+            && Path.GetExtension(normalized).Equals(".sco", StringComparison.OrdinalIgnoreCase);
+        bool bigWorld = normalized.StartsWith("objects/", StringComparison.OrdinalIgnoreCase)
+            && Path.GetExtension(normalized).Equals(".model", StringComparison.OrdinalIgnoreCase);
+        if (!source && !bigWorld)
+            throw new InvalidDataException("Expected a models/*.sco or objects/*.model scene asset.");
         return AssetPathResolver.Resolve(assets.Root, normalized);
     }
 

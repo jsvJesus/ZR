@@ -38,6 +38,7 @@ namespace Editor.Viewport
         private SceneSelectionRenderer? _objectSelection;
         private SceneGizmoRenderer? _objectGizmo;
         private SceneData? _scene;
+        private bool _objectPreview;
         private string? _selectedObject;
         private ObjectGizmoMode _objectGizmoMode;
         private ObjectGizmoAxis _objectGizmoAxis;
@@ -243,8 +244,49 @@ namespace Editor.Viewport
             _roads = roads;
             _trees = trees;
             _objects = objects;
+            _objectPreview = false;
             _scene = level.Objects;
             _selectedObject = null;
+        }
+
+        public void SetObjectPreview(AssetPaths assets, SceneData scene)
+        {
+            var objects = new SceneRenderer(_device, _context, assets, scene, objectPreview: true);
+            _context.ClearState();
+            _terrain?.Dispose(); _terrain = null;
+            _roads?.Dispose(); _roads = null;
+            _trees?.Dispose(); _trees = null;
+            _objects?.Dispose(); _objects = objects;
+            _scene = scene; _objectPreview = true; _selectedObject = null;
+        }
+
+        public void ClearObjectPreview()
+        {
+            if (!_objectPreview) return;
+            _context.ClearState();
+            _objects?.Dispose(); _objects = null;
+            _scene = null; _selectedObject = null;
+        }
+
+        public bool PickObjectSurface(Vector3 origin, Vector3 direction, out Vector3 position)
+        {
+            position = default;
+            if (!float.IsFinite(direction.LengthSquared()) || direction.LengthSquared() < 1e-12f) return false;
+            direction = Vector3.Normalize(direction);
+            float maximum = Math.Min(_terrain?.FarPlane ?? 1000, 1800);
+            bool found = PickTerrain(origin, direction, out var ground);
+            if (found)
+            {
+                float distance = Vector3.Distance(origin, ground);
+                found = distance <= maximum;
+                if (found) { maximum = distance; position = ground; }
+            }
+            if (_objects != null && _objects.Pick(origin, direction, maximum, out float objectDistance) != null)
+            {
+                position = origin + direction * objectDistance;
+                found = true;
+            }
+            return found;
         }
 
         public void SelectObject(string? id) => _selectedObject = id;
@@ -376,16 +418,24 @@ namespace Editor.Viewport
 
             var view = CreateViewMatrix(camera);
 
+            float farPlane = _terrain?.FarPlane ?? 1000f;
+            float nearPlane = playing ? 0.08f : 0.5f;
+            if (_objectPreview && _scene?.Instances.FirstOrDefault() is { } preview)
+            {
+                float radius = Math.Max(preview.Bounds.Radius, 0.05f);
+                farPlane = Math.Max(100, Vector3.Distance(camera.Position, preview.Bounds.Center) + radius * 2 + 50);
+                nearPlane = Math.Clamp(radius * 0.001f, 0.001f, 0.5f);
+            }
             var projection = CreateProjectionMatrix(
                 playing ? 0.78f : 1.05f,
                 (float)_width / _height,
-                playing ? 0.08f : 0.5f,
-                _terrain?.FarPlane ?? 1000f);
+                nearPlane,
+                farPlane);
 
             var viewProjection = view * projection;
             _terrain?.Render(camera, viewProjection);
             _roads?.Render(camera.Position, viewProjection, _terrain?.FarPlane ?? 10000, playing);
-            _objects?.Render(camera, viewProjection, _terrain?.FarPlane ?? 10000);
+            _objects?.Render(camera, viewProjection, farPlane);
             _trees?.Render(camera, viewProjection, playing);
 
             if (showGrid)

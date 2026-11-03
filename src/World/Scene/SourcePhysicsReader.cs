@@ -20,6 +20,8 @@ public static class SourcePhysicsReader
     {
         cancellationToken.ThrowIfCancellationRequested();
         string path = SourceModelReader.Resolve(assets, model);
+        if (Path.GetExtension(path).Equals(".model", StringComparison.OrdinalIgnoreCase))
+            return BigWorldModelReader.ReadPhysics(assets, model, cancellationToken, warning);
         string configuration = Path.ChangeExtension(path, ".phx");
         string? configuredType = File.Exists(configuration) ? ReadConfiguration(configuration, warning) : null;
         cancellationToken.ThrowIfCancellationRequested();

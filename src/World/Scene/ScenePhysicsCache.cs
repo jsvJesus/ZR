@@ -11,6 +11,15 @@ public sealed class ScenePhysicsCache(AssetPaths assets, Action<string> warning)
     public ScenePhysicsMesh? Get(string model) => _meshes.GetOrAdd(model, file => new Lazy<ScenePhysicsMesh?>(
         () => Load(file), LazyThreadSafetyMode.ExecutionAndPublication)).Value;
 
+    public bool TryGet(string model, out ScenePhysicsMesh? mesh)
+    {
+        mesh = null;
+        if (!_meshes.TryGetValue(model, out var entry) || !entry.IsValueCreated) return false;
+        // A completed null result means no authored proxy; it is still ready to place.
+        mesh = entry.Value;
+        return true;
+    }
+
     private ScenePhysicsMesh? Load(string model)
     {
         try { return SourcePhysicsReader.Read(assets, model, warning: warning); }

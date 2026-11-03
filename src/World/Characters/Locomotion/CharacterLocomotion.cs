@@ -342,12 +342,17 @@ public sealed partial class CharacterLocomotion
             Yaw = Wrap(cameraYaw);
         }
 
+        bool aiming = _caps.Contains(
+            (int)AnimationCap.Aiming
+        );
+
         float speed = moving
             ? LocomotionSettings.Speed(
                 input.Move,
                 input.Walk,
                 _crouched,
-                input.Sprint
+                input.Sprint && !aiming,
+                aiming
             )
             : 0;
 
@@ -369,9 +374,10 @@ public sealed partial class CharacterLocomotion
             wantedVelocity = Vector2.Zero;
         }
 
-        float acceleration = input.Sprint && !_crouched
-            ? LocomotionSettings.SprintAcceleration
-            : LocomotionSettings.Acceleration;
+        float acceleration =
+            input.Sprint && !_crouched && !aiming
+                ? LocomotionSettings.SprintAcceleration
+                : LocomotionSettings.Acceleration;
 
         _velocity = Approach(
             _velocity,
