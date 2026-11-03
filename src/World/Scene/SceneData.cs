@@ -13,20 +13,32 @@ public sealed class SceneData
     private readonly Dictionary<string, SceneInstance> _originals;
     private readonly Dictionary<string, SceneInstance> _current;
     private readonly List<SceneInstance> _instances = [];
+    private readonly Dictionary<string, int> _instanceSlots = new(StringComparer.Ordinal);
     private readonly List<Change> _history = [];
+    private SceneInstance? _previewOriginal;
+    private SceneCollision _collision = null!;
+    private bool _collisionDirty;
     private int _historyPosition;
     private long _revision, _savedRevision;
     public IReadOnlyList<SceneInstance> Instances { get; }
     public string SourceName { get; internal set; } = "";
     public bool CanSave { get; internal set; } = true;
     public bool IsDirty => _revision != _savedRevision;
-    public bool CanUndo => CanSave && _historyPosition > 0;
-    public bool CanRedo => CanSave && _historyPosition < _history.Count;
+    public bool HasTransformPreview => _previewOriginal != null;
+    public bool CanUndo => CanSave && !HasTransformPreview && _historyPosition > 0;
+    public bool CanRedo => CanSave && !HasTransformPreview && _historyPosition < _history.Count;
     public event Action? Changed;
     public ConcurrentQueue<string> Warnings { get; } = new();
     public SceneModelCache Models { get; }
     public ScenePhysicsCache Physics { get; }
-    public SceneCollision Collision { get; private set; } = null!;
+    public SceneCollision Collision
+    {
+        get
+        {
+            if (_collisionDirty) RefreshCollision();
+            return _collision;
+        }
+    }
 
     public SceneData(AssetPaths assets, IReadOnlyList<SceneInstance> instances, IEnumerable<string>? warnings = null,
         ScenePhysicsCache? physics = null)
@@ -42,6 +54,49 @@ public sealed class SceneData
     }
 
     public SceneInstance? Find(string id) => _current.GetValueOrDefault(id);
+
+    /// <summary>A mouse gesture previews many matrices but commits one history entry.</summary>
+    public void BeginTransformPreview(string id)
+    {
+        RequireEditable();
+        _previewOriginal = Find(id) ?? throw new InvalidOperationException("Объект не найден или уже удалён.");
+    }
+
+    public SceneInstance PreviewTransform(string id, Matrix4x4 world)
+    {
+        if (!CanSave || _previewOriginal?.Id != id)
+            throw new InvalidOperationException("Нет активного преобразования выбранного объекта.");
+        var current = Find(id)!;
+        if (current.World == world) return current;
+        var preview = Transform(current, world);
+        // Moving one object must not rebuild all 29,000 Aspen instances per mouse move.
+        Unindex(current);
+        _current[id] = preview;
+        _instances[_instanceSlots[id]] = preview;
+        Index(preview);
+        _collisionDirty = true;
+        return preview;
+    }
+
+    public bool CommitTransformPreview()
+    {
+        if (_previewOriginal is not { } before) return false;
+        var after = Find(before.Id)!;
+        if (before.World == after.World) return CancelTransformPreview();
+        _previewOriginal = null;
+        Record(new(before, after));
+        return true;
+    }
+
+    public bool CancelTransformPreview()
+    {
+        if (_previewOriginal is not { } original) return false;
+        _previewOriginal = null;
+        _current[original.Id] = original;
+        RebuildIndex();
+        Changed?.Invoke();
+        return true;
+    }
 
     public SceneInstance UpdateTransform(string id, Matrix4x4 world)
     {
@@ -105,6 +160,7 @@ public sealed class SceneData
     private void RequireEditable()
     {
         if (!CanSave) throw new InvalidOperationException("Файл правок объектов не прочитан. Редактирование и перезапись отключены.");
+        if (HasTransformPreview) throw new InvalidOperationException("Сначала завершите или отмените перетаскивание объекта.");
     }
 
     internal SceneInstance? Original(string id) => _originals.GetValueOrDefault(id);
@@ -153,25 +209,48 @@ public sealed class SceneData
 
     private void RebuildIndex()
     {
-        _instances.Clear(); _cells.Clear(); _large.Clear();
+        _instances.Clear(); _instanceSlots.Clear(); _cells.Clear(); _large.Clear();
         foreach (var source in _sources)
         {
             if (!_current.TryGetValue(source.Id, out var instance)) continue;
+            _instanceSlots[instance.Id] = _instances.Count;
             _instances.Add(instance);
         }
-        foreach (var instance in _instances)
+        foreach (var instance in _instances) Index(instance);
+        RefreshCollision();
+    }
+
+    private void Index(SceneInstance instance)
+    {
+        int x0 = Cell(instance.Bounds.Minimum.X), x1 = Cell(instance.Bounds.Maximum.X);
+        int z0 = Cell(instance.Bounds.Minimum.Z), z1 = Cell(instance.Bounds.Maximum.Z);
+        if ((long)(x1 - x0 + 1) * (z1 - z0 + 1) > 4096) { _large.Add(instance); return; }
+        for (int z = z0; z <= z1; z++)
+        for (int x = x0; x <= x1; x++)
         {
-            int x0 = Cell(instance.Bounds.Minimum.X), x1 = Cell(instance.Bounds.Maximum.X);
-            int z0 = Cell(instance.Bounds.Minimum.Z), z1 = Cell(instance.Bounds.Maximum.Z);
-            if ((long)(x1 - x0 + 1) * (z1 - z0 + 1) > 4096) { _large.Add(instance); continue; }
-            for (int z = z0; z <= z1; z++)
-            for (int x = x0; x <= x1; x++)
-            {
-                if (!_cells.TryGetValue((x, z), out var cell)) _cells.Add((x, z), cell = []);
-                cell.Add(instance);
-            }
+            if (!_cells.TryGetValue((x, z), out var cell)) _cells.Add((x, z), cell = []);
+            cell.Add(instance);
         }
-        Collision = new SceneCollision(this);
+    }
+
+    private void Unindex(SceneInstance instance)
+    {
+        int x0 = Cell(instance.Bounds.Minimum.X), x1 = Cell(instance.Bounds.Maximum.X);
+        int z0 = Cell(instance.Bounds.Minimum.Z), z1 = Cell(instance.Bounds.Maximum.Z);
+        if ((long)(x1 - x0 + 1) * (z1 - z0 + 1) > 4096) { _large.Remove(instance); return; }
+        for (int z = z0; z <= z1; z++)
+        for (int x = x0; x <= x1; x++)
+            if (_cells.TryGetValue((x, z), out var cell))
+            {
+                cell.Remove(instance);
+                if (cell.Count == 0) _cells.Remove((x, z));
+            }
+    }
+
+    private void RefreshCollision()
+    {
+        _collision = new SceneCollision(this);
+        _collisionDirty = false;
     }
 
     public IEnumerable<SceneInstance> Query(SceneBounds bounds)

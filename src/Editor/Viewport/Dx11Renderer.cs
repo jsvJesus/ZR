@@ -36,8 +36,12 @@ namespace Editor.Viewport
         private TreeRenderer? _trees;
         private SceneRenderer? _objects;
         private SceneSelectionRenderer? _objectSelection;
+        private SceneGizmoRenderer? _objectGizmo;
         private SceneData? _scene;
         private string? _selectedObject;
+        private ObjectGizmoMode _objectGizmoMode;
+        private ObjectGizmoAxis _objectGizmoAxis;
+        private bool _objectGizmoEnabled;
 
         private VertexShader _vertexShader = null!;
         private PixelShader _pixelShader = null!;
@@ -142,6 +146,7 @@ namespace Editor.Viewport
                 0);
 
             _objectSelection = new(_device, _context, _vertexShader, _pixelShader, _inputLayout);
+            _objectGizmo = new(_device, _context, _vertexShader, _pixelShader, _inputLayout);
 
             CreateRenderTarget();
         }
@@ -243,6 +248,13 @@ namespace Editor.Viewport
         }
 
         public void SelectObject(string? id) => _selectedObject = id;
+
+        public void SetObjectGizmo(ObjectGizmoMode mode, ObjectGizmoAxis axis, bool enabled)
+        {
+            _objectGizmoMode = mode;
+            _objectGizmoAxis = axis;
+            _objectGizmoEnabled = enabled;
+        }
 
         public SceneInstance? PickObject(Vector3 origin, Vector3 direction)
         {
@@ -410,7 +422,12 @@ namespace Editor.Viewport
             _character?.Render(characterView * projection, camera.Position);
             _objects?.RenderTransparent(camera, viewProjection);
             if (!playing && _selectedObject != null && _scene?.Find(_selectedObject) is { } selected)
+            {
                 _objectSelection?.Render(selected, viewProjection);
+                if (_objectGizmoEnabled && _scene.CanSave &&
+                    ObjectGizmoGeometry.TryCreateFrame(selected, camera, _width, _height, out var frame))
+                    _objectGizmo?.Render(frame, _objectGizmoMode, _objectGizmoAxis, viewProjection);
+            }
             _swapChain.Present(1, PresentFlags.None);
         }
 
@@ -477,6 +494,7 @@ namespace Editor.Viewport
             _trees?.Dispose();
             _objects?.Dispose();
             _objectSelection?.Dispose();
+            _objectGizmo?.Dispose();
             _character?.Dispose();
             _depthTarget?.Dispose();
             _depthTexture?.Dispose();

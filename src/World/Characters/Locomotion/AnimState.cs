@@ -10,14 +10,43 @@ public enum AnimState
 }
 
 // Numeric IDs are the original scripts/common/capabilities.xml values.
-public enum AnimationCap { Unarmed = 0, AutogunArmed = 1, Crouching = 2, Injured = 3, Aiming = 4, Dead = 5, Crawl = 14, Bored = 16, Tired = 17, WeaponRightHand = 24 }
-public enum SupportFoot { Left, Right }
+public enum AnimationCap
+{
+    Unarmed = 0,
+    AutogunArmed = 1,
+    Crouching = 2,
+    Injured = 3,
+    Aiming = 4,
+    Dead = 5,
+    Crawl = 14,
+    Bored = 16,
+    Tired = 17,
+    WeaponRightHand = 24
+}
+
+public enum SupportFoot
+{
+    Left,
+    Right
+}
 
 public readonly record struct CharacterInput(
-    Vector2 Move, bool Walk, bool Sprint, bool Crouch, bool JumpPressed, bool ToggleCrouchPressed);
+    Vector2 Move,
+    bool Walk,
+    bool Sprint,
+    bool Crouch,
+    bool JumpPressed,
+    bool ToggleCrouchPressed
+);
 
 public readonly record struct LocomotionSnapshot(
-    AnimState State, string Action, float Frame, float Speed, bool Grounded, bool Crouched);
+    AnimState State,
+    string Action,
+    float Frame,
+    float Speed,
+    bool Grounded,
+    bool Crouched
+);
 
 // Ported from player_speed_settings.pyc_dis.
 public static class LocomotionSettings
@@ -39,11 +68,35 @@ public static class LocomotionSettings
 
     public const float JumpHeight = 0.9f;
 
-    public static float Speed(Vector2 move, bool walk, bool crouch, bool sprint)
+    public const float CrouchSpeed = 1.2f;
+    public const float CrouchWalkSpeed = 1.4f;
+
+    public static float Speed(
+        Vector2 move,
+        bool walk,
+        bool crouch,
+        bool sprint)
     {
-        if (sprint && !crouch && !walk && move.Y > 0) return 6.3f;
         if (crouch)
-            return move.Y < 0 ? (walk ? 1.2f : 1f) : move.Y == 0 && move.X != 0 ? (walk ? 1.4f : 1.2f) : walk ? 1.5f : 2.8f;
-        return move.Y < 0 ? (walk ? 1.2f : 2.7f) : move.Y == 0 && move.X != 0 ? (walk ? 1.3f : 2.7f) : walk ? 1.3f : 3.6f;
+        {
+            return walk ? CrouchWalkSpeed : CrouchSpeed;
+        }
+
+        if (sprint && !walk && move.Y > 0)
+        {
+            return 6.3f;
+        }
+
+        if (move.Y < 0)
+        {
+            return walk ? 1.2f : 2.7f;
+        }
+
+        if (move.Y == 0 && move.X != 0)
+        {
+            return walk ? 1.3f : 2.7f;
+        }
+
+        return walk ? 1.3f : 3.6f;
     }
 }

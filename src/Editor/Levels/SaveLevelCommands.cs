@@ -12,7 +12,7 @@ public sealed partial class MainWindow
     private async void SaveLevel_Click(object? sender, RoutedEventArgs e)
     {
         if (_level == null || _isClosing || _importCancellation != null || _levelOpening || _levelSaving || _savingChangesOnClose
-            || RoadSegmentsPanel.IsSaving || VegetationPanel.IsSaving || ObjectsPanel.IsSaving || Viewport.IsPlaying || Viewport.IsStarting)
+            || RoadSegmentsPanel.IsSaving || VegetationPanel.IsSaving || ObjectsPanel.IsSaving || Viewport.IsObjectDragging || Viewport.IsPlaying || Viewport.IsStarting)
         {
             StatusText.Text = "Сначала откройте преобразованный уровень.";
             return;

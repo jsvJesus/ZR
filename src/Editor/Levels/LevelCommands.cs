@@ -19,17 +19,24 @@ public sealed partial class MainWindow
     private void SetLevelCommandsBusy(bool busy)
     {
         bool saving = _levelSaving || _savingChangesOnClose || RoadSegmentsPanel.IsSaving || VegetationPanel.IsSaving || ObjectsPanel.IsSaving;
-        bool locked = busy || _levelOpening || saving || Viewport.IsPlaying || Viewport.IsStarting || CharacterPanel.IsBusy;
+        bool baseLocked = busy || _levelOpening || saving || Viewport.IsPlaying || Viewport.IsStarting || CharacterPanel.IsBusy;
+        bool dragging = Viewport.IsObjectDragging;
+        bool locked = baseLocked || dragging;
         ImportLevelMenu.IsEnabled = !locked;
         ImportAllLevelsMenu.IsEnabled = !locked;
         OpenLevelMenu.IsEnabled = !locked;
         SaveLevelMenu.IsEnabled = !locked;
-        PlayButton.IsEnabled = _level != null && !busy && !_levelOpening && !saving && !CharacterPanel.IsActive;
-        CharacterEditorMenu.IsEnabled = !busy && !_levelOpening && !saving;
+        PlayButton.IsEnabled = _level != null && !busy && !_levelOpening && !saving && !dragging && !CharacterPanel.IsActive;
+        CharacterEditorMenu.IsEnabled = !busy && !_levelOpening && !saving && !dragging;
+        LevelEditorMenu.IsEnabled = !dragging;
+        SceneEditorMenu.IsEnabled = !dragging;
+        ObjectsEditorMenu.IsEnabled = !dragging;
+        TerrainMaterialsPanel.IsEnabled = !locked;
+        CharacterPanel.IsEnabled = !dragging;
         RoadSegmentsPanel.IsEnabled = !locked;
         VegetationPanel.IsEnabled = !locked;
         VegetationPanel.RefreshMode();
-        ObjectsPanel.IsEnabled = !locked;
+        ObjectsPanel.IsEnabled = !baseLocked;
         ObjectsPanel.RefreshMode();
         CancelImportMenu.IsEnabled = busy;
     }

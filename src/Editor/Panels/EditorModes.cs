@@ -15,6 +15,7 @@ namespace Editor
             bool showObjects = false,
             bool showCharacterEditor = false)
         {
+            if (Viewport.IsObjectDragging) return;
             CurrentModeText.Text = $"{category} / {name}";
             ModeTitle.Text = name;
             ModeDetails.Text = description;
@@ -33,7 +34,7 @@ namespace Editor
 
         private async void CharacterEditor_Click(object? sender, RoutedEventArgs e)
         {
-            if (_isClosing || _levelOpening || _levelSaving || _savingChangesOnClose || _importCancellation != null
+            if (_isClosing || _levelOpening || _levelSaving || _savingChangesOnClose || _importCancellation != null || Viewport.IsObjectDragging
                 || RoadSegmentsPanel.IsSaving || VegetationPanel.IsSaving || ObjectsPanel.IsSaving) return;
             SetMode("Character Editor", "Экипировка персонажа",
                 "Одежда, снаряжение и оружие на персонаже текущего уровня.", showCharacterEditor: true);

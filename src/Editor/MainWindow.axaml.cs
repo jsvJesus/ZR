@@ -16,6 +16,7 @@ namespace Editor
             VegetationPanel.BusyChanged += UpdatePlayControls;
             ObjectsPanel.Attach(Viewport);
             ObjectsPanel.BusyChanged += UpdatePlayControls;
+            Viewport.ObjectDragStateChanged += UpdatePlayControls;
             CharacterPanel.Attach(Viewport, _workspace.Assets);
             CharacterPanel.BusyChanged += UpdatePlayControls;
 
@@ -56,6 +57,7 @@ namespace Editor
 
         private async void SaveChangesBeforeClosing(object? sender, WindowClosingEventArgs e)
         {
+            Viewport.CancelObjectDrag();
             if (_changesSavedForClose || (!RoadSegmentsPanel.HasPendingChanges && !VegetationPanel.HasPendingChanges && !ObjectsPanel.HasPendingChanges)) return;
             e.Cancel = true;
             if (_savingChangesOnClose) return;

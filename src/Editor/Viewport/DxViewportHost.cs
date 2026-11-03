@@ -23,6 +23,7 @@ namespace Editor.Viewport
         private const uint WmSysKeyUp = 0x0105;
         private const uint WmMouseMove = 0x0200;
         private const uint WmLeftDown = 0x0201;
+        private const uint WmLeftUp = 0x0202;
         private const uint WmRightDown = 0x0204;
         private const uint WmRightUp = 0x0205;
         private const uint WmMouseWheel = 0x020A;
@@ -166,6 +167,7 @@ namespace Editor.Viewport
         protected override void DestroyNativeControlCore(
             IPlatformHandle control)
         {
+            CancelObjectDrag();
             StopPlay();
             _timer.Stop();
             _pressedKeys.Clear();
@@ -216,7 +218,7 @@ namespace Editor.Viewport
             {
                 if (IsPlaying) UpdatePlayMouseCapture();
                 if (IsPlaying) UpdatePlayer(deltaTime);
-                if (!IsPlaying && !IsStarting) _camera.Move(
+                if (!IsPlaying && !IsStarting && !IsObjectDragging) _camera.Move(
                     IsPressed(KeyW),
                     IsPressed(KeyS),
                     IsPressed(KeyA),
@@ -236,6 +238,8 @@ namespace Editor.Viewport
                     {
                         UpdatePlayCamera();
                         _renderer.SelectObject(ObjectEditingEnabled && !IsPlaying && !IsStarting ? _selectedObjectId : null);
+                        _renderer.SetObjectGizmo(ObjectTransformMode, _objectDrag?.Axis ?? _hoveredObjectAxis,
+                            ObjectEditingEnabled && !IsPlaying && !IsStarting && !_rotating && _level?.Objects?.CanSave == true);
                         _renderer.Render(
                             IsPlaying ? _playCamera : _camera,
                             width,
@@ -268,6 +272,7 @@ namespace Editor.Viewport
 
         public void SetCamera(CameraPose pose)
         {
+            CancelObjectDrag();
             _camera.Restore(pose);
             _pressedKeys.Clear();
 
@@ -276,6 +281,7 @@ namespace Editor.Viewport
 
         public void SetLevel(LoadedLevel level, AssetPaths assets)
         {
+            CancelObjectDrag();
             StopPlay();
             _renderer?.SetLevel(level, assets);
             _level = level;
@@ -297,12 +303,26 @@ namespace Editor.Viewport
             {
                 case WmLeftDown:
                     SetFocus(window);
-                    if (ObjectEditingEnabled) { PickObject(ReadX(lParam), ReadY(lParam)); return nint.Zero; }
+                    if (ObjectEditingEnabled)
+                    {
+                        if (!BeginObjectDrag(ReadX(lParam), ReadY(lParam))) PickObject(ReadX(lParam), ReadY(lParam));
+                        return nint.Zero;
+                    }
                     if (TreeEditingEnabled) { HandleTreePointer(ReadX(lParam), ReadY(lParam)); return nint.Zero; }
                     PickRoadSegment(ReadX(lParam), ReadY(lParam));
                     return nint.Zero;
 
+                case WmLeftUp:
+                    if (IsObjectDragging)
+                    {
+                        MoveObjectDrag(ReadX(lParam), ReadY(lParam));
+                        EndObjectDrag(true);
+                        return nint.Zero;
+                    }
+                    break;
+
                 case WmRightDown:
+                    if (IsObjectDragging) { CancelObjectDrag(); return nint.Zero; }
                     SetFocus(window);
                     if (IsPlaying && !IsCharacterEditing) return nint.Zero;
                     SetCapture(window);
@@ -320,11 +340,14 @@ namespace Editor.Viewport
                     return nint.Zero;
 
                 case WmCaptureChanged:
+                    CancelObjectDrag();
                     _rotating = false;
                     break;
 
                 case WmMouseMove:
+                    if (MoveObjectDrag(ReadX(lParam), ReadY(lParam))) return nint.Zero;
                     HandleMouseMove(lParam);
+                    HoverObjectGizmo(ReadX(lParam), ReadY(lParam));
                     return nint.Zero;
 
                 case WmInput:
@@ -341,6 +364,7 @@ namespace Editor.Viewport
                     break;
 
                 case WmMouseWheel:
+                    if (IsObjectDragging) return nint.Zero;
                     int wheelDelta = unchecked(
                         (short)((wParam.ToInt64() >> 16) & 0xFFFF));
 
@@ -392,6 +416,7 @@ namespace Editor.Viewport
                     break;
 
                 case WmKillFocus:
+                    CancelObjectDrag();
                     ReleasePlayMouse(false);
                     _pressedKeys.Clear();
                     ReleasePlayerInput();
