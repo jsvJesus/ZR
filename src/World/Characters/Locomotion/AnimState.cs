@@ -36,7 +36,8 @@ public readonly record struct CharacterInput(
     bool Sprint,
     bool Crouch,
     bool JumpPressed,
-    bool ToggleCrouchPressed
+    bool ToggleCrouchPressed,
+    bool AimPressed = false
 );
 
 public readonly record struct LocomotionSnapshot(

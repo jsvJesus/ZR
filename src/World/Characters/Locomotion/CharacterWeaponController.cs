@@ -91,7 +91,7 @@ public sealed class CharacterWeaponController
         }
     }
 
-    public void UpdatePose(float dt, CharacterAction action, bool airborne)
+    public void UpdatePose(float dt, CharacterAction action, bool airborne, bool aiming)
     {
         if (Definition == null) return;
         // AvatarTrackers.modelMatchNotifier uses the matched action, not requested
@@ -105,8 +105,16 @@ public sealed class CharacterWeaponController
             _profileSprint = parts[0] == "sprint";
             _profileRunning = parts[0] is "run" or "sprint";
         }
-        var target = Definition.ResolveProfile(_profileCrouch, _profileMoving, _profileSprint,
-            inCombat: !Relaxed, running: _profileRunning);
+
+        var target = Definition.ResolveProfile(
+            _profileCrouch,
+            _profileMoving,
+            _profileSprint,
+            inCombat: !Relaxed,
+            running: _profileRunning,
+            aiming: aiming
+        );
+
         float blend = 1 - MathF.Exp(-12 * dt);
         if (Profile is { } previous)
             Profile = target with

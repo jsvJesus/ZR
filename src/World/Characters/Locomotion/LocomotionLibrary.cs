@@ -14,7 +14,19 @@ public sealed class LocomotionLibrary
     private LocomotionLibrary(Dictionary<string, CharacterAction> actions)
     {
         Actions = actions;
-        MovementActions = actions.Values.Where(a => a.Trigger != null && !a.Stop && !a.Turn && a.Track == 0).ToArray();
+
+        MovementActions = actions.Values
+            .Where(action =>
+                action.Trigger != null &&
+                !action.Stop &&
+                !action.Turn &&
+                action.Track == 0)
+            .OrderByDescending(action =>
+                action.Name.EndsWith(
+                    "_aim",
+                    StringComparison.Ordinal))
+            .ToArray();
+
         StopActions = actions.Values.Where(a => a.Stop).ToArray();
     }
 
@@ -41,7 +53,12 @@ public sealed class LocomotionLibrary
                     requiredActions.Add($"{verb}_{holster}_{phase}");
         foreach (var jump in new[] { JumpDefinition.Right, JumpDefinition.Left, JumpDefinition.Fall, JumpDefinition.Stationary })
             requiredActions.UnionWith([jump.Up, jump.Fly, jump.FlyHigh, jump.DownMove, jump.DownStop]);
-        var availableCaps = new HashSet<int> { 0, 1, 2, 16, 17, 24 };
+
+        var availableCaps = new HashSet<int>
+        {
+            0, 1, 2, 4, 16, 17, 24
+        };
+
         foreach (var section in model.All("action"))
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -49,9 +66,15 @@ public sealed class LocomotionLibrary
             var match = section.Find("match");
             var trigger = ReadMatch(match?.Find("trigger"));
             int track = (int)Number(section, "track", 0);
+
             // Keep the original model order for both unarmed and armed action matching.
-            bool compatible = trigger != null && trigger.CapsOn.Any(cap => cap is 0 or 1 or 16)
-                && trigger.CapsOn.All(availableCaps.Contains) && track == 0;
+            bool compatible =
+                trigger != null &&
+                trigger.CapsOn.Any(cap =>
+                    cap is 0 or 1 or 4 or 16) &&
+                trigger.CapsOn.All(availableCaps.Contains) &&
+                track == 0;
+
             compatible |= trigger != null && (Flag(match, "stopLeftAction") || Flag(match, "stopRightAction"))
                 && trigger.CapsOn.All(availableCaps.Contains) && track == 0;
             compatible |= name.StartsWith("handgrip_", StringComparison.Ordinal) && (track is 10 or 11);
@@ -84,9 +107,28 @@ public sealed class LocomotionLibrary
                 Number(match, "prevActionPlayTime", 0), track, Flag(match, "feetFollowDirection"));
             if (!actions.TryAdd(name, action)) throw new InvalidDataException($"Duplicate locomotion action {name}.");
         }
-        foreach (string name in requiredActions.Concat(new[] { "idle_0_stay_unarmed", "idle_0_crouch_unarmed",
-            "idle_0_stay_incombat", "idle_0_crouch_incombat", "idle_0_stay_bored", "idle_0_crouch_bored" }))
-            if (!actions.ContainsKey(name)) throw new InvalidDataException($"Missing locomotion action {name}.");
+
+        foreach (string name in requiredActions.Concat(
+                     new[]
+                     {
+                         "idle_0_stay_unarmed",
+                         "idle_0_crouch_unarmed",
+                         "idle_0_stay_incombat",
+                         "idle_0_crouch_incombat",
+                         "idle_0_stay_bored",
+                         "idle_0_crouch_bored",
+                         "idle_0_stay_aim",
+                         "idle_0_crouch_aim"
+                     }))
+        {
+            if (!actions.ContainsKey(name))
+            {
+                throw new InvalidDataException(
+                    $"Missing locomotion action {name}."
+                );
+            }
+        }
+
         return new(actions);
     }
 

@@ -82,7 +82,7 @@ public sealed class SceneData
     {
         if (_previewOriginal is not { } before) return false;
         var after = Find(before.Id)!;
-        if (before.World == after.World) return CancelTransformPreview();
+        if (before.World == after.World) { CancelTransformPreview(); return false; }
         _previewOriginal = null;
         Record(new(before, after));
         return true;

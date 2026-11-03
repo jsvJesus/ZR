@@ -86,9 +86,20 @@ public sealed partial class CharacterLocomotion
         bool wantsCrouch = input.Crouch || _crouchToggle;
         if (_crouched && !wantsCrouch && !_surface.CanOccupy(Position, StandingHeight)) wantsCrouch = true;
 
-        Weapon.Advance(deltaTime, IsFreeGroundState && wantsCrouch == _crouched && !input.JumpPressed,
-            _crouched, input.Sprint && input.Move.Y > 0 && !input.Walk);
-        UpdateWeaponCaps();
+        Weapon.Advance(
+            deltaTime,
+            IsFreeGroundState &&
+            wantsCrouch == _crouched &&
+            !input.JumpPressed,
+            _crouched,
+            input.Sprint &&
+            !(input.AimPressed && Weapon.InHands) &&
+            input.Move.Y > 0 &&
+            !input.Walk
+        );
+
+        UpdateWeaponCaps(input.AimPressed);
+
         if (Weapon.IsChanging) wantsCrouch = _crouched;
 
         float cameraDelta = Wrap(cameraYaw - _lastCameraYaw);
@@ -146,7 +157,12 @@ public sealed partial class CharacterLocomotion
             (Position.Y - _cameraBaseY) *
             (1f - MathF.Exp(-8f * deltaTime));
 
-        Weapon.UpdatePose(deltaTime, Animator.Current, !Grounded || IsLanding);
+        Weapon.UpdatePose(
+            deltaTime,
+            Animator.Current,
+            !Grounded || IsLanding,
+            _caps.Contains((int)AnimationCap.Aiming)
+        );
 
         float targetPitch =
             Weapon.InHands &&
@@ -558,19 +574,49 @@ public sealed partial class CharacterLocomotion
         Animator.EvaluatePose();
     }
 
-    private void UpdateWeaponCaps()
+    private void UpdateWeaponCaps(bool aimPressed = false)
     {
         _caps.Remove((int)AnimationCap.Unarmed);
         _caps.Remove((int)AnimationCap.AutogunArmed);
+        _caps.Remove((int)AnimationCap.Aiming);
         _caps.Remove((int)AnimationCap.Bored);
         _caps.Remove((int)AnimationCap.WeaponRightHand);
-        _caps.Add((int)(Weapon.Armed ? AnimationCap.AutogunArmed : AnimationCap.Unarmed));
-        if (!Weapon.Armed) return;
-        if (Weapon.Relaxed) _caps.Add((int)AnimationCap.Bored);
-        // The original cap identifies the weapon's bored sprint family, rather
-        // than the previous frame's hand profile or temporary airborne carry.
-        if (Weapon.Relaxed && Weapon.Definition?.ResolveProfile(false, true, true, inCombat: false).ToAttachWeapon == "Right")
+
+        _caps.Add(
+            (int)(Weapon.Armed
+                ? AnimationCap.AutogunArmed
+                : AnimationCap.Unarmed)
+        );
+
+        if (!Weapon.Armed)
+        {
+            return;
+        }
+
+        if (aimPressed &&
+            Weapon.State == CharacterWeaponState.Held &&
+            Grounded &&
+            !IsLanding &&
+            !IsPostureTransition)
+        {
+            _caps.Add((int)AnimationCap.Aiming);
+        }
+
+        if (Weapon.Relaxed)
+        {
+            _caps.Add((int)AnimationCap.Bored);
+        }
+
+        if (Weapon.Relaxed &&
+            Weapon.Definition?.ResolveProfile(
+                false,
+                true,
+                true,
+                inCombat: false
+            ).ToAttachWeapon == "Right")
+        {
             _caps.Add((int)AnimationCap.WeaponRightHand);
+        }
     }
 
     private void UpdateBodyTwist(float dt, float cameraYaw)

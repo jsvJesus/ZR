@@ -322,9 +322,20 @@ namespace Editor.Viewport
                     break;
 
                 case WmRightDown:
-                    if (IsObjectDragging) { CancelObjectDrag(); return nint.Zero; }
+                    if (IsObjectDragging)
+                    {
+                        CancelObjectDrag();
+                        return nint.Zero;
+                    }
+
                     SetFocus(window);
-                    if (IsPlaying && !IsCharacterEditing) return nint.Zero;
+
+                    if (IsPlaying && !IsCharacterEditing)
+                    {
+                        _aimHeld = true;
+                        return nint.Zero;
+                    }
+
                     SetCapture(window);
 
                     _rotating = true;
@@ -334,9 +345,15 @@ namespace Editor.Viewport
                     return nint.Zero;
 
                 case WmRightUp:
-                    if (IsPlaying && !IsCharacterEditing) return nint.Zero;
+                    if (IsPlaying && !IsCharacterEditing)
+                    {
+                        _aimHeld = false;
+                        return nint.Zero;
+                    }
+
                     _rotating = false;
                     ReleaseCapture();
+
                     return nint.Zero;
 
                 case WmCaptureChanged:

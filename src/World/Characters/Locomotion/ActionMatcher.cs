@@ -26,10 +26,33 @@ public sealed class ActionMatcher
 
     public CharacterAction Idle(IReadOnlySet<int> caps)
     {
-        string posture = caps.Contains((int)AnimationCap.Crouching) ? "crouch" : "stay";
-        string mode = caps.Contains((int)AnimationCap.AutogunArmed)
-            ? caps.Contains((int)AnimationCap.Bored) ? "bored" : "incombat" : "unarmed";
-        return _library.Actions[$"idle_0_{posture}_{mode}"];
+        string posture = caps.Contains(
+            (int)AnimationCap.Crouching)
+            ? "crouch"
+            : "stay";
+
+        string mode;
+
+        if (!caps.Contains((int)AnimationCap.AutogunArmed))
+        {
+            mode = "unarmed";
+        }
+        else if (caps.Contains((int)AnimationCap.Aiming))
+        {
+            mode = "aim";
+        }
+        else if (caps.Contains((int)AnimationCap.Bored))
+        {
+            mode = "bored";
+        }
+        else
+        {
+            mode = "incombat";
+        }
+
+        return _library.Actions[
+            $"idle_0_{posture}_{mode}"
+        ];
     }
 
     private static string Gait(CharacterAction action)

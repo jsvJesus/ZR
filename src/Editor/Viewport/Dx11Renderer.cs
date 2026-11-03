@@ -249,6 +249,8 @@ namespace Editor.Viewport
 
         public void SelectObject(string? id) => _selectedObject = id;
 
+        public float ObjectGizmoFarPlane => _terrain?.FarPlane ?? 1000f;
+
         public void SetObjectGizmo(ObjectGizmoMode mode, ObjectGizmoAxis axis, bool enabled)
         {
             _objectGizmoMode = mode;
@@ -425,7 +427,8 @@ namespace Editor.Viewport
             {
                 _objectSelection?.Render(selected, viewProjection);
                 if (_objectGizmoEnabled && _scene.CanSave &&
-                    ObjectGizmoGeometry.TryCreateFrame(selected, camera, _width, _height, out var frame))
+                    ObjectGizmoGeometry.TryCreateFrame(selected, camera, _width, _height, out var frame,
+                        ObjectGizmoFarPlane))
                     _objectGizmo?.Render(frame, _objectGizmoMode, _objectGizmoAxis, viewProjection);
             }
             _swapChain.Present(1, PresentFlags.None);

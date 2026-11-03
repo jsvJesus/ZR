@@ -54,20 +54,64 @@ public sealed class CharacterWeaponDefinition
     public CharacterWeaponProfile ResolveProfile(bool crouch, bool moving, bool sprint) =>
         ResolveProfile(crouch, moving, sprint, true);
 
-    public CharacterWeaponProfile ResolveProfile(bool crouch, bool moving, bool sprint, bool inCombat, bool running = false)
+    public CharacterWeaponProfile ResolveProfile(
+        bool crouch,
+        bool moving,
+        bool sprint,
+        bool inCombat,
+        bool running = false,
+        bool aiming = false)
     {
-        // The original tracker maps combat sprinting to run; only bored has a sprint entry.
-        string state = crouch ? (moving || sprint ? running ? "crouch_run" : "crouch_walk" : "crouch_idle")
-            : sprint ? (inCombat ? "run" : "sprint") : moving ? (running ? "run" : "walk") : "idle";
-        if (!_profiles.TryGetValue(inCombat ? "incombat" : "bored", out var profiles)
-            && !_profiles.TryGetValue("incombat", out profiles)
-            && !_profiles.TryGetValue("bored", out profiles))
+        string state = crouch
+            ? moving || sprint
+                ? running ? "crouch_run" : "crouch_walk"
+                : "crouch_idle"
+            : sprint
+                ? inCombat ? "run" : "sprint"
+                : moving
+                    ? running ? "run" : "walk"
+                    : "idle";
+
+        string status = aiming
+            ? "aim"
+            : inCombat
+                ? "incombat"
+                : "bored";
+
+        if (!_profiles.TryGetValue(status, out var profiles) &&
+            !_profiles.TryGetValue("incombat", out profiles) &&
+            !_profiles.TryGetValue("bored", out profiles))
+        {
             return CharacterWeaponProfile.Default;
-        if (profiles.TryGetValue(state, out var profile)) return profile;
-        if (crouch && moving && profiles.TryGetValue("crouch_walk", out profile)) return profile;
-        if (crouch && profiles.TryGetValue("crouch_idle", out profile)) return profile;
-        if (sprint && profiles.TryGetValue("run", out profile)) return profile;
-        return profiles.TryGetValue("idle", out profile) ? profile : CharacterWeaponProfile.Default;
+        }
+
+        if (profiles.TryGetValue(state, out var profile))
+        {
+            return profile;
+        }
+
+        if (crouch &&
+            moving &&
+            profiles.TryGetValue("crouch_walk", out profile))
+        {
+            return profile;
+        }
+
+        if (crouch &&
+            profiles.TryGetValue("crouch_idle", out profile))
+        {
+            return profile;
+        }
+
+        if (sprint &&
+            profiles.TryGetValue("run", out profile))
+        {
+            return profile;
+        }
+
+        return profiles.TryGetValue("idle", out profile)
+            ? profile
+            : CharacterWeaponProfile.Default;
     }
 
     internal static CharacterWeaponDefinition Read(Dictionary<object, object?> data, int typeId, string context)
@@ -83,7 +127,8 @@ public sealed class CharacterWeaponDefinition
         if (data.TryGetValue("tracker", out var trackerValue) && trackerValue is not null)
         {
             var tracker = Map(trackerValue, context);
-            foreach (string status in new[] { "incombat", "bored" })
+
+            foreach (string status in new[] { "incombat", "bored", "aim" })
             {
                 if (!tracker.TryGetValue(status, out var statusValue) || statusValue is null) continue;
                 var states = new Dictionary<string, CharacterWeaponProfile>(StringComparer.Ordinal);

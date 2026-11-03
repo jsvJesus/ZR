@@ -13,6 +13,7 @@ public sealed partial class DxViewportHost
     private TerrainSurface? _surface;
     private CharacterLocomotion? _player;
     private bool _jumpRequested;
+    private bool _aimHeld;
     private bool _toggleCrouchRequested;
     private CameraPose _savedCamera;
 
@@ -29,6 +30,7 @@ public sealed partial class DxViewportHost
         var assets = _assets ?? throw new InvalidOperationException("Не найдены ресурсы проекта.");
         _savedCamera = _camera.Pose;
         _pressedKeys.Clear();
+        _aimHeld = false;
         using var cancellation = new CancellationTokenSource();
         _playLoad = cancellation;
         PlayStateChanged?.Invoke();
@@ -99,6 +101,7 @@ public sealed partial class DxViewportHost
         PublishCharacterWeaponState();
         _characterAsset = null;
         _jumpRequested = false;
+        _aimHeld = false;
         _toggleCrouchRequested = false;
         _pressedKeys.Clear();
         if (_rotating) { _rotating = false; ReleaseCapture(); }
@@ -123,6 +126,7 @@ public sealed partial class DxViewportHost
         if (IsCharacterEditing)
         {
             // Finish airborne/stop motion, then idle without turning toward the inspection camera.
+            _aimHeld = false;
             _player.Update(deltaTime, default, _player.Yaw);
             PublishCharacterWeaponState();
             _jumpRequested = false;
@@ -140,7 +144,8 @@ public sealed partial class DxViewportHost
                 IsPressed(KeyShift),
                 IsPressed(KeyControl),
                 _jumpRequested,
-                _toggleCrouchRequested
+                _toggleCrouchRequested,
+                _aimHeld
             ),
             _orbit.Yaw,
             _orbit.Pitch
@@ -155,6 +160,7 @@ public sealed partial class DxViewportHost
     {
         _jumpRequested = false;
         _toggleCrouchRequested = false;
+        _aimHeld = false;
         _player?.ReleaseInput();
     }
 }
