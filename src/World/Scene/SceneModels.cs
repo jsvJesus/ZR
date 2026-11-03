@@ -33,7 +33,14 @@ public sealed record SceneMaterial(string Name, string Diffuse, string Normal, V
 
 public sealed record SceneMesh(SceneVertex[] Vertices, int[] Indices, SceneMaterial Material);
 public sealed record SceneModel(string File, SceneBounds Bounds, SceneMesh[] Meshes);
-public sealed record ScenePhysicsMesh(string File, Vector3[] Vertices, int[] Indices, SceneBounds Bounds);
+public sealed record ScenePhysicsMesh(
+    string File,
+    Vector3[] Vertices,
+    int[] Indices,
+    SceneBounds Bounds)
+{
+    public bool IsVisualFallback { get; init; }
+}
 public sealed record SceneInstance(string Model, Matrix4x4 World, Matrix4x4 InverseWorld,
     SceneBounds Bounds, bool CollisionEnabled)
 {
