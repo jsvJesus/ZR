@@ -83,12 +83,12 @@ public sealed partial class CharacterPose
                     local = Layer(rig, i, local, overlay, weapon.Frame, weapon.OverlayWeight);
                 if (node.Name == "Root") local *= Matrix4x4.CreateRotationY(feetYaw);
                 matrices[i] = node.Parent < 0 ? local : local * matrices[node.Parent];
-                if (node.Name == "Spine2" && torsoYaw != 0)
-                {
-                    var pivot = matrices[i].Translation;
-                    matrices[i] *= Matrix4x4.CreateRotationY(torsoYaw);
-                    matrices[i].Translation = pivot;
-                }
+
+                ApplyUpperBodyAim(
+                    ref matrices[i],
+                    node.Name,
+                    torsoYaw
+                );
             }
         }
 

@@ -38,4 +38,9 @@ public sealed record SceneInstance(string Model, Matrix4x4 World, Matrix4x4 Inve
     SceneBounds Bounds, bool CollisionEnabled)
 {
     public bool PlayerCollisionOnly { get; init; }
+    public string Id { get; init; } = "";
+    public string SourceStamp { get; init; } = "";
+    public string? PrefabName { get; init; }
+    public SceneBounds LocalBounds { get; init; }
+    public SceneBounds VisualLocalBounds { get; init; }
 }

@@ -9,20 +9,157 @@ public sealed class SceneData
     private const int CellSize = 64;
     private readonly Dictionary<(int X, int Z), List<SceneInstance>> _cells = [];
     private readonly List<SceneInstance> _large = [];
+    private readonly SceneInstance[] _sources;
+    private readonly Dictionary<string, SceneInstance> _originals;
+    private readonly Dictionary<string, SceneInstance> _current;
+    private readonly List<SceneInstance> _instances = [];
+    private readonly List<Change> _history = [];
+    private int _historyPosition;
+    private long _revision, _savedRevision;
     public IReadOnlyList<SceneInstance> Instances { get; }
+    public string SourceName { get; internal set; } = "";
+    public bool CanSave { get; internal set; } = true;
+    public bool IsDirty => _revision != _savedRevision;
+    public bool CanUndo => CanSave && _historyPosition > 0;
+    public bool CanRedo => CanSave && _historyPosition < _history.Count;
+    public event Action? Changed;
     public ConcurrentQueue<string> Warnings { get; } = new();
     public SceneModelCache Models { get; }
     public ScenePhysicsCache Physics { get; }
-    public SceneCollision Collision { get; }
+    public SceneCollision Collision { get; private set; } = null!;
 
     public SceneData(AssetPaths assets, IReadOnlyList<SceneInstance> instances, IEnumerable<string>? warnings = null,
         ScenePhysicsCache? physics = null)
     {
-        Instances = instances;
+        _sources = instances.ToArray();
+        _originals = _sources.ToDictionary(instance => instance.Id, StringComparer.Ordinal);
+        _current = new(_originals, StringComparer.Ordinal);
+        Instances = _instances.AsReadOnly();
         if (warnings != null) foreach (string warning in warnings) Warnings.Enqueue(warning);
         Models = new SceneModelCache(assets, warning => Warnings.Enqueue(warning));
         Physics = physics ?? new ScenePhysicsCache(assets, warning => Warnings.Enqueue(warning));
-        foreach (var instance in instances)
+        RebuildIndex();
+    }
+
+    public SceneInstance? Find(string id) => _current.GetValueOrDefault(id);
+
+    public SceneInstance UpdateTransform(string id, Matrix4x4 world)
+    {
+        RequireEditable();
+        var before = Find(id) ?? throw new InvalidOperationException("Объект не найден или уже удалён.");
+        if (before.World == world) return before;
+        var after = Transform(before, world);
+        Record(new(before, after));
+        return after;
+    }
+
+    public bool Remove(string id)
+    {
+        RequireEditable();
+        if (Find(id) is not { } before) return false;
+        Record(new(before, null));
+        return true;
+    }
+
+    public bool Undo()
+    {
+        RequireEditable();
+        if (!CanUndo) return false;
+        var change = _history[--_historyPosition];
+        _current[change.Before.Id] = change.Before;
+        PublishChange();
+        return true;
+    }
+
+    public bool Redo()
+    {
+        RequireEditable();
+        if (!CanRedo) return false;
+        Apply(_history[_historyPosition++]);
+        PublishChange();
+        return true;
+    }
+
+    private void Record(Change change)
+    {
+        if (_historyPosition < _history.Count) _history.RemoveRange(_historyPosition, _history.Count - _historyPosition);
+        if (_history.Count == 256) { _history.RemoveAt(0); _historyPosition--; }
+        _history.Add(change); _historyPosition++;
+        Apply(change);
+        PublishChange();
+    }
+
+    private void Apply(Change change)
+    {
+        if (change.After == null) _current.Remove(change.Before.Id);
+        else _current[change.After.Id] = change.After;
+    }
+
+    private void PublishChange()
+    {
+        RebuildIndex();
+        _revision++;
+        Changed?.Invoke();
+    }
+
+    private void RequireEditable()
+    {
+        if (!CanSave) throw new InvalidOperationException("Файл правок объектов не прочитан. Редактирование и перезапись отключены.");
+    }
+
+    internal SceneInstance? Original(string id) => _originals.GetValueOrDefault(id);
+
+    internal static SceneInstance Transform(SceneInstance instance, Matrix4x4 world)
+    {
+        SceneObjectTransform.ValidateWorld(world);
+        Matrix4x4.Invert(world, out var inverse);
+        var bounds = instance.LocalBounds.Transform(world);
+        if (!SceneTriangle.IsFinite(bounds.Minimum) || !SceneTriangle.IsFinite(bounds.Maximum) ||
+            Math.Max(Vector3.Abs(bounds.Minimum).Length(), Vector3.Abs(bounds.Maximum).Length()) > 2e7f)
+            throw new InvalidDataException("Границы объекта выходят за допустимые пределы.");
+        return instance with { World = world, InverseWorld = inverse, Bounds = bounds };
+    }
+
+    internal void LoadOverrides(IReadOnlyList<(string Id, SceneInstance? Instance)> changes)
+    {
+        foreach (var change in changes)
+        {
+            if (change.Instance == null) _current.Remove(change.Id);
+            else _current[change.Id] = change.Instance;
+        }
+        RebuildIndex();
+        _history.Clear(); _historyPosition = 0;
+        _revision = _savedRevision = 0;
+    }
+
+    internal (long Revision, SceneObjectOverride[] Edits) CaptureEdits()
+    {
+        RequireEditable();
+        var edits = new List<SceneObjectOverride>();
+        foreach (var source in _sources)
+        {
+            var current = Find(source.Id);
+            if (current != null && current.World == source.World) continue;
+            edits.Add(new()
+            {
+                Id = source.Id, SourceStamp = source.SourceStamp, Model = source.Model,
+                Deleted = current == null, World = current == null ? null : SceneEditStorage.MatrixValues(current.World)
+            });
+        }
+        return (_revision, edits.ToArray());
+    }
+
+    internal void MarkSaved(long revision) => _savedRevision = revision;
+
+    private void RebuildIndex()
+    {
+        _instances.Clear(); _cells.Clear(); _large.Clear();
+        foreach (var source in _sources)
+        {
+            if (!_current.TryGetValue(source.Id, out var instance)) continue;
+            _instances.Add(instance);
+        }
+        foreach (var instance in _instances)
         {
             int x0 = Cell(instance.Bounds.Minimum.X), x1 = Cell(instance.Bounds.Maximum.X);
             int z0 = Cell(instance.Bounds.Minimum.Z), z1 = Cell(instance.Bounds.Maximum.Z);
@@ -61,4 +198,5 @@ public sealed class SceneData
     }
 
     private static int Cell(float value) => (int)MathF.Floor(value / CellSize);
+    private readonly record struct Change(SceneInstance Before, SceneInstance? After);
 }

@@ -11,7 +11,8 @@ public sealed partial class MainWindow
 {
     private async void OpenLevel_Click(object? sender, RoutedEventArgs e)
     {
-        if (_importCancellation != null || _levelOpening || Viewport.IsPlaying || Viewport.IsStarting) return;
+        if (_isClosing || _importCancellation != null || _levelOpening || _levelSaving || _savingChangesOnClose
+            || RoadSegmentsPanel.IsSaving || VegetationPanel.IsSaving || ObjectsPanel.IsSaving || Viewport.IsPlaying || Viewport.IsStarting) return;
         try
         {
             var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
@@ -32,18 +33,21 @@ public sealed partial class MainWindow
 
     private async Task OpenLevelAsync(string path)
     {
+        if (_isClosing || _levelOpening || _levelSaving || _savingChangesOnClose || Viewport.IsPlaying || Viewport.IsStarting) return;
         _levelOpening = true;
         SetLevelCommandsBusy(_importCancellation != null);
         try
         {
             await RoadSegmentsPanel.SavePendingAsync();
             await VegetationPanel.SavePendingAsync();
+            await ObjectsPanel.SavePendingAsync();
             var level = await _workspace.OpenAsync(path);
             if (_isClosing) return;
             Viewport.SetLevel(level, _workspace.Assets);
             _level = level;
             RoadSegmentsPanel.Bind(level, _workspace.Assets);
             VegetationPanel.Bind(level);
+            ObjectsPanel.Bind(level);
             var camera = level.Manifest.Camera;
             Viewport.SetCamera(new(camera.X, camera.Y, camera.Z, camera.Yaw, camera.Pitch, camera.Speed));
             LevelNameText.Text = $"Уровень: {level.Manifest.Name}";

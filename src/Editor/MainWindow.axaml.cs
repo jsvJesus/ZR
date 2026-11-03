@@ -14,6 +14,8 @@ namespace Editor
             RoadSegmentsPanel.BusyChanged += UpdatePlayControls;
             VegetationPanel.Attach(Viewport, _workspace.Assets);
             VegetationPanel.BusyChanged += UpdatePlayControls;
+            ObjectsPanel.Attach(Viewport);
+            ObjectsPanel.BusyChanged += UpdatePlayControls;
             CharacterPanel.Attach(Viewport, _workspace.Assets);
             CharacterPanel.BusyChanged += UpdatePlayControls;
 
@@ -54,19 +56,28 @@ namespace Editor
 
         private async void SaveChangesBeforeClosing(object? sender, WindowClosingEventArgs e)
         {
-            if (_changesSavedForClose || (!RoadSegmentsPanel.HasPendingChanges && !VegetationPanel.HasPendingChanges)) return;
+            if (_changesSavedForClose || (!RoadSegmentsPanel.HasPendingChanges && !VegetationPanel.HasPendingChanges && !ObjectsPanel.HasPendingChanges)) return;
             e.Cancel = true;
             if (_savingChangesOnClose) return;
             _savingChangesOnClose = true;
+            UpdatePlayControls();
             try
             {
                 await RoadSegmentsPanel.SavePendingAsync();
                 await VegetationPanel.SavePendingAsync();
+                await ObjectsPanel.SavePendingAsync();
                 _changesSavedForClose = true;
                 Avalonia.Threading.Dispatcher.UIThread.Post(Close);
             }
             catch (Exception exception) { StatusText.Text = $"Не удалось сохранить изменения уровня перед закрытием: {exception.Message}"; }
-            finally { _savingChangesOnClose = false; }
+            finally
+            {
+                if (!_changesSavedForClose)
+                {
+                    _savingChangesOnClose = false;
+                    UpdatePlayControls();
+                }
+            }
         }
     }
 }

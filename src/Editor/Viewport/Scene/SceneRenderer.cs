@@ -41,6 +41,7 @@ internal sealed class SceneRenderer : IDisposable
     private readonly CancellationTokenSource _stop = new();
     private readonly List<Matrix4x4> _worlds = [];
     private readonly List<TransparentDraw> _transparent = [];
+    private readonly HashSet<string> _visibleObjects = new(StringComparer.Ordinal);
     private VertexShader _vertex = null!;
     private PixelShader _pixel = null!;
     private InputLayout _layout = null!;
@@ -116,6 +117,7 @@ internal sealed class SceneRenderer : IDisposable
         if (_disposed) return;
         _preparedFrame = false;
         _frame++;
+        _visibleObjects.Clear();
         // Hard visibility bounds also bound the number of spatial cells visited on large maps.
         float distance = float.IsFinite(farPlane) ? Math.Clamp(farPlane, 1, 1800) : 1800;
         var extent = new Vector3(distance);
@@ -172,6 +174,7 @@ internal sealed class SceneRenderer : IDisposable
                 if (_worlds.Count == MaximumInstances) break;
                 int offset = _worlds.Count;
                 _worlds.Add(instance.World);
+                _visibleObjects.Add(instance.Id);
                 foreach (var mesh in model.Meshes)
                     if (mesh.Material.Transparent)
                         _transparent.Add(new(mesh, offset, group.Mirrored,
@@ -205,6 +208,36 @@ internal sealed class SceneRenderer : IDisposable
         }
         catch (Exception exception) { Warn($"Scene rendering failed: {exception.Message}"); }
         finally { ResetBindings(); }
+    }
+
+    public SceneInstance? Pick(Vector3 origin, Vector3 direction, float maximumDistance)
+    {
+        if (_disposed || !float.IsFinite(maximumDistance) || maximumDistance <= 0) return null;
+        float nearest = Math.Min(maximumDistance, 1800);
+        var end = origin + direction * nearest;
+        var candidates = new List<(SceneInstance Instance, float Near)>();
+        foreach (var instance in _scene.Query(new(Vector3.Min(origin, end), Vector3.Max(origin, end))))
+        {
+            if (!_visibleObjects.Contains(instance.Id) || !_models.ContainsKey(instance.Model)) continue;
+            if (SceneVisualPicker.Intersects(instance.VisualLocalBounds.Transform(instance.World), origin,
+                direction, nearest, out float near)) candidates.Add((instance, near));
+        }
+        candidates.Sort((a, b) => a.Near.CompareTo(b.Near));
+        SceneInstance? picked = null;
+        foreach (var (instance, near) in candidates)
+        {
+            if (near > nearest) break;
+            if (!_scene.Models.TryGet(instance.Model, out var model))
+            {
+                _scene.Models.Request(instance.Model);
+                continue;
+            }
+            if (!SceneVisualPicker.Pick(model, instance.InverseWorld, origin, direction, nearest, out float distance))
+                continue;
+            nearest = distance;
+            picked = instance;
+        }
+        return picked;
     }
 
     public void RenderTransparent(FreeCamera camera, Matrix4x4 viewProjection)
@@ -554,6 +587,7 @@ internal sealed class SceneRenderer : IDisposable
         foreach (var texture in _textures.Values) texture.Texture.Dispose();
         _models.Clear(); _textures.Clear(); _textureDemands.Clear(); _textureInfo.Clear();
         _worlds.Clear(); _transparent.Clear();
+        _visibleObjects.Clear();
         _flatNormal?.Dispose(); _white?.Dispose(); _alpha?.Dispose(); _depthRead?.Dispose(); _depth?.Dispose();
         _mirroredTwoSided?.Dispose(); _twoSided?.Dispose(); _mirroredBack?.Dispose(); _back?.Dispose(); _sampler?.Dispose();
         _instances?.Dispose(); _constants?.Dispose(); _layout?.Dispose(); _pixel?.Dispose(); _vertex?.Dispose();

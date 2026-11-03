@@ -14,7 +14,8 @@ namespace Editor
                 StatusText.Text = "Редактор: свободная камера.";
                 return;
             }
-            if (_level == null || _importCancellation != null || _levelOpening) return;
+            if (_level == null || _isClosing || _importCancellation != null || _levelOpening || _levelSaving || _savingChangesOnClose
+                || RoadSegmentsPanel.IsSaving || VegetationPanel.IsSaving || ObjectsPanel.IsSaving) return;
             try
             {
                 StatusText.Text = "Загрузка персонажа…";

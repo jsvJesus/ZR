@@ -38,6 +38,7 @@ public sealed class LevelWorkspace
         await RoadEditStorage.LoadAsync(level.Directory, roads, cancellationToken);
         var vegetation = await ZoneReborn.World.Vegetation.VegetationStorage.LoadAsync(level.Directory, Assets, cancellationToken);
         var objects = await Task.Run(() => SourceSceneReader.Read(source, Assets, cancellationToken), cancellationToken);
+        await SceneEditStorage.LoadAsync(level.Directory, objects, cancellationToken);
         return level with { Roads = roads, Vegetation = vegetation, Objects = objects };
     }
 

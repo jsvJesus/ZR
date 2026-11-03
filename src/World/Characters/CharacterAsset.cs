@@ -262,16 +262,11 @@ public sealed partial class CharacterPose
                     ? local
                     : local * matrices[node.Parent];
 
-                if (node.Name == "Spine2" && torsoYaw != 0)
-                {
-                    var pivot = matrices[i].Translation;
-
-                    matrices[i] *= Matrix4x4.CreateRotationY(
-                        torsoYaw
-                    );
-
-                    matrices[i].Translation = pivot;
-                }
+                ApplyUpperBodyAim(
+                    ref matrices[i],
+                    node.Name,
+                    torsoYaw
+                );
             }
         }
 

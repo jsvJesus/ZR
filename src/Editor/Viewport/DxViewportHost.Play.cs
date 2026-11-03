@@ -131,8 +131,21 @@ public sealed partial class DxViewportHost
         }
         var movement = new Vector2((IsPressed(KeyD) ? 1 : 0) - (IsPressed(KeyA) ? 1 : 0),
             (IsPressed(KeyW) ? 1 : 0) - (IsPressed(KeyS) ? 1 : 0));
-        _player.Update(deltaTime, new CharacterInput(movement, IsPressed(KeyAlt), IsPressed(KeyShift),
-            IsPressed(KeyControl), _jumpRequested, _toggleCrouchRequested), _orbit.Yaw);
+
+        _player.Update(
+            deltaTime,
+            new CharacterInput(
+                movement,
+                IsPressed(KeyAlt),
+                IsPressed(KeyShift),
+                IsPressed(KeyControl),
+                _jumpRequested,
+                _toggleCrouchRequested
+            ),
+            _orbit.Yaw,
+            _orbit.Pitch
+        );
+
         PublishCharacterWeaponState();
         _jumpRequested = false;
         _toggleCrouchRequested = false;

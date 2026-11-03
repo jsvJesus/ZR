@@ -61,7 +61,7 @@ public sealed partial class CharacterLocomotion
         Animator.Pose.Weapon = Weapon;
     }
 
-    public void Update(float deltaTime, CharacterInput input, float cameraYaw)
+    public void Update(float deltaTime, CharacterInput input, float cameraYaw, float cameraPitch = 0f)
     {
         if (!float.IsFinite(deltaTime) || deltaTime <= 0)
         {
@@ -147,6 +147,22 @@ public sealed partial class CharacterLocomotion
             (1f - MathF.Exp(-8f * deltaTime));
 
         Weapon.UpdatePose(deltaTime, Animator.Current, !Grounded || IsLanding);
+
+        float targetPitch =
+            Weapon.InHands &&
+            Grounded &&
+            !IsPostureTransition &&
+            !IsLanding
+                ? Math.Clamp(cameraPitch, -1.15f, 0.65f)
+                : 0f;
+
+        float pitchBlend =
+            1f - MathF.Exp(-12f * deltaTime);
+
+        Animator.Pose.AimPitch +=
+            (targetPitch - Animator.Pose.AimPitch) *
+            pitchBlend;
+
         Animator.EvaluatePose();
     }
 

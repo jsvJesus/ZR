@@ -16,6 +16,7 @@ using ZoneReborn.World.Characters;
 using ZoneReborn.World.Characters.Locomotion;
 using ZoneReborn.World.Assets;
 using ZoneReborn.World.Levels.Models;
+using ZoneReborn.World.Scene;
 using Buffer = SharpDX.Direct3D11.Buffer;
 using Device = SharpDX.Direct3D11.Device;
 
@@ -34,6 +35,9 @@ namespace Editor.Viewport
         private RoadRenderer? _roads;
         private TreeRenderer? _trees;
         private SceneRenderer? _objects;
+        private SceneSelectionRenderer? _objectSelection;
+        private SceneData? _scene;
+        private string? _selectedObject;
 
         private VertexShader _vertexShader = null!;
         private PixelShader _pixelShader = null!;
@@ -137,6 +141,8 @@ namespace Editor.Viewport
                 ResourceOptionFlags.None,
                 0);
 
+            _objectSelection = new(_device, _context, _vertexShader, _pixelShader, _inputLayout);
+
             CreateRenderTarget();
         }
 
@@ -232,6 +238,21 @@ namespace Editor.Viewport
             _roads = roads;
             _trees = trees;
             _objects = objects;
+            _scene = level.Objects;
+            _selectedObject = null;
+        }
+
+        public void SelectObject(string? id) => _selectedObject = id;
+
+        public SceneInstance? PickObject(Vector3 origin, Vector3 direction)
+        {
+            if (_objects == null || !float.IsFinite(direction.LengthSquared()) ||
+                direction.LengthSquared() < 1e-12f) return null;
+            direction = Vector3.Normalize(direction);
+            float maximum = Math.Min(_terrain?.FarPlane ?? 1000, 1800);
+            if (PickTerrain(origin, direction, out var ground))
+                maximum = Math.Min(maximum, Vector3.Distance(origin, ground) + 0.05f);
+            return _objects.Pick(origin, direction, maximum);
         }
 
         public void SelectTree(Guid? id) { if (_trees != null) _trees.Selected = id; }
@@ -388,6 +409,8 @@ namespace Editor.Viewport
             characterView.Translation = Vector3.Zero;
             _character?.Render(characterView * projection, camera.Position);
             _objects?.RenderTransparent(camera, viewProjection);
+            if (!playing && _selectedObject != null && _scene?.Find(_selectedObject) is { } selected)
+                _objectSelection?.Render(selected, viewProjection);
             _swapChain.Present(1, PresentFlags.None);
         }
 
@@ -453,6 +476,7 @@ namespace Editor.Viewport
             _roads?.Dispose();
             _trees?.Dispose();
             _objects?.Dispose();
+            _objectSelection?.Dispose();
             _character?.Dispose();
             _depthTarget?.Dispose();
             _depthTexture?.Dispose();

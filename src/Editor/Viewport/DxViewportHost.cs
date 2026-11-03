@@ -131,6 +131,7 @@ namespace Editor.Viewport
                 _renderer = new Dx11Renderer(_windowHandle);
                 if (_level != null && _assets != null)
                     _renderer.SetLevel(_level, _assets);
+                _renderer.SelectObject(ObjectEditingEnabled && !IsPlaying && !IsStarting ? _selectedObjectId : null);
 
                 _lastFrameTime = Stopwatch.GetTimestamp();
                 _timer.Start();
@@ -234,6 +235,7 @@ namespace Editor.Viewport
                     if (width > 0 && height > 0)
                     {
                         UpdatePlayCamera();
+                        _renderer.SelectObject(ObjectEditingEnabled && !IsPlaying && !IsStarting ? _selectedObjectId : null);
                         _renderer.Render(
                             IsPlaying ? _playCamera : _camera,
                             width,
@@ -278,6 +280,8 @@ namespace Editor.Viewport
             _renderer?.SetLevel(level, assets);
             _level = level;
             _assets = assets;
+            SelectObject(null);
+            ObjectPicked?.Invoke(null);
             _lastFrameTime = Stopwatch.GetTimestamp();
             _timer.Start();
             LevelChanged?.Invoke();
@@ -293,6 +297,7 @@ namespace Editor.Viewport
             {
                 case WmLeftDown:
                     SetFocus(window);
+                    if (ObjectEditingEnabled) { PickObject(ReadX(lParam), ReadY(lParam)); return nint.Zero; }
                     if (TreeEditingEnabled) { HandleTreePointer(ReadX(lParam), ReadY(lParam)); return nint.Zero; }
                     PickRoadSegment(ReadX(lParam), ReadY(lParam));
                     return nint.Zero;
@@ -347,6 +352,7 @@ namespace Editor.Viewport
 
                 case WmKeyDown:
                 case WmSysKeyDown:
+                    if (HandleObjectKey((int)wParam, lParam)) return nint.Zero;
                     if ((int)wParam == 0x1B && (IsPlaying || IsStarting))
                     {
                         StopPlay();

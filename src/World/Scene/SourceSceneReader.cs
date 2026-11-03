@@ -1,5 +1,7 @@
 using System.Globalization;
 using System.Numerics;
+using System.Security.Cryptography;
+using System.Text;
 using System.Xml;
 using System.Xml.Linq;
 using ZoneReborn.World.Assets;
@@ -28,18 +30,23 @@ public static class SourceSceneReader
             ? Path.GetFullPath(sourceLevel) : Path.Combine(sourceDirectory, "LevelData.xml");
         try
         {
-            foreach (var entry in Objects(levelPath)) Expand(entry, Matrix4x4.Identity, true, false, 0);
+            var entries = Objects(levelPath);
+            for (int i = 0; i < entries.Length; i++)
+                Expand(entries[i], Matrix4x4.Identity, true, false, 0,
+                    i.ToString(CultureInfo.InvariantCulture), Path.GetFileName(sourceDirectory), null);
         }
         catch (Exception error) when (Expected(error)) { Warn($"{levelPath}: {error.Message}"); }
         cancellationToken.ThrowIfCancellationRequested();
         var scene = new SceneData(assets, instances, warnings, physics);
+        scene.SourceName = Path.GetFileName(sourceDirectory);
         loadedScene = scene;
         scene.Models.SetSourceDirectory(sourceDirectory);
         return scene;
 
         void Warn(string text) { if (warned.Add(text)) warnings.Add(text); }
 
-        void Expand(XElement entry, Matrix4x4 parent, bool parentCollision, bool parentPlayerOnly, int depth)
+        void Expand(XElement entry, Matrix4x4 parent, bool parentCollision, bool parentPlayerOnly, int depth,
+            string id, string parentStamp, string? prefabName)
         {
             cancellationToken.ThrowIfCancellationRequested();
             string file = (string?)entry.Attribute("fileName") ?? "";
@@ -47,6 +54,8 @@ public static class SourceSceneReader
             if (!prefab && !Path.GetExtension(file).Equals(".sco", StringComparison.OrdinalIgnoreCase)) return;
             try
             {
+                string stamp = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
+                    parentStamp + "\n" + entry.ToString(SaveOptions.DisableFormatting))));
                 if (depth > 32) throw new InvalidDataException("Prefab nesting exceeds 32 levels.");
                 if (instances.Count >= 1_000_000) throw new InvalidDataException("Scene instance limit exceeded.");
                 var gameObject = entry.Element("gameObject");
@@ -75,7 +84,10 @@ public static class SourceSceneReader
                     try
                     {
                         if (!prefabs.TryGetValue(path, out var children)) prefabs.Add(path, children = Objects(path));
-                        foreach (var child in children) Expand(child, world, collision, playerOnly, depth + 1);
+                        for (int i = 0; i < children.Length; i++)
+                            Expand(children[i], world, collision, playerOnly, depth + 1,
+                                id + "/" + i.ToString(CultureInfo.InvariantCulture), stamp,
+                                prefabName == null ? name : prefabName + " / " + name);
                     }
                     finally { activePrefabs.Remove(path); }
                     return;
@@ -99,7 +111,11 @@ public static class SourceSceneReader
                 SceneBounds transformed = localBounds.Transform(world);
                 if (!Finite(transformed.Minimum) || !Finite(transformed.Maximum))
                     throw new InvalidDataException("Scene bounds are non-finite.");
-                instances.Add(new(model, world, inverse, transformed, collision) { PlayerCollisionOnly = playerOnly });
+                instances.Add(new(model, world, inverse, transformed, collision)
+                {
+                    PlayerCollisionOnly = playerOnly, Id = id, SourceStamp = stamp,
+                    PrefabName = prefabName, LocalBounds = localBounds, VisualLocalBounds = local.Value
+                });
             }
             catch (Exception error) when (Expected(error)) { Warn($"Object {file}: {error.Message}"); }
         }

@@ -25,6 +25,73 @@ internal sealed class SceneTriangleTree
         if (_triangles.Length != 0) Build(0, _triangles.Length);
     }
 
+    public SceneTriangleTree(SceneModel model)
+    {
+        var triangles = new List<SceneTriangle>();
+        foreach (var mesh in model.Meshes)
+        for (int i = 0; i + 2 < mesh.Indices.Length; i += 3)
+        {
+            int a = mesh.Indices[i], b = mesh.Indices[i + 1], c = mesh.Indices[i + 2];
+            if ((uint)a >= (uint)mesh.Vertices.Length || (uint)b >= (uint)mesh.Vertices.Length ||
+                (uint)c >= (uint)mesh.Vertices.Length) continue;
+            var triangle = new SceneTriangle(mesh.Vertices[a].Position, mesh.Vertices[b].Position,
+                mesh.Vertices[c].Position) { DoubleSided = mesh.Material.DoubleSided };
+            if (SceneTriangle.IsFinite(triangle.A) && SceneTriangle.IsFinite(triangle.B) &&
+                SceneTriangle.IsFinite(triangle.C) && triangle.Normal.LengthSquared() > 1e-16f)
+                triangles.Add(triangle);
+        }
+        _triangles = triangles.ToArray();
+        if (_triangles.Length != 0) Build(0, _triangles.Length);
+    }
+
+    public bool Raycast(Vector3 origin, Vector3 direction, float maximumDistance, out float distance)
+    {
+        distance = maximumDistance;
+        bool hit = false;
+        if (_nodes.Count != 0) Raycast(0, origin, direction, ref distance, ref hit);
+        return hit;
+    }
+
+    private void Raycast(int index, Vector3 origin, Vector3 direction, ref float nearest, ref bool hit)
+    {
+        var node = _nodes[index];
+        if (!SceneVisualPicker.Intersects(node.Bounds, origin, direction, nearest, out _)) return;
+        if (node.Left >= 0)
+        {
+            bool left = SceneVisualPicker.Intersects(_nodes[node.Left].Bounds, origin, direction, nearest, out float a);
+            bool right = SceneVisualPicker.Intersects(_nodes[node.Right].Bounds, origin, direction, nearest, out float b);
+            if (left && right)
+            {
+                Raycast(a <= b ? node.Left : node.Right, origin, direction, ref nearest, ref hit);
+                Raycast(a <= b ? node.Right : node.Left, origin, direction, ref nearest, ref hit);
+            }
+            else if (left) Raycast(node.Left, origin, direction, ref nearest, ref hit);
+            else if (right) Raycast(node.Right, origin, direction, ref nearest, ref hit);
+            return;
+        }
+        for (int i = node.Start; i < node.Start + node.Count; i++)
+        {
+            var triangle = _triangles[i];
+            var first = triangle.B - triangle.A;
+            var second = triangle.C - triangle.A;
+            var p = Vector3.Cross(direction, second);
+            double determinant = Vector3.Dot(first, p);
+            // Relative tolerance also works for an unnormalised inverse-scaled ray.
+            double tolerance = 1e-8 * Math.Sqrt((double)first.LengthSquared() * p.LengthSquared());
+            if (triangle.DoubleSided ? Math.Abs(determinant) <= tolerance : determinant <= tolerance) continue;
+            var offset = origin - triangle.A;
+            double u = Vector3.Dot(offset, p) / determinant;
+            if (u < 0 || u > 1) continue;
+            var q = Vector3.Cross(offset, first);
+            double v = Vector3.Dot(direction, q) / determinant;
+            if (v < 0 || u + v > 1) continue;
+            double value = Vector3.Dot(second, q) / determinant;
+            if (!double.IsFinite(value) || value < 0 || value > nearest) continue;
+            nearest = (float)value;
+            hit = true;
+        }
+    }
+
     public void Append(SceneBounds localBounds, SceneBounds worldBounds, Matrix4x4 world,
         List<SceneTriangle> output)
     {
@@ -91,6 +158,7 @@ internal sealed class SceneTriangleTree
 
 internal readonly record struct SceneTriangle(Vector3 A, Vector3 B, Vector3 C)
 {
+    public bool DoubleSided { get; init; }
     public Vector3 Normal => Vector3.Cross(B - A, C - A);
     public SceneBounds Bounds => new(Vector3.Min(A, Vector3.Min(B, C)), Vector3.Max(A, Vector3.Max(B, C)));
     public static bool IsFinite(Vector3 value) => float.IsFinite(value.X) && float.IsFinite(value.Y) && float.IsFinite(value.Z);

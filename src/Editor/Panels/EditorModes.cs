@@ -12,6 +12,7 @@ namespace Editor
             bool showTerrainMaterials = false,
             bool showRoadSegments = false,
             bool showVegetation = false,
+            bool showObjects = false,
             bool showCharacterEditor = false)
         {
             CurrentModeText.Text = $"{category} / {name}";
@@ -22,6 +23,8 @@ namespace Editor
             RoadSegmentsPanel.RefreshHighlight();
             VegetationPanel.IsVisible = showVegetation;
             VegetationPanel.RefreshMode();
+            ObjectsPanel.IsVisible = showObjects;
+            ObjectsPanel.RefreshMode();
             CharacterPanel.IsVisible = showCharacterEditor;
             CharacterPanel.SetActive(showCharacterEditor);
             UpdatePlayControls();
@@ -30,7 +33,8 @@ namespace Editor
 
         private async void CharacterEditor_Click(object? sender, RoutedEventArgs e)
         {
-            if (_isClosing || _levelOpening || _importCancellation != null) return;
+            if (_isClosing || _levelOpening || _levelSaving || _savingChangesOnClose || _importCancellation != null
+                || RoadSegmentsPanel.IsSaving || VegetationPanel.IsSaving || ObjectsPanel.IsSaving) return;
             SetMode("Character Editor", "Экипировка персонажа",
                 "Одежда, снаряжение и оружие на персонаже текущего уровня.", showCharacterEditor: true);
             await CharacterPanel.ActivateAsync();
@@ -94,7 +98,7 @@ namespace Editor
         private void Objects_Click(object? sender, RoutedEventArgs e)
         {
             SetMode("Objects editor", "Объекты сцены",
-                "Просмотр объектов игрового мира.");
+                "Выбор, изменение и удаление отдельных объектов текущего уровня.", showObjects: true);
         }
 
         private void Placement_Click(object? sender, RoutedEventArgs e)
@@ -106,7 +110,7 @@ namespace Editor
         private void ObjectProperties_Click(object? sender, RoutedEventArgs e)
         {
             SetMode("Objects editor", "Свойства объектов",
-                "Изменение параметров выбранного объекта.");
+                "Параметры выбранного объекта; правки затрагивают только этот экземпляр на карте.", showObjects: true);
         }
 
     }
