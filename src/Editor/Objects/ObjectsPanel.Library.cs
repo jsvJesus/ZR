@@ -207,7 +207,14 @@ public sealed partial class ObjectsPanel
                     RefreshLibraryMode();
                 };
                 window.SetModel(_assetPaths, _readyAsset);
-                if (this.GetVisualRoot() is Window owner) window.Show(owner); else window.Show();
+                if (TopLevel.GetTopLevel(this) is Window owner)
+                {
+                    window.Show(owner);
+                }
+                else
+                {
+                    window.Show();
+                }
             }
             else
             {
