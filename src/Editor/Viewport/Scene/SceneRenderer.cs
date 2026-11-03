@@ -33,6 +33,8 @@ internal sealed class SceneRenderer : IDisposable
     private readonly Dictionary<string, ModelResources> _models = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, TextureResources> _textures = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, Task<TextureResult>> _pendingTextures = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, TextureDemand> _textureDemands = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, TextureMipInfo[]> _textureInfo = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _failedModels = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _failedTextures = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _warnings = new(StringComparer.OrdinalIgnoreCase);
@@ -179,7 +181,9 @@ internal sealed class SceneRenderer : IDisposable
         }
         try
         {
+            PrepareTextures(ordered);
             UploadReadyTextures();
+            RequestTextures();
             if (_worlds.Count == 0) return;
             _context.MapSubresource(_instances, MapMode.WriteDiscard, SharpDX.Direct3D11.MapFlags.None, out DataStream stream);
             try { using (stream) stream.WriteRange(_worlds.ToArray()); }
@@ -260,10 +264,126 @@ internal sealed class SceneRenderer : IDisposable
         if (string.IsNullOrWhiteSpace(path)) return fallback;
         if (_textures.TryGetValue(path, out var texture))
         { texture.LastUsed = _frame; ready = true; return texture.Texture; }
-        // Deferred requests never enter the cache as fallback textures. They are retried next frame.
-        if (!_failedTextures.Contains(path) && !_pendingTextures.ContainsKey(path) && _pendingTextures.Count < 2)
-            _pendingTextures.Add(path, ReadTextureAsync(path, _stop.Token));
         return fallback;
+    }
+
+    private void PrepareTextures(DrawGroup[] groups)
+    {
+        _textureDemands.Clear();
+        foreach (var group in groups)
+        {
+            if (group.Resources == null || group.Count == 0) continue;
+            foreach (var mesh in group.Resources.Meshes)
+            {
+                Demand(mesh.Material.Diffuse, group.DistanceSquared, false);
+                Demand(mesh.Material.Normal, group.DistanceSquared, true);
+            }
+        }
+        foreach (var pair in _pendingTextures)
+            if (pair.Value.IsCompletedSuccessfully && pair.Value.Result.Image is { } image)
+                _textureInfo[pair.Key] = MipInfo(image);
+
+        // Reserve a base mip chain for every visible texture first. Spending the whole
+        // budget on the first few models would permanently starve the rest of the view.
+        int baseline = 256;
+        long bytes;
+        do
+        {
+            bytes = _textureDemands.Sum(p => TextureBytes(p.Key, baseline));
+            if (bytes <= TextureCacheBytes || baseline == 4) break;
+            baseline /= 2;
+        } while (true);
+        foreach (var demand in _textureDemands.Values) demand.Limit = baseline;
+        foreach (var pair in _textureDemands.OrderBy(p => p.Value.DistanceSquared).ThenBy(p => p.Value.Normal))
+        {
+            var demand = pair.Value;
+            for (int limit = baseline * 2; limit <= demand.DesiredLimit; limit *= 2)
+            {
+                long extra = TextureBytes(pair.Key, limit) - TextureBytes(pair.Key, demand.Limit);
+                if (bytes + extra > TextureCacheBytes) break;
+                bytes += extra; demand.Limit = limit;
+            }
+        }
+
+        void Demand(string path, float distanceSquared, bool normal)
+        {
+            if (string.IsNullOrWhiteSpace(path) || _failedTextures.Contains(path)) return;
+            int desired = distanceSquared < 64 * 64 ? 1024 : distanceSquared < 256 * 256 ? 512 : 256;
+            if (_textureDemands.TryGetValue(path, out var demand))
+            {
+                demand.DistanceSquared = Math.Min(demand.DistanceSquared, distanceSquared);
+                demand.DesiredLimit = Math.Max(demand.DesiredLimit, desired);
+                demand.Normal &= normal;
+            }
+            else _textureDemands.Add(path, new(distanceSquared, desired, normal));
+            if (_textures.TryGetValue(path, out var resident)) resident.LastUsed = _frame;
+        }
+    }
+
+    private long TextureBytes(string path, int limit)
+    {
+        if (_textureInfo.TryGetValue(path, out var info))
+        {
+            int first = 0;
+            while (first + 1 < info.Length && info[first].Dimension > limit) first++;
+            return info[first].Bytes;
+        }
+        // BC3 is the conservative compressed estimate until the background reader
+        // supplies exact mip sizes (including the few uncompressed source textures).
+        return (long)limit * limit * 4 / 3 + 64;
+    }
+
+    private static TextureMipInfo[] MipInfo(DdsImage image)
+    {
+        int selectable = 1;
+        while (selectable < image.MipLevels.Count &&
+            (image.Format == DdsPixelFormat.Rgba8 || BlockAligned(image.MipLevels[selectable]))) selectable++;
+        var info = new TextureMipInfo[selectable];
+        long bytes = 0;
+        for (int i = image.MipLevels.Count - 1; i >= 0; i--)
+        {
+            var mip = image.MipLevels[i];
+            bytes += mip.Data.LongLength;
+            if (i < info.Length) info[i] = new(Math.Max(mip.Width, mip.Height), bytes);
+        }
+        return info;
+    }
+
+    private static DdsImage SelectMips(DdsImage image, int limit)
+    {
+        int first = 0;
+        while (first + 1 < image.MipLevels.Count &&
+            Math.Max(image.MipLevels[first].Width, image.MipLevels[first].Height) > limit &&
+            (image.Format == DdsPixelFormat.Rgba8 || BlockAligned(image.MipLevels[first + 1]))) first++;
+        if (first == 0) return image;
+        var mips = image.MipLevels.Skip(first).ToArray();
+        return new(mips[0].Width, mips[0].Height, image.Format, mips);
+    }
+
+    // BC mip tails may reach 1x1, but a new BC resource's top level must be block aligned.
+    private static bool BlockAligned(DdsMipLevel mip) => mip.Width % 4 == 0 && mip.Height % 4 == 0;
+
+    private void RequestTextures()
+    {
+        // Fill missing diffuse/normal maps before refining existing ones. Draw order
+        // must not decide which materials are allowed to enter the request queue.
+        foreach (var pair in _textureDemands.OrderBy(p => _textures.ContainsKey(p.Key))
+            .ThenBy(p => p.Value.Normal).ThenBy(p => p.Value.DistanceSquared))
+        {
+            if (_pendingTextures.Count >= 2) break;
+            if (_pendingTextures.ContainsKey(pair.Key)) continue;
+            if (_textures.TryGetValue(pair.Key, out var resident) &&
+                Math.Max(resident.Image.Width, resident.Image.Height) >= RequiredDimension(pair.Key, pair.Value.Limit)) continue;
+            _pendingTextures.Add(pair.Key, ReadTextureAsync(pair.Key, _stop.Token));
+        }
+    }
+
+    private int RequiredDimension(string path, int limit)
+    {
+        if (!_textureInfo.TryGetValue(path, out var info)) return limit;
+        int first = 0;
+        while (first + 1 < info.Length && info[first].Dimension > limit) first++;
+        return info[first].Dimension;
     }
 
     private static Task<TextureResult> ReadTextureAsync(string path, CancellationToken token) => Task.Run(() =>
@@ -272,17 +392,12 @@ internal sealed class SceneRenderer : IDisposable
         try
         {
             TextureDecoder.Wait(token); entered = true;
-            var image = DdsReader.Read(path);
+            var image = SceneTextureMips.Complete(DdsReader.Read(path), token);
             token.ThrowIfCancellationRequested();
-            int first = 0;
-            while (first + 1 < image.MipLevels.Count &&
-                Math.Max(image.MipLevels[first].Width, image.MipLevels[first].Height) > 1024) first++;
-            var mips = image.MipLevels.Skip(first).ToArray();
-            long bytes = mips.Sum(m => (long)m.Data.Length);
-            return new TextureResult(new DdsImage(mips[0].Width, mips[0].Height, image.Format, mips), null, bytes);
+            return new TextureResult(SelectMips(image, 1024), null);
         }
-        catch (OperationCanceledException) { return new TextureResult(null, null, 0); }
-        catch (Exception exception) { return new TextureResult(null, exception.Message, 0); }
+        catch (OperationCanceledException) { return new TextureResult(null, null); }
+        catch (Exception exception) { return new TextureResult(null, exception.Message); }
         finally { if (entered) TextureDecoder.Release(); }
     });
 
@@ -290,6 +405,25 @@ internal sealed class SceneRenderer : IDisposable
     {
         long uploaded = 0;
         int count = 0;
+        // Keep the resident mip tails in CPU memory so pressure can reduce detail
+        // without dropping the texture or waiting for another disk read.
+        foreach (var pair in _textures.ToArray())
+        {
+            if (!_textureDemands.TryGetValue(pair.Key, out var demand)) continue;
+            var old = pair.Value;
+            var image = SelectMips(old.Image, demand.Limit);
+            if (ReferenceEquals(image, old.Image)) continue;
+            long bytes = image.MipLevels.Sum(m => m.Data.LongLength);
+            if (count >= 8 || (uploaded > 0 && uploaded + bytes > TextureFrameBytes)) continue;
+            try
+            {
+                var texture = new TerrainTexture(_device, image);
+                _textures[pair.Key] = new(texture, image, bytes, _frame);
+                old.Texture.Dispose(); _textureBytes += bytes - old.Bytes;
+                uploaded += bytes; count++;
+            }
+            catch (Exception exception) { Warn($"Scene DDS {pair.Key}: mip reduction failed: {exception.Message}"); }
+        }
         foreach (var pair in _pendingTextures.ToArray())
         {
             if (!pair.Value.IsCompletedSuccessfully) continue;
@@ -301,20 +435,28 @@ internal sealed class SceneRenderer : IDisposable
                 if (result.Error != null) Warn($"Scene DDS {pair.Key}: {result.Error}");
                 continue;
             }
-            if (count >= 2 || (uploaded > 0 && uploaded + result.Bytes > TextureFrameBytes)) continue;
-            if (!MakeTextureRoom(result.Bytes)) continue;
-            if (result.Bytes > TextureFrameBytes)
-                Warn($"Scene DDS {pair.Key}: uploading {result.Bytes / (1024 * 1024)} MiB in one frame.");
+            // A reader can finish after PrepareTextures scanned the pending queue.
+            // Always publish its sizes before consuming the result, so subsequent
+            // frames plan with exact costs and small textures are not reread forever.
+            _textureInfo[pair.Key] = MipInfo(result.Image);
+            if (!_textureDemands.TryGetValue(pair.Key, out var demand))
+            { _pendingTextures.Remove(pair.Key); continue; }
+            var image = SelectMips(result.Image, demand.Limit);
+            long bytes = image.MipLevels.Sum(m => m.Data.LongLength);
+            _textures.TryGetValue(pair.Key, out var old);
+            if (count >= 8 || (uploaded > 0 && uploaded + bytes > TextureFrameBytes)) continue;
+            if (!MakeTextureRoom(bytes - (old?.Bytes ?? 0))) continue;
             _pendingTextures.Remove(pair.Key);
             try
             {
-                var texture = new TerrainTexture(_device, result.Image);
-                _textures.Add(pair.Key, new(texture, result.Bytes, _frame));
-                _textureBytes += result.Bytes; uploaded += result.Bytes; count++;
+                var texture = new TerrainTexture(_device, image);
+                _textures[pair.Key] = new(texture, image, bytes, _frame);
+                old?.Texture.Dispose();
+                _textureBytes += bytes - (old?.Bytes ?? 0); uploaded += bytes; count++;
             }
             catch (Exception exception)
             {
-                _failedTextures.Add(pair.Key);
+                if (old == null) _failedTextures.Add(pair.Key);
                 Warn($"Scene DDS {pair.Key}: GPU upload failed: {exception.Message}");
             }
         }
@@ -355,7 +497,7 @@ internal sealed class SceneRenderer : IDisposable
     private bool MakeTextureRoom(long bytes)
     {
         long budget = Math.Max(TextureCacheBytes, bytes);
-        while (_textureBytes + bytes > budget || _textures.Count >= 256)
+        while (_textureBytes + bytes > budget)
         {
             var oldest = _textures.Where(p => p.Value.LastUsed != _frame)
                 .OrderBy(p => p.Value.LastUsed).FirstOrDefault();
@@ -410,7 +552,8 @@ internal sealed class SceneRenderer : IDisposable
         _pendingTextures.Clear();
         foreach (var model in _models.Values) model.Dispose();
         foreach (var texture in _textures.Values) texture.Texture.Dispose();
-        _models.Clear(); _textures.Clear(); _worlds.Clear(); _transparent.Clear();
+        _models.Clear(); _textures.Clear(); _textureDemands.Clear(); _textureInfo.Clear();
+        _worlds.Clear(); _transparent.Clear();
         _flatNormal?.Dispose(); _white?.Dispose(); _alpha?.Dispose(); _depthRead?.Dispose(); _depth?.Dispose();
         _mirroredTwoSided?.Dispose(); _twoSided?.Dispose(); _mirroredBack?.Dispose(); _back?.Dispose(); _sampler?.Dispose();
         _instances?.Dispose(); _constants?.Dispose(); _layout?.Dispose(); _pixel?.Dispose(); _vertex?.Dispose();
@@ -484,12 +627,21 @@ internal sealed class SceneRenderer : IDisposable
         }
     }
 
-    private sealed class TextureResources(TerrainTexture texture, long bytes, long lastUsed)
+    private sealed class TextureResources(TerrainTexture texture, DdsImage image, long bytes, long lastUsed)
     {
         public TerrainTexture Texture { get; } = texture;
+        public DdsImage Image { get; } = image;
         public long Bytes { get; } = bytes;
         public long LastUsed { get; set; } = lastUsed;
     }
-    private sealed record TextureResult(DdsImage? Image, string? Error, long Bytes);
+    private sealed class TextureDemand(float distanceSquared, int desiredLimit, bool normal)
+    {
+        public float DistanceSquared { get; set; } = distanceSquared;
+        public int DesiredLimit { get; set; } = desiredLimit;
+        public bool Normal { get; set; } = normal;
+        public int Limit { get; set; }
+    }
+    private readonly record struct TextureMipInfo(int Dimension, long Bytes);
+    private sealed record TextureResult(DdsImage? Image, string? Error);
     private readonly record struct TransparentDraw(MeshResources Mesh, int Offset, bool Mirrored, float DistanceSquared);
 }

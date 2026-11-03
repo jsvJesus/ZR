@@ -4,6 +4,8 @@ namespace ZoneReborn.World.Characters.Locomotion;
 
 public sealed partial class CharacterLocomotion
 {
+    private const float JumpCueFallbackDelay = 0.08f;
+
     private JumpDefinition? _jump;
     private float _jumpWait;
     private float _verticalVelocity;
@@ -60,9 +62,8 @@ public sealed partial class CharacterLocomotion
         _jumpImpulseApplied = false;
         _lastMovingSpeed = 0;
 
-        // A/D/S use the in-place animation set, but still carry movement.
-        // Only a jump without directional input starts with zero momentum.
-        if (_jump == JumpDefinition.Stationary && input.Move.LengthSquared() <= 0.001f)
+        if (_jump == JumpDefinition.Stationary &&
+            input.Move.LengthSquared() <= 0.001f)
         {
             _velocity = Vector2.Zero;
         }
@@ -96,7 +97,6 @@ public sealed partial class CharacterLocomotion
     {
         _jump ??= JumpDefinition.Fall;
 
-        // Air states bypass ground steering; update facing before root promotion.
         if (input.Move.LengthSquared() > 0.001f)
         {
             Yaw = Wrap(cameraYaw);
@@ -104,22 +104,27 @@ public sealed partial class CharacterLocomotion
 
         bool takeoff = State == AnimState.JumpTakeoff;
         var actionBefore = Animator.Current;
-        var takeoffClip = actionBefore.Clip;
-        bool authoredTakeoff = takeoff && actionBefore.IgnoreGravity
-            && takeoffClip.RootPosition(takeoffClip.LastFrame).Y
-                - takeoffClip.RootPosition(takeoffClip.FirstFrame).Y > 0.01f;
 
         Animator.Advance(dt, _velocity.Length());
 
         var horizontal = _velocity * dt;
 
-        if (authoredTakeoff)
+        if (takeoff &&
+            (_jump == JumpDefinition.Right ||
+             _jump == JumpDefinition.Left))
         {
-            // animation_jump_config.vel_or_imp selects the greater displacement,
-            // rather than adding physics and the impacting animation twice.
-            var root = Vector3.TransformNormal(Animator.RootDelta, Matrix4x4.CreateRotationY(Yaw));
+            var root = Vector3.TransformNormal(
+                Animator.RootDelta,
+                Matrix4x4.CreateRotationY(Yaw)
+            );
+
             var promotion = new Vector2(root.X, root.Z);
-            if (promotion.LengthSquared() > horizontal.LengthSquared()) horizontal = promotion;
+
+            if (promotion.LengthSquared() >
+                horizontal.LengthSquared())
+            {
+                horizontal = promotion;
+            }
         }
 
         if (!takeoff)
@@ -142,8 +147,8 @@ public sealed partial class CharacterLocomotion
             );
 
             var target =
-                (forward * input.Move.Y + right * input.Move.X) *
-                speed;
+                (forward * input.Move.Y +
+                 right * input.Move.X) * speed;
 
             if (input.Move.LengthSquared() > 0.001f)
             {
@@ -171,7 +176,7 @@ public sealed partial class CharacterLocomotion
         {
             candidate.X = Position.X;
             candidate.Z = Position.Z;
-
+            horizontal = Vector2.Zero;
             _velocity = Vector2.Zero;
 
             if (!GroundBelow(
@@ -186,9 +191,7 @@ public sealed partial class CharacterLocomotion
             }
         }
 
-        // The running takeoff supplies its own ascent and disables gravity.
-        // Only clips without vertical root motion need a physical impulse.
-        if (takeoff && !authoredTakeoff && !_jumpImpulseApplied)
+        if (takeoff && !_jumpImpulseApplied)
         {
             var clip = actionBefore.Clip;
 
@@ -196,48 +199,45 @@ public sealed partial class CharacterLocomotion
                 c => c.Name == "cJump"
             );
 
-            bool reachedCue =
-                cue == null ||
-                (Animator.Frame - cue.Frame) * clip.Direction >= 0 ||
-                Animator.Complete;
+            bool reachedCue = cue != null
+                ? (Animator.Frame - cue.Frame) *
+                    clip.Direction >= 0 || Animator.Complete
+                : Animator.Elapsed >= JumpCueFallbackDelay ||
+                    Animator.Complete;
 
-            if (reachedCue)
+            if (!reachedCue)
             {
-                _verticalVelocity = MathF.Sqrt(
-                    2f *
-                    LocomotionSettings.Gravity *
-                    LocomotionSettings.JumpHeight
+                Position = _surface.MoveCharacter(
+                    Position,
+                    candidate with { Y = ground },
+                    CollisionHeight
                 );
 
-                _jumpImpulseApplied = true;
-            }
-            else
-            {
-                // Keep the character on the terrain during
-                // the anticipation frames of the jump.
-                Position = _surface.MoveCharacter(Position, candidate with { Y = ground }, CollisionHeight);
                 return;
             }
+
+            _verticalVelocity = MathF.Sqrt(
+                2f *
+                LocomotionSettings.Gravity *
+                LocomotionSettings.JumpHeight
+            );
+
+            _jumpImpulseApplied = true;
         }
 
-        if (authoredTakeoff)
-        {
-            candidate.Y += Animator.RootDelta.Y;
-            _verticalVelocity = 0;
-        }
-        else
-        {
-            candidate.Y += _verticalVelocity * dt - 0.5f * LocomotionSettings.Gravity * dt * dt;
-            _verticalVelocity -= LocomotionSettings.Gravity * dt;
-        }
+        float verticalDisplacement =
+            _verticalVelocity * dt -
+            0.5f * LocomotionSettings.Gravity * dt * dt;
 
-        // Do not allow the character to climb an unwalkable
-        // slope by pushing horizontally into it during a jump.
+        _verticalVelocity -= LocomotionSettings.Gravity * dt;
+
+        candidate.Y = Position.Y + verticalDisplacement;
+
         if (ground > candidate.Y + 0.15f)
         {
             candidate.X = Position.X;
             candidate.Z = Position.Z;
-
+            horizontal = Vector2.Zero;
             _velocity = Vector2.Zero;
 
             GroundBelow(
@@ -248,14 +248,64 @@ public sealed partial class CharacterLocomotion
             );
         }
 
-        // Capture descent before collision can zero an upward velocity at a ceiling.
-        bool descending = !authoredTakeoff && _verticalVelocity <= 0 && candidate.Y <= Position.Y;
+        bool descending =
+            _verticalVelocity <= 0 &&
+            verticalDisplacement <= 0;
+
         if (_surface.HasSceneObjects)
         {
-            float requestedY = candidate.Y;
-            candidate = _surface.MoveCharacter(Position, candidate, CollisionHeight);
-            if (candidate.Y < requestedY - 0.001f && _verticalVelocity > 0) _verticalVelocity = 0;
-            GroundBelow(candidate.X, candidate.Z, Math.Max(Position.Y, candidate.Y) + 0.02f, out ground);
+            var horizontalDelta = new Vector3(
+                horizontal.X,
+                0,
+                horizontal.Y
+            );
+
+            if (verticalDisplacement > 0)
+            {
+                var verticalTarget = Position +
+                    Vector3.UnitY * verticalDisplacement;
+
+                var elevated = _surface.MoveCharacter(
+                    Position,
+                    verticalTarget,
+                    CollisionHeight
+                );
+
+                if (elevated.Y <
+                    verticalTarget.Y - 0.001f &&
+                    _verticalVelocity > 0)
+                {
+                    _verticalVelocity = 0;
+                }
+
+                candidate = _surface.MoveCharacter(
+                    elevated,
+                    elevated + horizontalDelta,
+                    CollisionHeight
+                );
+            }
+            else
+            {
+                var advanced = _surface.MoveCharacter(
+                    Position,
+                    Position + horizontalDelta,
+                    CollisionHeight
+                );
+
+                candidate = _surface.MoveCharacter(
+                    advanced,
+                    advanced +
+                    Vector3.UnitY * verticalDisplacement,
+                    CollisionHeight
+                );
+            }
+
+            GroundBelow(
+                candidate.X,
+                candidate.Z,
+                Math.Max(Position.Y, candidate.Y) + 0.02f,
+                out ground
+            );
         }
 
         _jumpPeak = Math.Max(
@@ -263,12 +313,12 @@ public sealed partial class CharacterLocomotion
             candidate.Y
         );
 
-        if (authoredTakeoff && _surface.TryGetHeight(candidate.X, candidate.Z, out float terrainGround))
-            candidate.Y = Math.Max(terrainGround, candidate.Y);
-
-        // Landing is controlled by collision and vertical
-        // velocity, not by the length of the takeoff animation.
-        if (descending && TryGroundSupport(candidate, _surface.HasSceneObjects ? 0.02f : 0, 0.15f, out var landingSupport))
+        if (descending &&
+            TryGroundSupport(
+                candidate,
+                _surface.HasSceneObjects ? 0.02f : 0,
+                0.15f,
+                out var landingSupport))
         {
             Position = landingSupport;
             Land(input);
@@ -341,8 +391,6 @@ public sealed partial class CharacterLocomotion
             false
         );
 
-        // The in-place landing is not covered by animation_jump_config's run
-        // recovery timers. Play its authored range instead of cutting it at 0.4s.
         if (!hard && _jump == JumpDefinition.Stationary)
         {
             _landingRemaining = Animator.Current.Clip.Duration;
