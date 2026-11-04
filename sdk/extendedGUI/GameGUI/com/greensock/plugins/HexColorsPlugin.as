@@ -1,0 +1,113 @@
+package com.greensock.plugins
+{
+   import com.greensock.TweenLite;
+   
+   public class HexColorsPlugin extends TweenPlugin
+   {
+      public static const API:Number = 2;
+      
+      protected var _colors:Array;
+      
+      public function HexColorsPlugin()
+      {
+         super("hexColors");
+         _overwriteProps = [];
+         _colors = [];
+      }
+      
+      public function _initColor(target:Object, p:String, end:uint) : void
+      {
+         var r:uint = 0;
+         var g:uint = 0;
+         var b:uint = 0;
+         var isFunc:Boolean = typeof target[p] == "function";
+         var start:uint = !isFunc ? uint(target[p]) : uint(target[Boolean(p.indexOf("set")) || !("get" + p.substr(3) in target) ? p : "get" + p.substr(3)]());
+         if(start != end)
+         {
+            r = uint(start >> 16);
+            g = uint(start >> 8 & 0xFF);
+            b = uint(start & 0xFF);
+            _colors[_colors.length] = new ColorProp(target,p,isFunc,r,(end >> 16) - r,g,(end >> 8 & 0xFF) - g,b,(end & 0xFF) - b);
+            _overwriteProps[_overwriteProps.length] = p;
+         }
+      }
+      
+      override public function setRatio(v:Number) : void
+      {
+         var clr:ColorProp = null;
+         var val:Number = NaN;
+         var i:int = int(_colors.length);
+         while(--i > -1)
+         {
+            clr = _colors[i];
+            val = clr.rs + v * clr.rc << 16 | clr.gs + v * clr.gc << 8 | clr.bs + v * clr.bc;
+            if(clr.f)
+            {
+               clr.t[clr.p](val);
+            }
+            else
+            {
+               clr.t[clr.p] = val;
+            }
+         }
+      }
+      
+      override public function _onInitTween(target:Object, value:*, tween:TweenLite) : Boolean
+      {
+         var p:String = null;
+         for(p in value)
+         {
+            _initColor(target,p,uint(value[p]));
+         }
+         return true;
+      }
+      
+      override public function _kill(lookup:Object) : Boolean
+      {
+         var i:int = int(_colors.length);
+         while(Boolean(i--))
+         {
+            if(lookup[_colors[i].p] != null)
+            {
+               _colors.splice(i,1);
+            }
+         }
+         return super._kill(lookup);
+      }
+   }
+}
+
+class ColorProp
+{
+   public var rs:int;
+   
+   public var f:Boolean;
+   
+   public var gs:int;
+   
+   public var p:String;
+   
+   public var rc:int;
+   
+   public var t:Object;
+   
+   public var bc:int;
+   
+   public var gc:int;
+   
+   public var bs:int;
+   
+   public function ColorProp(t:Object, p:String, f:Boolean, rs:int, rc:int, gs:int, gc:int, bs:int, bc:int)
+   {
+      super();
+      this.t = t;
+      this.p = p;
+      this.f = f;
+      this.rs = rs;
+      this.rc = rc;
+      this.gs = gs;
+      this.gc = gc;
+      this.bs = bs;
+      this.bc = bc;
+   }
+}

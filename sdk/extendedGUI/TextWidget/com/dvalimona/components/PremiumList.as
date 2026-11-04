@@ -1,0 +1,109 @@
+package com.dvalimona.components
+{
+   import flash.display.*;
+   import flash.events.*;
+   import logging.*;
+   import ui.components.*;
+   
+   public class PremiumList extends List
+   {
+      public function PremiumList(param1:DisplayObjectContainer = null, param2:Number = 0, param3:Number = 0, param4:Array = null)
+      {
+         _listItemClass = PremiumListItem;
+         super(param1,param2,param3,param4);
+      }
+      
+      override protected function addChildren() : void
+      {
+         _panel = new Panel(this,0,0);
+         _panel.color = _defaultColor;
+         _panel.colorAlpha = 0;
+         _itemHolder = new Sprite();
+         _panel.content.addChild(_itemHolder);
+         _scrollbar = new VScrollBar(this,0,0,onScroll);
+         _scrollbar.hideButtons = true;
+         _scrollbar.autoHide = true;
+         _scrollbar.setSliderParams(0,0,0);
+      }
+      
+      override protected function makeListItems() : void
+      {
+         var item:PremiumListItem = null;
+         var numItems:int = 0;
+         var i:int = 0;
+         try
+         {
+            while(_itemHolder.numChildren > 0)
+            {
+               item = PremiumListItem(_itemHolder.getChildAt(0));
+               item.removeEventListener(MouseEvent.CLICK,onSelect);
+               _itemHolder.removeChildAt(0);
+            }
+            _listItems = new Array();
+            numItems = Math.ceil(_height / _listItemHeight);
+            numItems = Math.min(numItems,_items.length);
+            numItems = Math.max(numItems,0);
+            i = 0;
+            while(i < numItems)
+            {
+               item = new PremiumListItem(_itemHolder,0,i * _listItemHeight + i * spacing);
+               _listItems.push(item);
+               item.setSize(width - _scrollbar.width,_listItemHeight);
+               item.defaultColor = _defaultColor;
+               item.selectedColor = _selectedColor;
+               item.rolloverColor = _rolloverColor;
+               item.addEventListener(MouseEvent.CLICK,onSelect);
+               item.doubleClickEnabled = true;
+               item.addEventListener(MouseEvent.DOUBLE_CLICK,onDoubleClick);
+               i++;
+            }
+         }
+         catch(error:Error)
+         {
+            Logger.LogToChannel(Logger.DEBUG,"ERROR PremiumList.makeListItems:",error);
+         }
+      }
+      
+      override protected function fillItems() : void
+      {
+         var offset:int = 0;
+         var numItems:int = 0;
+         var i:int = 0;
+         var item:PremiumListItem = null;
+         try
+         {
+            offset = _scrollbar.value;
+            numItems = Math.ceil(_height / _listItemHeight);
+            numItems = Math.min(numItems,_items.length);
+            Logger.LogToChannel(Logger.DEBUG,"PremiumList.fillItems:numItems",numItems);
+            i = 0;
+            while(i < numItems)
+            {
+               item = _listItems[i];
+               if(offset + i < _items.length)
+               {
+                  item.data = _items[offset + i];
+               }
+               else
+               {
+                  item.data = null;
+               }
+               if(offset + i == _selectedIndex)
+               {
+                  item.selected = true;
+               }
+               else
+               {
+                  item.selected = false;
+               }
+               i++;
+            }
+         }
+         catch(error:Error)
+         {
+            Logger.LogToChannel(Logger.DEBUG,"ERROR PremiumList.fillItems:",error);
+         }
+      }
+   }
+}
+
