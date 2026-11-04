@@ -21,7 +21,7 @@ namespace Editor
                 StatusText.Text = "Загрузка персонажа…";
                 await Viewport.StartPlayAsync();
                 if (!_isClosing) StatusText.Text = Viewport.IsPlaying
-                    ? "Play: мышь — обзор, WASD — бег, Alt — ходьба, Shift — спринт, Ctrl/C — присед, Space — прыжок, Esc — Stop."
+                    ? "Play: мышь — обзор, WASD — бег, Alt — ходьба, Shift — спринт, Ctrl/C — присед, Space — прыжок, F8 — осмотр, Esc — Stop."
                     : "Play остановлен.";
             }
             catch (Exception exception)
@@ -37,10 +37,13 @@ namespace Editor
             PlayButton.Content = active ? "■ Stop" : "▶ Play";
             PlayButton.IsEnabled = _level != null && _importCancellation == null && !_levelOpening;
             PlayHint.Text = CharacterPanel.IsActive ? "Character Editor · ПКМ — осмотр · колесо — расстояние"
-                : active ? "WASD · Alt — шаг · Shift — спринт · Ctrl — присед · Space — прыжок" : "Персонаж появится на Terrain под камерой";
+                : Viewport.IsPlayInspecting ? "Осмотр · WASD — полёт · Space/Shift — вверх/вниз · F8 — к персонажу"
+                : active ? "WASD · Alt — шаг · Shift — спринт · Ctrl — присед · Space — прыжок · F8 — осмотр" : "Персонаж появится на Terrain под камерой";
             CameraSpeedSlider.IsEnabled = !active && !Viewport.IsObjectDragging;
-            PlayNavigationHints.IsVisible = active && !CharacterPanel.IsActive;
+            PlayNavigationHints.IsVisible = active && !CharacterPanel.IsActive && !Viewport.IsPlayInspecting;
+            InspectionNavigationHints.IsVisible = Viewport.IsPlayInspecting && !CharacterPanel.IsActive;
             FreeNavigationHints.IsVisible = !active && !CharacterPanel.IsActive;
+            AnimStateInfo.IsVisible = active && !CharacterPanel.IsActive;
             if (!active) AnimStateInfo.Text = "";
             SetLevelCommandsBusy(_importCancellation != null);
         }

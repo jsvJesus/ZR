@@ -76,6 +76,7 @@ public sealed partial class DxViewportHost
         if (IsCharacterEditing && IsPlaying) return;
         if (IsStarting) throw new InvalidOperationException("Дождитесь завершения загрузки Play.");
         if (!HasLoadedLevel) throw new InvalidOperationException("Сначала откройте уровень.");
+        SetPlayInspection(false);
         int version = ++_characterEditorVersion;
         _characterEditorOwnsPlay = !IsPlaying;
         IsCharacterEditing = true;

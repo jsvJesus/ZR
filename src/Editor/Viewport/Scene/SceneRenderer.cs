@@ -128,6 +128,8 @@ internal sealed class SceneRenderer : IDisposable
             : _scene.Query(new(camera.Position - extent, camera.Position + extent));
         foreach (var instance in candidates)
         {
+            // Authored level borders remain in the scene's physical queries, but have no visible surface.
+            if (instance.IsEnvironmentCollision) continue;
             float radius = instance.Bounds.Radius;
             float distanceSquared = Vector3.DistanceSquared(camera.Position, instance.Bounds.Center);
             if (distanceSquared > (distance + radius) * (distance + radius) || !Visible(instance.Bounds, planes)) continue;

@@ -30,6 +30,7 @@ public sealed partial class DxViewportHost
         var level = _level ?? throw new InvalidOperationException("Сначала откройте уровень.");
         var assets = _assets ?? throw new InvalidOperationException("Не найдены ресурсы проекта.");
         _savedCamera = _camera.Pose;
+        IsPlayInspecting = false;
         _pressedKeys.Clear();
         _aimHeld = false;
         using var cancellation = new CancellationTokenSource();
@@ -97,6 +98,7 @@ public sealed partial class DxViewportHost
         _playLoad = null;
         _renderer?.ClearCharacter();
         _orbit = null;
+        IsPlayInspecting = false;
         _surface = null;
         _player = null;
         PublishCharacterWeaponState();
@@ -116,14 +118,14 @@ public sealed partial class DxViewportHost
 
     private void UpdatePlayCamera()
     {
-        if (_orbit == null || _surface == null || _player == null) return;
+        if (IsPlayInspecting || _orbit == null || _surface == null || _player == null) return;
         var p = _orbit.Position(_player.CameraAnchor, _surface, _player.CameraHeight);
         _playCamera.Restore(new(p.X, p.Y, p.Z, _orbit.Yaw, _orbit.Pitch, _camera.Speed));
     }
 
     private void UpdatePlayer(float deltaTime)
     {
-        if (_player == null || _orbit == null) return;
+        if (IsPlayInspecting || _player == null || _orbit == null) return;
         if (IsCharacterEditing)
         {
             // Finish airborne/stop motion, then idle without turning toward the inspection camera.

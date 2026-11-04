@@ -70,8 +70,12 @@ namespace Editor.Viewport
 
         public float CameraSpeed
         {
-            get => _camera.Speed;
-            set => _camera.Speed = Math.Clamp(value, FreeCamera.MinimumSpeed, FreeCamera.MaximumSpeed);
+            get => IsPlayInspecting ? _inspectionCamera.Speed : _camera.Speed;
+            set
+            {
+                var camera = IsPlayInspecting ? _inspectionCamera : _camera;
+                camera.Speed = Math.Clamp(value, FreeCamera.MinimumSpeed, FreeCamera.MaximumSpeed);
+            }
         }
 
         public DxViewportHost()
@@ -221,6 +225,14 @@ namespace Editor.Viewport
             {
                 if (IsPlaying) UpdatePlayMouseCapture();
                 if (IsPlaying) UpdatePlayer(deltaTime);
+                if (IsPlayInspecting) _inspectionCamera.Move(
+                    IsPressed(KeyW),
+                    IsPressed(KeyS),
+                    IsPressed(KeyA),
+                    IsPressed(KeyD),
+                    IsPressed(KeySpace),
+                    IsPressed(KeyShift),
+                    deltaTime);
                 if (!IsPlaying && !IsStarting && !IsObjectDragging) _camera.Move(
                     IsPressed(KeyW),
                     IsPressed(KeyS),
@@ -244,7 +256,7 @@ namespace Editor.Viewport
                         _renderer.SetObjectGizmo(ObjectTransformMode, _objectDrag?.Axis ?? _hoveredObjectAxis,
                             ObjectEditingEnabled && !IsObjectPlacing && !IsPlaying && !IsStarting && !_rotating && _level?.Objects?.CanSave == true);
                         _renderer.Render(
-                            IsPlaying ? _playCamera : _camera,
+                            IsPlaying ? ActivePlayCamera : _camera,
                             width,
                             height,
                             ShowGrid && !IsPlaying,
@@ -256,7 +268,7 @@ namespace Editor.Viewport
 
                 if (_frameCounter % 4 == 0)
                 {
-                    CameraChanged?.Invoke(IsPlaying ? _playCamera.Pose : _camera.Pose);
+                    CameraChanged?.Invoke(IsPlaying ? ActivePlayCamera.Pose : _camera.Pose);
                     if (IsPlaying && _player != null) LocomotionChanged?.Invoke(_player.Snapshot);
                 }
             }
@@ -338,7 +350,7 @@ namespace Editor.Viewport
 
                     if (IsPlaying && !IsCharacterEditing)
                     {
-                        _aimHeld = true;
+                        if (!IsPlayInspecting) _aimHeld = true;
                         return nint.Zero;
                     }
 
@@ -391,15 +403,21 @@ namespace Editor.Viewport
                     int wheelDelta = unchecked(
                         (short)((wParam.ToInt64() >> 16) & 0xFFFF));
 
-                    if (IsPlaying) _orbit!.Zoom(wheelDelta);
+                    if (IsPlayInspecting) _inspectionCamera.ChangeSpeed(wheelDelta);
+                    else if (IsPlaying) _orbit!.Zoom(wheelDelta);
                     else if (!IsStarting) _camera.ChangeSpeed(wheelDelta);
-                    CameraChanged?.Invoke(_camera.Pose);
+                    CameraChanged?.Invoke(IsPlaying ? ActivePlayCamera.Pose : _camera.Pose);
 
                     return nint.Zero;
 
                 case WmKeyDown:
                 case WmSysKeyDown:
                     if (HandleObjectKey((int)wParam, lParam)) return nint.Zero;
+                    if ((int)wParam == KeyF8 && IsPlaying)
+                    {
+                        if ((lParam.ToInt64() & (1L << 30)) == 0) TogglePlayInspection();
+                        return nint.Zero;
+                    }
                     if ((int)wParam == 0x1B && (IsPlaying || IsStarting))
                     {
                         StopPlay();
@@ -407,13 +425,15 @@ namespace Editor.Viewport
                     }
                     if ((int)wParam == KeyH && IsPlaying && !IsCharacterEditing)
                     {
-                        if (_pressedKeys.Add(KeyH)) SetCharacterWeaponInHands(!CharacterWeaponRequestedHeld);
+                        if (!IsPlayInspecting && (lParam.ToInt64() & (1L << 30)) == 0 && _pressedKeys.Add(KeyH))
+                            SetCharacterWeaponInHands(!CharacterWeaponRequestedHeld);
                         return nint.Zero;
                     }
                     if (IsMovementKey((int)wParam) && ((int)wParam != KeyAlt || IsPlaying))
                     {
                         bool firstPress = _pressedKeys.Add((int)wParam);
-                        if (IsPlaying && !IsCharacterEditing && firstPress)
+                        if (IsPlaying && !IsCharacterEditing && !IsPlayInspecting && firstPress
+                            && (lParam.ToInt64() & (1L << 30)) == 0)
                         {
                             if ((int)wParam == KeySpace) _jumpRequested = true;
                             if ((int)wParam == KeyC) _toggleCrouchRequested = true;

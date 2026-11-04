@@ -44,6 +44,8 @@ public sealed record ScenePhysicsMesh(
 public sealed record SceneInstance(string Model, Matrix4x4 World, Matrix4x4 InverseWorld,
     SceneBounds Bounds, bool CollisionEnabled)
 {
+    // Model paths are normalized by the scene readers and object placement pipeline.
+    public bool IsEnvironmentCollision => Model.StartsWith("models/env_collision/", StringComparison.OrdinalIgnoreCase);
     public bool PlayerCollisionOnly { get; init; }
     public string Id { get; init; } = "";
     public string SourceStamp { get; init; } = "";

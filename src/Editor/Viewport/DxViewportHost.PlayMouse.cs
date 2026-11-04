@@ -120,7 +120,8 @@ namespace Editor.Viewport
                 _playAbsolutePosition = current;
             }
             else _playAbsoluteMouse = false;
-            _orbit!.Rotate(dx, dy);
+            if (IsPlayInspecting) _inspectionCamera.Rotate(dx, dy);
+            else _orbit!.Rotate(dx, dy);
         }
 
         [StructLayout(LayoutKind.Sequential)]
