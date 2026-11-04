@@ -318,9 +318,11 @@ public sealed partial class CharacterLocomotion
                 candidate,
                 _surface.HasSceneObjects ? 0.02f : 0,
                 0.15f,
-                out var landingSupport))
+                out var landingSupport,
+                out float landingSurfaceY))
         {
             Position = landingSupport;
+            _supportSurfaceY = landingSurfaceY;
             Land(input);
             return;
         }

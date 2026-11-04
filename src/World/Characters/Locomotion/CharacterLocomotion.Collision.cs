@@ -7,6 +7,7 @@ public sealed partial class CharacterLocomotion
     private const float StandingHeight = 1.75f;
     private const float CrouchingHeight = 1.1f;
     private const float StepHeight = 0.3f;
+    private float _supportSurfaceY = float.NaN;
     private float CollisionHeight => _crouched ? CrouchingHeight : StandingHeight;
 
     private bool GroundBelow(float x, float z, float maximumY, out float height) =>
@@ -34,7 +35,12 @@ public sealed partial class CharacterLocomotion
 
         var moved = _surface.MoveCharacter(Position, target, CollisionHeight);
         float maximumTerrainRise = displacement.Length() * slope + 0.001f;
-        bool hasSupport = TryGroundSupport(moved, StepHeight, maximumTerrainRise, out var grounded, StepHeight);
+        // At a tread edge the rounded capsule's feet can be below the actual support.
+        // Measure the next step from the last accepted surface, never a speculative probe.
+        float currentSurfaceY = float.IsFinite(_supportSurfaceY) ? Math.Max(Position.Y, _supportSurfaceY) : Position.Y;
+        float maximumSurfaceY = currentSurfaceY + StepHeight;
+        bool hasSupport = TryGroundSupport(moved, StepHeight, maximumTerrainRise,
+            out var grounded, out float surfaceY, maximumSurfaceY);
         var remaining = new Vector2(target.X - moved.X, target.Z - moved.Z);
         bool blocked = displacement.LengthSquared() > 1e-10f &&
             remaining.LengthSquared() > Math.Max(1e-10f, displacement.LengthSquared() * 0.01f);
@@ -49,12 +55,14 @@ public sealed partial class CharacterLocomotion
                 var stepped = _surface.MoveCharacter(raised, target with { Y = raised.Y }, CollisionHeight);
                 var stepRemaining = new Vector2(target.X - stepped.X, target.Z - stepped.Z);
                 if (stepRemaining.LengthSquared() < remaining.LengthSquared() &&
-                    TryGroundSupport(stepped, rise + StepHeight, maximumTerrainRise, out var supported, StepHeight) &&
+                    TryGroundSupport(stepped, rise + StepHeight, maximumTerrainRise,
+                        out var supported, out float stepSurfaceY, maximumSurfaceY) &&
                     supported.Y >= Position.Y - StepHeight && supported.Y <= Position.Y + StepHeight + 0.01f)
                 {
                     // A rounded capsule reaches a stair edge before its center reaches the tread.
                     // Keep that swept support instead of snapping to the lower floor at the center.
                     Position = supported;
+                    _supportSurfaceY = stepSurfaceY;
                     Grounded = true;
                     return true;
                 }
@@ -64,28 +72,36 @@ public sealed partial class CharacterLocomotion
         // Recover only an unsupported upward push beyond a legitimate ramp rise.
         // A horizontal wall slide can also leave a real ledge and must be free to fall.
         if (blocked && !hasSupport && moved.Y > Position.Y + maximumTerrainRise + 0.01f &&
-            TryGroundSupport(Position, 0.02f, 0.001f, out var previousSupport, StepHeight))
+            TryGroundSupport(Position, 0.02f, 0.001f,
+                out var previousSupport, out float previousSurfaceY, maximumSurfaceY))
         {
             Position = previousSupport;
+            _supportSurfaceY = previousSurfaceY;
             Grounded = true;
             return true;
         }
 
         Position = hasSupport ? grounded : moved;
+        if (hasSupport) _supportSurfaceY = surfaceY;
         Grounded = hasSupport;
         return true;
     }
 
     private bool TryGroundSupport(Vector3 candidate, float maximumDrop, float maximumTerrainRise, out Vector3 supported,
-        float maximumObjectRise = float.PositiveInfinity)
+        out float surfaceY, float maximumSurfaceY = float.PositiveInfinity)
     {
         supported = candidate;
+        surfaceY = candidate.Y;
         bool hasTerrain = _surface.TryGetHeight(candidate.X, candidate.Z, out float terrain);
         bool found = _surface.TrySnapToObject(candidate, CollisionHeight, maximumDrop, out var objectSupport,
-                Position.Y + maximumObjectRise) &&
+                out float objectSurfaceY, maximumSurfaceY) &&
             (!hasTerrain || objectSupport.Y >= terrain - 0.001f) &&
             _surface.CanOccupy(objectSupport, CollisionHeight);
-        if (found) supported = objectSupport;
+        if (found)
+        {
+            supported = objectSupport;
+            surfaceY = objectSurfaceY;
+        }
 
         // Object support must come from the entire capsule, including contacts outside
         // its center ray. Terrain has no scene collider, so retain its heightfield floor.
@@ -96,6 +112,7 @@ public sealed partial class CharacterLocomotion
             if (_surface.CanOccupy(terrainSupport, CollisionHeight))
             {
                 supported = terrainSupport;
+                surfaceY = terrain;
                 found = true;
             }
         }

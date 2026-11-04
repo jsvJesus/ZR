@@ -46,11 +46,16 @@ public sealed class TerrainSurface
         _level.Objects?.Collision.CanOccupy(feet, 0.32f, height) ?? true;
 
     public bool TrySnapToObject(Vector3 feet, float height, float maximumDrop, out Vector3 supported,
-        float maximumSurfaceY = float.PositiveInfinity)
+        float maximumSurfaceY = float.PositiveInfinity) =>
+        TrySnapToObject(feet, height, maximumDrop, out supported, out _, maximumSurfaceY);
+
+    public bool TrySnapToObject(Vector3 feet, float height, float maximumDrop, out Vector3 supported,
+        out float surfaceY, float maximumSurfaceY = float.PositiveInfinity)
     {
         supported = feet;
+        surfaceY = feet.Y;
         return _level.Objects is { } objects &&
-            objects.Collision.TrySnapDown(feet, 0.32f, height, maximumDrop, out supported, maximumSurfaceY);
+            objects.Collision.TrySnapDown(feet, 0.32f, height, maximumDrop, out supported, out surfaceY, maximumSurfaceY);
     }
 
     public float CameraDistance(Vector3 origin, Vector3 direction, float maximum)
