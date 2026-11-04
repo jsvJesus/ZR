@@ -9,6 +9,7 @@ public sealed class SceneCollision
 {
     private const float Skin = 0.001f;
     private const float Tolerance = 0.0001f;
+    private const float GroundProbeLift = 0.01f;
     private static readonly float WalkableY = MathF.Cos(40f * MathF.PI / 180f);
     private static readonly ConditionalWeakTable<ScenePhysicsMesh, Lazy<SceneTriangleTree>> Trees = new();
     private readonly ConcurrentBag<List<SceneTriangle>> _buffers = [];
@@ -126,11 +127,20 @@ public sealed class SceneCollision
     }
 
     /// <summary>Finds the first walkable capsule support below the feet, including a stair tread's rounded-cap edge contact.</summary>
-    public bool TrySnapDown(Vector3 position, float radius, float height, float maxDistance, out Vector3 supported)
+    public bool TrySnapDown(Vector3 position, float radius, float height, float maxDistance, out Vector3 supported,
+        float maximumSurfaceY = float.PositiveInfinity)
     {
         supported = position;
         if (!ValidCapsule(position, radius, height) || !float.IsFinite(maxDistance) ||
-            maxDistance <= 0 || !_hasGeometry) return false;
+            maxDistance <= 0 || float.IsNaN(maximumSurfaceY) || !_hasGeometry) return false;
+        // Recover small contact errors at seams instead of returning an already penetrating
+        // position that CanOccupy rejects. A low ceiling can prevent this optional lift.
+        Vector3 lifted = position + Vector3.UnitY * GroundProbeLift;
+        if (CanOccupy(lifted, radius, height))
+        {
+            position = lifted;
+            maxDistance += GroundProbeLift;
+        }
         Vector3 down = new(0, -maxDistance, 0);
         var triangles = Rent();
         try
@@ -147,7 +157,13 @@ public sealed class SceneCollision
                 // near a step edge the lower sphere touches on a diagonal normal.
                 Vector3 faceNormal = triangle.Normal;
                 if (faceNormal.Y < WalkableY * faceNormal.Length()) continue;
-                if (!Sweep(position, down, radius, height, triangle, time, out float contact, out _)) continue;
+                if (!Sweep(position, down, radius, height, triangle, time, out float contact, out var contactNormal)
+                    || contactNormal.Y <= Tolerance) continue;
+                CapsuleSegment(position + down * contact, radius, height, out var a, out var b);
+                ClosestPoints(a, b, triangle, out _, out var onTriangle);
+                // A capsule may touch a tall tread while its feet are still much lower.
+                // Limit the actual surface so repeated edge contacts cannot climb a tall wall.
+                if (onTriangle.Y > maximumSurfaceY + Skin) continue;
                 time = contact;
                 found = true;
             }
@@ -258,11 +274,13 @@ public sealed class SceneCollision
 
     private static Vector3 Slide(Vector3 position, Vector3 remaining, float radius, float height, List<SceneTriangle> triangles)
     {
+        bool horizontalMovement = Math.Abs(remaining.Y) <= Tolerance;
         for (int pass = 0; pass < 6 && remaining.LengthSquared() > 1e-12f; pass++)
         {
             float time = 1;
             Vector3 normal = default;
             bool hit = false;
+            bool walkableFace = false;
             var sweepBounds = SceneTriangleTree.Union(CapsuleBounds(position, radius + Skin, height),
                 CapsuleBounds(position + remaining, radius + Skin, height));
             foreach (var triangle in triangles)
@@ -271,16 +289,22 @@ public sealed class SceneCollision
                     !Sweep(position, remaining, radius, height, triangle, time, out float contact, out Vector3 contactNormal)) continue;
                 time = contact;
                 normal = contactNormal;
+                Vector3 faceNormal = triangle.Normal;
+                walkableFace = faceNormal.Y >= WalkableY * faceNormal.Length();
                 hit = true;
             }
             position += remaining * time;
             if (!hit) break;
             remaining *= 1 - time;
             // A horizontal push must not become an ascent of a wall or an unwalkable slope.
-            if (normal.Y > 0 && normal.Y < WalkableY && Math.Abs(remaining.Y) <= Tolerance)
+            // Keep the intent of the original sweep: projecting onto an earlier ramp
+            // must not disable this constraint at the next wall or steep edge.
+            if (horizontalMovement && normal.Y > 0 && (!walkableFace || normal.Y < WalkableY))
             {
                 normal.Y = 0;
+                if (normal.LengthSquared() <= 1e-12f) break;
                 normal = Vector3.Normalize(normal);
+                remaining.Y = Math.Min(remaining.Y, 0);
             }
             float into = Vector3.Dot(remaining, normal);
             if (into >= 0) break;
