@@ -114,11 +114,11 @@ public sealed class SceneCollision
         try
         {
             Collect(CapsuleBounds(position, radius, height), triangles);
-            CapsuleSegment(position, radius, height, out Vector3 a, out Vector3 b);
+            CapsuleSegment(Vector3.Zero, radius, height, out Vector3 a, out Vector3 b);
             float allowed = Math.Max(0, radius - Tolerance);
             foreach (var triangle in triangles)
             {
-                ClosestPoints(a, b, triangle, out Vector3 onCapsule, out Vector3 onTriangle);
+                ClosestPoints(a, b, RelativeTo(triangle, position), out Vector3 onCapsule, out Vector3 onTriangle);
                 if (Vector3.DistanceSquared(onCapsule, onTriangle) < allowed * allowed) return false;
             }
             return true;
@@ -128,9 +128,14 @@ public sealed class SceneCollision
 
     /// <summary>Finds the first walkable capsule support below the feet, including a stair tread's rounded-cap edge contact.</summary>
     public bool TrySnapDown(Vector3 position, float radius, float height, float maxDistance, out Vector3 supported,
-        float maximumSurfaceY = float.PositiveInfinity)
+        float maximumSurfaceY = float.PositiveInfinity) =>
+        TrySnapDown(position, radius, height, maxDistance, out supported, out _, maximumSurfaceY);
+
+    public bool TrySnapDown(Vector3 position, float radius, float height, float maxDistance, out Vector3 supported,
+        out float surfaceY, float maximumSurfaceY = float.PositiveInfinity)
     {
         supported = position;
+        surfaceY = position.Y;
         if (!ValidCapsule(position, radius, height) || !float.IsFinite(maxDistance) ||
             maxDistance <= 0 || float.IsNaN(maximumSurfaceY) || !_hasGeometry) return false;
         // Recover small contact errors at seams instead of returning an already penetrating
@@ -159,12 +164,14 @@ public sealed class SceneCollision
                 if (faceNormal.Y < WalkableY * faceNormal.Length()) continue;
                 if (!Sweep(position, down, radius, height, triangle, time, out float contact, out var contactNormal)
                     || contactNormal.Y <= Tolerance) continue;
-                CapsuleSegment(position + down * contact, radius, height, out var a, out var b);
-                ClosestPoints(a, b, triangle, out _, out var onTriangle);
+                Vector3 contactFeet = position + down * contact;
+                CapsuleSegment(Vector3.Zero, radius, height, out var a, out var b);
+                ClosestPoints(a, b, RelativeTo(triangle, contactFeet), out _, out var onTriangle);
                 // A capsule may touch a tall tread while its feet are still much lower.
                 // Limit the actual surface so repeated edge contacts cannot climb a tall wall.
-                if (onTriangle.Y > maximumSurfaceY + Skin) continue;
+                if (onTriangle.Y > maximumSurfaceY - contactFeet.Y + Skin) continue;
                 time = contact;
+                surfaceY = contactFeet.Y + onTriangle.Y;
                 found = true;
             }
             if (found) supported = position + down * time;
@@ -243,6 +250,12 @@ public sealed class SceneCollision
         b = position + new Vector3(0, height - radius, 0);
     }
 
+    // Keep closest points and their difference near the capsule, rather than adding
+    // kilometre-scale world coordinates back before computing a contact normal.
+    // At Aspen coordinates one world-space float ULP can exceed Tolerance.
+    private static SceneTriangle RelativeTo(SceneTriangle triangle, Vector3 origin) =>
+        new(triangle.A - origin, triangle.B - origin, triangle.C - origin);
+
     private static Vector3 Depenetrate(Vector3 position, float radius, float height, List<SceneTriangle> triangles)
     {
         for (int pass = 0; pass < 6; pass++)
@@ -251,8 +264,9 @@ public sealed class SceneCollision
             foreach (var triangle in triangles)
             {
                 if (!CapsuleBounds(position, radius, height).Intersects(triangle.Bounds)) continue;
-                CapsuleSegment(position, radius, height, out Vector3 a, out Vector3 b);
-                ClosestPoints(a, b, triangle, out Vector3 onCapsule, out Vector3 onTriangle);
+                CapsuleSegment(Vector3.Zero, radius, height, out Vector3 a, out Vector3 b);
+                var local = RelativeTo(triangle, position);
+                ClosestPoints(a, b, local, out Vector3 onCapsule, out Vector3 onTriangle);
                 Vector3 separation = onCapsule - onTriangle;
                 float length = separation.Length();
                 if (length >= radius - Tolerance) continue;
@@ -261,8 +275,8 @@ public sealed class SceneCollision
                 if (length > 1e-6f) normal = separation / length;
                 else
                 {
-                    normal = SurfaceNormal(a, b, triangle, Vector3.Zero);
-                    depth = radius - Math.Min(Vector3.Dot(a - triangle.A, normal), Vector3.Dot(b - triangle.A, normal));
+                    normal = SurfaceNormal(a, b, local, Vector3.Zero);
+                    depth = radius - Math.Min(Vector3.Dot(a - local.A, normal), Vector3.Dot(b - local.A, normal));
                 }
                 position += normal * (depth + Skin);
                 changed = true;
@@ -318,7 +332,8 @@ public sealed class SceneCollision
     {
         time = 0;
         normal = default;
-        CapsuleSegment(position, radius, height, out Vector3 a, out Vector3 b);
+        triangle = RelativeTo(triangle, position);
+        CapsuleSegment(Vector3.Zero, radius, height, out Vector3 a, out Vector3 b);
         // Distance to a convex triangle is convex along this translation. Its separating
         // plane gives a conservative advancement, including triangle edges and vertices.
         for (int iteration = 0; iteration < 24; iteration++)

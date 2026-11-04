@@ -12,9 +12,22 @@ public sealed record JumpDefinition(string Name, int FromFrame, int ToFrame,
     public static readonly JumpDefinition Left = new("J_RUN_L", 15, 19,
         "run_jump_up_left", "run_jump_fly_left", "run_jump_fly_OLD2",
         "run_jump_down_move_left", "run_jump_down_stop_left", 0.5f, 0.4f, 9);
-    public static readonly JumpDefinition Fall = new("J_IDLE_FALL", -1, -1,
-        "run_forward_jump_up__unarmed_OLD", "run_forward_jump_fly__unarmed_OLD", "run_forward_jump_fly__unarmed_OLD",
-        HardLanding, HardLanding, 0.7f, 0.4f, -1, 0.7f);
+
+    public static readonly JumpDefinition Fall = new(
+        "J_IDLE_FALL",
+        -1,
+        -1,
+        "run_forward_jump_up__unarmed_OLD",
+        "run_forward_jump_fly__unarmed_OLD",
+        "run_forward_jump_fly__unarmed_OLD",
+        "idle_jump_down__unarmed",
+        "idle_jump_down__unarmed",
+        0.4f,
+        0.4f,
+        -1,
+        0.7f
+    );
+
     // The resource includes separate stationary jump phases; PlayerAvatar's bytecode was not decompiled.
     public static readonly JumpDefinition Stationary = new("IDLE", -1, -1,
         "idle_jump_up__unarmed", "idle_jump_fly__unarmed", "idle_jump_fly__unarmed",
