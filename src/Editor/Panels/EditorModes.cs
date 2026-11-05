@@ -37,7 +37,7 @@ namespace Editor
         private async void CharacterEditor_Click(object? sender, RoutedEventArgs e)
         {
             if (_isClosing || _levelOpening || _levelSaving || _savingChangesOnClose || _importCancellation != null || Viewport.IsObjectDragging
-                || RoadSegmentsPanel.IsSaving || VegetationPanel.IsSaving || ObjectsPanel.IsSaving) return;
+                || RoadSegmentsPanel.IsSaving || VegetationPanel.IsSaving || ObjectsPanel.IsBusy) return;
             SetMode("Character Editor", "Экипировка персонажа",
                 "Одежда, снаряжение и оружие на персонаже текущего уровня.", showCharacterEditor: true);
             await CharacterPanel.ActivateAsync();

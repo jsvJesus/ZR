@@ -15,7 +15,7 @@ namespace Editor
                 return;
             }
             if (_level == null || _isClosing || _importCancellation != null || _levelOpening || _levelSaving || _savingChangesOnClose
-                || RoadSegmentsPanel.IsSaving || VegetationPanel.IsSaving || ObjectsPanel.IsSaving) return;
+                || RoadSegmentsPanel.IsSaving || VegetationPanel.IsSaving || ObjectsPanel.IsBusy) return;
             try
             {
                 StatusText.Text = "Загрузка персонажа…";

@@ -18,6 +18,8 @@ public static class SourceModelReader
     {
         cancellationToken.ThrowIfCancellationRequested();
         string path = Resolve(assets, file);
+        if (Path.GetExtension(path).Equals(ImportedModelStorage.Extension, StringComparison.OrdinalIgnoreCase))
+            return ImportedModelStorage.Read(assets, file, cancellationToken);
         if (Path.GetExtension(path).Equals(".model", StringComparison.OrdinalIgnoreCase))
             return BigWorldModelReader.Read(assets, file, cancellationToken, warning);
         using var stream = File.OpenRead(path);
@@ -86,6 +88,8 @@ public static class SourceModelReader
     {
         cancellationToken.ThrowIfCancellationRequested();
         string path = Resolve(assets, file);
+        if (Path.GetExtension(path).Equals(ImportedModelStorage.Extension, StringComparison.OrdinalIgnoreCase))
+            return ImportedModelStorage.ReadBounds(path);
         if (Path.GetExtension(path).Equals(".model", StringComparison.OrdinalIgnoreCase))
             return BigWorldModelReader.ReadBounds(assets, file, cancellationToken);
         if (!File.Exists(path)) throw new FileNotFoundException("SCO model was not found.", path);
@@ -228,8 +232,9 @@ public static class SourceModelReader
         if (normalized.StartsWith("packs/", StringComparison.OrdinalIgnoreCase)) normalized = normalized[6..];
         if (normalized.StartsWith("data/objectsdepot/", StringComparison.OrdinalIgnoreCase)) normalized = "models/" + normalized[18..];
         if (!normalized.StartsWith("models/", StringComparison.OrdinalIgnoreCase)
+            && !normalized.StartsWith("models2/", StringComparison.OrdinalIgnoreCase)
             && !normalized.StartsWith("objects/", StringComparison.OrdinalIgnoreCase))
-            throw new InvalidDataException("Expected a models/, objects/ or data/objectsdepot/ asset path.");
+            throw new InvalidDataException("Expected a models/, models2/, objects/ or data/objectsdepot/ asset path.");
         if (normalized.Split('/').Any(part => part is ".." or "." || part.Length == 0) || normalized.Contains(':'))
             throw new InvalidDataException("Invalid scene model asset path.");
         return normalized;
@@ -242,8 +247,10 @@ public static class SourceModelReader
             && Path.GetExtension(normalized).Equals(".sco", StringComparison.OrdinalIgnoreCase);
         bool bigWorld = normalized.StartsWith("objects/", StringComparison.OrdinalIgnoreCase)
             && Path.GetExtension(normalized).Equals(".model", StringComparison.OrdinalIgnoreCase);
-        if (!source && !bigWorld)
-            throw new InvalidDataException("Expected a models/*.sco or objects/*.model scene asset.");
+        bool imported = normalized.StartsWith("models2/", StringComparison.OrdinalIgnoreCase)
+            && Path.GetExtension(normalized).Equals(ImportedModelStorage.Extension, StringComparison.OrdinalIgnoreCase);
+        if (!source && !bigWorld && !imported)
+            throw new InvalidDataException("Expected a models/*.sco, objects/*.model or models2/*.zrmodel scene asset.");
         return AssetPathResolver.Resolve(assets.Root, normalized);
     }
 

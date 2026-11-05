@@ -16,7 +16,12 @@ internal sealed class SceneTriangleTree
             int a = model.Indices[i], b = model.Indices[i + 1], c = model.Indices[i + 2];
             if ((uint)a >= (uint)model.Vertices.Length || (uint)b >= (uint)model.Vertices.Length ||
                 (uint)c >= (uint)model.Vertices.Length) continue;
-            var triangle = new SceneTriangle(model.Vertices[a], model.Vertices[b], model.Vertices[c]);
+            // Visual fallback meshes can contain open sheets with either winding.
+            // Capsule sweeps already collide with both sides; support must agree.
+            var triangle = new SceneTriangle(model.Vertices[a], model.Vertices[b], model.Vertices[c])
+            {
+                DoubleSided = model.IsVisualFallback
+            };
             if (SceneTriangle.IsFinite(triangle.A) && SceneTriangle.IsFinite(triangle.B) &&
                 SceneTriangle.IsFinite(triangle.C) && triangle.Normal.LengthSquared() > 1e-16f)
                 triangles.Add(triangle);
@@ -133,7 +138,10 @@ internal sealed class SceneTriangleTree
             if (!triangle.Bounds.Intersects(localBounds)) continue;
             var transformed = new SceneTriangle(Vector3.Transform(triangle.A, world),
                 Vector3.Transform(mirrored ? triangle.C : triangle.B, world),
-                Vector3.Transform(mirrored ? triangle.B : triangle.C, world));
+                Vector3.Transform(mirrored ? triangle.B : triangle.C, world))
+            {
+                DoubleSided = triangle.DoubleSided
+            };
             if (transformed.Bounds.Intersects(worldBounds) && SceneTriangle.IsFinite(transformed.Normal) &&
                 transformed.Normal.LengthSquared() > 1e-16f) output.Add(transformed);
         }

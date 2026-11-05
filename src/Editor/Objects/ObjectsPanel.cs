@@ -31,7 +31,8 @@ namespace Editor.Objects
         private Task _saveTask = Task.CompletedTask;
 
         public bool IsSaving { get; private set; }
-        public bool HasPendingChanges => _level?.Objects?.IsDirty == true || IsSaving;
+        public bool IsBusy => IsSaving || IsImporting;
+        public bool HasPendingChanges => _level?.Objects?.IsDirty == true || IsBusy;
         public event Action? BusyChanged;
 
         public ObjectsPanel()
@@ -115,7 +116,7 @@ namespace Editor.Objects
                 : "Выберите объект в списке или щелчком в сцене. Delete — удалить.";
         }
 
-        private bool CanInteract => IsVisible && IsEnabled && !IsSaving && _level?.Objects != null
+        private bool CanInteract => IsVisible && IsEnabled && !IsBusy && _level?.Objects != null
             && _viewport?.IsPlaying != true && _viewport?.IsStarting != true;
         private bool IsDragging => _viewport?.IsObjectDragging == true;
         private SceneInstance? Selected => _selectedId == null ? null : _level?.Objects?.Find(_selectedId);

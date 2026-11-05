@@ -54,7 +54,7 @@ public sealed class SceneCollision
             bool found = false;
             foreach (var triangle in triangles)
             {
-                Vector3 normal = triangle.Normal;
+                Vector3 normal = GroundNormal(triangle);
                 float length = normal.Length();
                 if (normal.Y < WalkableY * length) continue;
                 float rawY = triangle.A.Y - (normal.X * (x - triangle.A.X) + normal.Z * (z - triangle.A.Z)) / normal.Y;
@@ -160,7 +160,7 @@ public sealed class SceneCollision
             {
                 // Classify the tread's authored face, rather than the contact normal:
                 // near a step edge the lower sphere touches on a diagonal normal.
-                Vector3 faceNormal = triangle.Normal;
+                Vector3 faceNormal = GroundNormal(triangle);
                 if (faceNormal.Y < WalkableY * faceNormal.Length()) continue;
                 if (!Sweep(position, down, radius, height, triangle, time, out float contact, out var contactNormal)
                     || contactNormal.Y <= Tolerance) continue;
@@ -241,6 +241,15 @@ public sealed class SceneCollision
         SceneTriangle.IsFinite(position) && float.IsFinite(radius) && float.IsFinite(height) &&
         radius > Tolerance && height >= 2 * radius;
 
+    private static Vector3 GroundNormal(SceneTriangle triangle)
+    {
+        var normal = triangle.Normal;
+        // A visual sheet is solid from both sides, including a downward-wound mat.
+        // Swept support still requires an upward contact normal, so an underside
+        // touching the capsule's head cannot become ground.
+        return triangle.DoubleSided && normal.Y < 0 ? -normal : normal;
+    }
+
     private static SceneBounds CapsuleBounds(Vector3 position, float radius, float height) =>
         new(position - new Vector3(radius, 0, radius), position + new Vector3(radius, height, radius));
 
@@ -303,7 +312,7 @@ public sealed class SceneCollision
                     !Sweep(position, remaining, radius, height, triangle, time, out float contact, out Vector3 contactNormal)) continue;
                 time = contact;
                 normal = contactNormal;
-                Vector3 faceNormal = triangle.Normal;
+                Vector3 faceNormal = GroundNormal(triangle);
                 walkableFace = faceNormal.Y >= WalkableY * faceNormal.Length();
                 hit = true;
             }

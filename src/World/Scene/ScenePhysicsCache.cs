@@ -72,7 +72,8 @@ public sealed class ScenePhysicsCache(
 
         if (!normalized.StartsWith(
             "objects/",
-            StringComparison.OrdinalIgnoreCase))
+            StringComparison.OrdinalIgnoreCase) && !normalized.StartsWith(
+            "models2/", StringComparison.OrdinalIgnoreCase))
         {
             return null;
         }

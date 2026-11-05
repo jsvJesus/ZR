@@ -48,10 +48,17 @@ namespace Editor.Objects
         public Task SavePendingAsync()
         {
             _viewport?.CancelObjectPlacement();
+            if (IsImporting) return SaveAfterImportAsync();
             if (IsSaving) return _saveTask;
             if (IsDragging) throw new InvalidOperationException("Завершите перемещение или вращение объекта перед сохранением.");
             if (_level?.Objects?.IsDirty != true) return Task.CompletedTask;
             _saveTask = SaveCoreAsync(); return _saveTask;
+        }
+
+        private async Task SaveAfterImportAsync()
+        {
+            await _modelImportTask;
+            await SavePendingAsync();
         }
 
         private async Task SaveCoreAsync()

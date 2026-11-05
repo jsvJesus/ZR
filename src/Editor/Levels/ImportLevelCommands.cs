@@ -11,7 +11,7 @@ public sealed partial class MainWindow
 {
     private async void ImportLevel_Click(object? sender, RoutedEventArgs e)
     {
-        if (_importCancellation != null || _levelOpening || Viewport.IsObjectDragging || Viewport.IsPlaying || Viewport.IsStarting) return;
+        if (_importCancellation != null || _levelOpening || ObjectsPanel.IsBusy || Viewport.IsObjectDragging || Viewport.IsPlaying || Viewport.IsStarting) return;
         try
         {
             var folders = await StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions
@@ -36,14 +36,14 @@ public sealed partial class MainWindow
 
     private async void ImportAllLevels_Click(object? sender, RoutedEventArgs e)
     {
-        if (_importCancellation != null || _levelOpening || Viewport.IsObjectDragging || Viewport.IsPlaying || Viewport.IsStarting) return;
+        if (_importCancellation != null || _levelOpening || ObjectsPanel.IsBusy || Viewport.IsObjectDragging || Viewport.IsPlaying || Viewport.IsStarting) return;
         try { await ImportLevelsAsync(_workspace.FindSources()); }
         catch (Exception exception) { StatusText.Text = $"Ошибка импорта: {exception.Message}"; }
     }
 
     private async Task ImportLevelsAsync(IReadOnlyList<string> names)
     {
-        if (Viewport.IsObjectDragging) return;
+        if (Viewport.IsObjectDragging || ObjectsPanel.IsBusy) return;
         if (names.Count == 0)
         {
             StatusText.Text = "В packs/import/levels нет исходных уровней.";

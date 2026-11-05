@@ -26,7 +26,7 @@ public sealed partial class ObjectsPanel
         MaxHeight = 230
     };
 
-    private readonly TextBlock _assetLocation = Text("Папка: objects/");
+    private readonly TextBlock _assetLocation = Text("Папка: packs/objects/");
     private readonly TextBlock _catalogueSummary = Text("Загрузка каталога…");
     private readonly TextBlock _assetPageSummary = Text("");
     private readonly TextBlock _assetStatus = Text("Выберите модель для предпросмотра.");
@@ -55,6 +55,7 @@ public sealed partial class ObjectsPanel
     private int _assetPage;
     private int _assetPageCount = 1;
     private int _assetVersion;
+    private int _catalogueVersion;
 
     private bool _catalogueBinding;
     private bool _folderBinding;
@@ -65,13 +66,14 @@ public sealed partial class ObjectsPanel
         !_libraryClosed &&
         IsVisible &&
         IsEnabled &&
-        !IsSaving &&
+        !IsBusy &&
         _viewport?.IsPlaying != true &&
         _viewport?.IsStarting != true;
 
     private void BuildLibrary(StackPanel root)
     {
-        root.Children.Add(Text("КАТАЛОГ МОДЕЛЕЙ · packs/objects"));
+        root.Children.Add(Text("КАТАЛОГ МОДЕЛЕЙ · objects / models2"));
+        BuildModelImport(root);
         root.Children.Add(_assetLocation);
 
         _parentFolderButton = Button(
@@ -203,52 +205,9 @@ public sealed partial class ObjectsPanel
     private async void AttachLibrary(AssetPaths assets)
     {
         _assetPaths = assets;
-
         try
         {
-            var entries = await Task.Run(() =>
-            {
-                string directory = Path.Combine(
-                    assets.Root,
-                    "objects"
-                );
-
-                if (!Directory.Exists(directory))
-                {
-                    throw new DirectoryNotFoundException(
-                        $"Не найден каталог {directory}"
-                    );
-                }
-
-                return Directory
-                    .EnumerateFiles(
-                        directory,
-                        "*.model",
-                        SearchOption.AllDirectories
-                    )
-                    .Select(path => new AssetEntry(
-                        "objects/" +
-                        Path.GetRelativePath(directory, path)
-                            .Replace('\\', '/')
-                    ))
-                    .OrderBy(
-                        entry => entry.Path,
-                        StringComparer.OrdinalIgnoreCase
-                    )
-                    .ToArray();
-            });
-
-            if (_libraryClosed)
-            {
-                return;
-            }
-
-            _catalogue = entries;
-            _folderPath = "";
-            _assetPage = 0;
-            _selectedAsset = null;
-
-            RefreshCatalogue();
+            await ReloadCatalogueAsync("objects");
         }
         catch (Exception exception)
         {
@@ -260,6 +219,28 @@ public sealed partial class ObjectsPanel
         }
 
         RefreshLibraryMode();
+    }
+
+    private async Task ReloadCatalogueAsync(string folder)
+    {
+        if (_assetPaths is not { } assets) return;
+        int version = ++_catalogueVersion;
+        var entries = await Task.Run(() =>
+        {
+            var result = new List<AssetEntry>();
+            foreach (var (name, extension) in new[] { ("objects", ".model"), ("models2", ImportedModelStorage.Extension) })
+            {
+                string directory = Path.Combine(assets.Root, name);
+                if (!Directory.Exists(directory)) continue;
+                result.AddRange(Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories)
+                    .Where(path => Path.GetExtension(path).Equals(extension, StringComparison.OrdinalIgnoreCase))
+                    .Select(path => new AssetEntry(name + "/" + Path.GetRelativePath(directory, path).Replace('\\', '/'))));
+            }
+            return result.OrderBy(entry => entry.Path, StringComparer.OrdinalIgnoreCase).ToArray();
+        });
+        if (_libraryClosed || version != _catalogueVersion) return;
+        _catalogue = entries;
+        NavigateFolder(folder);
     }
 
     private void NavigateParentFolder()
@@ -311,12 +292,12 @@ public sealed partial class ObjectsPanel
         }
 
         string prefix = _folderPath.Length == 0
-            ? "objects/"
-            : "objects/" + _folderPath + "/";
+            ? ""
+            : _folderPath + "/";
 
         string search = (_assetSearch.Text ?? "").Trim();
 
-        _assetLocation.Text = "Папка: " + prefix;
+        _assetLocation.Text = "Папка: packs/" + prefix;
 
         var folderNames = _catalogue
             .Where(entry =>
@@ -447,6 +428,7 @@ public sealed partial class ObjectsPanel
     public void CloseLibrary()
     {
         _libraryClosed = true;
+        CancelModelImport();
 
         CancelLibraryLoad();
 
@@ -691,6 +673,7 @@ public sealed partial class ObjectsPanel
     private void RefreshLibraryMode()
     {
         bool active = CanBrowseLibrary && !IsDragging;
+        RefreshModelImportMode(active);
 
         _assetSearch.IsEnabled = active;
         _assetFolders.IsEnabled = active;
@@ -739,7 +722,6 @@ public sealed partial class ObjectsPanel
 
     private sealed record AssetEntry(string Path)
     {
-        public override string ToString() =>
-            Path["objects/".Length..];
+        public override string ToString() => Path;
     }
 }

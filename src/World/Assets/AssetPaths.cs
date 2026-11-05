@@ -4,6 +4,8 @@ public sealed class AssetPaths
 {
     public string Root { get; }
     public string ImportLevels => Path.Combine(Root, "import", "levels");
+    public string ImportModels => Path.Combine(Root, "import", "models");
+    public string Models2 => Path.Combine(Root, "models2");
     public string Levels => Path.Combine(Root, "levels");
     public string Materials => Path.Combine(Root, "materials");
     public string Shaders => Path.Combine(Root, "shaders");

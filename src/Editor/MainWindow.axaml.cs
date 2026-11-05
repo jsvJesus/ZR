@@ -60,6 +60,7 @@ namespace Editor
         {
             Viewport.CancelObjectDrag();
             Viewport.CancelObjectPlacement();
+            ObjectsPanel.CancelModelImport();
             if (_changesSavedForClose || (!RoadSegmentsPanel.HasPendingChanges && !VegetationPanel.HasPendingChanges && !ObjectsPanel.HasPendingChanges)) return;
             e.Cancel = true;
             if (_savingChangesOnClose) return;
