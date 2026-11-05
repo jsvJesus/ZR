@@ -12,11 +12,11 @@ namespace ZoneReborn.World.Levels.Import;
 public sealed class LevelImporter(AssetPaths assets)
 {
     public Task<string> ImportAsync(
-        string name, IProgress<LevelImportProgress>? progress = null, CancellationToken cancellationToken = default) =>
-        Task.Run(() => ImportCoreAsync(name, progress, cancellationToken), cancellationToken);
+        string name, IProgress<LevelImportProgress>? progress = null, CancellationToken cancellationToken = default, float cellSize = 1) =>
+        Task.Run(() => ImportCoreAsync(name, progress, cancellationToken, cellSize), cancellationToken);
 
     private async Task<string> ImportCoreAsync(
-        string name, IProgress<LevelImportProgress>? progress, CancellationToken cancellationToken)
+        string name, IProgress<LevelImportProgress>? progress, CancellationToken cancellationToken, float cellSize)
     {
         if (string.IsNullOrWhiteSpace(name) || name is "." or ".." ||
             name.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 || name.Contains('/') || name.Contains('\\'))
@@ -26,6 +26,9 @@ public sealed class LevelImporter(AssetPaths assets)
         if (!Directory.Exists(source)) throw new DirectoryNotFoundException("Не найден исходный уровень.");
         if (Directory.Exists(destination) || File.Exists(destination))
             throw new IOException($"Уровень «{name}» уже существует. Импорт не перезаписывает готовые уровни.");
+        var fbx = Directory.EnumerateFiles(source, "*", SearchOption.TopDirectoryOnly)
+            .Where(file => Path.GetExtension(file).Equals(".fbx", StringComparison.OrdinalIgnoreCase)).ToArray();
+        if (fbx.Length > 0) return await new FbxTerrainImporter(assets).ImportAsync(name, fbx, cellSize, progress, cancellationToken);
         var configuration = SourceTerrainConfigurationReader.Read(source, assets);
         var terrain = configuration.Terrain;
         var reader = new SourceTerrainReader(configuration.Directory, terrain, configuration.Layers.Count);

@@ -7,5 +7,6 @@ public sealed record LoadedLevel(string Directory, LevelManifest Manifest, IRead
     public ZoneReborn.World.Roads.RoadNetwork Roads { get; init; } = new();
     public ZoneReborn.World.Vegetation.VegetationScene Vegetation { get; init; } = new();
     public ZoneReborn.World.Scene.SceneData? Objects { get; init; }
+    public ZoneReborn.World.Terrain.TerrainDocument? TerrainDocument { get; init; }
 }
 

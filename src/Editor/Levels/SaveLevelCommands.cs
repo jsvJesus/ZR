@@ -12,7 +12,7 @@ public sealed partial class MainWindow
     private async void SaveLevel_Click(object? sender, RoutedEventArgs e)
     {
         if (_level == null || _isClosing || _importCancellation != null || _levelOpening || _levelSaving || _savingChangesOnClose
-            || RoadSegmentsPanel.IsSaving || VegetationPanel.IsSaving || ObjectsPanel.IsBusy || Viewport.IsObjectDragging || Viewport.IsPlaying || Viewport.IsStarting)
+            || RoadSegmentsPanel.IsSaving || VegetationPanel.IsSaving || ObjectsPanel.IsBusy || TerrainEditorPanel.IsSaving || Viewport.IsObjectDragging || Viewport.IsPlaying || Viewport.IsStarting)
         {
             StatusText.Text = "Сначала откройте преобразованный уровень.";
             return;
@@ -21,12 +21,13 @@ public sealed partial class MainWindow
         UpdatePlayControls();
         try
         {
+            await TerrainEditorPanel.SavePendingAsync();
             await RoadSegmentsPanel.SavePendingAsync();
             await VegetationPanel.SavePendingAsync();
             await ObjectsPanel.SavePendingAsync();
             var camera = Viewport.CameraPose;
             await LevelWorkspace.SaveCameraAsync(_level, new(camera.X, camera.Y, camera.Z, camera.Yaw, camera.Pitch, camera.Speed));
-            if (!_isClosing) StatusText.Text = "Камера, дороги, растительность и объекты сохранены.";
+            if (!_isClosing) StatusText.Text = "Terrain, камера, дороги, растительность и объекты сохранены.";
         }
         catch (Exception exception)
         {

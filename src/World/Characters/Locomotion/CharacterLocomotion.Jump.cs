@@ -207,6 +207,14 @@ public sealed partial class CharacterLocomotion
 
             if (!reachedCue)
             {
+                if (!float.IsFinite(ground))
+                {
+                    // Root motion can leave the rim before the jump cue. There is
+                    // no floor to snap to; keep finite feet and start free fall.
+                    Position = _surface.MoveCharacter(Position, candidate with { Y = Position.Y }, CollisionHeight);
+                    BeginFall();
+                    return;
+                }
                 Position = _surface.MoveCharacter(
                     Position,
                     candidate with { Y = ground },

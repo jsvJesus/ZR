@@ -11,8 +11,14 @@ public static class ImportedModelStorage
     internal const int MaximumVertices = 2_000_000;
     internal const int MaximumIndices = 12_000_000;
     private const uint Signature = 0x314D525A; // ZRM1
-    private const int Version = 1;
+    private const int Version = 2; // Version 1 used an unconditional 0.01 import scale.
     private const int MaximumMeshes = 4096;
+
+    internal static bool HasLegacyScale(string path)
+    {
+        using var reader = new BinaryReader(File.OpenRead(path));
+        return ReadVersion(reader) == 1;
+    }
 
     public static SceneBounds ReadBounds(string path)
     {
@@ -122,12 +128,19 @@ public static class ImportedModelStorage
 
     private static SceneBounds Header(BinaryReader reader)
     {
-        if (reader.ReadUInt32() != Signature || reader.ReadInt32() != Version)
-            throw new InvalidDataException("Unsupported imported model version.");
+        _ = ReadVersion(reader);
         var bounds = new SceneBounds(Vector(reader), Vector(reader));
         if (bounds.Minimum.X > bounds.Maximum.X || bounds.Minimum.Y > bounds.Maximum.Y || bounds.Minimum.Z > bounds.Maximum.Z)
             throw new InvalidDataException("Invalid imported model bounds.");
         return bounds;
+    }
+
+    private static int ReadVersion(BinaryReader reader)
+    {
+        if (reader.ReadUInt32() != Signature)
+            throw new InvalidDataException("Invalid imported model signature.");
+        int version = reader.ReadInt32();
+        return version is 1 or Version ? version : throw new InvalidDataException("Unsupported imported model version.");
     }
 
     private static string RelativeTexture(AssetPaths assets, string path)

@@ -10,13 +10,18 @@ public sealed partial class CharacterLocomotion
     private float _supportSurfaceY = float.NaN;
     private float CollisionHeight => _crouched ? CrouchingHeight : StandingHeight;
 
-    private bool GroundBelow(float x, float z, float maximumY, out float height) =>
-        _surface.TryGetGround(x, z, maximumY, out height);
+    private bool GroundBelow(float x, float z, float maximumY, out float height)
+    {
+        if (_surface.TryGetGround(x, z, maximumY, out height)) return true;
+        height = float.NegativeInfinity; // An open terrain hole has no heightfield floor.
+        return _surface.Contains(x, z);
+    }
 
     private bool MoveAmongObjects(Vector2 displacement)
     {
         var target = Position + new Vector3(displacement.X, 0, displacement.Y);
-        if (!_surface.TryGetHeight(target.X, target.Z, out float terrain)) return false;
+        if (!_surface.Contains(target.X, target.Z)) return false;
+        if (!_surface.TryGetHeight(target.X, target.Z, out float terrain)) terrain = Position.Y;
         float slope = MathF.Tan(LocomotionSettings.MaximumSlopeDegrees * MathF.PI / 180);
         // Model stairs may be stepped onto; the existing terrain slope limit still applies.
         if (displacement.LengthSquared() > 1e-10f && terrain - Position.Y > displacement.Length() * slope + 0.001f)

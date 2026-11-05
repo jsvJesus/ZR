@@ -29,6 +29,9 @@ internal sealed partial class TerrainRenderer : IDisposable
     private readonly HashSet<(int X, int Z)> _failed = [];
     private TerrainMaterialCache _materials = null!;
     private TerrainOverviewResources _overview = null!;
+    private readonly AssetPaths _assets;
+    private TerrainTexture? _holes;
+    private long _heightRevision, _holeRevision;
     private VertexShader _vertexShader = null!;
     private PixelShader _pixelShader = null!;
     private InputLayout _layout = null!;
@@ -51,6 +54,7 @@ internal sealed partial class TerrainRenderer : IDisposable
         _device = device;
         _context = context;
         _level = level;
+        _assets = assets;
         _references = level.Manifest.Tiles.ToDictionary(tile => (tile.X, tile.Z));
         try
         {
@@ -100,6 +104,7 @@ internal sealed partial class TerrainRenderer : IDisposable
             blend.RenderTarget[0].RenderTargetWriteMask = ColorWriteMaskFlags.All;
             _add = new BlendState(device, blend);
             _overview = new TerrainOverviewResources(device, level, assets);
+            if (level.TerrainDocument?.Holes.Any == true) _holes = TerrainTexture.Holes(device, level.TerrainDocument.Holes);
         }
         catch
         {
@@ -110,6 +115,19 @@ internal sealed partial class TerrainRenderer : IDisposable
 
     public void Render(FreeCamera camera, Matrix4x4 viewProjection)
     {
+        if (_level.TerrainDocument is { } document && document.HeightRevision != _heightRevision)
+        {
+            foreach (var tile in _tiles.Values) tile.Dispose();
+            _tiles.Clear(); _failed.Clear(); _overview.Dispose();
+            _overview = new TerrainOverviewResources(_device, _level, _assets);
+            _heightRevision = document.HeightRevision;
+        }
+        if (_level.TerrainDocument is { } holeDocument && holeDocument.HoleRevision != _holeRevision)
+        {
+            _holes?.Dispose(); _holes = null;
+            if (holeDocument.Holes.Any) _holes = TerrainTexture.Holes(_device, holeDocument.Holes);
+            _holeRevision = holeDocument.HoleRevision;
+        }
         var descriptor = _level.Manifest.Terrain;
         float tileWorldSize = descriptor.TileSize * descriptor.CellSize;
         // A bounded neighborhood keeps large levels usable without expanding the whole map.
@@ -153,6 +171,7 @@ internal sealed partial class TerrainRenderer : IDisposable
         _context.OutputMerger.SetDepthStencilState(_depthWrite);
         _context.PixelShader.SetSampler(0, _wrap);
         _context.PixelShader.SetSampler(1, _clamp);
+        _context.PixelShader.SetShaderResource(5, _holes?.View);
         _overview.Render(_context, viewProjection, _materials);
         _context.InputAssembler.InputLayout = _layout;
         _context.InputAssembler.PrimitiveTopology = PrimitiveTopology.TriangleList;
@@ -167,7 +186,8 @@ internal sealed partial class TerrainRenderer : IDisposable
         {
             ViewProjection = viewProjection,
             Camera = new Vector4(camera.Position, 1),
-            WorldExtent = new Vector4(descriptor.SamplesX * descriptor.CellSize, descriptor.SamplesZ * descriptor.CellSize, 0, 0)
+            WorldExtent = new Vector4(descriptor.SamplesX * descriptor.CellSize, descriptor.SamplesZ * descriptor.CellSize,
+                descriptor.CellSize, _holes == null ? 0 : 1)
         };
         foreach (var reference in nearest)
         {
@@ -193,7 +213,7 @@ internal sealed partial class TerrainRenderer : IDisposable
                 DrawLayer(tile, _level.Layers[index], mask, false, ref constants);
             }
         }
-        for (int index = 0; index < 5; index++) _context.PixelShader.SetShaderResource(index, null);
+        for (int index = 0; index < 6; index++) _context.PixelShader.SetShaderResource(index, null);
         _context.OutputMerger.SetBlendState(null);
         _context.OutputMerger.SetDepthStencilState(null);
         _context.Rasterizer.State = null;
@@ -217,7 +237,8 @@ internal sealed partial class TerrainRenderer : IDisposable
     private TerrainTileData? Read(int x, int z)
     {
         if (!_references.TryGetValue((x, z), out var reference)) return null;
-        var tile = TerrainTileReader.Read(AssetPathResolver.Resolve(_level.Directory, reference.File));
+        var tile = _level.TerrainDocument?.Tile(x, z)
+            ?? TerrainTileReader.Read(AssetPathResolver.Resolve(_level.Directory, reference.File));
         if (tile.X != x || tile.Z != z) throw new InvalidDataException("Terrain tile coordinates do not match the manifest.");
         return tile;
     }
@@ -227,6 +248,7 @@ internal sealed partial class TerrainRenderer : IDisposable
         foreach (var tile in _tiles.Values) tile.Dispose();
         _tiles.Clear();
         _overview?.Dispose();
+        _holes?.Dispose();
         _materials?.Dispose();
         _add?.Dispose();
         _depthRead?.Dispose();

@@ -7,6 +7,7 @@ cbuffer TerrainOverviewBuffer : register(b0)
 };
 Texture2D Diffuse : register(t0);
 Texture2D DetailNormal : register(t1);
+Texture2D TerrainHoles : register(t5);
 SamplerState MaterialSampler : register(s0);
 SamplerState OverviewSampler : register(s1);
 
@@ -31,6 +32,8 @@ PixelInput VSMain(VertexInput input)
 }
 float4 PSMain(PixelInput input) : SV_TARGET
 {
+    if (WorldExtent.w > 0.5)
+        clip(0.5 - TerrainHoles.Load(int3(int2(input.World.xz / WorldExtent.z), 0)).r);
     float2 levelUv = input.World.xz / WorldExtent.xy;
     float2 diffuseUv = levelUv * Material.xy;
     float2 normalUv = levelUv * Material.zw;

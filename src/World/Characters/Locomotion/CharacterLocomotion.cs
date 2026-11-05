@@ -695,7 +695,7 @@ public sealed partial class CharacterLocomotion
 
     private bool MoveOnGround(Vector2 displacement)
     {
-        if (_surface.HasSceneObjects) return MoveAmongObjects(displacement);
+        if (_surface.HasSceneObjects || _surface.HasTerrainHoles) return MoveAmongObjects(displacement);
         var candidate = Position + new Vector3(
             displacement.X,
             0,

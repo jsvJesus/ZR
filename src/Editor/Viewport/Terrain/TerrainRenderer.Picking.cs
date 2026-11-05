@@ -9,6 +9,7 @@ namespace Editor.Viewport.Terrain
             height = 0;
             var d = Descriptor;
             if (x < 0 || z < 0 || x > d.WorldSizeX || z > d.WorldSizeZ) return false;
+            if (_level.TerrainDocument is { } document && !document.HasSurface(x, z)) return false;
             int tx = Math.Clamp((int)(x / (d.CellSize * 256)), 0, d.TilesX - 1);
             int tz = Math.Clamp((int)(z / (d.CellSize * 256)), 0, d.TilesZ - 1);
             var grid = GetSurfaceGrid(tx, tz);
@@ -21,7 +22,7 @@ namespace Editor.Viewport.Terrain
             return true;
         }
 
-        public bool PickSurface(Vector3 origin, Vector3 direction, out Vector3 position)
+        public bool PickSurface(Vector3 origin, Vector3 direction, out Vector3 position, bool includeHoles = false)
         {
             position = default;
             var d = Descriptor;
@@ -45,7 +46,9 @@ namespace Editor.Viewport.Terrain
                 if (ViewportPicking.Triangle(origin, direction, e, c, b, out float second)) closest = Math.Min(closest, second);
                 if (closest >= near && closest <= far && closest >= distance - 0.01f)
                 {
-                    position = origin + direction * closest; return true;
+                    var candidate = origin + direction * closest;
+                    if (includeHoles || _level.TerrainDocument?.HasSurface(candidate.X, candidate.Z) != false)
+                    { position = candidate; return true; }
                 }
                 float exitX = MathF.Abs(direction.X) < 1e-9f ? float.MaxValue
                     : ((direction.X > 0 ? b.X : a.X) - origin.X) / direction.X;

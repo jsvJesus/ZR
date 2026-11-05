@@ -13,7 +13,8 @@ namespace Editor
             bool showRoadSegments = false,
             bool showVegetation = false,
             bool showObjects = false,
-            bool showCharacterEditor = false)
+            bool showCharacterEditor = false,
+            bool showTerrainEditing = false)
         {
             if (Viewport.IsObjectDragging) return;
             ObjectsPanel.CancelLibraryLoad();
@@ -21,12 +22,14 @@ namespace Editor
             ModeTitle.Text = name;
             ModeDetails.Text = description;
             TerrainMaterialsPanel.IsVisible = showTerrainMaterials;
+            TerrainEditorPanel.IsVisible = showTerrainEditing;
             RoadSegmentsPanel.IsVisible = showRoadSegments;
             RoadSegmentsPanel.RefreshHighlight();
             VegetationPanel.IsVisible = showVegetation;
             VegetationPanel.RefreshMode();
             ObjectsPanel.IsVisible = showObjects;
             ObjectsPanel.RefreshMode();
+            TerrainEditorPanel.RefreshMode();
             if (showObjects) ObjectsPanel.ResumeLibrary();
             CharacterPanel.IsVisible = showCharacterEditor;
             CharacterPanel.SetActive(showCharacterEditor);
@@ -37,7 +40,7 @@ namespace Editor
         private async void CharacterEditor_Click(object? sender, RoutedEventArgs e)
         {
             if (_isClosing || _levelOpening || _levelSaving || _savingChangesOnClose || _importCancellation != null || Viewport.IsObjectDragging
-                || RoadSegmentsPanel.IsSaving || VegetationPanel.IsSaving || ObjectsPanel.IsBusy) return;
+                || RoadSegmentsPanel.IsSaving || VegetationPanel.IsSaving || ObjectsPanel.IsBusy || TerrainEditorPanel.IsSaving) return;
             SetMode("Character Editor", "Экипировка персонажа",
                 "Одежда, снаряжение и оружие на персонаже текущего уровня.", showCharacterEditor: true);
             await CharacterPanel.ActivateAsync();
@@ -46,7 +49,7 @@ namespace Editor
         private void Terrain_Click(object? sender, RoutedEventArgs e)
         {
             SetMode("Level editor", "Terrain",
-                "Редактирование игрового ландшафта.");
+                "Редактирование игрового ландшафта.", showTerrainEditing: true);
         }
 
         private void RoadSegments_Click(object? sender, RoutedEventArgs e)
@@ -58,7 +61,7 @@ namespace Editor
         private void Heights_Click(object? sender, RoutedEventArgs e)
         {
             SetMode("Level editor", "Высоты и рельеф",
-                "Создание и изменение высот поверхности.");
+                "Создание и изменение высот поверхности.", showTerrainEditing: true);
         }
 
         private void TerrainMaterials_Click(object? sender, RoutedEventArgs e)

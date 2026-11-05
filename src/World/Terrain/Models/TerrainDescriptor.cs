@@ -8,6 +8,11 @@ namespace ZoneReborn.World.Terrain.Models
         public float CellSize { get; init; }
         public float HeightOffset { get; init; }
         public float HeightScale { get; init; }
+        public int MeshStep { get; init; } = 4;
+        public string HolesFile { get; set; } = "";
+        public bool ImportedFromMesh { get; init; }
+        public float SourceOffsetX { get; init; }
+        public float SourceOffsetZ { get; init; }
         public string FarDiffuseTexture { get; init; } = "";
         public string FarNormalTexture { get; init; } = "";
         public int TilesX => SamplesX / TileSize;

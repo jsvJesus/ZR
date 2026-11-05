@@ -11,13 +11,13 @@ internal readonly record struct TerrainVertex(Vector3 Position, Vector2 TileUv);
 internal static class TerrainMeshBuilder
 {
     // Every tile uses the same sampling step, including its shared border vertices.
-    internal const int Step = 4;
-    internal const int Side = 256 / Step + 1;
+    internal static int Side(TerrainDescriptor descriptor) => 256 / descriptor.MeshStep + 1;
 
     public static (TerrainVertex[] Vertices, int[] Indices, int MainIndexCount, int EdgeIndexCount) Build(TerrainDescriptor descriptor,
         TerrainTileData tile, TerrainTileData? right, TerrainTileData? bottom, TerrainTileData? diagonal,
         Func<int, int, float> overviewHeight)
     {
+        int Step = descriptor.MeshStep, Side = TerrainMeshBuilder.Side(descriptor);
         var vertices = new TerrainVertex[Side * Side];
         for (int z = 0; z < Side; z++)
         for (int x = 0; x < Side; x++)

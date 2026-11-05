@@ -19,11 +19,14 @@ public sealed class TerrainSurface
         _references = level.Manifest.Tiles.ToDictionary(t => (t.X, t.Z));
     }
 
-    public bool TryGetHeight(float x, float z, out float height) => TryGetHeight(x, z, 4, out height);
+    public bool TryGetHeight(float x, float z, out float height) => TryGetHeight(x, z, _level.Manifest.Terrain.MeshStep, out height);
 
     public bool TryGetSourceHeight(float x, float z, out float height) => TryGetHeight(x, z, 1, out height);
 
     public bool HasSceneObjects => _level.Objects?.Instances.Count > 0;
+    public bool HasTerrainHoles => _level.TerrainDocument?.Holes.Any == true;
+    public bool Contains(float x, float z) => float.IsFinite(x) && float.IsFinite(z)
+        && x >= 0 && z >= 0 && x <= _level.Manifest.Terrain.WorldSizeX && z <= _level.Manifest.Terrain.WorldSizeZ;
 
     // Editing and road attachment keep using the terrain-only queries above.
     // Gameplay selects the floor beneath the feet, rather than a roof above the player.
@@ -70,6 +73,7 @@ public sealed class TerrainSurface
         var d = _level.Manifest.Terrain;
         if (!float.IsFinite(x) || !float.IsFinite(z) || x < 0 || z < 0 || x > d.WorldSizeX || z > d.WorldSizeZ || d.CellSize <= 0)
             return false;
+        if (_level.TerrainDocument is { } document && !document.HasSurface(x, z)) return false;
         float sampleX = x / d.CellSize, sampleZ = z / d.CellSize;
         // Match TerrainMeshBuilder's step and triangle diagonal, including the last, shortened cell.
         int x0 = Math.Min((int)(sampleX / step) * step, (d.SamplesX - 2) / step * step);
@@ -88,6 +92,7 @@ public sealed class TerrainSurface
     {
         height = 0;
         var d = _level.Manifest.Terrain;
+        if (_level.TerrainDocument is { } document) { height = document.Height(x, z); return true; }
         var key = (x / d.TileSize, z / d.TileSize);
         if (!_references.TryGetValue(key, out var reference)) return false;
         if (!_tiles.TryGetValue(key, out var tile))

@@ -320,6 +320,7 @@ namespace Editor.Viewport
             {
                 case WmLeftDown:
                     SetFocus(window);
+                    if (TerrainBrushEnabled) { PaintTerrain(ReadX(lParam), ReadY(lParam)); return nint.Zero; }
                     if (ObjectEditingEnabled)
                     {
                         if (IsObjectPlacing) { PlaceObject(ReadX(lParam), ReadY(lParam)); return nint.Zero; }

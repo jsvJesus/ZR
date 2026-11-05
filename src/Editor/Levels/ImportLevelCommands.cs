@@ -11,7 +11,7 @@ public sealed partial class MainWindow
 {
     private async void ImportLevel_Click(object? sender, RoutedEventArgs e)
     {
-        if (_importCancellation != null || _levelOpening || ObjectsPanel.IsBusy || Viewport.IsObjectDragging || Viewport.IsPlaying || Viewport.IsStarting) return;
+        if (_importCancellation != null || _levelOpening || ObjectsPanel.IsBusy || TerrainEditorPanel.IsSaving || Viewport.IsObjectDragging || Viewport.IsPlaying || Viewport.IsStarting) return;
         try
         {
             var folders = await StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions
@@ -26,7 +26,14 @@ public sealed partial class MainWindow
             string parent = Path.GetDirectoryName(source)!;
             if (!string.Equals(parent, Path.GetFullPath(_workspace.Assets.ImportLevels), StringComparison.OrdinalIgnoreCase))
                 throw new InvalidDataException("Выберите уровень внутри packs/import/levels.");
-            await ImportLevelsAsync([Path.GetFileName(source)]);
+            float cellSize = 1;
+            if (Directory.EnumerateFiles(source).Any(file => Path.GetExtension(file).Equals(".fbx", StringComparison.OrdinalIgnoreCase)))
+            {
+                float? selectedSize = await AskTerrainGridAsync(Path.GetFileName(source));
+                if (selectedSize == null || _isClosing) return;
+                cellSize = selectedSize.Value;
+            }
+            await ImportLevelsAsync([Path.GetFileName(source)], cellSize);
         }
         catch (Exception exception)
         {
@@ -36,14 +43,14 @@ public sealed partial class MainWindow
 
     private async void ImportAllLevels_Click(object? sender, RoutedEventArgs e)
     {
-        if (_importCancellation != null || _levelOpening || ObjectsPanel.IsBusy || Viewport.IsObjectDragging || Viewport.IsPlaying || Viewport.IsStarting) return;
+        if (_importCancellation != null || _levelOpening || ObjectsPanel.IsBusy || TerrainEditorPanel.IsSaving || Viewport.IsObjectDragging || Viewport.IsPlaying || Viewport.IsStarting) return;
         try { await ImportLevelsAsync(_workspace.FindSources()); }
         catch (Exception exception) { StatusText.Text = $"Ошибка импорта: {exception.Message}"; }
     }
 
-    private async Task ImportLevelsAsync(IReadOnlyList<string> names)
+    private async Task ImportLevelsAsync(IReadOnlyList<string> names, float cellSize = 1)
     {
-        if (Viewport.IsObjectDragging || ObjectsPanel.IsBusy) return;
+        if (Viewport.IsObjectDragging || ObjectsPanel.IsBusy || TerrainEditorPanel.IsSaving) return;
         if (names.Count == 0)
         {
             StatusText.Text = "В packs/import/levels нет исходных уровней.";
@@ -54,11 +61,15 @@ public sealed partial class MainWindow
         SetLevelCommandsBusy(true);
         int imported = 0, skipped = 0;
         var failures = new List<string>();
+        var warnings = new List<string>();
         string? firstLevel = null;
         var progress = new Progress<LevelImportProgress>(value =>
         {
             if (!_isClosing && ReferenceEquals(_importCancellation, cancellation) && !cancellation.IsCancellationRequested)
+            {
+                if (!string.IsNullOrWhiteSpace(value.Warning)) warnings.Add($"{value.Level}: {value.Warning}");
                 StatusText.Text = $"Импорт {value.Level}: {value.Percentage}% ({value.CompletedTiles}/{value.TotalTiles})";
+            }
         });
         try
         {
@@ -73,7 +84,7 @@ public sealed partial class MainWindow
                 }
                 try
                 {
-                    string path = await _workspace.ImportAsync(name, progress, cancellation.Token);
+                    string path = await _workspace.ImportAsync(name, progress, cancellation.Token, cellSize);
                     firstLevel ??= path;
                     imported++;
                 }
@@ -88,6 +99,8 @@ public sealed partial class MainWindow
                 StatusText.Text = failures.Count == 0
                     ? $"Terrain: импортировано {imported}, уже существуют {skipped}."
                     : $"Импортировано {imported}; ошибки: {string.Join("; ", failures)}";
+            if (!_isClosing && warnings.Count > 0)
+                StatusText.Text += " Предупреждения: " + string.Join("; ", warnings.Take(3));
         }
         catch (OperationCanceledException)
         {

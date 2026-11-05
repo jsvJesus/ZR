@@ -34,8 +34,9 @@ internal sealed class TerrainTileResources : IDisposable
         {
             var mesh = TerrainMeshBuilder.Build(descriptor, tile, right, bottom, diagonal, overviewHeight);
             _sourceVertices = mesh.Vertices;
-            Surface = new TerrainSurfaceGrid(mesh.Vertices.Take(TerrainMeshBuilder.Side * TerrainMeshBuilder.Side)
-                .Select(v => v.Position).ToArray(), TerrainMeshBuilder.Side);
+            int side = TerrainMeshBuilder.Side(descriptor);
+            Surface = new TerrainSurfaceGrid(mesh.Vertices.Take(side * side)
+                .Select(v => v.Position).ToArray(), side);
             Vertices = Buffer.Create(device, BindFlags.VertexBuffer, mesh.Vertices);
             Indices = Buffer.Create(device, BindFlags.IndexBuffer, mesh.Indices);
             IndexCount = mesh.MainIndexCount;
@@ -54,7 +55,7 @@ internal sealed class TerrainTileResources : IDisposable
     public void UpdateLodEdges(DeviceContext context, int edges)
     {
         if (SkirtEdges == edges) return;
-        int side = TerrainMeshBuilder.Side, mainCount = side * side;
+        int side = TerrainMeshBuilder.Side(_descriptor), mainCount = side * side;
         var vertices = (TerrainVertex[])_sourceVertices.Clone();
         for (int z = 0; z < side; z++)
         for (int x = 0; x < side; x++)
@@ -64,8 +65,8 @@ internal sealed class TerrainTileResources : IDisposable
             if (!boundary) continue;
             int index = z * side + x;
             var vertex = vertices[index]; var position = vertex.Position;
-            position.Y = _overviewHeight(_tileX * 256 + x * TerrainMeshBuilder.Step,
-                _tileZ * 256 + z * TerrainMeshBuilder.Step);
+            position.Y = _overviewHeight(_tileX * 256 + x * _descriptor.MeshStep,
+                _tileZ * 256 + z * _descriptor.MeshStep);
             vertices[index] = vertex with { Position = position };
         }
         // Once the top borders agree, skirts extend down from the common border instead of

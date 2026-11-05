@@ -22,14 +22,14 @@ public sealed class LevelWorkspace
     public bool IsImported(string name) =>
         File.Exists(Path.Combine(AssetPathResolver.Resolve(Assets.Levels, name), "level.json"));
 
-    public Task<string> ImportAsync(string name, IProgress<LevelImportProgress> progress, CancellationToken cancellationToken) =>
-        new LevelImporter(Assets).ImportAsync(name, progress, cancellationToken);
+    public Task<string> ImportAsync(string name, IProgress<LevelImportProgress> progress, CancellationToken cancellationToken, float cellSize = 1) =>
+        new LevelImporter(Assets).ImportAsync(name, progress, cancellationToken, cellSize);
 
     public async Task<LoadedLevel> OpenAsync(string path, CancellationToken cancellationToken = default)
     {
         var level = await LevelReader.ReadAsync(path, cancellationToken);
         string source = AssetPathResolver.Resolve(Assets.ImportLevels, level.Manifest.Name);
-        var roads = await Task.Run(() =>
+        var roads = level.Manifest.Terrain.ImportedFromMesh ? new RoadNetwork() : await Task.Run(() =>
         {
             var network = SourceRoadReader.Read(source, cancellationToken);
             RoadSurfaceAttachment.ReadSourceOffsets(level, network, cancellationToken);
@@ -37,7 +37,9 @@ public sealed class LevelWorkspace
         }, cancellationToken);
         await RoadEditStorage.LoadAsync(level.Directory, roads, cancellationToken);
         var vegetation = await ZoneReborn.World.Vegetation.VegetationStorage.LoadAsync(level.Directory, Assets, cancellationToken);
-        var objects = await Task.Run(() => SourceSceneReader.Read(source, Assets, cancellationToken), cancellationToken);
+        var objects = level.Manifest.Terrain.ImportedFromMesh
+            ? new SceneData(Assets, [], sourceName: level.Manifest.Name)
+            : await Task.Run(() => SourceSceneReader.Read(source, Assets, cancellationToken), cancellationToken);
         await SceneEditStorage.LoadAsync(level.Directory, objects, cancellationToken);
         return level with { Roads = roads, Vegetation = vegetation, Objects = objects };
     }

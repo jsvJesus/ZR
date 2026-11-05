@@ -42,8 +42,9 @@ public sealed class SceneData
     }
 
     public SceneData(AssetPaths assets, IReadOnlyList<SceneInstance> instances, IEnumerable<string>? warnings = null,
-        ScenePhysicsCache? physics = null)
+        ScenePhysicsCache? physics = null, string sourceName = "")
     {
+        SourceName = sourceName;
         _sources = instances.ToArray();
         _originals = _sources.ToDictionary(instance => instance.Id, StringComparer.Ordinal);
         _current = new(_originals, StringComparer.Ordinal);

@@ -38,7 +38,8 @@ internal sealed class TerrainOverviewResources : IDisposable
         _device = device;
         _level = level;
         var terrain = level.Manifest.Terrain;
-        var overview = TerrainOverviewReader.Read(AssetPathResolver.Resolve(level.Directory, level.Manifest.OverviewFile));
+        var overview = level.TerrainDocument?.IsDirty == true ? level.TerrainDocument.BuildOverview()
+            : TerrainOverviewReader.Read(AssetPathResolver.Resolve(level.Directory, level.Manifest.OverviewFile));
         _width = overview.Width;
         _height = overview.Height;
         _step = overview.Step;
@@ -154,7 +155,8 @@ internal sealed class TerrainOverviewResources : IDisposable
         var constants = new Constants
         {
             ViewProjection = viewProjection,
-            WorldExtent = new Vector4(terrain.SamplesX * terrain.CellSize, terrain.SamplesZ * terrain.CellSize, 0, 0),
+            WorldExtent = new Vector4(terrain.SamplesX * terrain.CellSize, terrain.SamplesZ * terrain.CellSize,
+                terrain.CellSize, _level.TerrainDocument?.Holes.Any == true ? 1 : 0),
             Material = new Vector4(
                 farDiffuse ? 1 : layer.ScaleU,
                 farDiffuse ? 1 : layer.ScaleV,

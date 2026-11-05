@@ -314,10 +314,10 @@ namespace Editor.Viewport
         public void SelectTree(Guid? id) { if (_trees != null) _trees.Selected = id; }
         public Matrix4x4 TreeWorld(ZoneReborn.World.Vegetation.TreeInstance tree) => TreeRenderer.World(tree, _terrain);
 
-        public bool PickTerrain(Vector3 origin, Vector3 direction, out Vector3 position)
+        public bool PickTerrain(Vector3 origin, Vector3 direction, out Vector3 position, bool includeHoles = false)
         {
             position = default;
-            return _terrain != null && _terrain.PickSurface(origin, direction, out position);
+            return _terrain != null && _terrain.PickSurface(origin, direction, out position, includeHoles);
         }
 
         public void SelectRoadSegment(SourceRoad? road, RoadSegment? segment)

@@ -30,16 +30,16 @@ public sealed class ModelImporter(AssetPaths assets)
         if (files.Length == 0) return new(0, 0, 0, [], []);
         int skipped = 0;
         var textures = new ModelTextureImporter(assets, textureFolders, token);
-        // The FBX importer normalizes axes and source units to centimetres at the root.
-        // Bake that root and its node hierarchy into metre-based, left-handed vertices.
-        using var context = new AssimpContext { Scale = 0.01f };
+        // FBX declares its own units. GlobalScale applies the importer's conversion
+        // to metres; a fixed centimetre multiplier also shrinks metre-authored assets.
+        using var context = new AssimpContext();
         context.SetConfig(new FBXPreservePivotsConfig(false));
         context.SetConfig(new FBXImportAnimationsConfig(false));
         context.SetConfig(new FBXImportCamerasConfig(false));
         context.SetConfig(new FBXImportLightsConfig(false));
         var flags = PostProcessSteps.Triangulate | PostProcessSteps.JoinIdenticalVertices
             | PostProcessSteps.GenerateSmoothNormals | PostProcessSteps.TransformUVCoords
-            | PostProcessSteps.PreTransformVertices | PostProcessSteps.SortByPrimitiveType
+            | PostProcessSteps.PreTransformVertices | PostProcessSteps.SortByPrimitiveType | PostProcessSteps.GlobalScale
             | PostProcessSteps.MakeLeftHanded | PostProcessSteps.FlipWindingOrder | PostProcessSteps.FlipUVs;
         for (int index = 0; index < files.Length; index++)
         {
@@ -50,7 +50,20 @@ public sealed class ModelImporter(AssetPaths assets)
             progress?.Report(new(relative, index, files.Length));
             try
             {
-                if (File.Exists(AssetPathResolver.Resolve(assets.Root, target))) { skipped++; continue; }
+                string path = AssetPathResolver.Resolve(assets.Root, target);
+                if (File.Exists(path) && ImportedModelStorage.HasLegacyScale(path))
+                {
+                    // Keep old assets stable: existing instances may compensate with scale 100.
+                    target = "models2/" + Path.ChangeExtension(relative, ".meters" + ImportedModelStorage.Extension);
+                    path = AssetPathResolver.Resolve(assets.Root, target);
+                }
+                if (File.Exists(path))
+                {
+                    if (ImportedModelStorage.HasLegacyScale(path))
+                        throw new InvalidDataException($"Путь исправленной модели занят старым ресурсом: {target}");
+                    skipped++;
+                    continue;
+                }
                 var scene = context.ImportFile(source, flags);
                 token.ThrowIfCancellationRequested();
                 if (scene == null || !scene.HasMeshes) throw new InvalidDataException("В FBX нет геометрии.");

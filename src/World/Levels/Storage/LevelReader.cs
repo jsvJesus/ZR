@@ -1,6 +1,7 @@
 using ZoneReborn.World.Assets;
 using ZoneReborn.World.Levels.Models;
 using ZoneReborn.World.Terrain.Models;
+using ZoneReborn.World.Terrain;
 
 namespace ZoneReborn.World.Levels.Storage;
 
@@ -18,7 +19,8 @@ public static class LevelReader
             terrain.SamplesX % 256 != 0 || terrain.SamplesZ % 256 != 0 ||
             !float.IsFinite(terrain.CellSize) || terrain.CellSize <= 0 ||
             !float.IsFinite(terrain.HeightScale) || terrain.HeightScale <= 0 ||
-            !float.IsFinite(terrain.HeightOffset))
+            !float.IsFinite(terrain.HeightOffset) || terrain.MeshStep is not (1 or 2 or 4)
+            || !float.IsFinite(terrain.SourceOffsetX) || !float.IsFinite(terrain.SourceOffsetZ))
             throw new InvalidDataException("Некорректные размеры или масштаб Terrain.");
         if (manifest.Tiles is null || manifest.Tiles.Count != terrain.TilesX * terrain.TilesZ)
             throw new InvalidDataException("Неполный список тайлов Terrain.");
@@ -54,7 +56,17 @@ public static class LevelReader
         if (camera == null || !float.IsFinite(camera.X) || !float.IsFinite(camera.Y) || !float.IsFinite(camera.Z) ||
             !float.IsFinite(camera.Yaw) || !float.IsFinite(camera.Pitch) || !float.IsFinite(camera.Speed))
             throw new InvalidDataException("Некорректная камера уровня.");
-        return new LoadedLevel(directory, manifest, layers);
+        if (!string.IsNullOrWhiteSpace(terrain.HolesFile)
+            && ((long)(terrain.SamplesX - 1) * (terrain.SamplesZ - 1) > 16_777_216
+                || terrain.SamplesX - 1 > 16384 || terrain.SamplesZ - 1 > 16384))
+            throw new InvalidDataException("Маска отверстий превышает поддерживаемый размер Terrain.");
+        TerrainHoles holes = string.IsNullOrWhiteSpace(terrain.HolesFile)
+            ? new(terrain.SamplesX - 1, terrain.SamplesZ - 1)
+            : TerrainHoles.Read(AssetPathResolver.Resolve(directory, terrain.HolesFile), terrain.SamplesX - 1, terrain.SamplesZ - 1);
+        return new LoadedLevel(directory, manifest, layers)
+        {
+            TerrainDocument = new TerrainDocument(directory, manifest, holes)
+        };
     }
 }
 

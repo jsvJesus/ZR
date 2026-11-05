@@ -9,6 +9,8 @@ namespace Editor
         public MainWindow()
         {
             InitializeComponent();
+            TerrainEditorPanel.Attach(Viewport);
+            TerrainEditorPanel.BusyChanged += UpdatePlayControls;
             RoadSegmentsPanel.Attach(Viewport);
             Viewport.RoadSegmentPicked += RoadSegmentsPanel.Select;
             RoadSegmentsPanel.BusyChanged += UpdatePlayControls;
@@ -61,13 +63,14 @@ namespace Editor
             Viewport.CancelObjectDrag();
             Viewport.CancelObjectPlacement();
             ObjectsPanel.CancelModelImport();
-            if (_changesSavedForClose || (!RoadSegmentsPanel.HasPendingChanges && !VegetationPanel.HasPendingChanges && !ObjectsPanel.HasPendingChanges)) return;
+            if (_changesSavedForClose || (!RoadSegmentsPanel.HasPendingChanges && !VegetationPanel.HasPendingChanges && !ObjectsPanel.HasPendingChanges && !TerrainEditorPanel.HasPendingChanges)) return;
             e.Cancel = true;
             if (_savingChangesOnClose) return;
             _savingChangesOnClose = true;
             UpdatePlayControls();
             try
             {
+                await TerrainEditorPanel.SavePendingAsync();
                 await RoadSegmentsPanel.SavePendingAsync();
                 await VegetationPanel.SavePendingAsync();
                 await ObjectsPanel.SavePendingAsync();

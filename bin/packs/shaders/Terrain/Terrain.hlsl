@@ -12,6 +12,7 @@ Texture2D DetailNormal : register(t1);
 Texture2D SurfaceNormal : register(t2);
 Texture2D LayerMask : register(t3);
 Texture2D WeightSum : register(t4);
+Texture2D TerrainHoles : register(t5);
 SamplerState MaterialSampler : register(s0);
 SamplerState TileSampler : register(s1);
 
@@ -39,6 +40,8 @@ PixelInput VSMain(VertexInput input)
 
 float4 PSMain(PixelInput input) : SV_TARGET
 {
+    if (WorldExtent.w > 0.5)
+        clip(0.5 - TerrainHoles.Load(int3(int2(input.World.xz / WorldExtent.z), 0)).r);
     // Both the masks and stored normals have a four-texel neighboring border.
     float2 tileUv = (4 + saturate(input.TileUv) * 248) / 256;
     float sum = WeightSum.Sample(TileSampler, tileUv).r;
