@@ -50,6 +50,12 @@ internal sealed class TerrainTexture : IDisposable
     public static TerrainTexture Bc1(Device device, byte[] data) => new(device, 256, 256, Format.BC1_UNorm,
         new[] { new DdsMipLevel(256, 256, 512, data) });
 
+    public static TerrainTexture Mask(Device device, byte[] data) => data.Length == 32768 ? Bc1(device, data)
+        : Rgba(device, 256, 256, data);
+
+    public static TerrainTexture Rgba(Device device, int width, int height, byte[] data) =>
+        new(device, width, height, Format.R8G8B8A8_UNorm, new[] { new DdsMipLevel(width, height, width * 4, data) });
+
     public static TerrainTexture Holes(Device device, ZoneReborn.World.Terrain.TerrainHoles holes) =>
         new(device, holes.Width, holes.Height, Format.R8_UNorm,
             new[] { new DdsMipLevel(holes.Width, holes.Height, holes.Width, holes.Pixels()) });

@@ -9,7 +9,7 @@ namespace ZoneReborn.World.Scene.Import;
 
 internal sealed class ModelTextureImporter
 {
-    private readonly AssetPaths _assets;
+    private readonly string _destination;
     private readonly string[] _searchRoots;
     private readonly CancellationToken _token;
     private readonly Dictionary<string, string> _resolved = new(StringComparer.OrdinalIgnoreCase);
@@ -18,9 +18,10 @@ internal sealed class ModelTextureImporter
 
     public int TextureCount => _outputs.Count;
 
-    public ModelTextureImporter(AssetPaths assets, IEnumerable<string> extraRoots, CancellationToken token)
+    public ModelTextureImporter(AssetPaths assets, IEnumerable<string> extraRoots, CancellationToken token,
+        string? destination = null)
     {
-        _assets = assets;
+        _destination = destination ?? Path.Combine(assets.Models2, "Tex");
         _token = token;
         _searchRoots = new[] { assets.ImportModels }.Concat(extraRoots)
             .Select(Path.GetFullPath).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
@@ -68,7 +69,7 @@ internal sealed class ModelTextureImporter
         if (string.IsNullOrWhiteSpace(basename)) basename = "texture";
         if (basename.Length > 80) basename = basename[..80];
         string hash = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
-        string destination = AssetPathResolver.Resolve(Path.Combine(_assets.Models2, "Tex"), $"{basename}-{hash}.dds");
+        string destination = AssetPathResolver.Resolve(_destination, $"{basename}-{hash}.dds");
         Publish(destination, bytes);
         _outputs.Add(destination);
         _resolved.Add(key, destination);

@@ -320,7 +320,7 @@ namespace Editor.Viewport
             {
                 case WmLeftDown:
                     SetFocus(window);
-                    if (TerrainBrushEnabled) { PaintTerrain(ReadX(lParam), ReadY(lParam)); return nint.Zero; }
+                    if (TerrainBrushEnabled) { BeginTerrainPaint(window, ReadX(lParam), ReadY(lParam)); return nint.Zero; }
                     if (ObjectEditingEnabled)
                     {
                         if (IsObjectPlacing) { PlaceObject(ReadX(lParam), ReadY(lParam)); return nint.Zero; }
@@ -332,6 +332,7 @@ namespace Editor.Viewport
                     return nint.Zero;
 
                 case WmLeftUp:
+                    if (_terrainPainting) { PaintTerrain(ReadX(lParam), ReadY(lParam)); EndTerrainPaint(); return nint.Zero; }
                     if (IsObjectDragging)
                     {
                         MoveObjectDrag(ReadX(lParam), ReadY(lParam));
@@ -341,6 +342,7 @@ namespace Editor.Viewport
                     break;
 
                 case WmRightDown:
+                    EndTerrainPaint();
                     if (IsObjectDragging)
                     {
                         CancelObjectDrag();
@@ -376,11 +378,13 @@ namespace Editor.Viewport
                     return nint.Zero;
 
                 case WmCaptureChanged:
+                    EndTerrainPaint();
                     CancelObjectDrag();
                     _rotating = false;
                     break;
 
                 case WmMouseMove:
+                    if (_terrainPainting) { PaintTerrain(ReadX(lParam), ReadY(lParam)); return nint.Zero; }
                     if (MoveObjectDrag(ReadX(lParam), ReadY(lParam))) return nint.Zero;
                     HandleMouseMove(lParam);
                     HoverObjectGizmo(ReadX(lParam), ReadY(lParam));
@@ -460,6 +464,7 @@ namespace Editor.Viewport
                     break;
 
                 case WmKillFocus:
+                    EndTerrainPaint();
                     CancelObjectDrag();
                     ReleasePlayMouse(false);
                     _pressedKeys.Clear();

@@ -88,6 +88,16 @@ internal static class TerrainMeshBuilder
         var active = tile.ActiveLayers.ToHashSet();
         foreach (var mask in tile.Masks)
         {
+            if (mask.Data.Length == 256 * 256 * 4)
+            {
+                for (int pixel = 0; pixel < sum.Length; pixel++)
+                for (int channel = 0; channel < 3; channel++)
+                {
+                    int layer = mask.Group * 3 + channel + 1;
+                    if (layer < layerCount && active.Contains((byte)layer)) sum[pixel] += mask.Data[pixel * 4 + channel] / 255f;
+                }
+                continue;
+            }
             for (int blockZ = 0; blockZ < 64; blockZ++)
             for (int blockX = 0; blockX < 64; blockX++)
             {

@@ -30,10 +30,26 @@ internal sealed class FbxTerrainImporter(AssetPaths assets)
                 SamplesX = raster.Width, SamplesZ = raster.Height, CellSize = cellSize, MeshStep = 1,
                 HeightOffset = minimum - 128, HeightScale = Math.Max(1, maximum - minimum + 256),
                 HolesFile = "terrain/holes.bin", ImportedFromMesh = true,
-                SourceOffsetX = raster.Offset.X, SourceOffsetZ = raster.Offset.Y
+                SourceOffsetX = raster.Offset.X, SourceOffsetZ = raster.Offset.Y, HasSourceMaterialLayout = true
             };
             var manifest = new LevelManifest { Name = name, Terrain = d };
             var overview = new TerrainOverviewBuilder(d);
+            string diffuse = $"levels/{name}/terrain/ground.dds", normal = $"levels/{name}/terrain/normal.dds";
+            Solid(Path.Combine(staging, "terrain", "ground.dds"), 122, 131, 108);
+            Solid(Path.Combine(staging, "terrain", "normal.dds"), 128, 128, 255);
+            var layers = new List<TerrainLayer>
+            {
+                new TerrainLayer { Index = 0, Name = "Земля", DiffuseTexture = diffuse, NormalTexture = normal,
+                    ScaleU = d.WorldSizeX / 4, ScaleV = d.WorldSizeZ / 4 }
+            };
+            var materials = FbxTerrainMaterials.Read(assets, files, d, layers[0], null, token);
+            foreach (var layer in materials.Layers)
+            {
+                if (layers.Count >= 255) throw new InvalidDataException("В FBX больше 254 дополнительных материалов Terrain.");
+                layers.Add(layer with { Index = layers.Count });
+            }
+            progress?.Report(new("Перенос участков материалов FBX", 0, 1));
+            var materialTiles = FbxTerrainMaterialLayout.Read(files, d, layers, token);
             int total = d.TilesX * d.TilesZ;
             for (int tz = 0; tz < d.TilesZ; tz++)
             for (int tx = 0; tx < d.TilesX; tx++)
@@ -45,7 +61,9 @@ internal sealed class FbxTerrainImporter(AssetPaths assets)
                     heights[z * 256 + x] = (ushort)Math.Clamp((int)MathF.Round(
                         (raster.Heights[(tz * 256 + z) * raster.Width + tx * 256 + x] - d.HeightOffset) / d.HeightScale * 65535), 0, 65535);
                 float Height(int x, int z) => raster.Heights[Math.Clamp(z, 0, d.SamplesZ - 1) * raster.Width + Math.Clamp(x, 0, d.SamplesX - 1)];
-                var tile = new TerrainTileData(tx, tz, heights, TerrainNormals.Build(d, tx, tz, Height), [], []);
+                var materialTile = materialTiles[(tx, tz)];
+                var tile = new TerrainTileData(tx, tz, heights, TerrainNormals.Build(d, tx, tz, Height),
+                    materialTile.ActiveLayers, materialTile.Masks);
                 string file = $"terrain/tiles/{tx}_{tz}.terrain";
                 TerrainTileWriter.Write(AssetPathResolver.Resolve(staging, file), tile); overview.Add(tile);
                 manifest.Tiles.Add(new(tx, tz, d.DecodeHeight(heights.Min()), d.DecodeHeight(heights.Max()), file));
@@ -53,14 +71,7 @@ internal sealed class FbxTerrainImporter(AssetPaths assets)
             }
             raster.Holes.Write(Path.Combine(staging, "terrain", "holes.bin"));
             TerrainOverviewWriter.Write(Path.Combine(staging, "terrain", "overview.terrain"), overview.Build());
-            string diffuse = $"levels/{name}/terrain/ground.dds", normal = $"levels/{name}/terrain/normal.dds";
-            Solid(Path.Combine(staging, "terrain", "ground.dds"), 122, 131, 108);
-            Solid(Path.Combine(staging, "terrain", "normal.dds"), 128, 128, 255);
-            await LevelJson.WriteAsync(Path.Combine(staging, "layers.json"), new[]
-            {
-                new TerrainLayer { Index = 0, Name = "Земля", DiffuseTexture = diffuse, NormalTexture = normal,
-                    ScaleU = d.WorldSizeX / 4, ScaleV = d.WorldSizeZ / 4 }
-            }, token);
+            await LevelJson.WriteAsync(Path.Combine(staging, "layers.json"), layers, token);
             int cameraIndex = FindSurface();
             float cx = cameraIndex % raster.Width * cellSize, cz = cameraIndex / raster.Width * cellSize;
             manifest.Camera = new(cx, raster.Heights[cameraIndex] + 60, cz, 0, -0.7f, 40);
@@ -72,8 +83,8 @@ internal sealed class FbxTerrainImporter(AssetPaths assets)
             {
                 Format = "ZoneReborn.FbxTerrainImport", Sources = files.Select(Path.GetFileName).ToArray(), CellSize = cellSize,
                 SourceOffsetX = raster.Offset.X, SourceOffsetZ = raster.Offset.Y, raster.Triangles, raster.OverlappingSamples,
-                Warnings = warning == null ? Array.Empty<string>() : new[] { warning },
-                Note = "Перенесены высоты и отверстия. Верхняя поверхность выбирается при перекрытиях; вертикальные стены и объекты не импортируются."
+                Warnings = materials.Warnings.Concat(warning == null ? [] : new[] { warning }).ToArray(),
+                Note = "Перенесены высоты, отверстия и участки материалов FBX. Верхняя поверхность выбирается при перекрытиях; вертикальные стены и объекты не импортируются."
             }, token);
             token.ThrowIfCancellationRequested(); Directory.Move(staging, destination);
             if (warning != null) progress?.Report(new(name, total, total) { Warning = warning });

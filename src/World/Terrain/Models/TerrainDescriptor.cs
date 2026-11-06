@@ -11,6 +11,7 @@ namespace ZoneReborn.World.Terrain.Models
         public int MeshStep { get; init; } = 4;
         public string HolesFile { get; set; } = "";
         public bool ImportedFromMesh { get; init; }
+        public bool HasSourceMaterialLayout { get; set; }
         public float SourceOffsetX { get; init; }
         public float SourceOffsetZ { get; init; }
         public string FarDiffuseTexture { get; init; } = "";

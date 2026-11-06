@@ -145,7 +145,7 @@ internal sealed class TerrainOverviewResources : IDisposable
         _indexCount = indices.Count;
     }
 
-    public void Render(DeviceContext context, Matrix4x4 viewProjection, TerrainMaterialCache materials)
+    public void Render(DeviceContext context, Matrix4x4 viewProjection, TerrainMaterialCache materials, bool painted)
     {
         if (_indexCount == 0) return;
         var terrain = _level.Manifest.Terrain;
@@ -162,7 +162,7 @@ internal sealed class TerrainOverviewResources : IDisposable
                 farDiffuse ? 1 : layer.ScaleV,
                 farNormal ? 1 : layer.ScaleU * layer.NormalUvMultiplier,
                 farNormal ? 1 : layer.ScaleV * layer.NormalUvMultiplier),
-            MapMode = new Vector4(farDiffuse ? 1 : 0, farNormal ? 1 : 0, 0, 0)
+            MapMode = new Vector4(farDiffuse ? 1 : 0, farNormal ? 1 : 0, painted ? 1 : 0, 0)
         };
         context.UpdateSubresource(ref constants, _constants);
         context.InputAssembler.InputLayout = _layout;

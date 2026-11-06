@@ -10,7 +10,7 @@ namespace ZoneReborn.World.Terrain;
 public enum TerrainBrushMode { Raise, Lower, Smooth, CutHole, FillHole }
 
 /// <summary>Shared CPU terrain data used by editing, rendering and gameplay.</summary>
-public sealed class TerrainDocument(string directory, LevelManifest manifest, TerrainHoles holes)
+public sealed partial class TerrainDocument(string directory, LevelManifest manifest, TerrainHoles holes, List<TerrainLayer> layers)
 {
     private readonly ConcurrentDictionary<(int X, int Z), TerrainTileData> _tiles = new();
     private readonly HashSet<(int X, int Z)> _dirty = [], _normalDirty = [];
@@ -22,6 +22,8 @@ public sealed class TerrainDocument(string directory, LevelManifest manifest, Te
     public long Revision { get; private set; }
     public long HeightRevision { get; private set; }
     public long HoleRevision { get; private set; }
+    public long MaterialRevision { get; private set; }
+    public IReadOnlyList<TerrainLayer> Layers => layers;
     public bool IsDirty => Revision != _savedRevision;
     public bool CanUndo => _undo.Count > 0;
     public TerrainDescriptor Descriptor => manifest.Terrain;
@@ -117,11 +119,21 @@ public sealed class TerrainDocument(string directory, LevelManifest manifest, Te
     {
         if (_undo.Count == 0) return;
         var change = _undo[^1]; _undo.RemoveAt(_undo.Count - 1);
+        if (change.SourceMaterialLayout is { } sourceLayout) Descriptor.HasSourceMaterialLayout = sourceLayout;
         foreach (var value in change.Heights) SetHeight(value.X, value.Z, value.Value);
         foreach (var value in change.Holes) Holes.Set(value.X, value.Z, value.Value);
+        foreach (var value in change.Materials)
+        {
+            var tile = Raw(value.Key.X, value.Key.Z);
+            _tiles[value.Key] = tile with { Masks = value.Value.Masks, ActiveLayers = value.Value.ActiveLayers };
+            _dirty.Add(value.Key);
+            _materialVersions[value.Key] = MaterialRevision + 1;
+            _paintOverviewDirty.Add(value.Key);
+        }
         Revision++;
         if (change.Heights.Count > 0) HeightRevision++;
         if (change.Holes.Count > 0) HoleRevision++;
+        if (change.Materials.Count > 0) MaterialRevision++;
     }
 
     private void SetHeight(int x, int z, ushort value)
@@ -169,6 +181,15 @@ public sealed class TerrainDocument(string directory, LevelManifest manifest, Te
             Atomic(Descriptor.HolesFile, Holes.Write);
         }
         Atomic(manifest.OverviewFile, path => TerrainOverviewWriter.Write(path, BuildOverview()));
+        string layerTemporary = Path.Combine(directory, $".terrain-layers-{Guid.NewGuid():N}.tmp");
+        try
+        {
+            await LevelJson.WriteAsync(layerTemporary, layers);
+            File.Move(layerTemporary, AssetPathResolver.Resolve(directory, manifest.LayersFile), true);
+        }
+        finally { if (File.Exists(layerTemporary)) File.Delete(layerTemporary); }
+        if (BuildPaintOverview() is { } paintOverview)
+            Atomic("terrain/paint-overview.bin", path => WritePaintOverview(path, paintOverview));
         string temporary = AssetPathResolver.Resolve(directory, $".terrain-manifest-{Guid.NewGuid():N}.tmp");
         try { await LevelJson.WriteAsync(temporary, manifest); File.Move(temporary, Path.Combine(directory, "level.json"), true); }
         finally { if (File.Exists(temporary)) File.Delete(temporary); }
@@ -184,7 +205,9 @@ public sealed class TerrainDocument(string directory, LevelManifest manifest, Te
 
     private sealed class Change
     {
+        public bool? SourceMaterialLayout { get; init; }
         public List<(int X, int Z, ushort Value)> Heights { get; } = [];
         public List<(int X, int Z, bool Value)> Holes { get; } = [];
+        public Dictionary<(int X, int Z), TerrainTileData> Materials { get; } = [];
     }
 }

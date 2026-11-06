@@ -47,7 +47,8 @@ public static class LevelReader
                 !float.IsFinite(layer.ScaleU) || layer.ScaleU <= 0 ||
                 !float.IsFinite(layer.ScaleV) || layer.ScaleV <= 0 ||
                 !float.IsFinite(layer.NormalUvMultiplier) || layer.NormalUvMultiplier <= 0 ||
-                !float.IsFinite(layer.Specular))
+                !float.IsFinite(layer.Specular) || layer.AverageColor is not { Length: 0 or 3 }
+                || layer.AverageColor.Any(value => !float.IsFinite(value) || value < 0 || value > 1))
                 throw new InvalidDataException("Некорректные параметры слоя Terrain.");
         }
         if (!File.Exists(AssetPathResolver.Resolve(directory, manifest.OverviewFile)))
@@ -65,7 +66,7 @@ public static class LevelReader
             : TerrainHoles.Read(AssetPathResolver.Resolve(directory, terrain.HolesFile), terrain.SamplesX - 1, terrain.SamplesZ - 1);
         return new LoadedLevel(directory, manifest, layers)
         {
-            TerrainDocument = new TerrainDocument(directory, manifest, holes)
+            TerrainDocument = new TerrainDocument(directory, manifest, holes, layers)
         };
     }
 }

@@ -31,6 +31,8 @@ internal sealed partial class TerrainRenderer : IDisposable
     private TerrainOverviewResources _overview = null!;
     private readonly AssetPaths _assets;
     private TerrainTexture? _holes;
+    private TerrainTexture? _paintOverview;
+    private long _paintRevision = -1;
     private long _heightRevision, _holeRevision;
     private VertexShader _vertexShader = null!;
     private PixelShader _pixelShader = null!;
@@ -115,6 +117,13 @@ internal sealed partial class TerrainRenderer : IDisposable
 
     public void Render(FreeCamera camera, Matrix4x4 viewProjection)
     {
+        if (_level.TerrainDocument is { } paintDocument && paintDocument.MaterialRevision != _paintRevision)
+        {
+            byte[]? pixels = paintDocument.BuildPaintOverview();
+            TerrainTexture? replacement = pixels == null ? null : TerrainTexture.Rgba(_device,
+                paintDocument.PaintOverviewWidth, paintDocument.PaintOverviewHeight, pixels);
+            _paintOverview?.Dispose(); _paintOverview = replacement; _paintRevision = paintDocument.MaterialRevision;
+        }
         if (_level.TerrainDocument is { } document && document.HeightRevision != _heightRevision)
         {
             foreach (var tile in _tiles.Values) tile.Dispose();
@@ -172,7 +181,8 @@ internal sealed partial class TerrainRenderer : IDisposable
         _context.PixelShader.SetSampler(0, _wrap);
         _context.PixelShader.SetSampler(1, _clamp);
         _context.PixelShader.SetShaderResource(5, _holes?.View);
-        _overview.Render(_context, viewProjection, _materials);
+        _context.PixelShader.SetShaderResource(6, _paintOverview?.View);
+        _overview.Render(_context, viewProjection, _materials, _paintOverview != null);
         _context.InputAssembler.InputLayout = _layout;
         _context.InputAssembler.PrimitiveTopology = PrimitiveTopology.TriangleList;
         _context.VertexShader.Set(_vertexShader);
@@ -192,6 +202,15 @@ internal sealed partial class TerrainRenderer : IDisposable
         foreach (var reference in nearest)
         {
             if (!_tiles.TryGetValue((reference.X, reference.Z), out var tile)) continue;
+            if (_level.TerrainDocument is { } materialsDocument)
+            {
+                long version = materialsDocument.TileMaterialVersion(reference.X, reference.Z);
+                if (tile.MaterialVersion != version)
+                {
+                    tile.RefreshMaterials(_device, materialsDocument.Tile(reference.X, reference.Z), _level.Layers.Count);
+                    tile.MaterialVersion = version;
+                }
+            }
             int skirtEdges = 0;
             if (reference.Z > 0 && !_tiles.ContainsKey((reference.X, reference.Z - 1))) skirtEdges |= 1;
             if (reference.Z + 1 < descriptor.TilesZ && !_tiles.ContainsKey((reference.X, reference.Z + 1))) skirtEdges |= 2;
@@ -213,7 +232,7 @@ internal sealed partial class TerrainRenderer : IDisposable
                 DrawLayer(tile, _level.Layers[index], mask, false, ref constants);
             }
         }
-        for (int index = 0; index < 6; index++) _context.PixelShader.SetShaderResource(index, null);
+        for (int index = 0; index < 7; index++) _context.PixelShader.SetShaderResource(index, null);
         _context.OutputMerger.SetBlendState(null);
         _context.OutputMerger.SetDepthStencilState(null);
         _context.Rasterizer.State = null;
@@ -249,6 +268,7 @@ internal sealed partial class TerrainRenderer : IDisposable
         _tiles.Clear();
         _overview?.Dispose();
         _holes?.Dispose();
+        _paintOverview?.Dispose();
         _materials?.Dispose();
         _add?.Dispose();
         _depthRead?.Dispose();

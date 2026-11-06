@@ -12,7 +12,7 @@ public sealed partial class MainWindow
     private async void OpenLevel_Click(object? sender, RoutedEventArgs e)
     {
         if (_isClosing || _importCancellation != null || _levelOpening || _levelSaving || _savingChangesOnClose
-            || RoadSegmentsPanel.IsSaving || VegetationPanel.IsSaving || ObjectsPanel.IsBusy || TerrainEditorPanel.IsSaving || Viewport.IsObjectDragging || Viewport.IsPlaying || Viewport.IsStarting) return;
+            || RoadSegmentsPanel.IsSaving || VegetationPanel.IsSaving || ObjectsPanel.IsBusy || TerrainEditorPanel.IsBusy || Viewport.IsObjectDragging || Viewport.IsPlaying || Viewport.IsStarting) return;
         try
         {
             var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions

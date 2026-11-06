@@ -21,8 +21,9 @@ namespace Editor
             CurrentModeText.Text = $"{category} / {name}";
             ModeTitle.Text = name;
             ModeDetails.Text = description;
-            TerrainMaterialsPanel.IsVisible = showTerrainMaterials;
-            TerrainEditorPanel.IsVisible = showTerrainEditing;
+            TerrainMaterialsPanel.IsVisible = false;
+            TerrainEditorPanel.IsVisible = showTerrainEditing || showTerrainMaterials;
+            TerrainEditorPanel.SetPainting(showTerrainMaterials);
             RoadSegmentsPanel.IsVisible = showRoadSegments;
             RoadSegmentsPanel.RefreshHighlight();
             VegetationPanel.IsVisible = showVegetation;
@@ -40,7 +41,7 @@ namespace Editor
         private async void CharacterEditor_Click(object? sender, RoutedEventArgs e)
         {
             if (_isClosing || _levelOpening || _levelSaving || _savingChangesOnClose || _importCancellation != null || Viewport.IsObjectDragging
-                || RoadSegmentsPanel.IsSaving || VegetationPanel.IsSaving || ObjectsPanel.IsBusy || TerrainEditorPanel.IsSaving) return;
+                || RoadSegmentsPanel.IsSaving || VegetationPanel.IsSaving || ObjectsPanel.IsBusy || TerrainEditorPanel.IsBusy) return;
             SetMode("Character Editor", "Экипировка персонажа",
                 "Одежда, снаряжение и оружие на персонаже текущего уровня.", showCharacterEditor: true);
             await CharacterPanel.ActivateAsync();

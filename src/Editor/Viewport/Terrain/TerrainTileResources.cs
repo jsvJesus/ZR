@@ -18,7 +18,8 @@ internal sealed class TerrainTileResources : IDisposable
     public TerrainTexture Normals { get; private set; } = null!;
     public TerrainTexture WeightSum { get; private set; } = null!;
     public Dictionary<int, TerrainTexture> Masks { get; } = [];
-    public byte[] ActiveLayers { get; }
+    public byte[] ActiveLayers { get; private set; }
+    public long MaterialVersion { get; set; }
     public int IndexCount { get; }
     public int EdgeIndexCount { get; }
     public int SkirtEdges { get; private set; } = -1;
@@ -43,7 +44,7 @@ internal sealed class TerrainTileResources : IDisposable
             EdgeIndexCount = mesh.EdgeIndexCount;
             Normals = TerrainTexture.Bc1(device, tile.Normals);
             WeightSum = TerrainTexture.WeightSum(device, TerrainMeshBuilder.BuildWeightSum(tile, layerCount));
-            foreach (var mask in tile.Masks) Masks.Add(mask.Group, TerrainTexture.Bc1(device, mask.Data));
+            foreach (var mask in tile.Masks) Masks.Add(mask.Group, TerrainTexture.Mask(device, mask.Data));
         }
         catch
         {
@@ -91,6 +92,25 @@ internal sealed class TerrainTileResources : IDisposable
         context.UpdateSubresource(vertices, Vertices);
         Surface = new TerrainSurfaceGrid(vertices.Take(mainCount).Select(v => v.Position).ToArray(), side);
         SkirtEdges = edges;
+    }
+
+    public void RefreshMaterials(Device device, TerrainTileData tile, int layerCount)
+    {
+        var masks = new Dictionary<int, TerrainTexture>();
+        TerrainTexture? weightSum = null;
+        try
+        {
+            weightSum = TerrainTexture.WeightSum(device, TerrainMeshBuilder.BuildWeightSum(tile, layerCount));
+            foreach (var mask in tile.Masks) masks.Add(mask.Group, TerrainTexture.Mask(device, mask.Data));
+        }
+        catch
+        {
+            weightSum?.Dispose(); foreach (var texture in masks.Values) texture.Dispose(); throw;
+        }
+        foreach (var texture in Masks.Values) texture.Dispose();
+        Masks.Clear(); foreach (var pair in masks) Masks.Add(pair.Key, pair.Value);
+        WeightSum.Dispose(); WeightSum = weightSum;
+        ActiveLayers = tile.ActiveLayers.Distinct().Order().ToArray();
     }
 
     public void Dispose()

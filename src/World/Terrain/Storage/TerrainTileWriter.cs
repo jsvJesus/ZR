@@ -8,7 +8,7 @@ public static class TerrainTileWriter
     public static void Write(string path, TerrainTileData tile)
     {
         using var writer = new BinaryWriter(new FileStream(path, FileMode.CreateNew, FileAccess.Write), Encoding.UTF8);
-        writer.Write("ZRTERR01"u8);
+        writer.Write(tile.Masks.Any(mask => mask.Data.Length == 256 * 256 * 4) ? "ZRTERR02"u8 : "ZRTERR01"u8);
         writer.Write(tile.X);
         writer.Write(tile.Z);
         writer.Write(tile.Heights.Length);

@@ -8,6 +8,7 @@ cbuffer TerrainOverviewBuffer : register(b0)
 Texture2D Diffuse : register(t0);
 Texture2D DetailNormal : register(t1);
 Texture2D TerrainHoles : register(t5);
+Texture2D PaintedOverview : register(t6);
 SamplerState MaterialSampler : register(s0);
 SamplerState OverviewSampler : register(s1);
 
@@ -50,5 +51,10 @@ float4 PSMain(PixelInput input) : SV_TARGET
     float3 color = MapMode.x > 0.5
         ? Diffuse.Sample(OverviewSampler, diffuseUv).rgb
         : Diffuse.Sample(MaterialSampler, diffuseUv).rgb;
+    if (MapMode.z > 0.5)
+    {
+        float4 paint = PaintedOverview.Sample(OverviewSampler, levelUv);
+        color = lerp(color, paint.rgb, paint.a);
+    }
     return float4(color * light, 1);
 }

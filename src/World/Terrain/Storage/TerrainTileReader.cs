@@ -7,7 +7,9 @@ public static class TerrainTileReader
     public static TerrainTileData Read(string path)
     {
         using var reader = new BinaryReader(File.OpenRead(path));
-        if (!reader.ReadBytes(8).AsSpan().SequenceEqual("ZRTERR01"u8))
+        byte[] signature = reader.ReadBytes(8);
+        bool editableMasks = signature.AsSpan().SequenceEqual("ZRTERR02"u8);
+        if (!editableMasks && !signature.AsSpan().SequenceEqual("ZRTERR01"u8))
             throw new InvalidDataException("Неподдерживаемая версия тайла Terrain.");
         int x = reader.ReadInt32(), z = reader.ReadInt32();
         if (x < 0 || z < 0 || x >= 128 || z >= 128)
@@ -27,7 +29,10 @@ public static class TerrainTileReader
             int group = reader.ReadInt32();
             if (group < 0 || group >= 85 || !groups.Add(group))
                 throw new InvalidDataException("Некорректная группа маски.");
-            masks.Add(new TerrainMask(group, ReadBlock(reader, 32768, 32768)));
+            byte[] data = ReadBlock(reader, 32768, editableMasks ? 256 * 256 * 4 : 32768);
+            if (data.Length != 32768 && data.Length != 256 * 256 * 4)
+                throw new InvalidDataException("Некорректный формат маски Terrain.");
+            masks.Add(new TerrainMask(group, data));
         }
         if (reader.BaseStream.Position != reader.BaseStream.Length)
             throw new InvalidDataException("Лишние данные тайла Terrain.");
