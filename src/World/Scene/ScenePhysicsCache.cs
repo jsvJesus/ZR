@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Numerics;
 using System.Xml;
 using ZoneReborn.World.Assets;
+using ZoneReborn.World.Scene.Import;
 
 namespace ZoneReborn.World.Scene;
 
@@ -45,6 +46,49 @@ public sealed class ScenePhysicsCache(
 
     private ScenePhysicsMesh? Load(string model)
     {
+        if (model.StartsWith(
+                "models2/",
+                StringComparison.OrdinalIgnoreCase) &&
+            Path.GetExtension(model).Equals(
+                ImportedModelStorage.Extension,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            try
+            {
+                string modelPath = SourceModelReader.Resolve(
+                    assets,
+                    model
+                );
+
+                if (!CollisionStorage.IsCurrent(modelPath))
+                {
+                    var result = CollisionGenerator.Generate(
+                        assets,
+                        model
+                    );
+
+                    warning(
+                        $"Physics {model}: автоматически создана " +
+                        $"коллизия из {result.SourceTriangles:N0} " +
+                        $"треугольников, осталось " +
+                        $"{result.CollisionTriangles:N0}."
+                    );
+                }
+
+                return CollisionStorage.Read(
+                    assets,
+                    model
+                );
+            }
+            catch (Exception exception) when (IsLoadError(exception))
+            {
+                warning(
+                    $"Physics {model}: ошибка генератора " +
+                    $"коллизии: {exception.Message}"
+                );
+            }
+        }
+
         try
         {
             var physical = SourcePhysicsReader.Read(
@@ -96,11 +140,14 @@ public sealed class ScenePhysicsCache(
             return physical;
         }
 
-        var vertices = new Vector3[physical.Vertices.Length];
+        var vertices = new Vector3[
+            physical.Vertices.Length
+        ];
 
         for (int index = 0; index < vertices.Length; index++)
         {
-            vertices[index] = physical.Vertices[index] * scale;
+            vertices[index] =
+                physical.Vertices[index] * scale;
         }
 
         var bounds = new SceneBounds(
@@ -215,11 +262,12 @@ public sealed class ScenePhysicsCache(
                 }
             }
 
-            if (vertices.Count == 0 || indices.Count == 0)
+            if (vertices.Count == 0 ||
+                indices.Count == 0)
             {
                 warning(
-                    $"Physics {model}: отсутствует геометрия " +
-                    "для создания коллизии."
+                    $"Physics {model}: отсутствует " +
+                    "геометрия для создания коллизии."
                 );
 
                 return null;
@@ -230,10 +278,9 @@ public sealed class ScenePhysicsCache(
             if (triangles >= HeavyCollisionThreshold)
             {
                 warning(
-                    $"Physics {model}: тяжёлая коллизия, " +
-                    $"{triangles:N0} треугольников. " +
-                    "Для повышения производительности " +
-                    "рекомендуется отдельная упрощённая коллизия."
+                    $"Physics {model}: используется тяжёлая " +
+                    $"резервная коллизия, {triangles:N0} " +
+                    "треугольников."
                 );
             }
 
@@ -248,9 +295,8 @@ public sealed class ScenePhysicsCache(
             };
 
             warning(
-                $"Physics {model}: создана коллизия " +
-                $"из визуальной модели, " +
-                $"{triangles:N0} треугольников."
+                $"Physics {model}: резервная коллизия " +
+                $"из {triangles:N0} треугольников."
             );
 
             return collision;
@@ -258,8 +304,8 @@ public sealed class ScenePhysicsCache(
         catch (Exception exception) when (IsLoadError(exception))
         {
             warning(
-                $"Physics {model}: не удалось создать " +
-                $"коллизию: {exception.Message}"
+                $"Physics {model}: резервная коллизия " +
+                $"не создана: {exception.Message}"
             );
 
             return null;
@@ -275,6 +321,9 @@ public sealed class ScenePhysicsCache(
             FormatException or
             OverflowException or
             ArgumentException or
-            XmlException;
+            XmlException or
+            DllNotFoundException or
+            EntryPointNotFoundException or
+            BadImageFormatException;
     }
 }
