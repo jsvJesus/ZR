@@ -9,8 +9,7 @@ public sealed class ScenePhysicsCache(
     AssetPaths assets,
     Action<string> warning)
 {
-    private const int MaximumFallbackTriangles = 25_000;
-    private const int MaximumFallbackVertices = 150_000;
+    private const int HeavyCollisionThreshold = 25_000;
 
     private readonly ConcurrentDictionary<
         string,
@@ -56,73 +55,89 @@ public sealed class ScenePhysicsCache(
 
             if (physical == null)
             {
-                return null;
+                return BuildVisualFallback(model);
             }
 
-            if (!model.StartsWith(
-                    "models2/",
-                    StringComparison.OrdinalIgnoreCase))
-            {
-                return physical;
-            }
-
-            string modelPath = SourceModelReader.Resolve(
-                assets,
-                model
-            );
-
-            float scale = ModelScaleStorage.Read(modelPath);
-
-            if (scale == 1f)
-            {
-                return physical;
-            }
-
-            var vertices = new Vector3[
-                physical.Vertices.Length
-            ];
-
-            for (int index = 0; index < vertices.Length; index++)
-            {
-                vertices[index] =
-                    physical.Vertices[index] * scale;
-            }
-
-            var bounds = new SceneBounds(
-                physical.Bounds.Minimum * scale,
-                physical.Bounds.Maximum * scale
-            );
-
-            return new ScenePhysicsMesh(
-                physical.File,
-                vertices,
-                physical.Indices,
-                bounds
-            )
-            {
-                IsVisualFallback = physical.IsVisualFallback
-            };
+            return ApplyImportedScale(model, physical);
         }
         catch (Exception exception) when (IsLoadError(exception))
         {
-            warning(
-                $"Physics {model}: {exception.Message}"
-            );
+            if (exception is not FileNotFoundException)
+            {
+                warning(
+                    $"Physics {model}: {exception.Message}"
+                );
+            }
 
             return BuildVisualFallback(model);
         }
+    }
+
+    private ScenePhysicsMesh ApplyImportedScale(
+        string model,
+        ScenePhysicsMesh physical)
+    {
+        if (!model.StartsWith(
+                "models2/",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return physical;
+        }
+
+        string modelPath = SourceModelReader.Resolve(
+            assets,
+            model
+        );
+
+        float scale = ModelScaleStorage.Read(modelPath);
+
+        if (scale == 1f)
+        {
+            return physical;
+        }
+
+        var vertices = new Vector3[physical.Vertices.Length];
+
+        for (int index = 0; index < vertices.Length; index++)
+        {
+            vertices[index] = physical.Vertices[index] * scale;
+        }
+
+        var bounds = new SceneBounds(
+            physical.Bounds.Minimum * scale,
+            physical.Bounds.Maximum * scale
+        );
+
+        return new ScenePhysicsMesh(
+            physical.File,
+            vertices,
+            physical.Indices,
+            bounds
+        )
+        {
+            IsVisualFallback = physical.IsVisualFallback
+        };
     }
 
     private ScenePhysicsMesh? BuildVisualFallback(string model)
     {
         string normalized = model.Replace('\\', '/');
 
-        if (!normalized.StartsWith(
+        bool supported =
+            normalized.StartsWith(
                 "objects/",
-                StringComparison.OrdinalIgnoreCase) &&
-            !normalized.StartsWith(
+                StringComparison.OrdinalIgnoreCase
+            ) ||
+            normalized.StartsWith(
                 "models2/",
-                StringComparison.OrdinalIgnoreCase))
+                StringComparison.OrdinalIgnoreCase
+            ) ||
+            normalized.StartsWith(
+                "models/",
+                StringComparison.OrdinalIgnoreCase
+            );
+
+        if (!supported)
         {
             return null;
         }
@@ -134,36 +149,21 @@ public sealed class ScenePhysicsCache(
                 normalized
             );
 
-            long triangleCount = visual.Meshes.Sum(
-                mesh => (long)mesh.Indices.Length / 3
-            );
+            var vertices = new List<Vector3>();
+            var indices = new List<int>();
 
-            long vertexCount = visual.Meshes.Sum(
-                mesh => (long)mesh.Vertices.Length
-            );
-
-            if (triangleCount == 0 ||
-                triangleCount > MaximumFallbackTriangles ||
-                vertexCount > MaximumFallbackVertices)
-            {
-                warning(
-                    $"Physics {model}: визуальная геометрия " +
-                    "слишком большая или пустая для резервной коллизии."
-                );
-
-                return null;
-            }
-
-            var vertices = new List<Vector3>(
-                (int)vertexCount
-            );
-
-            var indices = new List<int>(
-                checked((int)(triangleCount * 3))
+            var offsets = new Dictionary<SceneVertex[], int>(
+                ReferenceEqualityComparer.Instance
             );
 
             foreach (var mesh in visual.Meshes)
             {
+                if (mesh.Vertices.Length == 0 ||
+                    mesh.Indices.Length == 0)
+                {
+                    continue;
+                }
+
                 if (mesh.Indices.Length % 3 != 0)
                 {
                     throw new InvalidDataException(
@@ -171,20 +171,32 @@ public sealed class ScenePhysicsCache(
                     );
                 }
 
-                int startVertex = vertices.Count;
-
-                foreach (var vertex in mesh.Vertices)
+                if (!offsets.TryGetValue(
+                        mesh.Vertices,
+                        out int startVertex))
                 {
-                    if (!float.IsFinite(vertex.Position.X) ||
-                        !float.IsFinite(vertex.Position.Y) ||
-                        !float.IsFinite(vertex.Position.Z))
+                    startVertex = vertices.Count;
+
+                    foreach (var vertex in mesh.Vertices)
                     {
-                        throw new InvalidDataException(
-                            "Non-finite visual collision vertex."
-                        );
+                        Vector3 position = vertex.Position;
+
+                        if (!float.IsFinite(position.X) ||
+                            !float.IsFinite(position.Y) ||
+                            !float.IsFinite(position.Z))
+                        {
+                            throw new InvalidDataException(
+                                "Non-finite visual collision vertex."
+                            );
+                        }
+
+                        vertices.Add(position);
                     }
 
-                    vertices.Add(vertex.Position);
+                    offsets.Add(
+                        mesh.Vertices,
+                        startVertex
+                    );
                 }
 
                 foreach (int index in mesh.Indices)
@@ -197,22 +209,35 @@ public sealed class ScenePhysicsCache(
                         );
                     }
 
-                    indices.Add(startVertex + index);
+                    indices.Add(
+                        checked(startVertex + index)
+                    );
                 }
             }
 
-            if (indices.Count == 0)
+            if (vertices.Count == 0 || indices.Count == 0)
             {
+                warning(
+                    $"Physics {model}: отсутствует геометрия " +
+                    "для создания коллизии."
+                );
+
                 return null;
             }
 
-            warning(
-                $"Physics {model}: использована резервная " +
-                $"коллизия из {indices.Count / 3:N0} " +
-                "визуальных треугольников."
-            );
+            int triangles = indices.Count / 3;
 
-            return new ScenePhysicsMesh(
+            if (triangles >= HeavyCollisionThreshold)
+            {
+                warning(
+                    $"Physics {model}: тяжёлая коллизия, " +
+                    $"{triangles:N0} треугольников. " +
+                    "Для повышения производительности " +
+                    "рекомендуется отдельная упрощённая коллизия."
+                );
+            }
+
+            var collision = new ScenePhysicsMesh(
                 normalized,
                 vertices.ToArray(),
                 indices.ToArray(),
@@ -221,12 +246,20 @@ public sealed class ScenePhysicsCache(
             {
                 IsVisualFallback = true
             };
+
+            warning(
+                $"Physics {model}: создана коллизия " +
+                $"из визуальной модели, " +
+                $"{triangles:N0} треугольников."
+            );
+
+            return collision;
         }
         catch (Exception exception) when (IsLoadError(exception))
         {
             warning(
-                $"Physics {model}: резервная коллизия " +
-                $"не создана: {exception.Message}"
+                $"Physics {model}: не удалось создать " +
+                $"коллизию: {exception.Message}"
             );
 
             return null;
