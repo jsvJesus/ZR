@@ -22,15 +22,52 @@ public static class ImportedModelStorage
 
     public static SceneBounds ReadBounds(string path)
     {
-        using var reader = new BinaryReader(File.OpenRead(path));
-        return Header(reader);
+        float scale = ModelScaleStorage.Read(path);
+
+        using var reader = new BinaryReader(
+            File.OpenRead(path)
+        );
+
+        return ScaleBounds(
+            Header(reader),
+            scale
+        );
+    }
+
+    private static SceneBounds ScaleBounds(
+        SceneBounds bounds,
+        float scale)
+    {
+        if (scale == 1f)
+        {
+            return bounds;
+        }
+
+        return new SceneBounds(
+            bounds.Minimum * scale,
+            bounds.Maximum * scale
+        );
     }
 
     public static SceneModel Read(AssetPaths assets, string file, CancellationToken token = default)
     {
         string normalized = SourceModelReader.Normalize(file);
-        using var reader = new BinaryReader(File.OpenRead(AssetPathResolver.Resolve(assets.Root, normalized)));
-        var bounds = Header(reader);
+        string path = AssetPathResolver.Resolve(
+            assets.Root,
+            normalized
+        );
+
+        float scale = ModelScaleStorage.Read(path);
+
+        using var reader = new BinaryReader(
+            File.OpenRead(path)
+        );
+
+        var bounds = ScaleBounds(
+            Header(reader),
+            scale
+        );
+
         int count = Count(reader.ReadInt32(), MaximumMeshes, "mesh");
         var meshes = new SceneMesh[count];
         int totalVertices = 0, totalIndices = 0;
@@ -54,8 +91,21 @@ public static class ImportedModelStorage
             for (int index = 0; index < vertices.Length; index++)
             {
                 if ((index & 1023) == 0) token.ThrowIfCancellationRequested();
-                vertices[index] = new(Vector(reader), Vector(reader), new(Scalar(reader), Scalar(reader)),
-                    new(Scalar(reader), Scalar(reader), Scalar(reader), Scalar(reader)));
+
+                vertices[index] = new(
+                    Vector(reader) * scale,
+                    Vector(reader),
+                    new(
+                        Scalar(reader),
+                        Scalar(reader)
+                    ),
+                    new(
+                        Scalar(reader),
+                        Scalar(reader),
+                        Scalar(reader),
+                        Scalar(reader)
+                    )
+                );
             }
             for (int index = 0; index < indices.Length; index++)
             {
