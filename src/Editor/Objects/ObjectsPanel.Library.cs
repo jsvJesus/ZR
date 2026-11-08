@@ -141,11 +141,10 @@ public sealed partial class ObjectsPanel
             ShowObjectPreview
         );
 
-        root.Children.Add(_placement);
-
         root.Children.Add(Text(
-            "Выберите папку и модель, проверьте её в отдельном окне. " +
-            "Для размещения включите соответствующий режим."
+            "ЛКМ — выбрать объект на сцене. " +
+            "Ctrl+ЛКМ — поставить выбранную модель. " +
+            "Delete — удалить. Ctrl+S — сохранить."
         ));
 
         _assetSearch.TextChanged += (_, _) =>
@@ -176,29 +175,6 @@ public sealed partial class ObjectsPanel
 
             _selectedAsset = _assetsList.SelectedItem as AssetEntry;
             _ = LoadSelectedAssetAsync();
-        };
-
-        _placement.IsCheckedChanged += (_, _) =>
-        {
-            if (_placementBinding || _viewport == null)
-            {
-                return;
-            }
-
-            if (_placement.IsChecked == true &&
-                CanBrowseLibrary &&
-                _readyAsset != null &&
-                ReferenceEquals(_readyScene, _level?.Objects) &&
-                _readyScene?.CanSave == true)
-            {
-                _viewport.SetObjectPlacement(_readyAsset.File);
-            }
-            else
-            {
-                _viewport.CancelObjectPlacement();
-            }
-
-            RefreshLibraryMode();
         };
     }
 
@@ -523,6 +499,12 @@ public sealed partial class ObjectsPanel
             _readyAsset = result.Model;
             _readyScene = scene;
 
+            if (ReferenceEquals(scene, _level?.Objects) &&
+                scene.CanSave)
+            {
+                _viewport?.SetObjectPlacement(result.Model.File);
+            }
+
             var size =
                 result.Model.Bounds.Maximum -
                 result.Model.Bounds.Minimum;
@@ -564,11 +546,6 @@ public sealed partial class ObjectsPanel
             {
                 _assetStatus.Text +=
                     "\n" + string.Join("\n", warnings);
-            }
-
-            if (CanBrowseLibrary)
-            {
-                ShowObjectPreview();
             }
         }
         catch (OperationCanceledException)
@@ -618,8 +595,6 @@ public sealed partial class ObjectsPanel
 
                 window.Closed += (_, _) =>
                 {
-                    _viewport?.CancelObjectPlacement();
-
                     if (ReferenceEquals(_previewWindow, window))
                     {
                         _previewWindow = null;
@@ -628,7 +603,6 @@ public sealed partial class ObjectsPanel
 
                 window.PreviewFailed += error =>
                 {
-                    _viewport?.CancelObjectPlacement();
                     _readyAsset = null;
 
                     _assetStatus.Text =
@@ -656,8 +630,6 @@ public sealed partial class ObjectsPanel
         }
         catch (Exception exception)
         {
-            _viewport?.CancelObjectPlacement();
-
             _readyAsset = null;
 
             _previewWindow?.Close();
@@ -690,27 +662,6 @@ public sealed partial class ObjectsPanel
 
         _previewButton.IsEnabled =
             active && _readyAsset != null;
-
-        bool ready =
-            active &&
-            _readyAsset != null &&
-            _level?.Objects?.CanSave == true &&
-            ReferenceEquals(_readyScene, _level.Objects) &&
-            _assetLoad == null;
-
-        _placement.IsEnabled = ready;
-
-        if (!ready)
-        {
-            _viewport?.CancelObjectPlacement();
-        }
-
-        _placementBinding = true;
-
-        _placement.IsChecked =
-            _viewport?.IsObjectPlacing == true;
-
-        _placementBinding = false;
     }
 
     private sealed record FolderEntry(

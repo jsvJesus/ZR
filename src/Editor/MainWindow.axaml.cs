@@ -1,5 +1,6 @@
 using Avalonia.Controls;
 using Avalonia.Interactivity;
+using Avalonia.Input;
 using Editor.Viewport;
 
 namespace Editor
@@ -17,6 +18,7 @@ namespace Editor
             VegetationPanel.Attach(Viewport, _workspace.Assets);
             VegetationPanel.BusyChanged += UpdatePlayControls;
             ObjectsPanel.Attach(Viewport, _workspace.Assets);
+            Viewport.ObjectSaveRequested += () => SaveLevel_Click(this, new RoutedEventArgs());
             ObjectsPanel.BusyChanged += UpdatePlayControls;
             Viewport.ObjectDragStateChanged += UpdatePlayControls;
             CharacterPanel.Attach(Viewport, _workspace.Assets);
@@ -40,6 +42,12 @@ namespace Editor
                 Viewport.ShowGrid = GridCheck.IsChecked == true;
             };
 
+            AddHandler(
+                InputElement.KeyDownEvent,
+                HandleEditorShortcut,
+                RoutingStrategies.Tunnel
+            );
+
             UpdateCamera(Viewport.CameraPose);
             Closing += SaveChangesBeforeClosing;
             Closed += (_, _) =>
@@ -51,6 +59,29 @@ namespace Editor
                 CharacterPanel.SetActive(false);
                 Viewport.StopPlay();
             };
+        }
+
+        private void HandleEditorShortcut(
+            object? sender,
+            KeyEventArgs e)
+        {
+            bool control =
+                (e.KeyModifiers & KeyModifiers.Control) != 0;
+
+            if (control && e.Key == Key.S)
+            {
+                e.Handled = true;
+                SaveLevel_Click(this, new RoutedEventArgs());
+                return;
+            }
+
+            if (e.Key == Key.Delete &&
+                e.KeyModifiers == KeyModifiers.None &&
+                e.Source is not TextBox)
+            {
+                e.Handled =
+                    ObjectsPanel.TryDeleteSelectedFromShortcut();
+            }
         }
 
         private void Exit_Click(object? sender, RoutedEventArgs e) => Close();

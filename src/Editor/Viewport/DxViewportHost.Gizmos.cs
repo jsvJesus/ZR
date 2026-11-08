@@ -16,7 +16,6 @@ public sealed partial class DxViewportHost
         {
             if (_objectTransformMode == value) return;
             CancelObjectDrag();
-            CancelObjectPlacement();
             _objectTransformMode = value;
             _hoveredObjectAxis = ObjectGizmoAxis.None;
             ObjectGizmoModeChanged?.Invoke();
@@ -33,11 +32,21 @@ public sealed partial class DxViewportHost
     private bool TryObjectGizmoFrame(out ObjectGizmoFrame frame)
     {
         frame = default;
-        return ObjectEditingEnabled && !IsObjectPlacing && !IsPlaying && !IsStarting && _level?.Objects is { CanSave: true } scene &&
-            _selectedObjectId != null && scene.Find(_selectedObjectId) is { } selected &&
-            GetClientRect(_windowHandle, out NativeRect rect) &&
-            ObjectGizmoGeometry.TryCreateFrame(selected, _camera, rect.Right - rect.Left, rect.Bottom - rect.Top,
-                out frame, _renderer?.ObjectGizmoFarPlane ?? 1000f);
+        return ObjectEditingEnabled &&
+               !IsPlaying &&
+               !IsStarting &&
+               _level?.Objects is { CanSave: true } scene &&
+               _selectedObjectId != null &&
+               scene.Find(_selectedObjectId) is { } selected &&
+               GetClientRect(_windowHandle, out NativeRect rect) &&
+               ObjectGizmoGeometry.TryCreateFrame(
+                   selected,
+                   _camera,
+                   rect.Right - rect.Left,
+                   rect.Bottom - rect.Top,
+                   out frame,
+                   _renderer?.ObjectGizmoFarPlane ?? 1000f
+               );
     }
 
     private bool BeginObjectDrag(int x, int y)

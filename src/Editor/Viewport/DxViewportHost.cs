@@ -320,14 +320,45 @@ namespace Editor.Viewport
             {
                 case WmLeftDown:
                     SetFocus(window);
-                    if (TerrainBrushEnabled) { BeginTerrainPaint(window, ReadX(lParam), ReadY(lParam)); return nint.Zero; }
+
                     if (ObjectEditingEnabled)
                     {
-                        if (IsObjectPlacing) { PlaceObject(ReadX(lParam), ReadY(lParam)); return nint.Zero; }
-                        if (!BeginObjectDrag(ReadX(lParam), ReadY(lParam))) PickObject(ReadX(lParam), ReadY(lParam));
+                        int x = ReadX(lParam);
+                        int y = ReadY(lParam);
+
+                        bool control =
+                            (GetKeyState(KeyControl) & 0x8000) != 0;
+
+                        if (control)
+                        {
+                            PlaceObject(x, y);
+                            return nint.Zero;
+                        }
+
+                        if (!BeginObjectDrag(x, y))
+                        {
+                            PickObject(x, y);
+                        }
+
                         return nint.Zero;
                     }
-                    if (TreeEditingEnabled) { HandleTreePointer(ReadX(lParam), ReadY(lParam)); return nint.Zero; }
+
+                    if (TerrainBrushEnabled)
+                    {
+                        BeginTerrainPaint(
+                            window,
+                            ReadX(lParam),
+                            ReadY(lParam)
+                        );
+                        return nint.Zero;
+                    }
+
+                    if (TreeEditingEnabled)
+                    {
+                        HandleTreePointer(ReadX(lParam), ReadY(lParam));
+                        return nint.Zero;
+                    }
+
                     PickRoadSegment(ReadX(lParam), ReadY(lParam));
                     return nint.Zero;
 
@@ -417,23 +448,41 @@ namespace Editor.Viewport
 
                 case WmKeyDown:
                 case WmSysKeyDown:
-                    if (HandleObjectKey((int)wParam, lParam)) return nint.Zero;
+                    if ((int)wParam == KeyS &&
+                        (GetKeyState(KeyControl) & 0x8000) != 0)
+                    {
+                        if ((lParam.ToInt64() & (1L << 30)) == 0)
+                        {
+                            ObjectSaveRequested?.Invoke();
+                        }
+
+                        return nint.Zero;
+                    }
+
+                    if (HandleObjectKey((int)wParam, lParam))
+                    {
+                        return nint.Zero;
+                    }
+
                     if ((int)wParam == KeyF8 && IsPlaying)
                     {
                         if ((lParam.ToInt64() & (1L << 30)) == 0) TogglePlayInspection();
                         return nint.Zero;
                     }
+
                     if ((int)wParam == 0x1B && (IsPlaying || IsStarting))
                     {
                         StopPlay();
                         return nint.Zero;
                     }
+
                     if ((int)wParam == KeyH && IsPlaying && !IsCharacterEditing)
                     {
                         if (!IsPlayInspecting && (lParam.ToInt64() & (1L << 30)) == 0 && _pressedKeys.Add(KeyH))
                             SetCharacterWeaponInHands(!CharacterWeaponRequestedHeld);
                         return nint.Zero;
                     }
+
                     if (IsMovementKey((int)wParam) && ((int)wParam != KeyAlt || IsPlaying))
                     {
                         bool firstPress = _pressedKeys.Add((int)wParam);
