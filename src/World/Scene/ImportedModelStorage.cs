@@ -121,7 +121,7 @@ public static class ImportedModelStorage
                 }
             }
             token.ThrowIfCancellationRequested();
-            File.Move(temporary, path); // Existing assets and their cached geometry remain stable.
+            File.Move(temporary, path, true);
         }
         finally { if (File.Exists(temporary)) File.Delete(temporary); }
     }

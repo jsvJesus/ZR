@@ -1,4 +1,5 @@
 using System.Numerics;
+using System.Globalization;
 using Assimp;
 using Assimp.Configs;
 using ZoneReborn.World.Assets;
@@ -57,17 +58,50 @@ public sealed class ModelImporter(AssetPaths assets)
                     target = "models2/" + Path.ChangeExtension(relative, ".meters" + ImportedModelStorage.Extension);
                     path = AssetPathResolver.Resolve(assets.Root, target);
                 }
-                if (File.Exists(path))
+                string scaleFile = Path.ChangeExtension(source, ".zrscale");
+                DateTime lastChange = File.GetLastWriteTimeUtc(source);
+
+                if (File.Exists(scaleFile))
                 {
-                    if (ImportedModelStorage.HasLegacyScale(path))
-                        throw new InvalidDataException($"Путь исправленной модели занят старым ресурсом: {target}");
+                    DateTime scaleChange = File.GetLastWriteTimeUtc(scaleFile);
+
+                    if (scaleChange > lastChange)
+                    {
+                        lastChange = scaleChange;
+                    }
+                }
+
+                if (File.Exists(path) &&
+                    File.GetLastWriteTimeUtc(path) >= lastChange)
+                {
                     skipped++;
                     continue;
                 }
-                var scene = context.ImportFile(source, flags);
+
+                var importedScene = context.ImportFile(source, flags);
+
                 token.ThrowIfCancellationRequested();
-                if (scene == null || !scene.HasMeshes) throw new InvalidDataException("В FBX нет геометрии.");
-                var model = Convert(scene, source, target, textures, token);
+
+                if (importedScene == null || !importedScene.HasMeshes)
+                {
+                    throw new InvalidDataException("В FBX нет геометрии.");
+                }
+
+                var model = Convert(
+                    importedScene,
+                    source,
+                    target,
+                    textures,
+                    token
+                );
+
+                float importScale = ReadImportScale(scaleFile);
+
+                if (MathF.Abs(importScale - 1f) > 0.00001f)
+                {
+                    model = ApplyImportScale(model, importScale);
+                }
+
                 ImportedModelStorage.Write(assets, model, token);
                 outputs.Add(target);
             }
@@ -79,6 +113,60 @@ public sealed class ModelImporter(AssetPaths assets)
             finally { progress?.Report(new(relative, index + 1, files.Length)); }
         }
         return new(outputs.Count, skipped, textures.TextureCount, outputs.ToArray(), errors.ToArray());
+    }
+
+    private static float ReadImportScale(string path)
+    {
+        if (!File.Exists(path))
+        {
+            return 1f;
+        }
+
+        string text = File.ReadAllText(path)
+            .Trim()
+            .Replace(',', '.');
+
+        if (!float.TryParse(
+                text,
+                NumberStyles.Float,
+                CultureInfo.InvariantCulture,
+                out float scale) ||
+            !float.IsFinite(scale) ||
+            scale < 0.01f ||
+            scale > 100f)
+        {
+            throw new InvalidDataException(
+                $"Недопустимый коэффициент масштаба: {path}"
+            );
+        }
+
+        return scale;
+    }
+
+    private static SceneModel ApplyImportScale(
+        SceneModel model,
+        float scale)
+    {
+        foreach (var mesh in model.Meshes)
+        {
+            for (int index = 0; index < mesh.Vertices.Length; index++)
+            {
+                var vertex = mesh.Vertices[index];
+
+                mesh.Vertices[index] = vertex with
+                {
+                    Position = vertex.Position * scale
+                };
+            }
+        }
+
+        return model with
+        {
+            Bounds = new SceneBounds(
+                model.Bounds.Minimum * scale,
+                model.Bounds.Maximum * scale
+            )
+        };
     }
 
     private static SceneModel Convert(Assimp.Scene scene, string source, string target,
