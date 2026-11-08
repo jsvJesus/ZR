@@ -48,11 +48,60 @@ public sealed class ScenePhysicsCache(
     {
         try
         {
-            return SourcePhysicsReader.Read(
+            var physical = SourcePhysicsReader.Read(
                 assets,
                 model,
                 warning: warning
             );
+
+            if (physical == null)
+            {
+                return null;
+            }
+
+            if (!model.StartsWith(
+                    "models2/",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return physical;
+            }
+
+            string modelPath = SourceModelReader.Resolve(
+                assets,
+                model
+            );
+
+            float scale = ModelScaleStorage.Read(modelPath);
+
+            if (scale == 1f)
+            {
+                return physical;
+            }
+
+            var vertices = new Vector3[
+                physical.Vertices.Length
+            ];
+
+            for (int index = 0; index < vertices.Length; index++)
+            {
+                vertices[index] =
+                    physical.Vertices[index] * scale;
+            }
+
+            var bounds = new SceneBounds(
+                physical.Bounds.Minimum * scale,
+                physical.Bounds.Maximum * scale
+            );
+
+            return new ScenePhysicsMesh(
+                physical.File,
+                vertices,
+                physical.Indices,
+                bounds
+            )
+            {
+                IsVisualFallback = physical.IsVisualFallback
+            };
         }
         catch (Exception exception) when (IsLoadError(exception))
         {
@@ -66,14 +115,14 @@ public sealed class ScenePhysicsCache(
 
     private ScenePhysicsMesh? BuildVisualFallback(string model)
     {
-        // Reserve this fallback for the editable objects catalogue.
-        // Other scene collision sources retain their existing behavior.
         string normalized = model.Replace('\\', '/');
 
         if (!normalized.StartsWith(
-            "objects/",
-            StringComparison.OrdinalIgnoreCase) && !normalized.StartsWith(
-            "models2/", StringComparison.OrdinalIgnoreCase))
+                "objects/",
+                StringComparison.OrdinalIgnoreCase) &&
+            !normalized.StartsWith(
+                "models2/",
+                StringComparison.OrdinalIgnoreCase))
         {
             return null;
         }
