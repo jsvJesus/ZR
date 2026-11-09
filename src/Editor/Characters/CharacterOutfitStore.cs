@@ -13,8 +13,11 @@ internal static class CharacterOutfitStore
     {
         string key = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
             Path.GetFullPath(assets.Root).ToUpperInvariant())))[..16];
-        return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "ZoneReborn", "Editor", $"character-{key}.json");
+        return Path.Combine(
+            System.Environment.GetFolderPath(System.Environment.SpecialFolder.LocalApplicationData),
+            "ZoneReborn",
+            "Editor",
+            $"character-{key}.json");
     }
 
     public static bool Exists(AssetPaths assets) => File.Exists(FilePath(assets));
