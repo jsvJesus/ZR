@@ -1,4 +1,5 @@
 using Avalonia.Controls;
+using Avalonia.Threading;
 using Editor.Viewport;
 using ZoneReborn.World.Assets;
 using ZoneReborn.World.Levels.Models;
@@ -26,12 +27,63 @@ namespace Editor.Environment
         private EnvironmentSettings _settings = new();
         private EnvironmentSection _section;
 
+        private readonly DispatcherTimer _clockTimer = new()
+        {
+            Interval = TimeSpan.FromMilliseconds(250)
+        };
+
+        private Slider? _timeSlider;
+        private TextBlock? _timeText;
+        private bool _updatingTime;
+
         public bool HasPendingChanges { get; private set; }
 
         public EnvironmentPanel()
         {
             Content = _content;
             Build();
+
+            _clockTimer.Tick += (_, _) => RefreshTime();
+            _clockTimer.Start();
+
+            DetachedFromVisualTree += (_, _) => _clockTimer.Stop();
+            AttachedToVisualTree += (_, _) => _clockTimer.Start();
+        }
+
+        private void RefreshTime()
+        {
+            if (!IsVisible ||
+                !_settings.RunTimeOfDay ||
+                _timeSlider == null ||
+                _timeText == null)
+            {
+                return;
+            }
+
+            _updatingTime = true;
+
+            try
+            {
+                float time = Math.Clamp(
+                    _settings.TimeOfDay,
+                    0f,
+                    24f);
+
+                _timeSlider.Value = time;
+
+                int hours = (int)time % 24;
+                int minutes = Math.Clamp(
+                    (int)((time % 1f) * 60f),
+                    0,
+                    59);
+
+                _timeText.Text =
+                    $"Время суток: {hours:00}:{minutes:00}";
+            }
+            finally
+            {
+                _updatingTime = false;
+            }
         }
 
         public void Attach(
@@ -92,6 +144,9 @@ namespace Editor.Environment
         {
             _content.Children.Clear();
 
+            _timeSlider = null;
+            _timeText = null;
+
             switch (_section)
             {
                 case EnvironmentSection.Lighting:
@@ -104,6 +159,19 @@ namespace Editor.Environment
                         () => _settings.TimeOfDay,
                         value => _settings.TimeOfDay = value,
                         value => $"{(int)value:00}:{(int)((value % 1) * 60):00}");
+
+                    AddToggle(
+                        "Автоматический цикл суток",
+                        () => _settings.RunTimeOfDay,
+                        value => _settings.RunTimeOfDay = value);
+
+                    AddSlider(
+                        "Секунд на игровой час",
+                        30,
+                        3600,
+                        () => _settings.SecondsPerGameHour,
+                        value => _settings.SecondsPerGameHour = value,
+                        value => $"{value:0} сек.");
 
                     AddSlider(
                         "Азимут солнца",
@@ -178,6 +246,19 @@ namespace Editor.Environment
                     AddHeading("ПОГОДА");
 
                     AddWeatherSelector();
+
+                    AddSlider(
+                        "Переход погоды",
+                        0,
+                        120,
+                        () => _settings.WeatherTransitionSeconds,
+                        value => _settings.WeatherTransitionSeconds = value,
+                        value => $"{value:0} сек.");
+
+                    AddToggle(
+                        "Молнии во время грозы",
+                        () => _settings.LightningEnabled,
+                        value => _settings.LightningEnabled = value);
 
                     AddSlider(
                         "Направление ветра",
@@ -260,6 +341,11 @@ namespace Editor.Environment
 
             slider.ValueChanged += (_, args) =>
             {
+                if (_updatingTime)
+                {
+                    return;
+                }
+
                 setter((float)args.NewValue);
                 valueText.Text = $"{title}: {Format(args.NewValue)}";
                 Changed();

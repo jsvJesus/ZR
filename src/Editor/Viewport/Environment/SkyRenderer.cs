@@ -114,6 +114,7 @@ namespace Editor.Viewport.Environment
         public void Render(
             FreeCamera camera,
             EnvironmentSettings settings,
+            WeatherFrame weather,
             Vector3 sunDirection,
             float daylight,
             int width,
@@ -137,25 +138,8 @@ namespace Editor.Viewport.Environment
             float tangent = MathF.Tan(fieldOfView * 0.5f);
             float aspect = (float)width / height;
 
-            float clouds = settings.CloudCoverage;
-
-            if (settings.Weather == WeatherType.Cloudy)
-            {
-                clouds = MathF.Max(clouds, 0.65f);
-            }
-            else if (settings.Weather is WeatherType.Rain or
-                     WeatherType.Snow or WeatherType.Fog)
-            {
-                clouds = MathF.Max(clouds, 0.78f);
-            }
-            else if (settings.Weather is WeatherType.Thunderstorm or
-                     WeatherType.Blizzard)
-            {
-                clouds = MathF.Max(clouds, 0.95f);
-            }
-
-            bool storm = settings.Weather is
-                WeatherType.Thunderstorm or WeatherType.Blizzard;
+            float clouds = weather.CloudCoverage;
+            float storm = weather.StormCover;
 
             var data = new SkyConstants
             {
@@ -172,17 +156,17 @@ namespace Editor.Viewport.Environment
                     clouds,
                     settings.CloudSpeed,
                     elapsed,
-                    storm ? 1f : 0f),
+                    storm),
                 Weather = new Vector4(
                     settings.WindDirection * MathF.PI / 180f,
                     settings.WindSpeed,
                     settings.SunIntensity,
                     settings.FogDensity),
                 Textures = new Vector4(
-                    _cumulus != null ? 1 : 0,
-                    _cirrus != null ? 1 : 0,
-                    _storm != null ? 1 : 0,
-                    0)
+                    _cumulus != null ? 1f : 0f,
+                    _cirrus != null ? 1f : 0f,
+                    _storm != null ? 1f : 0f,
+                    weather.Lightning)
             };
 
             _context.UpdateSubresource(ref data, _constants);

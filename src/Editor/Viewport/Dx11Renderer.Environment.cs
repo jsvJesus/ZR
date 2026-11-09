@@ -28,6 +28,14 @@ namespace Editor.Viewport
 
         private WeatherType _loadedWeather = (WeatherType)(-1);
 
+        private readonly WeatherRuntime _weatherRuntime = new();
+        private readonly Dictionary<
+            WeatherType,
+            (float Rate, float FallSpeed)> _weatherEmitterCache = new();
+
+        private WeatherFrame _weatherFrame;
+        private SkyCycle? _skyCycle;
+
         private float _particleRate;
         private float _particleFallSpeed;
         private float _environmentTime;
@@ -36,6 +44,11 @@ namespace Editor.Viewport
         public void SetEnvironment(EnvironmentSettings settings)
         {
             ArgumentNullException.ThrowIfNull(settings);
+
+            if (!ReferenceEquals(_environmentSettings, settings))
+            {
+                _weatherRuntime.Reset();
+            }
 
             _environmentSettings = settings;
             _loadedWeather = (WeatherType)(-1);
@@ -93,26 +106,44 @@ namespace Editor.Viewport
                 _context,
                 AssetPaths.FromApplication());
 
+            _skyCycle = SkyCycle.Load(AssetPaths.FromApplication());
             InitializeShadowResources();
         }
 
         private void AdvanceEnvironmentTime()
         {
             long current = Stopwatch.GetTimestamp();
+            float deltaTime = 0f;
 
             if (_lastEnvironmentFrame != 0)
             {
-                float delta = (float)(
+                deltaTime = (float)(
                     (double)(current - _lastEnvironmentFrame) /
                     Stopwatch.Frequency);
 
-                _environmentTime += Math.Clamp(
-                    delta,
-                    0f,
-                    0.1f);
+                deltaTime = Math.Clamp(deltaTime, 0f, 0.1f);
             }
 
             _lastEnvironmentFrame = current;
+            _environmentTime += deltaTime;
+
+            if (_environmentSettings.RunTimeOfDay)
+            {
+                float secondsPerHour = Math.Clamp(
+                    _environmentSettings.SecondsPerGameHour,
+                    1f,
+                    3600f);
+
+                float time = _environmentSettings.TimeOfDay +
+                             deltaTime / secondsPerHour;
+
+                _environmentSettings.TimeOfDay =
+                    (time % 24f + 24f) % 24f;
+            }
+
+            _weatherFrame = _weatherRuntime.Advance(
+                _environmentSettings,
+                deltaTime);
         }
 
         private Vector3 UpdateEnvironmentLighting(
@@ -130,7 +161,6 @@ namespace Editor.Viewport
                 * MathF.PI / 12f;
 
             float elevation = MathF.Cos(hourAngle);
-
             float horizontal = MathF.Sin(hourAngle);
 
             float azimuth = settings.SunAzimuth
@@ -146,68 +176,54 @@ namespace Editor.Viewport
                 0f,
                 1f);
 
-            float warm = Math.Clamp(
-                direction.Y * 3f,
-                0f,
-                1f);
+            Vector3 sunColor = _skyCycle?.SunColor(time) ??
+                Vector3.Lerp(
+                    new Vector3(1f, 0.53f, 0.26f),
+                    new Vector3(1f, 0.96f, 0.87f),
+                    daylight);
 
-            Vector3 sunColor = Vector3.Lerp(
-                new Vector3(1f, 0.53f, 0.26f),
-                new Vector3(1f, 0.96f, 0.87f),
-                warm);
-
-            Vector3 ambient = Vector3.Lerp(
-                new Vector3(0.07f, 0.09f, 0.14f),
-                new Vector3(0.48f, 0.52f, 0.56f),
-                daylight);
+            Vector3 ambient = _skyCycle?.AmbientColor(time) ??
+                Vector3.Lerp(
+                    new Vector3(0.07f, 0.09f, 0.14f),
+                    new Vector3(0.48f, 0.52f, 0.56f),
+                    daylight);
 
             ambient *= Math.Clamp(
                 settings.AmbientIntensity,
                 0f,
                 2f);
 
-            float sunlight = daylight * Math.Clamp(
-                settings.SunIntensity,
-                0f,
-                3f);
+            float sunlight = daylight
+                * Math.Clamp(settings.SunIntensity, 0f, 3f)
+                * _weatherFrame.SunMultiplier;
+
+            float lightning = _weatherFrame.Lightning;
+
+            if (lightning > 0f)
+            {
+                ambient += new Vector3(
+                    0.75f,
+                    0.85f,
+                    1f) * lightning * 0.85f;
+            }
 
             float fogDensity = Math.Clamp(
-                settings.FogDensity,
+                _weatherFrame.FogDensity,
                 0f,
                 0.04f);
-
-            if (settings.Weather == WeatherType.Cloudy)
-            {
-                sunlight *= 0.7f;
-            }
-            else if (settings.Weather is WeatherType.Rain or
-                     WeatherType.Snow)
-            {
-                sunlight *= 0.55f;
-                fogDensity = MathF.Max(fogDensity, 0.003f);
-            }
-            else if (settings.Weather is WeatherType.Thunderstorm or
-                     WeatherType.Blizzard)
-            {
-                sunlight *= 0.22f;
-                fogDensity = MathF.Max(fogDensity, 0.008f);
-            }
-            else if (settings.Weather == WeatherType.Fog)
-            {
-                sunlight *= 0.65f;
-                fogDensity = MathF.Max(fogDensity, 0.018f);
-            }
 
             Vector3 fogColor = Vector3.Lerp(
                 new Vector3(0.018f, 0.028f, 0.045f),
                 new Vector3(0.56f, 0.64f, 0.69f),
                 daylight);
 
-            if (settings.Weather is WeatherType.Thunderstorm or
-                WeatherType.Blizzard)
-            {
-                fogColor *= 0.55f;
-            }
+            fogColor *= 1f -
+                _weatherFrame.StormCover * 0.45f;
+
+            fogColor += new Vector3(
+                0.35f,
+                0.43f,
+                0.6f) * lightning * 0.35f;
 
             var constants = new EnvironmentLightConstants
             {
@@ -238,6 +254,7 @@ namespace Editor.Viewport
             _skyRenderer?.Render(
                 camera,
                 _environmentSettings,
+                _weatherFrame,
                 sunDirection,
                 daylight,
                 _width,
@@ -257,23 +274,47 @@ namespace Editor.Viewport
                 return;
             }
 
-            WeatherType weather = _environmentSettings.Weather;
+            WeatherType rainType =
+                _environmentSettings.Weather == WeatherType.Thunderstorm
+                    ? WeatherType.Thunderstorm
+                    : WeatherType.Rain;
 
-            bool snow = weather is WeatherType.Snow or
-                WeatherType.Blizzard;
+            WeatherType snowType =
+                _environmentSettings.Weather == WeatherType.Blizzard
+                    ? WeatherType.Blizzard
+                    : WeatherType.Snow;
 
-            bool rain = weather is WeatherType.Rain or
-                WeatherType.Thunderstorm;
+            RenderWeatherLayer(
+                camera,
+                viewProjection,
+                rainType,
+                _weatherFrame.Rain);
 
-            if (!snow && !rain)
+            RenderWeatherLayer(
+                camera,
+                viewProjection,
+                snowType,
+                _weatherFrame.Snow);
+        }
+
+        private void RenderWeatherLayer(
+            FreeCamera camera,
+            Matrix4x4 viewProjection,
+            WeatherType weather,
+            float amount)
+        {
+            if (amount <= 0.001f)
             {
                 return;
             }
 
+            bool snow = weather is WeatherType.Snow or
+                WeatherType.Blizzard;
+
             UpdateWeatherEmitter(weather);
 
             float intensity = Math.Clamp(
-                _environmentSettings.Precipitation,
+                _environmentSettings.Precipitation * amount,
                 0f,
                 2f);
 
@@ -445,6 +486,15 @@ namespace Editor.Viewport
 
             _loadedWeather = weather;
 
+            if (_weatherEmitterCache.TryGetValue(
+                weather,
+                out var cached))
+            {
+                _particleRate = cached.Rate;
+                _particleFallSpeed = cached.FallSpeed;
+                return;
+            }
+
             bool snow = weather is WeatherType.Snow or
                 WeatherType.Blizzard;
 
@@ -460,61 +510,72 @@ namespace Editor.Viewport
                 _ => ""
             };
 
-            if (filename.Length == 0)
+            if (filename.Length > 0)
             {
-                return;
-            }
+                string path = Path.Combine(
+                    AssetPaths.FromApplication().Root,
+                    "particles",
+                    filename);
 
-            string path = Path.Combine(
-                AssetPaths.FromApplication().Root,
-                "particles",
-                filename);
-
-            if (!File.Exists(path))
-            {
-                return;
-            }
-
-            var root = PackedSection.Read(path);
-
-            PackedSection? emitter = root.Children
-                .SelectMany(section =>
-                    section.Find("Actions")?.Children ??
-                    Array.Empty<PackedSection>())
-                .FirstOrDefault(action => action.Name == "Source");
-
-            var rate = emitter?.Find("rate_")?.Value as float[];
-
-            if (rate is { Length: > 0 } &&
-                float.IsFinite(rate[0]) &&
-                rate[0] > 0)
-            {
-                _particleRate = Math.Clamp(
-                    rate[0],
-                    1f,
-                    600f);
-            }
-
-            var velocityGenerator = emitter?
-                .Find("pVelocitySrc")?
-                .Children.FirstOrDefault();
-
-            var first = velocityGenerator?
-                .Find("corner_")?.Value as float[];
-
-            var second = velocityGenerator?
-                .Find("opposite_")?.Value as float[];
-
-            if (first is { Length: >= 3 } &&
-                second is { Length: >= 3 })
-            {
-                float speed = -0.5f * (first[1] + second[1]);
-
-                if (speed > 0.5f && speed < 100f)
+                if (File.Exists(path))
                 {
-                    _particleFallSpeed = speed;
+                    try
+                    {
+                        var root = PackedSection.Read(path);
+
+                        PackedSection? emitter = root.Children
+                            .SelectMany(section =>
+                                section.Find("Actions")?.Children ??
+                                Array.Empty<PackedSection>())
+                            .FirstOrDefault(
+                                action => action.Name == "Source");
+
+                        var rate = emitter?
+                            .Find("rate_")?.Value as float[];
+
+                        if (rate is { Length: > 0 } &&
+                            float.IsFinite(rate[0]) &&
+                            rate[0] > 0f)
+                        {
+                            _particleRate = Math.Clamp(
+                                rate[0],
+                                1f,
+                                600f);
+                        }
+
+                        var velocityGenerator = emitter?
+                            .Find("pVelocitySrc")?
+                            .Children.FirstOrDefault();
+
+                        var first = velocityGenerator?
+                            .Find("corner_")?.Value as float[];
+
+                        var second = velocityGenerator?
+                            .Find("opposite_")?.Value as float[];
+
+                        if (first is { Length: >= 3 } &&
+                            second is { Length: >= 3 })
+                        {
+                            float speed = -0.5f *
+                                (first[1] + second[1]);
+
+                            if (speed > 0.5f && speed < 100f)
+                            {
+                                _particleFallSpeed = speed;
+                            }
+                        }
+                    }
+                    catch (InvalidDataException)
+                    {
+                        // При повреждённом ресурсе используем
+                        // безопасные параметры по умолчанию.
+                    }
                 }
             }
+
+            _weatherEmitterCache[weather] = (
+                _particleRate,
+                _particleFallSpeed);
         }
 
         private static float PositiveModulo(

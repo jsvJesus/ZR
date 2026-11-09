@@ -25,6 +25,8 @@ namespace Editor.Environment
         };
 
         public float TimeOfDay { get; set; } = 14.38f;
+        public bool RunTimeOfDay { get; set; } = false;
+        public float SecondsPerGameHour { get; set; } = 3600f;
         public float SunAzimuth { get; set; } = 115.2f;
         public float SunIntensity { get; set; } = 1f;
         public float AmbientIntensity { get; set; } = 0.75f;
@@ -37,6 +39,8 @@ namespace Editor.Environment
         public float CloudSpeed { get; set; } = 0.3f;
 
         public WeatherType Weather { get; set; } = WeatherType.Clear;
+        public float WeatherTransitionSeconds { get; set; } = 12f;
+        public bool LightningEnabled { get; set; } = true;
         public float WindDirection { get; set; } = 30f;
         public float WindSpeed { get; set; } = 2f;
         public float FogDensity { get; set; } = 0.002f;

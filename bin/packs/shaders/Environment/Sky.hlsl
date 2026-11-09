@@ -198,6 +198,13 @@ float4 PSMain(PixelInput input) : SV_TARGET
         * daylight
         * Weather.z
         * (1.0 - cloudAlpha * 0.95);
+		
+	float lightning = saturate(TextureFlags.w);
+
+	sky += float3(
+		0.72,
+		0.82,
+		1.0) * lightning * 0.85;
 
     return float4(saturate(sky), 1.0);
 }
