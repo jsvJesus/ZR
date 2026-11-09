@@ -334,6 +334,12 @@ namespace Editor.Environment
                 TickFrequency = 0.1
             };
 
+            if (title == "Время суток")
+            {
+                _timeSlider = slider;
+                _timeText = valueText;
+            }
+
             string Format(double value) =>
                 formatter?.Invoke(value) ?? value.ToString("0.##");
 

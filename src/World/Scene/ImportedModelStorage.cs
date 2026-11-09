@@ -8,7 +8,7 @@ public static class ImportedModelStorage
 {
     public const string Extension = ".zrmodel";
 
-    internal const int MaximumVertices = 2_000_000;
+    internal const int MaximumVertices = 5_000_000;
     internal const int MaximumIndices = 12_000_000;
 
     private const uint Signature = 0x314D525A;

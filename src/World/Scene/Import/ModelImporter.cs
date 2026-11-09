@@ -293,14 +293,15 @@ public sealed class ModelImporter(AssetPaths assets)
                 totalIndices + mesh.FaceCount * 3
             );
 
-            if (totalVertices >
-                    ImportedModelStorage.MaximumVertices ||
-                totalIndices >
-                    ImportedModelStorage.MaximumIndices)
+            if (totalVertices > ImportedModelStorage.MaximumVertices ||
+                totalIndices > ImportedModelStorage.MaximumIndices)
             {
                 throw new InvalidDataException(
-                    "Геометрия FBX превышает поддерживаемый " +
-                    "размер модели."
+                    $"Слишком большая геометрия FBX. " +
+                    $"Вершин: {totalVertices:N0} " +
+                    $"(лимит {ImportedModelStorage.MaximumVertices:N0}); " +
+                    $"треугольников: {totalIndices / 3:N0} " +
+                    $"(лимит {ImportedModelStorage.MaximumIndices / 3:N0})."
                 );
             }
 
