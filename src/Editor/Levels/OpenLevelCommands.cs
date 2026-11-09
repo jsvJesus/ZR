@@ -42,6 +42,8 @@ public sealed partial class MainWindow
             await RoadSegmentsPanel.SavePendingAsync();
             await VegetationPanel.SavePendingAsync();
             await ObjectsPanel.SavePendingAsync();
+            await EnvironmentPanel.SavePendingAsync();
+
             var level = await _workspace.OpenAsync(path);
             if (_isClosing) return;
             Viewport.SetLevel(level, _workspace.Assets);
@@ -50,6 +52,8 @@ public sealed partial class MainWindow
             VegetationPanel.Bind(level);
             ObjectsPanel.Bind(level);
             TerrainEditorPanel.Bind(level);
+            EnvironmentPanel.Bind(level);
+
             var camera = level.Manifest.Camera;
             Viewport.SetCamera(new(camera.X, camera.Y, camera.Z, camera.Yaw, camera.Pitch, camera.Speed));
             LevelNameText.Text = $"Уровень: {level.Manifest.Name}";

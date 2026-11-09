@@ -25,6 +25,8 @@ public sealed partial class MainWindow
             await RoadSegmentsPanel.SavePendingAsync();
             await VegetationPanel.SavePendingAsync();
             await ObjectsPanel.SavePendingAsync();
+            await EnvironmentPanel.SavePendingAsync();
+
             var camera = Viewport.CameraPose;
             await LevelWorkspace.SaveCameraAsync(_level, new(camera.X, camera.Y, camera.Z, camera.Yaw, camera.Pitch, camera.Speed));
             if (!_isClosing) StatusText.Text = "Terrain, камера, дороги, растительность и объекты сохранены.";

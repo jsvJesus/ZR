@@ -134,6 +134,8 @@ namespace Editor.Viewport
                 }
 
                 _renderer = new Dx11Renderer(_windowHandle);
+                _renderer.SetEnvironment(_environment);
+
                 if (_objectPreview != null && _assets != null)
                     _renderer.SetObjectPreview(_assets, _objectPreview);
                 else if (_level != null && _assets != null)

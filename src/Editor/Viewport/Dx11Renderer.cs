@@ -22,7 +22,7 @@ using Device = SharpDX.Direct3D11.Device;
 
 namespace Editor.Viewport
 {
-    public sealed class Dx11Renderer : IDisposable
+    public sealed partial class Dx11Renderer : IDisposable
     {
         private Device _device = null!;
         private DeviceContext _context = null!;
@@ -150,6 +150,7 @@ namespace Editor.Viewport
             _objectGizmo = new(_device, _context, _vertexShader, _pixelShader, _inputLayout);
 
             CreateRenderTarget();
+            InitializeEnvironment();
         }
 
         private static GridVertex[] CreateGrid()
@@ -433,6 +434,25 @@ namespace Editor.Viewport
                 farPlane);
 
             var viewProjection = view * projection;
+
+            AdvanceEnvironmentTime();
+
+            Vector3 sunDirection = UpdateEnvironmentLighting(
+                camera.Position,
+                out float daylight);
+
+            RenderEnvironmentShadows(
+                camera,
+                sunDirection,
+                farPlane,
+                playing);
+
+            RenderEnvironmentSky(
+                camera,
+                sunDirection,
+                daylight,
+                playing);
+
             _terrain?.Render(camera, viewProjection);
             _roads?.Render(camera.Position, viewProjection, _terrain?.FarPlane ?? 10000, playing);
             _objects?.Render(camera, viewProjection, farPlane);
@@ -472,7 +492,10 @@ namespace Editor.Viewport
             var characterView = view;
             characterView.Translation = Vector3.Zero;
             _character?.Render(characterView * projection, camera.Position);
+
             _objects?.RenderTransparent(camera, viewProjection);
+            RenderEnvironmentWeather(camera, viewProjection);
+
             if (!playing && _selectedObject != null && _scene?.Find(_selectedObject) is { } selected)
             {
                 _objectSelection?.Render(selected, viewProjection);
@@ -541,6 +564,8 @@ namespace Editor.Viewport
         public void Dispose()
         {
             _context?.ClearState();
+
+            DisposeEnvironment();
 
             _terrain?.Dispose();
             _roads?.Dispose();

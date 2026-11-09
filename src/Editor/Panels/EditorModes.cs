@@ -1,5 +1,6 @@
 using Avalonia.Interactivity;
 using Editor.Viewport;
+using Editor.Environment;
 
 namespace Editor
 {
@@ -14,7 +15,8 @@ namespace Editor
             bool showVegetation = false,
             bool showObjects = false,
             bool showCharacterEditor = false,
-            bool showTerrainEditing = false)
+            bool showTerrainEditing = false,
+            bool showEnvironment = false)
         {
             if (Viewport.IsObjectDragging) return;
             ObjectsPanel.CancelLibraryLoad();
@@ -24,6 +26,7 @@ namespace Editor
             TerrainMaterialsPanel.IsVisible = false;
             TerrainEditorPanel.IsVisible = showTerrainEditing || showTerrainMaterials;
             TerrainEditorPanel.SetPainting(showTerrainMaterials);
+            EnvironmentPanel.IsVisible = showEnvironment;
             RoadSegmentsPanel.IsVisible = showRoadSegments;
             RoadSegmentsPanel.RefreshHighlight();
             VegetationPanel.IsVisible = showVegetation;
@@ -80,26 +83,46 @@ namespace Editor
 
         private void Lighting_Click(object? sender, RoutedEventArgs e)
         {
-            SetMode("Scene editor", "Освещение",
-                "Настройка источников света.");
+            SetMode(
+                "Scene editor",
+                "Освещение",
+                "Солнце, время суток и окружающее освещение.",
+                showEnvironment: true);
+
+            EnvironmentPanel.ShowSection(EnvironmentSection.Lighting);
         }
 
         private void Shadows_Click(object? sender, RoutedEventArgs e)
         {
-            SetMode("Scene editor", "Тени",
-                "Параметры теней игровой сцены.");
+            SetMode(
+                "Scene editor",
+                "Тени",
+                "Параметры динамических теней.",
+                showEnvironment: true);
+
+            EnvironmentPanel.ShowSection(EnvironmentSection.Shadows);
         }
 
         private void Clouds_Click(object? sender, RoutedEventArgs e)
         {
-            SetMode("Scene editor", "Облака",
-                "Параметры облаков и небесной системы.");
+            SetMode(
+                "Scene editor",
+                "Облака",
+                "Облачность и движение облачных слоёв.",
+                showEnvironment: true);
+
+            EnvironmentPanel.ShowSection(EnvironmentSection.Clouds);
         }
 
         private void Weather_Click(object? sender, RoutedEventArgs e)
         {
-            SetMode("Scene editor", "Погода",
-                "Редактирование системы погоды.");
+            SetMode(
+                "Scene editor",
+                "Погода",
+                "Осадки, ветер и туман.",
+                showEnvironment: true);
+
+            EnvironmentPanel.ShowSection(EnvironmentSection.Weather);
         }
 
         private void Objects_Click(object? sender, RoutedEventArgs e)

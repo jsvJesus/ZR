@@ -10,6 +10,7 @@ namespace Editor
         public MainWindow()
         {
             InitializeComponent();
+            EnvironmentPanel.Attach(Viewport, _workspace.Assets);
             TerrainEditorPanel.Attach(Viewport, _workspace.Assets);
             TerrainEditorPanel.BusyChanged += UpdatePlayControls;
             RoadSegmentsPanel.Attach(Viewport);
@@ -95,7 +96,17 @@ namespace Editor
             Viewport.CancelObjectPlacement();
             ObjectsPanel.CancelModelImport();
             TerrainEditorPanel.CancelMaterialImport();
-            if (_changesSavedForClose || (!RoadSegmentsPanel.HasPendingChanges && !VegetationPanel.HasPendingChanges && !ObjectsPanel.HasPendingChanges && !TerrainEditorPanel.HasPendingChanges)) return;
+
+            if (_changesSavedForClose ||
+                (!RoadSegmentsPanel.HasPendingChanges &&
+                 !VegetationPanel.HasPendingChanges &&
+                 !ObjectsPanel.HasPendingChanges &&
+                 !TerrainEditorPanel.HasPendingChanges &&
+                 !EnvironmentPanel.HasPendingChanges))
+            {
+                return;
+            }
+
             e.Cancel = true;
             if (_savingChangesOnClose) return;
             _savingChangesOnClose = true;
@@ -106,6 +117,7 @@ namespace Editor
                 await RoadSegmentsPanel.SavePendingAsync();
                 await VegetationPanel.SavePendingAsync();
                 await ObjectsPanel.SavePendingAsync();
+                await EnvironmentPanel.SavePendingAsync();
                 _changesSavedForClose = true;
                 Avalonia.Threading.Dispatcher.UIThread.Post(Close);
             }
