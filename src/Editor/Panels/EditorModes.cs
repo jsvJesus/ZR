@@ -33,106 +33,176 @@ namespace Editor
 
             ModeTitle.Text = name;
             ModeDetails.Text = description;
-            TerrainMaterialsPanel.IsVisible = false;
-            TerrainEditorPanel.IsVisible = showTerrainEditing || showTerrainMaterials;
+
+            TerrainEditorPanel.IsVisible =
+                showTerrainEditing || showTerrainMaterials;
+
             TerrainEditorPanel.SetPainting(showTerrainMaterials);
+
             EnvironmentPanel.IsVisible = showEnvironment;
+
             RoadSegmentsPanel.IsVisible = showRoadSegments;
             RoadSegmentsPanel.RefreshHighlight();
+
             VegetationPanel.IsVisible = showVegetation;
             VegetationPanel.RefreshMode();
+
             ObjectsPanel.IsVisible = showObjects;
             ObjectsPanel.RefreshMode();
+
             TerrainEditorPanel.RefreshMode();
-            if (showObjects) ObjectsPanel.ResumeLibrary();
+
+            if (showObjects)
+            {
+                ObjectsPanel.ResumeLibrary();
+            }
+
             CharacterPanel.IsVisible = showCharacterEditor;
             CharacterPanel.SetActive(showCharacterEditor);
+
             UpdatePlayControls();
+
             StatusText.Text = $"Выбран раздел: {name}";
         }
 
-        private async void CharacterEditor_Click(object? sender, RoutedEventArgs e)
+        private async void CharacterEditor_Click(
+            object? sender,
+            RoutedEventArgs e)
         {
-            if (_isClosing || _levelOpening || _levelSaving || _savingChangesOnClose || _importCancellation != null || Viewport.IsObjectDragging
-                || RoadSegmentsPanel.IsSaving || VegetationPanel.IsSaving || ObjectsPanel.IsBusy || TerrainEditorPanel.IsBusy) return;
-            SetMode("Character Editor", "Экипировка персонажа",
-                "Одежда, снаряжение и оружие на персонаже текущего уровня.", showCharacterEditor: true);
+            if (_isClosing ||
+                _levelOpening ||
+                _levelSaving ||
+                _savingChangesOnClose ||
+                _importCancellation != null ||
+                Viewport.IsObjectDragging ||
+                RoadSegmentsPanel.IsSaving ||
+                VegetationPanel.IsSaving ||
+                ObjectsPanel.IsBusy ||
+                TerrainEditorPanel.IsBusy)
+            {
+                return;
+            }
+
+            SetMode(
+                "Character Editor",
+                "Экипировка персонажа",
+                "Одежда, снаряжение и оружие на персонаже текущего уровня.",
+                showCharacterEditor: true
+            );
+
             await CharacterPanel.ActivateAsync();
         }
 
-        private void Terrain_Click(object? sender, RoutedEventArgs e)
+        private void Terrain_Click(
+            object? sender,
+            RoutedEventArgs e)
         {
-            SetMode("Level editor", "Terrain",
-                "Редактирование игрового ландшафта.", showTerrainEditing: true);
+            SetMode(
+                "Level editor",
+                "Terrain",
+                "Поднятие, опускание, сглаживание поверхности и редактирование отверстий.",
+                showTerrainEditing: true
+            );
         }
 
-        private void RoadSegments_Click(object? sender, RoutedEventArgs e)
+        private void RoadSegments_Click(
+            object? sender,
+            RoutedEventArgs e)
         {
-            SetMode("Level editor", "Road Segments",
-                "Сегменты исходных дорог, общие узлы и материалы.", showRoadSegments: true);
+            SetMode(
+                "Level editor",
+                "Road Segments",
+                "Редактирование дорог, сегментов и общих узлов.",
+                showRoadSegments: true
+            );
         }
 
-        private void Heights_Click(object? sender, RoutedEventArgs e)
+        private void TerrainMaterials_Click(
+            object? sender,
+            RoutedEventArgs e)
         {
-            SetMode("Level editor", "Высоты и рельеф",
-                "Создание и изменение высот поверхности.", showTerrainEditing: true);
+            SetMode(
+                "Materials editor",
+                "Terrain Materials",
+                "Материалы поверхности, слои, текстуры и кисть покраски.",
+                showTerrainMaterials: true
+            );
         }
 
-        private void TerrainMaterials_Click(object? sender, RoutedEventArgs e)
+        private void Vegetation_Click(
+            object? sender,
+            RoutedEventArgs e)
         {
-            SetMode("Level editor", "Текстуры поверхности",
-                "Настройка материалов игрового ландшафта.",
-                showTerrainMaterials: true);
+            SetMode(
+                "Vegetation editor",
+                "Vegetation",
+                "Каталог SpeedTree и размещение растительности.",
+                showVegetation: true
+            );
         }
 
-        private void Vegetation_Click(object? sender, RoutedEventArgs e)
-        {
-            SetMode("Level editor", "Растительность",
-                "Каталог SpeedTree и размещение деревьев на уровне.", showVegetation: true);
-        }
-
-        private void Lighting_Click(object? sender, RoutedEventArgs e)
+        private void Lighting_Click(
+            object? sender,
+            RoutedEventArgs e)
         {
             SetMode(
                 "Scene editor",
                 "Освещение",
                 "Солнце, время суток и окружающее освещение.",
-                showEnvironment: true);
+                showEnvironment: true
+            );
 
-            EnvironmentPanel.ShowSection(EnvironmentSection.Lighting);
+            EnvironmentPanel.ShowSection(
+                EnvironmentSection.Lighting
+            );
         }
 
-        private void Shadows_Click(object? sender, RoutedEventArgs e)
+        private void Shadows_Click(
+            object? sender,
+            RoutedEventArgs e)
         {
             SetMode(
                 "Scene editor",
                 "Тени",
                 "Параметры динамических теней.",
-                showEnvironment: true);
+                showEnvironment: true
+            );
 
-            EnvironmentPanel.ShowSection(EnvironmentSection.Shadows);
+            EnvironmentPanel.ShowSection(
+                EnvironmentSection.Shadows
+            );
         }
 
-        private void Clouds_Click(object? sender, RoutedEventArgs e)
+        private void Clouds_Click(
+            object? sender,
+            RoutedEventArgs e)
         {
             SetMode(
                 "Scene editor",
                 "Облака",
                 "Облачность и движение облачных слоёв.",
-                showEnvironment: true);
+                showEnvironment: true
+            );
 
-            EnvironmentPanel.ShowSection(EnvironmentSection.Clouds);
+            EnvironmentPanel.ShowSection(
+                EnvironmentSection.Clouds
+            );
         }
 
-        private void Weather_Click(object? sender, RoutedEventArgs e)
+        private void Weather_Click(
+            object? sender,
+            RoutedEventArgs e)
         {
             SetMode(
                 "Scene editor",
                 "Погода",
                 "Осадки, ветер и туман.",
-                showEnvironment: true);
+                showEnvironment: true
+            );
 
-            EnvironmentPanel.ShowSection(EnvironmentSection.Weather);
+            EnvironmentPanel.ShowSection(
+                EnvironmentSection.Weather
+            );
         }
 
         private void ObjectsImport_Click(

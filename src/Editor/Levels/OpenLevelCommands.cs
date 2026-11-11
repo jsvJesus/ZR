@@ -57,8 +57,6 @@ public sealed partial class MainWindow
             var camera = level.Manifest.Camera;
             Viewport.SetCamera(new(camera.X, camera.Y, camera.Z, camera.Yaw, camera.Pitch, camera.Speed));
             LevelNameText.Text = $"Уровень: {level.Manifest.Name}";
-            TerrainLevelInfo.Text = $"{level.Manifest.Terrain.SamplesX} × {level.Manifest.Terrain.SamplesZ} • {level.Layers.Count} слоёв";
-            TerrainLayersList.ItemsSource = level.Layers.Select(layer => layer.Name).ToArray();
             StatusText.Text = $"Открыт {level.Manifest.Name} · дорог: {level.Roads.Roads.Count}"
                 + $" · моделей: {level.Objects?.Instances.Count ?? 0}"
                 + (level.Roads.Warnings.Count > 0 ? $" · замечаний по дорогам: {level.Roads.Warnings.Count}" : "")

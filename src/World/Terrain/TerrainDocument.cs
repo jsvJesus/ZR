@@ -76,7 +76,10 @@ public sealed partial class TerrainDocument(string directory, LevelManifest mani
         if ((mode is TerrainBrushMode.CutHole or TerrainBrushMode.FillHole)
             && (long)(d.SamplesX - 1) * (d.SamplesZ - 1) > 16_777_216)
             throw new InvalidOperationException("Для отверстий поддерживается не более 16 миллионов ячеек.");
-        var change = new Change();
+
+        var change = _sculptStroke ?? new Change();
+        bool holesChanged = false;
+
         int x0 = Math.Clamp((int)MathF.Floor((x - radius) / d.CellSize), 0, d.SamplesX - 1);
         int x1 = Math.Clamp((int)MathF.Ceiling((x + radius) / d.CellSize), 0, d.SamplesX - 1);
         int z0 = Math.Clamp((int)MathF.Floor((z - radius) / d.CellSize), 0, d.SamplesZ - 1);
@@ -93,7 +96,18 @@ public sealed partial class TerrainDocument(string directory, LevelManifest mani
             {
                 if (gx >= Holes.Width || gz >= Holes.Height) continue;
                 bool previous = Holes.Contains(gx, gz);
-                if (Holes.Set(gx, gz, mode == TerrainBrushMode.CutHole)) change.Holes.Add((gx, gz, previous));
+
+                if (Holes.Set(gx, gz, mode == TerrainBrushMode.CutHole))
+                {
+                    holesChanged = true;
+
+                    if (_sculptStroke == null ||
+                        _sculptHolesTouched.Add((gx, gz)))
+                    {
+                        change.Holes.Add((gx, gz, previous));
+                    }
+                }
+
                 continue;
             }
             ushort old = Raw(gx / 256, gz / 256).Heights[(gz % 256) * 256 + gx % 256];
@@ -104,14 +118,42 @@ public sealed partial class TerrainDocument(string directory, LevelManifest mani
                 : height + strength * weight * (mode == TerrainBrushMode.Lower ? -1 : 1);
             ushort encoded = (ushort)Math.Clamp((int)MathF.Round((next - d.HeightOffset) / d.HeightScale * 65535), 0, 65535);
             if (encoded == old) continue;
-            change.Heights.Add((gx, gz, old)); pending.Add((gx, gz, encoded));
+
+            if (_sculptStroke == null ||
+                _sculptHeightsTouched.Add((gx, gz)))
+            {
+                change.Heights.Add((gx, gz, old));
+            }
         }
         foreach (var value in pending) SetHeight(value.X, value.Z, value.Value);
-        if (change.Heights.Count == 0 && change.Holes.Count == 0) return false;
-        if (_undo.Count >= 64) _undo.RemoveAt(0);
-        _undo.Add(change); Revision++;
-        if (change.Heights.Count > 0) HeightRevision++;
-        if (change.Holes.Count > 0) HoleRevision++;
+
+        if (pending.Count == 0 && !holesChanged)
+        {
+            return false;
+        }
+
+        if (_sculptStroke == null)
+        {
+            if (_undo.Count >= 64)
+            {
+                _undo.RemoveAt(0);
+            }
+
+            _undo.Add(change);
+        }
+
+        Revision++;
+
+        if (pending.Count > 0)
+        {
+            HeightRevision++;
+        }
+
+        if (holesChanged)
+        {
+            HoleRevision++;
+        }
+
         return true;
     }
 

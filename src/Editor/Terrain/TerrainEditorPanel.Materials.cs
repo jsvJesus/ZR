@@ -25,10 +25,13 @@ public sealed partial class TerrainEditorPanel
 
     public void CancelMaterialImport() => _materialCancellation?.Cancel();
 
-    public void SetPainting(bool paint)
+    public void SetPainting(bool showMaterials)
     {
-        if (paint) _mode.SelectedIndex = 5;
-        else if (_mode.SelectedIndex >= 5) _mode.SelectedIndex = 0;
+        _viewport?.EndTerrainPaint();
+
+        _materialsSection = showMaterials;
+
+        RefreshMode();
     }
 
     private void BuildMaterialControls(StackPanel root)
