@@ -65,6 +65,7 @@ namespace Editor.Viewport
         public event Action<string>? RendererError;
 
         public bool ShowGrid { get; set; } = true;
+        public bool ShowSelectedCollision { get; set; }
 
         public CameraPose CameraPose => _camera.Pose;
 
@@ -257,6 +258,7 @@ namespace Editor.Viewport
                         _renderer.SelectObject(ObjectEditingEnabled && !IsPlaying && !IsStarting ? _selectedObjectId : null);
                         _renderer.SetObjectGizmo(ObjectTransformMode, _objectDrag?.Axis ?? _hoveredObjectAxis,
                             ObjectEditingEnabled && !IsObjectPlacing && !IsPlaying && !IsStarting && !_rotating && _level?.Objects?.CanSave == true);
+                        _renderer.ShowSelectedCollision = ShowSelectedCollision;
                         _renderer.Render(
                             IsPlaying ? ActivePlayCamera : _camera,
                             width,

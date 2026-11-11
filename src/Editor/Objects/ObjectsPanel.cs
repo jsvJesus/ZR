@@ -40,6 +40,7 @@ namespace Editor.Objects
             var root = new StackPanel { Spacing = 8 };
             root.Children.Add(_summary);
             BuildLibrary(root);
+            BuildCollisionControls(root);
             root.Children.Add(Text("ИНСТРУМЕНТ ОБЪЕКТА"));
             _move = Button(root, "Перемещение [1]", () => SetTransformMode(ObjectGizmoMode.Move));
             _rotate = Button(root, "Вращение [2]", () => SetTransformMode(ObjectGizmoMode.Rotate));
@@ -124,6 +125,7 @@ namespace Editor.Objects
         public void RefreshMode()
         {
             RefreshLibraryMode();
+            RefreshCollisionMode();
             bool active = CanInteract;
             bool controlsEnabled = active && !IsDragging;
             bool editable = controlsEnabled && _level?.Objects?.CanSave == true;

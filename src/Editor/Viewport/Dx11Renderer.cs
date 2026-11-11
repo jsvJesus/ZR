@@ -498,6 +498,11 @@ namespace Editor.Viewport
 
             if (!playing && _selectedObject != null && _scene?.Find(_selectedObject) is { } selected)
             {
+                if (ShowSelectedCollision)
+                {
+                    RenderSelectedCollision(selected, viewProjection);
+                }
+
                 _objectSelection?.Render(selected, viewProjection);
                 if (_objectGizmoEnabled && _scene.CanSave &&
                     ObjectGizmoGeometry.TryCreateFrame(selected, camera, _width, _height, out var frame,
@@ -571,6 +576,7 @@ namespace Editor.Viewport
             _roads?.Dispose();
             _trees?.Dispose();
             _objects?.Dispose();
+            _collisionOverlay?.Dispose();
             _objectSelection?.Dispose();
             _objectGizmo?.Dispose();
             _character?.Dispose();
