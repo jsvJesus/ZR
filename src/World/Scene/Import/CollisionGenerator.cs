@@ -307,11 +307,79 @@ public static class CollisionGenerator
             return sourceIndices;
         }
 
+        if (!float.IsFinite(error) ||
+            error > settings.MaximumError + 0.00001f ||
+            !ValidateSimplifiedTriangles(
+                positions,
+                destination.AsSpan(0, count)))
+        {
+            return sourceIndices;
+        }
+
         Array.Resize(
             ref destination,
             count
         );
 
         return destination;
+    }
+
+    private static bool ValidateSimplifiedTriangles(
+        float[] positions,
+        ReadOnlySpan<uint> indices)
+    {
+        if (indices.Length == 0 ||
+            indices.Length % 3 != 0)
+        {
+            return false;
+        }
+
+        int vertexCount = positions.Length / 3;
+
+        for (int index = 0; index < indices.Length; index += 3)
+        {
+            uint a = indices[index];
+            uint b = indices[index + 1];
+            uint c = indices[index + 2];
+
+            if (a >= vertexCount ||
+                b >= vertexCount ||
+                c >= vertexCount ||
+                a == b ||
+                b == c ||
+                a == c)
+            {
+                return false;
+            }
+
+            int ai = (int)a * 3;
+            int bi = (int)b * 3;
+            int ci = (int)c * 3;
+
+            var first = new Vector3(
+                positions[bi] - positions[ai],
+                positions[bi + 1] - positions[ai + 1],
+                positions[bi + 2] - positions[ai + 2]
+            );
+
+            var second = new Vector3(
+                positions[ci] - positions[ai],
+                positions[ci + 1] - positions[ai + 1],
+                positions[ci + 2] - positions[ai + 2]
+            );
+
+            float areaSquared = Vector3.Cross(
+                first,
+                second
+            ).LengthSquared();
+
+            if (!float.IsFinite(areaSquared) ||
+                areaSquared <= 1e-16f)
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 }

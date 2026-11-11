@@ -8,6 +8,9 @@ internal sealed class SceneTriangleTree
     private readonly SceneTriangle[] _triangles;
     private readonly List<Node> _nodes = [];
 
+    public int TriangleCount => _triangles.Length;
+    public int NodeCount => _nodes.Count;
+
     public SceneTriangleTree(ScenePhysicsMesh model)
     {
         var triangles = new List<SceneTriangle>();

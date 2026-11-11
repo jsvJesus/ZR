@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Numerics;
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 
 namespace ZoneReborn.World.Scene;
@@ -11,7 +12,40 @@ public sealed class SceneCollision
     private const float Tolerance = 0.0001f;
     private const float GroundProbeLift = 0.01f;
     private static readonly float WalkableY = MathF.Cos(40f * MathF.PI / 180f);
+
     private static readonly ConditionalWeakTable<ScenePhysicsMesh, Lazy<SceneTriangleTree>> Trees = new();
+
+    public static CollisionTreeStatistics PrepareTree(
+        ScenePhysicsMesh mesh)
+    {
+        ArgumentNullException.ThrowIfNull(mesh);
+
+        bool reused =
+            Trees.TryGetValue(mesh, out var existing) &&
+            existing.IsValueCreated;
+
+        long started = Stopwatch.GetTimestamp();
+
+        var tree = Trees.GetValue(
+            mesh,
+            static value => new Lazy<SceneTriangleTree>(
+                () => new SceneTriangleTree(value),
+                LazyThreadSafetyMode.ExecutionAndPublication
+            )
+        ).Value;
+
+        double milliseconds = Stopwatch
+            .GetElapsedTime(started)
+            .TotalMilliseconds;
+
+        return new CollisionTreeStatistics(
+            tree.TriangleCount,
+            tree.NodeCount,
+            milliseconds,
+            reused
+        );
+    }
+
     private readonly ConcurrentBag<List<SceneTriangle>> _buffers = [];
     private readonly SceneData _scene;
     private readonly SceneBounds _bounds;
@@ -498,5 +532,15 @@ public sealed class SceneCollision
             return triangle.B + (triangle.C - triangle.B) * ((d4 - d3) / (d4 - d3 + d5 - d6));
         float inverse = 1 / (va + vb + vc);
         return triangle.A + ab * (vb * inverse) + ac * (vc * inverse);
+    }
+
+    public readonly record struct CollisionTreeStatistics(
+        int Triangles,
+        int Nodes,
+        double PreparationMilliseconds,
+        bool Reused)
+    {
+        public long EstimatedBytes =>
+            ((long)Triangles + Nodes) * 40L;
     }
 }

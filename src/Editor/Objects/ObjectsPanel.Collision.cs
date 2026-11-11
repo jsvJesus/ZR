@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Globalization;
 using Avalonia.Controls;
 using Avalonia.Interactivity;
@@ -10,10 +11,39 @@ namespace Editor.Objects;
 
 public sealed partial class ObjectsPanel
 {
+    private static readonly string[] ProfileIds =
+    [
+        "auto",
+        "vehicle",
+        "building",
+        "small",
+        "complex",
+        "general",
+        "custom"
+    ];
+
+    private static readonly string[] ProfileNames =
+    [
+        "Автоматически",
+        "Транспорт",
+        "Здания",
+        "Малые объекты",
+        "Сложная геометрия",
+        "Универсальный",
+        "Ручные настройки"
+    ];
+
     private readonly CheckBox _collisionCheck = new()
     {
         Content = "Показать коллизию выбранного объекта",
         IsChecked = false
+    };
+
+    private readonly ComboBox _collisionProfile = new()
+    {
+        ItemsSource = ProfileNames,
+        SelectedIndex = 0,
+        HorizontalAlignment = HorizontalAlignment.Stretch
     };
 
     private readonly TextBox _collisionPercent = new()
@@ -48,6 +78,7 @@ public sealed partial class ObjectsPanel
 
     private string? _collisionSettingsPath;
     private bool _collisionBuilding;
+    private bool _collisionBinding;
 
     private void BuildCollisionControls(StackPanel root)
     {
@@ -62,29 +93,31 @@ public sealed partial class ObjectsPanel
             "выбранного объекта."
         ));
 
-        root.Children.Add(
-            Text("НАСТРОЙКИ ГЕНЕРАТОРА")
-        );
+        root.Children.Add(Text("ОПТИМИЗАЦИЯ КОЛЛИЗИИ"));
+
+        root.Children.Add(Text("Профиль генерации"));
+        root.Children.Add(_collisionProfile);
 
         root.Children.Add(
             Text("Целевое количество треугольников, %")
         );
-
         root.Children.Add(_collisionPercent);
 
-        root.Children.Add(
-            Text("Максимальная ошибка, мм")
-        );
-
+        root.Children.Add(Text("Максимальная ошибка, мм"));
         root.Children.Add(_collisionError);
 
         root.Children.Add(_collisionBorders);
         root.Children.Add(_collisionGenerate);
+
+        root.Children.Add(Text("СТАТИСТИКА"));
         root.Children.Add(_collisionInfo);
         root.Children.Add(_collisionResult);
 
         _collisionCheck.IsCheckedChanged +=
             OnCollisionCheckChanged;
+
+        _collisionProfile.SelectionChanged +=
+            OnCollisionProfileChanged;
 
         _collisionGenerate.Click += async (_, _) =>
             await RegenerateCollisionAsync();
@@ -97,14 +130,85 @@ public sealed partial class ObjectsPanel
         UpdateCollisionVisibility();
     }
 
+    private void OnCollisionProfileChanged(
+        object? sender,
+        SelectionChangedEventArgs e)
+    {
+        if (_collisionBinding ||
+            _collisionBuilding ||
+            _assetPaths is not { } assets ||
+            Selected is not { } selected)
+        {
+            return;
+        }
+
+        string profile = SelectedProfile();
+
+        if (profile == "custom")
+        {
+            return;
+        }
+
+        try
+        {
+            string path = AssetPathResolver.Resolve(
+                assets.Root,
+                selected.Model
+            );
+
+            var settings = CollisionProfiles.Resolve(
+                profile,
+                path
+            );
+
+            ApplySettings(settings);
+
+            _collisionResult.Text =
+                "Профиль выбран. Нажмите " +
+                "«Сохранить и перегенерировать».";
+        }
+        catch (Exception exception)
+        {
+            _collisionResult.Text = exception.Message;
+        }
+    }
+
+    private void ApplySettings(
+        CollisionGenerationSettings settings)
+    {
+        _collisionPercent.Text =
+            (settings.TargetRatio * 100f).ToString(
+                "0.##",
+                CultureInfo.InvariantCulture
+            );
+
+        _collisionError.Text =
+            (settings.MaximumError * 1000f).ToString(
+                "0.##",
+                CultureInfo.InvariantCulture
+            );
+
+        _collisionBorders.IsChecked =
+            settings.PreserveBorders;
+    }
+
+    private string SelectedProfile()
+    {
+        int index = _collisionProfile.SelectedIndex;
+
+        return index >= 0 && index < ProfileIds.Length
+            ? ProfileIds[index]
+            : "custom";
+    }
+
     private void RefreshCollisionMode()
     {
         _collisionCheck.IsEnabled = CanInteract;
-
         UpdateCollisionVisibility();
 
         if (_collisionBuilding)
         {
+            _collisionProfile.IsEnabled = false;
             _collisionPercent.IsEnabled = false;
             _collisionError.IsEnabled = false;
             _collisionBorders.IsEnabled = false;
@@ -130,6 +234,7 @@ public sealed partial class ObjectsPanel
             CanInteract &&
             _assetPaths != null;
 
+        _collisionProfile.IsEnabled = enabled;
         _collisionPercent.IsEnabled = enabled;
         _collisionError.IsEnabled = enabled;
         _collisionBorders.IsEnabled = enabled;
@@ -138,8 +243,7 @@ public sealed partial class ObjectsPanel
         if (!supported || _assetPaths == null)
         {
             _collisionSettingsPath = null;
-            _collisionInfo.Text =
-                "Выберите объект из models2.";
+            _collisionInfo.Text = "Выберите объект из models2.";
             return;
         }
 
@@ -160,24 +264,37 @@ public sealed partial class ObjectsPanel
                         modelPath
                     );
 
-                _collisionPercent.Text =
-                    (settings.TargetRatio * 100f).ToString(
-                        "0.##",
-                        CultureInfo.InvariantCulture
+                _collisionBinding = true;
+
+                try
+                {
+                    int index = Array.IndexOf(
+                        ProfileIds,
+                        settings.Profile
                     );
 
-                _collisionError.Text =
-                    (settings.MaximumError * 1000f).ToString(
-                        "0.##",
-                        CultureInfo.InvariantCulture
-                    );
+                    _collisionProfile.SelectedIndex =
+                        index >= 0 ? index : ProfileIds.Length - 1;
 
-                _collisionBorders.IsChecked =
-                    settings.PreserveBorders;
+                    ApplySettings(settings);
+                }
+                finally
+                {
+                    _collisionBinding = false;
+                }
 
                 _collisionSettingsPath = modelPath;
                 _collisionResult.Text = "";
             }
+
+            string profileName = SelectedProfile() == "auto"
+                ? "Автоматически → " +
+                    CollisionProfiles.DisplayName(
+                        CollisionProfiles.Detect(modelPath)
+                    )
+                : CollisionProfiles.DisplayName(
+                    SelectedProfile()
+                );
 
             var scene = _level?.Objects;
 
@@ -187,16 +304,29 @@ public sealed partial class ObjectsPanel
                     out ScenePhysicsMesh? physical) &&
                 physical != null)
             {
+                int triangles = physical.Indices.Length / 3;
+
                 _collisionInfo.Text =
                     $"Модель: {Path.GetFileName(selected.Model)}\n" +
-                    $"Коллизия: " +
-                    $"{physical.Indices.Length / 3:N0} " +
-                    "треугольников.";
+                    $"Профиль: {profileName}\n" +
+                    $"Коллизия: {triangles:N0} треугольников\n" +
+                    $"Вершины: {physical.Vertices.Length:N0}";
+
+                int recommended =
+                    CollisionProfiles.RecommendedTriangles(modelPath);
+
+                if (triangles > recommended)
+                {
+                    _collisionInfo.Text +=
+                        $"\nОриентир для этого типа: " +
+                        $"{recommended:N0} треугольников.";
+                }
             }
             else
             {
                 _collisionInfo.Text =
                     $"Модель: {Path.GetFileName(selected.Model)}\n" +
+                    $"Профиль: {profileName}\n" +
                     "Коллизия ещё не загружена.";
             }
         }
@@ -270,20 +400,46 @@ public sealed partial class ObjectsPanel
                 );
             }
 
-            var settings = new CollisionGenerationSettings(
-                percent / 100f,
-                errorMillimeters / 1000f,
-                _collisionBorders.IsChecked == true
-            );
-
             string modelPath = AssetPathResolver.Resolve(
                 assets.Root,
                 model
             );
 
+            string profile = SelectedProfile();
+
+            var settings = new CollisionGenerationSettings(
+                percent / 100f,
+                errorMillimeters / 1000f,
+                _collisionBorders.IsChecked == true,
+                profile
+            );
+
+            if (profile != "custom")
+            {
+                var preset = CollisionProfiles.Resolve(
+                    profile,
+                    modelPath
+                );
+
+                if (MathF.Abs(
+                        preset.TargetRatio -
+                        settings.TargetRatio) > 0.000001f ||
+                    MathF.Abs(
+                        preset.MaximumError -
+                        settings.MaximumError) > 0.000001f ||
+                    preset.PreserveBorders != settings.PreserveBorders)
+                {
+                    settings = settings with
+                    {
+                        Profile = "custom"
+                    };
+                }
+            }
+
             _collisionBuilding = true;
+
             _collisionResult.Text =
-                "Генерация коллизии выполняется…";
+                "Генерация и подготовка BVH…";
 
             BusyChanged?.Invoke();
             RefreshMode();
@@ -293,6 +449,8 @@ public sealed partial class ObjectsPanel
 
             var generated = await Task.Run(() =>
             {
+                var stopwatch = Stopwatch.StartNew();
+
                 CollisionGenerationSettingsStorage.Write(
                     modelPath,
                     settings
@@ -303,41 +461,100 @@ public sealed partial class ObjectsPanel
                     model
                 );
 
+                stopwatch.Stop();
+
+                var loadTimer = Stopwatch.StartNew();
+
                 var physical = CollisionStorage.Read(
                     assets,
                     model
                 );
 
+                loadTimer.Stop();
+
+                var tree = SceneCollision.PrepareTree(
+                    physical
+                );
+
+                long fileBytes = new FileInfo(
+                    CollisionStorage.GetPath(modelPath)
+                ).Length;
+
                 return (
                     Result: result,
-                    Physics: physical
+                    Physics: physical,
+                    GenerateMs: stopwatch.Elapsed.TotalMilliseconds,
+                    LoadMs: loadTimer.Elapsed.TotalMilliseconds,
+                    Tree: tree,
+                    FileBytes: fileBytes
                 );
             });
 
-            if (ReferenceEquals(_level?.Objects, scene))
+            if (!ReferenceEquals(_level?.Objects, scene))
             {
-                scene.Physics.Store(
-                    model,
-                    generated.Physics
-                );
+                return;
             }
 
-            int original =
-                generated.Result.SourceTriangles;
+            scene.Physics.Store(
+                model,
+                generated.Physics
+            );
 
-            int simplified =
-                generated.Result.CollisionTriangles;
+            _collisionBinding = true;
 
-            float reduction = original == 0
-                ? 0f
-                : 100f * (1f - (float)simplified / original);
+            try
+            {
+                _collisionProfile.SelectedIndex =
+                    Array.IndexOf(
+                        ProfileIds,
+                        settings.Profile
+                    );
+            }
+            finally
+            {
+                _collisionBinding = false;
+            }
+
+            int original = generated.Result.SourceTriangles;
+            int simplified = generated.Result.CollisionTriangles;
+
+            double reduction = original == 0
+                ? 0
+                : 100.0 * (1.0 -
+                    (double)simplified / original);
+
+            long meshBytes =
+                generated.Physics.Vertices.LongLength * 12L +
+                generated.Physics.Indices.LongLength * 4L;
+
+            long estimatedMemory =
+                meshBytes + generated.Tree.EstimatedBytes;
+
+            int recommended =
+                CollisionProfiles.RecommendedTriangles(modelPath);
+
+            string warning = simplified > recommended
+                ? $"\nВнимание: коллизия тяжелее ориентира " +
+                    $"({recommended:N0} треугольников)."
+                : "";
 
             _collisionResult.Text =
                 "Коллизия успешно обновлена.\n" +
                 $"Исходная: {original:N0} треугольников.\n" +
                 $"Новая: {simplified:N0} треугольников.\n" +
                 $"Уменьшение: {reduction:F1}%.\n" +
-                "Настройки сохранены рядом с моделью.";
+                $"Вершины: {generated.Physics.Vertices.Length:N0}.\n" +
+                $"Размер файла: " +
+                $"{generated.FileBytes / 1048576.0:F2} МиБ.\n" +
+                $"Генерация: {generated.GenerateMs:F0} мс.\n" +
+                $"Чтение коллизии: {generated.LoadMs:F0} мс.\n" +
+                $"BVH: {generated.Tree.Nodes:N0} узлов.\n" +
+                $"Подготовка BVH: " +
+                $"{generated.Tree.PreparationMilliseconds:F0} мс.\n" +
+                $"Память меша и BVH (оценка): " +
+                $"{estimatedMemory / 1048576.0:F2} МиБ." +
+                warning +
+                "\nНастройки сохранены рядом с моделью.";
         }
         catch (Exception exception)
         {

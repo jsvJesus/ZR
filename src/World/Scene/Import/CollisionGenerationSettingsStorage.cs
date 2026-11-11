@@ -6,13 +6,14 @@ namespace ZoneReborn.World.Scene.Import;
 public sealed record CollisionGenerationSettings(
     float TargetRatio,
     float MaximumError,
-    bool PreserveBorders
+    bool PreserveBorders,
+    string Profile = "custom"
 );
 
 public static class CollisionGenerationSettingsStorage
 {
     public static readonly CollisionGenerationSettings Defaults =
-        new(0.12f, 0.015f, true);
+        new(0.12f, 0.015f, true, "general");
 
     private static readonly JsonSerializerOptions Options = new()
     {
@@ -35,7 +36,10 @@ public static class CollisionGenerationSettingsStorage
 
         if (!File.Exists(path))
         {
-            return Defaults;
+            return CollisionProfiles.Resolve(
+                "auto",
+                modelPath
+            );
         }
 
         string json = File.ReadAllText(path);
@@ -47,6 +51,14 @@ public static class CollisionGenerationSettingsStorage
             ) ?? throw new InvalidDataException(
                 $"Не удалось прочитать настройки коллизии: {path}"
             );
+
+        if (string.IsNullOrWhiteSpace(settings.Profile))
+        {
+            settings = settings with
+            {
+                Profile = "custom"
+            };
+        }
 
         Validate(settings);
         return settings;
@@ -109,6 +121,13 @@ public static class CollisionGenerationSettingsStorage
         {
             throw new InvalidDataException(
                 "Максимальная ошибка должна быть от 1 до 100 мм."
+            );
+        }
+
+        if (!CollisionProfiles.IsKnown(settings.Profile))
+        {
+            throw new InvalidDataException(
+                "Недопустимый профиль коллизии."
             );
         }
     }
