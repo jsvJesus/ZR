@@ -19,6 +19,7 @@ namespace Editor
             VegetationPanel.Attach(Viewport, _workspace.Assets);
             VegetationPanel.BusyChanged += UpdatePlayControls;
             ObjectsPanel.Attach(Viewport, _workspace.Assets);
+            ObjectsPanel.SectionChanged += UpdateObjectsSectionTitle;
             Viewport.ObjectSaveRequested += () => SaveLevel_Click(this, new RoutedEventArgs());
             ObjectsPanel.BusyChanged += UpdatePlayControls;
             Viewport.ObjectDragStateChanged += UpdatePlayControls;

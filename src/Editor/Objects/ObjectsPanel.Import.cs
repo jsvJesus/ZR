@@ -20,7 +20,10 @@ public sealed partial class ObjectsPanel
     {
         _importModelsButton = Button(root, "Импорт FBX → models2", () =>
         {
-            if (CanBrowseLibrary && !IsDragging) _modelImportTask = ImportModelsAsync();
+            if (CanImportModels && !IsDragging)
+            {
+                _modelImportTask = ImportModelsAsync();
+            }
         });
         _textureFolderButton = Button(root, "Папка поиска текстур…", () => _ = ChooseTextureFolderAsync());
         root.Children.Add(_textureFolderText);
@@ -36,7 +39,12 @@ public sealed partial class ObjectsPanel
 
     private async Task ChooseTextureFolderAsync()
     {
-        if (!CanBrowseLibrary || IsDragging || TopLevel.GetTopLevel(this) is not { } top) return;
+        if (!CanImportModels ||
+            IsDragging ||
+            TopLevel.GetTopLevel(this) is not { } top)
+        {
+            return;
+        }
         try
         {
             var folders = await top.StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions

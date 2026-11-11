@@ -345,6 +345,7 @@ public sealed partial class ObjectsPanel
         }
 
         _viewport.ShowSelectedCollision =
+            _section == ObjectsSection.ObjectsCollision &&
             _collisionCheck.IsChecked == true;
     }
 

@@ -67,13 +67,22 @@ public sealed partial class ObjectsPanel
         IsVisible &&
         IsEnabled &&
         !IsBusy &&
+        _section == ObjectsSection.PlaceObjects &&
+        _viewport?.IsPlaying != true &&
+        _viewport?.IsStarting != true;
+
+    private bool CanImportModels =>
+        !_libraryClosed &&
+        IsVisible &&
+        IsEnabled &&
+        !IsBusy &&
+        _section == ObjectsSection.Import &&
         _viewport?.IsPlaying != true &&
         _viewport?.IsStarting != true;
 
     private void BuildLibrary(StackPanel root)
     {
         root.Children.Add(Text("КАТАЛОГ МОДЕЛЕЙ · objects / models2"));
-        BuildModelImport(root);
         root.Children.Add(_assetLocation);
 
         _parentFolderButton = Button(
@@ -645,7 +654,7 @@ public sealed partial class ObjectsPanel
     private void RefreshLibraryMode()
     {
         bool active = CanBrowseLibrary && !IsDragging;
-        RefreshModelImportMode(active);
+        RefreshModelImportMode(CanImportModels && !IsDragging);
 
         _assetSearch.IsEnabled = active;
         _assetFolders.IsEnabled = active;

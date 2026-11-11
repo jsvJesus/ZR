@@ -9,13 +9,15 @@ public sealed partial class DxViewportHost
 
     public bool IsObjectPlacing => _placementModel != null;
     public string? ObjectPlacementModel => _placementModel;
+    public bool ObjectPlacementEnabled { get; set; } = true;
 
     public event Action? ObjectPlacementChanged;
     public event Action<SceneInstance>? ObjectPlaced;
 
     public void SetObjectPlacement(string model)
     {
-        if (!ObjectEditingEnabled ||
+        if (!ObjectPlacementEnabled ||
+            !ObjectEditingEnabled ||
             IsPlaying ||
             IsStarting ||
             _level?.Objects is not { CanSave: true } scene)
@@ -59,7 +61,8 @@ public sealed partial class DxViewportHost
 
     private void PlaceObject(int x, int y)
     {
-        if (!ObjectEditingEnabled ||
+        if (!ObjectPlacementEnabled ||
+            !ObjectEditingEnabled ||
             IsPlaying ||
             IsStarting ||
             _level?.Objects is not { CanSave: true } scene ||
