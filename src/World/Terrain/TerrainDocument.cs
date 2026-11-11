@@ -124,6 +124,8 @@ public sealed partial class TerrainDocument(string directory, LevelManifest mani
             {
                 change.Heights.Add((gx, gz, old));
             }
+
+            pending.Add((gx, gz, encoded));
         }
         foreach (var value in pending) SetHeight(value.X, value.Z, value.Value);
 
