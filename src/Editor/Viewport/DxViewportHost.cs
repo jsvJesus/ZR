@@ -259,12 +259,16 @@ namespace Editor.Viewport
                         _renderer.SetObjectGizmo(ObjectTransformMode, _objectDrag?.Axis ?? _hoveredObjectAxis,
                             ObjectEditingEnabled && !IsObjectPlacing && !IsPlaying && !IsStarting && !_rotating && _level?.Objects?.CanSave == true);
                         _renderer.ShowSelectedCollision = ShowSelectedCollision;
+
+                        UpdateTerrainBrushPreview();
+
                         _renderer.Render(
                             IsPlaying ? ActivePlayCamera : _camera,
                             width,
                             height,
                             ShowGrid && !IsPlaying,
-                            IsPlaying);
+                            IsPlaying
+                        );
                     }
                 }
 

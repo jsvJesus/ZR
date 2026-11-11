@@ -30,7 +30,7 @@ public sealed partial class TerrainEditorPanel : UserControl
             "Настройка материалов",
             "Рисовать текстурой"
         },
-        SelectedIndex = 0
+        SelectedIndex = 1
     };
 
     private readonly StackPanel _sculptControls = new()
@@ -371,9 +371,12 @@ public sealed partial class TerrainEditorPanel : UserControl
         }
 
         float cellSize =
-            _level?.TerrainDocument?.Descriptor.CellSize ?? 1;
+            _level?.TerrainDocument?.Descriptor.CellSize ?? 1f;
 
         float radius = (float)_radius.Value;
+
+        _viewport.TerrainBrushRadius = radius;
+        _viewport.TerrainBrushIsMaterial = IsTexturePainting;
 
         _viewport.TerrainBrushSpacing = Math.Max(
             cellSize * 0.25f,

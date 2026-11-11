@@ -489,6 +489,11 @@ namespace Editor.Viewport
                 _context.Draw(_vertexCount, 0);
             }
 
+            if (!playing)
+            {
+                RenderTerrainBrushPreview(viewProjection);
+            }
+
             var characterView = view;
             characterView.Translation = Vector3.Zero;
             _character?.Render(characterView * projection, camera.Position);
@@ -573,6 +578,7 @@ namespace Editor.Viewport
             DisposeEnvironment();
 
             _terrain?.Dispose();
+            _terrainBrushOverlay?.Dispose();
             _roads?.Dispose();
             _trees?.Dispose();
             _objects?.Dispose();

@@ -4,12 +4,23 @@ namespace Editor.Viewport.Terrain
 {
     internal sealed partial class TerrainRenderer
     {
-        public bool SurfaceHeight(float x, float z, out float height)
+        public bool SurfaceHeight(
+            float x,
+            float z,
+            out float height,
+            bool includeHoles = false)
         {
             height = 0;
             var d = Descriptor;
             if (x < 0 || z < 0 || x > d.WorldSizeX || z > d.WorldSizeZ) return false;
-            if (_level.TerrainDocument is { } document && !document.HasSurface(x, z)) return false;
+
+            if (!includeHoles &&
+                _level.TerrainDocument is { } document &&
+                !document.HasSurface(x, z))
+            {
+                return false;
+            }
+
             int tx = Math.Clamp((int)(x / (d.CellSize * 256)), 0, d.TilesX - 1);
             int tz = Math.Clamp((int)(z / (d.CellSize * 256)), 0, d.TilesZ - 1);
             var grid = GetSurfaceGrid(tx, tz);
