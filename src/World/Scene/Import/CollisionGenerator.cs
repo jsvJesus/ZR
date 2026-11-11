@@ -11,8 +11,6 @@ public readonly record struct CollisionBuildResult(
 
 public static class CollisionGenerator
 {
-    private const float TargetRatio = 0.12f;
-    private const float MaximumError = 0.015f;
     private const int MinimumTriangles = 64;
     private const int MinimumSimplificationTriangles = 256;
 
@@ -21,10 +19,15 @@ public static class CollisionGenerator
         string modelPath,
         CancellationToken token = default)
     {
+        var settings = CollisionGenerationSettingsStorage.Read(
+            modelPath
+        );
+
         return GenerateInternal(
             model,
             modelPath,
             1f,
+            settings,
             token
         );
     }
@@ -39,6 +42,10 @@ public static class CollisionGenerator
             model
         );
 
+        var settings = CollisionGenerationSettingsStorage.Read(
+            modelPath
+        );
+
         var geometry = ImportedModelStorage.Read(
             assets,
             model,
@@ -51,6 +58,7 @@ public static class CollisionGenerator
             geometry,
             modelPath,
             1f / scale,
+            settings,
             token
         );
     }
@@ -59,6 +67,7 @@ public static class CollisionGenerator
         SceneModel model,
         string modelPath,
         float inverseScale,
+        CollisionGenerationSettings settings,
         CancellationToken token)
     {
         var vertices = new List<Vector3>();
@@ -93,8 +102,15 @@ public static class CollisionGenerator
                 checked(mesh.Vertices.Length * 3)
             ];
 
-            for (int index = 0; index < mesh.Vertices.Length; index++)
+            for (int index = 0;
+                 index < mesh.Vertices.Length;
+                 index++)
             {
+                if ((index & 4095) == 0)
+                {
+                    token.ThrowIfCancellationRequested();
+                }
+
                 Vector3 position =
                     mesh.Vertices[index].Position * inverseScale;
 
@@ -118,7 +134,9 @@ public static class CollisionGenerator
                 mesh.Indices.Length
             ];
 
-            for (int index = 0; index < sourceIndices.Length; index++)
+            for (int index = 0;
+                 index < sourceIndices.Length;
+                 index++)
             {
                 int value = mesh.Indices[index];
 
@@ -137,6 +155,7 @@ public static class CollisionGenerator
                 positions,
                 sourceIndices,
                 mesh.Vertices.Length,
+                settings,
                 token
             );
 
@@ -213,6 +232,7 @@ public static class CollisionGenerator
         float[] positions,
         uint[] sourceIndices,
         int vertexCount,
+        CollisionGenerationSettings settings,
         CancellationToken token)
     {
         int triangleCount = sourceIndices.Length / 3;
@@ -227,7 +247,7 @@ public static class CollisionGenerator
         int targetTriangles = Math.Max(
             MinimumTriangles,
             (int)MathF.Ceiling(
-                triangleCount * TargetRatio
+                triangleCount * settings.TargetRatio
             )
         );
 
@@ -239,6 +259,14 @@ public static class CollisionGenerator
         var destination = new uint[
             sourceIndices.Length
         ];
+
+        SimplificationOptions options =
+            SimplificationOptions.meshopt_SimplifyErrorAbsolute;
+
+        if (settings.PreserveBorders)
+        {
+            options |= SimplificationOptions.SimplifyLockBorder;
+        }
 
         float error = 0f;
         nuint resultCount;
@@ -255,9 +283,8 @@ public static class CollisionGenerator
                 (nuint)vertexCount,
                 (nuint)(sizeof(float) * 3),
                 (nuint)(targetTriangles * 3),
-                MaximumError,
-                SimplificationOptions.SimplifyLockBorder |
-                SimplificationOptions.meshopt_SimplifyErrorAbsolute,
+                settings.MaximumError,
+                options,
                 &error
             );
         }

@@ -31,7 +31,7 @@ namespace Editor.Objects
         private Task _saveTask = Task.CompletedTask;
 
         public bool IsSaving { get; private set; }
-        public bool IsBusy => IsSaving || IsImporting;
+        public bool IsBusy => IsSaving || IsImporting || _collisionBuilding;
         public bool HasPendingChanges => _level?.Objects?.IsDirty == true || IsBusy;
         public event Action? BusyChanged;
 

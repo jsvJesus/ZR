@@ -44,6 +44,16 @@ public sealed class ScenePhysicsCache(
         return true;
     }
 
+    public void Store(string model, ScenePhysicsMesh mesh)
+    {
+        ArgumentNullException.ThrowIfNull(mesh);
+
+        _meshes[model] = new Lazy<ScenePhysicsMesh?>(
+            () => mesh,
+            LazyThreadSafetyMode.ExecutionAndPublication
+        );
+    }
+
     private ScenePhysicsMesh? Load(string model)
     {
         if (model.StartsWith(

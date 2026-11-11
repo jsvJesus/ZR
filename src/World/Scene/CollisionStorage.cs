@@ -25,9 +25,24 @@ public static class CollisionStorage
     {
         string path = GetPath(modelPath);
 
-        return File.Exists(path) &&
-            File.GetLastWriteTimeUtc(path) >=
-            File.GetLastWriteTimeUtc(modelPath);
+        if (!File.Exists(path))
+        {
+            return false;
+        }
+
+        DateTime collisionTime = File.GetLastWriteTimeUtc(path);
+
+        if (collisionTime < File.GetLastWriteTimeUtc(modelPath))
+        {
+            return false;
+        }
+
+        string settingsPath =
+            ZoneReborn.World.Scene.Import
+                .CollisionGenerationSettingsStorage.GetPath(modelPath);
+
+        return !File.Exists(settingsPath) ||
+               collisionTime >= File.GetLastWriteTimeUtc(settingsPath);
     }
 
     public static ScenePhysicsMesh Read(
