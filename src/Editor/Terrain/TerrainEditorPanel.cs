@@ -283,17 +283,8 @@ public sealed partial class TerrainEditorPanel : UserControl
     {
         bool active = Active;
         bool painting = !_materialsSection || IsTexturePainting;
-        
-        bool materialLocked =
-            IsTexturePainting &&
-            _palette.SelectedItem is
-                ZoneReborn.World.Terrain.Models.TerrainLayer selectedLayer &&
-            selectedLayer.IsPaintLocked;
 
-        bool brushEnabled =
-            active &&
-            painting &&
-            !materialLocked;
+        bool brushEnabled = active && painting;
 
         RefreshMaterialHierarchy();
 

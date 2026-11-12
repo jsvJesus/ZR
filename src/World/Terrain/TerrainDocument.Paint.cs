@@ -129,12 +129,6 @@ public sealed partial class TerrainDocument
             return false;
         }
 
-        if (selectedLayer.IsPaintLocked)
-        {
-            throw new InvalidOperationException(
-                "Материал заблокирован для рисования.");
-        }
-
         if (selectedLayer.NeedsTexture)
         {
             throw new InvalidOperationException(
