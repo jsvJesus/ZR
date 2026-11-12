@@ -248,6 +248,7 @@ public sealed partial class TerrainEditorPanel : UserControl
         _selectedVariantLayer = -1;
 
         RefreshPalette();
+        RefreshWaterControls();
         RefreshMode();
     }
 

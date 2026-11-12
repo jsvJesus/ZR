@@ -106,6 +106,7 @@ public sealed partial class TerrainEditorPanel
         BuildPbrControls();
         BuildWeatherMaterialControls();
         BuildMaterialHierarchyControls();
+        BuildWaterControls();
 
         void Add(string title, Func<CancellationToken, Task> operation)
         {

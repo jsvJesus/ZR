@@ -232,8 +232,11 @@ public sealed partial class TerrainDocument(string directory, LevelManifest mani
             File.Move(layerTemporary, AssetPathResolver.Resolve(directory, manifest.LayersFile), true);
         }
         finally { if (File.Exists(layerTemporary)) File.Delete(layerTemporary); }
+
         if (BuildPaintOverview() is { } paintOverview)
             Atomic("terrain/paint-overview.bin", path => WritePaintOverview(path, paintOverview));
+        SaveWaterBodies();
+
         string temporary = AssetPathResolver.Resolve(directory, $".terrain-manifest-{Guid.NewGuid():N}.tmp");
         try { await LevelJson.WriteAsync(temporary, manifest); File.Move(temporary, Path.Combine(directory, "level.json"), true); }
         finally { if (File.Exists(temporary)) File.Delete(temporary); }

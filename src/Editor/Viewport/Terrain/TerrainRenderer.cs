@@ -527,6 +527,8 @@ internal sealed partial class TerrainRenderer : IDisposable
         _layout?.Dispose();
         _pixelShader?.Dispose();
         _vertexShader?.Dispose();
+        _waterSurface?.Dispose();
+        _waterSurface = null;
     }
 
     [StructLayout(LayoutKind.Sequential)]

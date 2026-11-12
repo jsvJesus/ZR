@@ -454,9 +454,28 @@ namespace Editor.Viewport
                 playing);
 
             _terrain?.Render(camera, viewProjection);
-            _roads?.Render(camera.Position, viewProjection, _terrain?.FarPlane ?? 10000, playing);
-            _objects?.Render(camera, viewProjection, farPlane);
-            _trees?.Render(camera, viewProjection, playing);
+
+            _roads?.Render(
+                camera.Position,
+                viewProjection,
+                _terrain?.FarPlane ?? 10000,
+                playing);
+
+            _objects?.Render(
+                camera,
+                viewProjection,
+                farPlane);
+
+            _trees?.Render(
+                camera,
+                viewProjection,
+                playing);
+
+            _terrain?.RenderWater(
+                viewProjection,
+                camera.Position,
+                sunDirection,
+                _environmentTime);
 
             if (showGrid)
             {
