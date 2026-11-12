@@ -103,6 +103,7 @@ public sealed partial class TerrainEditorPanel
         };
         root.Children.Add(_materialControls);
         BuildMaterialCatalogControls();
+        BuildPbrControls();
         BuildMaterialHierarchyControls();
 
         void Add(string title, Func<CancellationToken, Task> operation)

@@ -232,7 +232,10 @@ internal sealed partial class TerrainRenderer : IDisposable
                 DrawLayer(tile, _level.Layers[index], mask, false, ref constants);
             }
         }
-        for (int index = 0; index < 7; index++) _context.PixelShader.SetShaderResource(index, null);
+        for (int index = 0; index <= 20; index++)
+        {
+            _context.PixelShader.SetShaderResource(index, null);
+        }
         _context.OutputMerger.SetBlendState(null);
         _context.OutputMerger.SetDepthStencilState(null);
         _context.Rasterizer.State = null;
@@ -247,18 +250,21 @@ internal sealed partial class TerrainRenderer : IDisposable
     {
         var variants = layer.GetTextureVariants();
 
-        var activeVariants = new List<TerrainTextureVariant>
+        var active = new List<TerrainTextureVariant>
         {
             variants[0]
         };
 
-        for (int i = 1; i < variants.Count; i++)
+        for (int i = 1; i < variants.Count && active.Count < 4; i++)
         {
             if (!string.IsNullOrWhiteSpace(variants[i].AlbedoTexture))
             {
-                activeVariants.Add(variants[i]);
+                active.Add(variants[i]);
             }
         }
+
+        var visual = layer.Settings.Visual;
+        var blend = layer.Settings.Blend;
 
         constants.Layer = new Vector4(
             layer.ScaleU,
@@ -267,82 +273,206 @@ internal sealed partial class TerrainRenderer : IDisposable
             layer.Specular);
 
         constants.LayerPassParameters = new Vector4(
-            isBase ? 1 : 0,
-            isBase ? 0 : (layer.Index - 1) % 3,
-            0,
-            0);
+            isBase ? 1f : 0f,
+            isBase ? 0f : (layer.Index - 1) % 3,
+            0f,
+            0f);
 
-        bool useVariantTiling = layer.TextureVariants is { Count: > 0 };
+        constants.PbrProperties = new Vector4(
+            visual.Roughness,
+            visual.Metallic,
+            visual.Specular,
+            visual.Opacity);
+
+        constants.BlendProperties = new Vector4(
+            blend.NoiseIntensity,
+            blend.HeightIntensity,
+            blend.SlopeIntensity,
+            blend.MacroIntensity);
+
+        constants.CoveringSettings = new Vector4(
+            active.Count,
+            blend.MacroScaleMeters,
+            0f,
+            0f);
+
+        Span<float> meters = stackalloc float[4];
+        Span<float> slope = stackalloc float[4];
+        Span<float> roughness = stackalloc float[4];
+        Span<float> height = stackalloc float[4];
+
+        meters.Clear();
+        slope.Clear();
+        roughness.Clear();
+        height.Clear();
+
+        for (int index = 0; index < active.Count; index++)
+        {
+            var variant = active[index];
+
+            float tiling = variant.TilingMeters;
+
+            if (!float.IsFinite(tiling) || tiling <= 0f)
+            {
+                tiling = 4f;
+            }
+
+            meters[index] = 1f / tiling;
+
+            slope[index] = Math.Clamp(
+                variant.SlopeBias,
+                -1f,
+                1f);
+
+            var flags = BindPbrVariant(
+                index,
+                layer,
+                variant);
+
+            roughness[index] = flags.Roughness;
+            height[index] = flags.Height;
+        }
+
+        constants.CoveringMeters = new Vector4(
+            meters[0],
+            meters[1],
+            meters[2],
+            meters[3]);
+
+        constants.CoveringSlope = new Vector4(
+            slope[0],
+            slope[1],
+            slope[2],
+            slope[3]);
+
+        constants.RoughnessFlags = new Vector4(
+            roughness[0],
+            roughness[1],
+            roughness[2],
+            roughness[3]);
+
+        constants.HeightFlags = new Vector4(
+            height[0],
+            height[1],
+            height[2],
+            height[3]);
 
         _context.PixelShader.SetShaderResource(
             3,
             (mask ?? _materials.DiffuseFallback).View);
 
-        for (int variantIndex = 0;
-             variantIndex < activeVariants.Count;
-             variantIndex++)
+        _context.OutputMerger.SetBlendState(
+            isBase ? null : _add);
+
+        _context.OutputMerger.SetDepthStencilState(
+            isBase ? _depthWrite : _depthRead);
+
+        _context.UpdateSubresource(
+            ref constants,
+            _constants);
+
+        _context.DrawIndexed(
+            tile.IndexCount,
+            0,
+            0);
+
+        for (int edge = 0; edge < 4; edge++)
         {
-            var variant = activeVariants[variantIndex];
-
-            bool firstBasePass = isBase && variantIndex == 0;
-
-            _context.OutputMerger.SetBlendState(
-                firstBasePass ? null : _add);
-
-            _context.OutputMerger.SetDepthStencilState(
-                firstBasePass ? _depthWrite : _depthRead);
-
-            float meters = variant.TilingMeters;
-
-            if (!float.IsFinite(meters) || meters <= 0)
+            if ((tile.SkirtEdges & (1 << edge)) == 0)
             {
-                meters = 4f;
+                continue;
             }
-
-            constants.Covering = new Vector4(
-                activeVariants.Count,
-                variantIndex,
-                1f / meters,
-                useVariantTiling ? 1f : 0f);
-
-            _context.UpdateSubresource(
-                ref constants,
-                _constants);
-
-            string diffuse = variantIndex == 0
-                ? layer.DiffuseTexture
-                : variant.AlbedoTexture;
-
-            string normal = variantIndex == 0
-                ? layer.NormalTexture
-                : variant.NormalTexture;
-
-            _context.PixelShader.SetShaderResource(
-                0,
-                _materials.Get(diffuse, false).View);
-
-            _context.PixelShader.SetShaderResource(
-                1,
-                _materials.Get(normal, true).View);
 
             _context.DrawIndexed(
-                tile.IndexCount,
-                0,
+                tile.EdgeIndexCount,
+                tile.IndexCount + edge * tile.EdgeIndexCount,
                 0);
-
-            for (int edge = 0; edge < 4; edge++)
-            {
-                if ((tile.SkirtEdges & (1 << edge)) == 0)
-                {
-                    continue;
-                }
-
-                _context.DrawIndexed(
-                    tile.EdgeIndexCount,
-                    tile.IndexCount + edge * tile.EdgeIndexCount,
-                    0);
-            }
         }
+    }
+
+    private (float Roughness, float Height) BindPbrVariant(
+        int index,
+        TerrainLayer layer,
+        TerrainTextureVariant variant)
+    {
+        string albedoPath = index == 0
+            ? layer.DiffuseTexture
+            : variant.AlbedoTexture;
+
+        string normalPath = index == 0
+            ? layer.NormalTexture
+            : variant.NormalTexture;
+
+        TerrainTexture albedo = _materials.Get(
+            albedoPath,
+            false);
+
+        TerrainTexture normal = _materials.Get(
+            normalPath,
+            true);
+
+        TerrainTexture roughness = _materials.Get(
+            variant.RoughnessTexture,
+            false);
+
+        TerrainTexture height = _materials.Get(
+            variant.HeightTexture,
+            false);
+
+        int albedoSlot;
+        int normalSlot;
+        int roughnessSlot;
+        int heightSlot;
+
+        if (index == 0)
+        {
+            albedoSlot = 0;
+            normalSlot = 1;
+            roughnessSlot = 7;
+            heightSlot = 8;
+        }
+        else
+        {
+            int first = 9 + (index - 1) * 4;
+
+            albedoSlot = first;
+            normalSlot = first + 1;
+            roughnessSlot = first + 2;
+            heightSlot = first + 3;
+        }
+
+        _context.PixelShader.SetShaderResource(
+            albedoSlot,
+            albedo.View);
+
+        _context.PixelShader.SetShaderResource(
+            normalSlot,
+            normal.View);
+
+        _context.PixelShader.SetShaderResource(
+            roughnessSlot,
+            roughness.View);
+
+        _context.PixelShader.SetShaderResource(
+            heightSlot,
+            height.View);
+
+        bool hasRoughness =
+            !string.IsNullOrWhiteSpace(variant.RoughnessTexture) &&
+            !ReferenceEquals(
+                roughness,
+                _materials.DiffuseFallback);
+
+        bool hasHeight =
+            !string.IsNullOrWhiteSpace(variant.HeightTexture) &&
+            !ReferenceEquals(
+                height,
+                _materials.DiffuseFallback);
+
+        return (
+            hasRoughness ? 1f : 0f,
+            hasHeight ? 1f : 0f
+        );
     }
 
     private TerrainTileData? Read(int x, int z)
@@ -378,10 +508,18 @@ internal sealed partial class TerrainRenderer : IDisposable
     private struct Constants
     {
         public Matrix4x4 ViewProjection;
+
         public Vector4 Camera;
         public Vector4 WorldExtent;
         public Vector4 Layer;
         public Vector4 LayerPassParameters;
-        public Vector4 Covering;
+
+        public Vector4 PbrProperties;
+        public Vector4 BlendProperties;
+        public Vector4 CoveringSettings;
+        public Vector4 CoveringMeters;
+        public Vector4 CoveringSlope;
+        public Vector4 RoughnessFlags;
+        public Vector4 HeightFlags;
     }
 }

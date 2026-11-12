@@ -87,6 +87,19 @@ public sealed partial class TerrainDocument
         CheckRange(visual.Specular, 0, 1, "Specular");
         CheckRange(visual.Opacity, 0, 1, "Opacity");
 
+        var blend = updated.Settings.Blend;
+
+        CheckRange(blend.NoiseIntensity, 0, 1, "Noise Blend");
+        CheckRange(blend.HeightIntensity, 0, 1, "Height Blend");
+        CheckRange(blend.SlopeIntensity, 0, 1, "Slope Blend");
+        CheckRange(blend.MacroIntensity, 0, 1, "Macro Variation");
+
+        CheckRange(
+            blend.MacroScaleMeters,
+            1,
+            1024,
+            "Macro Scale");
+
         SetLayer(updated with
         {
             Name = name,
@@ -149,10 +162,10 @@ public sealed partial class TerrainDocument
         var layer = RequireEditableMaterial(layerIndex);
         var variants = layer.GetTextureVariants();
 
-        if (variants.Count >= 32)
+        if (variants.Count >= 4)
         {
             throw new InvalidOperationException(
-                "Максимум 32 покрытия у одного материала.");
+                "Текущий PBR-рендер поддерживает до 4 покрытий материала.");
         }
 
         if (layer.TextureVariants is not { Count: > 0 })
@@ -215,6 +228,8 @@ public sealed partial class TerrainDocument
             0.05f,
             10000f,
             "Размер покрытия");
+
+        CheckRange(variant.SlopeBias, -1, 1, "Slope Bias");
 
         variants[variantIndex] = variant with
         {

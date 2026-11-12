@@ -3,22 +3,51 @@
 cbuffer TerrainBuffer : register(b0)
 {
     row_major float4x4 ViewProjection;
+
     float4 Camera;
     float4 WorldExtent;
     float4 Layer;
     float4 LayerPassParameters;
-    float4 Covering;
+
+    float4 PbrProperties;
+    float4 BlendProperties;
+    float4 CoveringSettings;
+    float4 CoveringMeters;
+    float4 CoveringSlope;
+    float4 RoughnessFlags;
+    float4 HeightFlags;
 };
 
-Texture2D Diffuse : register(t0);
-Texture2D DetailNormal : register(t1);
+Texture2D Albedo0 : register(t0);
+Texture2D Normal0 : register(t1);
+
 Texture2D SurfaceNormal : register(t2);
 Texture2D LayerMask : register(t3);
 Texture2D WeightSum : register(t4);
 Texture2D TerrainHoles : register(t5);
 
+Texture2D Roughness0 : register(t7);
+Texture2D Height0 : register(t8);
+
+Texture2D Albedo1 : register(t9);
+Texture2D Normal1 : register(t10);
+Texture2D Roughness1 : register(t11);
+Texture2D Height1 : register(t12);
+
+Texture2D Albedo2 : register(t13);
+Texture2D Normal2 : register(t14);
+Texture2D Roughness2 : register(t15);
+Texture2D Height2 : register(t16);
+
+Texture2D Albedo3 : register(t17);
+Texture2D Normal3 : register(t18);
+Texture2D Roughness3 : register(t19);
+Texture2D Height3 : register(t20);
+
 SamplerState MaterialSampler : register(s0);
 SamplerState TileSampler : register(s1);
+
+static const float PI = 3.14159265359;
 
 struct VertexInput
 {
@@ -47,14 +76,14 @@ PixelInput VSMain(VertexInput input)
     return output;
 }
 
-float TerrainVariantHash(float2 position)
+float Hash(float2 position)
 {
     return frac(
         sin(dot(position, float2(127.1, 311.7)))
         * 43758.5453);
 }
 
-float TerrainVariantNoise(float2 position)
+float Noise(float2 position)
 {
     float2 cell = floor(position);
     float2 fraction = frac(position);
@@ -62,10 +91,10 @@ float TerrainVariantNoise(float2 position)
     fraction = fraction * fraction *
         (3.0 - 2.0 * fraction);
 
-    float a = TerrainVariantHash(cell);
-    float b = TerrainVariantHash(cell + float2(1, 0));
-    float c = TerrainVariantHash(cell + float2(0, 1));
-    float d = TerrainVariantHash(cell + float2(1, 1));
+    float a = Hash(cell);
+    float b = Hash(cell + float2(1, 0));
+    float c = Hash(cell + float2(0, 1));
+    float d = Hash(cell + float2(1, 1));
 
     return lerp(
         lerp(a, b, fraction.x),
@@ -73,22 +102,60 @@ float TerrainVariantNoise(float2 position)
         fraction.y);
 }
 
-float CalculateCoveringWeight(float3 worldPosition)
+float BandWeight(
+    float noiseValue,
+    float index,
+    float count,
+    float transition)
 {
-    float count = max(Covering.x, 1.0);
+    if (index >= count)
+    {
+        return 0.0;
+    }
+
+    float enter = 1.0;
+    float leave = 0.0;
+
+    if (index > 0.5)
+    {
+        float boundary = index / count;
+
+        enter = smoothstep(
+            boundary - transition,
+            boundary + transition,
+            noiseValue);
+    }
+
+    if (index < count - 1.5)
+    {
+        float boundary = (index + 1.0) / count;
+
+        leave = smoothstep(
+            boundary - transition,
+            boundary + transition,
+            noiseValue);
+    }
+
+    return saturate(enter - leave);
+}
+
+float4 CalculateBlendWeights(
+    float3 world,
+    float3 surface,
+    float2 uv0,
+    float2 uv1,
+    float2 uv2,
+    float2 uv3)
+{
+    float count = max(CoveringSettings.x, 1.0);
 
     if (count < 1.5)
     {
-        return 1.0;
+        return float4(1, 0, 0, 0);
     }
 
-    float index = Covering.y;
-
-    float largeNoise = TerrainVariantNoise(
-        worldPosition.xz * 0.085);
-
-    float detailNoise = TerrainVariantNoise(
-        worldPosition.xz * 0.29);
+    float largeNoise = Noise(world.xz * 0.085);
+    float detailNoise = Noise(world.xz * 0.29);
 
     float noiseValue = saturate(
         largeNoise * 0.78 +
@@ -98,40 +165,127 @@ float CalculateCoveringWeight(float3 worldPosition)
         0.1,
         0.4 / count);
 
-    float left = 1.0;
-    float right = 0.0;
+    float4 bands = float4(
+        BandWeight(noiseValue, 0, count, transition),
+        BandWeight(noiseValue, 1, count, transition),
+        BandWeight(noiseValue, 2, count, transition),
+        BandWeight(noiseValue, 3, count, transition));
 
-    if (index > 0.5)
+    float4 enabled = float4(
+        1,
+        count > 1.5 ? 1 : 0,
+        count > 2.5 ? 1 : 0,
+        count > 3.5 ? 1 : 0);
+
+    float4 weights = lerp(
+        enabled / count,
+        bands,
+        saturate(BlendProperties.x));
+
+    if (BlendProperties.y > 0.001)
     {
-        float threshold = index / count;
+        float4 heights = float4(0.5, 0.5, 0.5, 0.5);
 
-        left = smoothstep(
-            threshold - transition,
-            threshold + transition,
-            noiseValue);
+        if (HeightFlags.x > 0.5)
+        {
+            heights.x = Height0.Sample(
+                MaterialSampler, uv0).r;
+        }
+
+        if (count > 1.5 && HeightFlags.y > 0.5)
+        {
+            heights.y = Height1.Sample(
+                MaterialSampler, uv1).r;
+        }
+
+        if (count > 2.5 && HeightFlags.z > 0.5)
+        {
+            heights.z = Height2.Sample(
+                MaterialSampler, uv2).r;
+        }
+
+        if (count > 3.5 && HeightFlags.w > 0.5)
+        {
+            heights.w = Height3.Sample(
+                MaterialSampler, uv3).r;
+        }
+
+        float meanHeight = dot(weights, heights);
+
+        float4 heightGain = max(
+            0.05,
+            1.0 + (heights - meanHeight) *
+            BlendProperties.y * 5.0);
+
+        weights *= heightGain;
     }
 
-    if (index < count - 1.5)
+    if (BlendProperties.z > 0.001)
     {
-        float threshold = (index + 1.0) / count;
+        float slope = saturate(
+            (1.0 - saturate(surface.y)) * 2.3);
 
-        right = smoothstep(
-            threshold - transition,
-            threshold + transition,
-            noiseValue);
+        float centeredSlope = slope - 0.4;
+
+        float4 slopeGain = max(
+            0.05,
+            1.0 + CoveringSlope *
+            centeredSlope *
+            BlendProperties.z * 3.0);
+
+        weights *= slopeGain;
     }
 
-    if (index < 0.5)
-    {
-        return 1.0 - right;
-    }
+    weights *= enabled;
 
-    if (index >= count - 1.5)
-    {
-        return left;
-    }
+    float total = dot(
+        weights,
+        float4(1, 1, 1, 1));
 
-    return max(left - right, 0.0);
+    return weights / max(total, 0.00001);
+}
+
+float DistributionGGX(
+    float noH,
+    float roughness)
+{
+    float alpha = roughness * roughness;
+    float alpha2 = alpha * alpha;
+
+    float denominator =
+        noH * noH * (alpha2 - 1.0) + 1.0;
+
+    return alpha2 /
+        max(PI * denominator * denominator, 0.00001);
+}
+
+float GeometrySchlickGGX(
+    float noX,
+    float roughness)
+{
+    float r = roughness + 1.0;
+    float k = r * r / 8.0;
+
+    return noX /
+        max(noX * (1.0 - k) + k, 0.00001);
+}
+
+float GeometrySmith(
+    float noV,
+    float noL,
+    float roughness)
+{
+    return GeometrySchlickGGX(noV, roughness) *
+        GeometrySchlickGGX(noL, roughness);
+}
+
+float3 FresnelSchlick(
+    float voH,
+    float3 f0)
+{
+    return f0 +
+        (1.0 - f0) *
+        pow(1.0 - saturate(voH), 5.0);
 }
 
 float4 PSMain(PixelInput input) : SV_TARGET
@@ -147,8 +301,8 @@ float4 PSMain(PixelInput input) : SV_TARGET
     }
 
     float2 tileUv = (
-        4 + saturate(input.TileUv) * 248
-    ) / 256;
+        4.0 + saturate(input.TileUv) * 248.0
+    ) / 256.0;
 
     float sum = WeightSum.Sample(
         TileSampler,
@@ -165,31 +319,112 @@ float4 PSMain(PixelInput input) : SV_TARGET
             : mask.b;
 
     float layerWeight = LayerPassParameters.x > 0.5
-        ? max(1 - sum, 0)
-        : channel / max(sum, 1);
-
-    float coveringWeight = CalculateCoveringWeight(
-        input.World);
-
-    float weight = layerWeight * coveringWeight;
-
-    float2 uv = input.World.xz
-        / WorldExtent.xy
-        * Layer.xy;
-
-    if (Covering.w > 0.5)
-    {
-        uv = input.World.xz * Covering.z;
-    }
-
-    float3 color = Diffuse.Sample(
-        MaterialSampler,
-        uv).rgb;
+        ? max(1.0 - sum, 0.0)
+        : channel / max(sum, 1.0);
 
     float3 surface = normalize(
         SurfaceNormal.Sample(
             TileSampler,
-            tileUv).rgb * 2 - 1);
+            tileUv).rgb * 2.0 - 1.0);
+
+    float2 uv0 = input.World.xz
+        / WorldExtent.xy
+        * Layer.xy;
+
+    float2 uv1 = input.World.xz * CoveringMeters.y;
+    float2 uv2 = input.World.xz * CoveringMeters.z;
+    float2 uv3 = input.World.xz * CoveringMeters.w;
+
+    float4 weights = CalculateBlendWeights(
+        input.World,
+        surface,
+        uv0,
+        uv1,
+        uv2,
+        uv3);
+
+    float3 albedo = Albedo0.Sample(
+        MaterialSampler, uv0).rgb * weights.x;
+
+    float3 detail = (
+        Normal0.Sample(
+            MaterialSampler,
+            uv0 * Layer.z).rgb * 2.0 - 1.0) * weights.x;
+
+    float roughnessValue = weights.x;
+
+    if (RoughnessFlags.x > 0.5)
+    {
+        roughnessValue = Roughness0.Sample(
+            MaterialSampler, uv0).r * weights.x;
+    }
+
+    if (CoveringSettings.x > 1.5)
+    {
+        albedo += Albedo1.Sample(
+            MaterialSampler, uv1).rgb * weights.y;
+
+        detail += (
+            Normal1.Sample(
+                MaterialSampler,
+                uv1 * Layer.z).rgb * 2.0 - 1.0) * weights.y;
+
+        roughnessValue += (
+            RoughnessFlags.y > 0.5
+                ? Roughness1.Sample(MaterialSampler, uv1).r
+                : 1.0) * weights.y;
+    }
+
+    if (CoveringSettings.x > 2.5)
+    {
+        albedo += Albedo2.Sample(
+            MaterialSampler, uv2).rgb * weights.z;
+
+        detail += (
+            Normal2.Sample(
+                MaterialSampler,
+                uv2 * Layer.z).rgb * 2.0 - 1.0) * weights.z;
+
+        roughnessValue += (
+            RoughnessFlags.z > 0.5
+                ? Roughness2.Sample(MaterialSampler, uv2).r
+                : 1.0) * weights.z;
+    }
+
+    if (CoveringSettings.x > 3.5)
+    {
+        albedo += Albedo3.Sample(
+            MaterialSampler, uv3).rgb * weights.w;
+
+        detail += (
+            Normal3.Sample(
+                MaterialSampler,
+                uv3 * Layer.z).rgb * 2.0 - 1.0) * weights.w;
+
+        roughnessValue += (
+            RoughnessFlags.w > 0.5
+                ? Roughness3.Sample(MaterialSampler, uv3).r
+                : 1.0) * weights.w;
+    }
+
+    float macroScale = max(
+        CoveringSettings.y,
+        1.0);
+
+    float macroNoise = Noise(
+        input.World.xz / macroScale);
+
+    float macroFactor = lerp(
+        1.0,
+        0.82 + macroNoise * 0.36,
+        saturate(BlendProperties.w));
+
+    albedo *= macroFactor;
+
+    detail = normalize(
+        detail + float3(0, 0, 0.00001));
+
+    detail.z = max(detail.z, 0.08);
 
     float3 reference = abs(surface.z) < 0.95
         ? float3(0, 0, 1)
@@ -201,42 +436,77 @@ float4 PSMain(PixelInput input) : SV_TARGET
     float3 bitangent = normalize(
         cross(tangent, surface));
 
-    float3 detail = DetailNormal.Sample(
-        MaterialSampler,
-        uv * Layer.z).rgb * 2 - 1;
-
-    detail.z = max(detail.z, 0.08);
-
     float3 normal = normalize(
         tangent * detail.x +
         bitangent * detail.y +
         surface * detail.z);
 
-    float3 lighting = ShadeEnvironment(
-        color,
-        normal,
-        input.World);
+    float roughness = clamp(
+        saturate(PbrProperties.x) * roughnessValue,
+        0.045,
+        1.0);
+
+    float metallic = saturate(PbrProperties.y);
+    float specularLevel = saturate(PbrProperties.z);
 
     float3 view = normalize(
         Camera.xyz - input.World);
 
-    float facingLight = saturate(
-        dot(normal, EnvironmentSun.xyz));
+    float3 light = normalize(
+        EnvironmentSun.xyz);
 
-    float specular = pow(
-        saturate(
-            dot(
-                normal,
-                normalize(EnvironmentSun.xyz + view))),
-        24);
+    float3 halfVector = normalize(
+        view + light + float3(0, 0.00001, 0));
 
-    specular *= saturate(Layer.w)
-        * 0.14
-        * facingLight
-        * EnvironmentSun.w
-        * ShadowVisibility(input.World);
+    float noV = max(dot(normal, view), 0.001);
+    float noL = saturate(dot(normal, light));
+    float noH = saturate(dot(normal, halfVector));
+    float voH = saturate(dot(view, halfVector));
+
+    float3 dielectricF0 = float3(
+        0.08 * specularLevel,
+        0.08 * specularLevel,
+        0.08 * specularLevel);
+
+    float3 f0 = lerp(
+        dielectricF0,
+        saturate(albedo),
+        metallic);
+
+    float3 fresnel = FresnelSchlick(voH, f0);
+
+    float distribution = DistributionGGX(
+        noH,
+        roughness);
+
+    float geometry = GeometrySmith(
+        noV,
+        noL,
+        roughness);
+
+    float3 specular = (
+        distribution * geometry * fresnel
+    ) / max(4.0 * noV * noL, 0.001);
+
+    float3 diffuseLighting = ShadeEnvironment(
+        albedo * (1.0 - metallic),
+        normal,
+        input.World);
+
+    float visibility = ShadowVisibility(
+        input.World);
+
+    float3 directSpecular =
+        specular *
+        noL *
+        EnvironmentSun.w *
+        visibility *
+        0.35;
+
+    float3 finalColor =
+        diffuseLighting + directSpecular;
 
     return float4(
-        (lighting + specular) * weight,
-        LayerPassParameters.x > 0.5 ? 1 : 0);
+        finalColor * layerWeight,
+        LayerPassParameters.x > 0.5 ? 1.0 : 0.0);
 }

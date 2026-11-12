@@ -27,7 +27,16 @@ public sealed record TerrainVisualProperties
     public float Roughness { get; init; } = 0.85f;
     public float Metallic { get; init; }
     public float Specular { get; init; } = 0.5f;
-    public float Opacity { get; init; } = 1.0f;
+    public float Opacity { get; init; } = 1f;
+}
+
+public sealed record TerrainBlendProperties
+{
+    public float NoiseIntensity { get; init; } = 1f;
+    public float HeightIntensity { get; init; }
+    public float SlopeIntensity { get; init; }
+    public float MacroIntensity { get; init; }
+    public float MacroScaleMeters { get; init; } = 32f;
 }
 
 public sealed record TerrainMaterialSettings
@@ -38,6 +47,8 @@ public sealed record TerrainMaterialSettings
     public TerrainPhysicalProperties Physics { get; init; } = new();
 
     public TerrainVisualProperties Visual { get; init; } = new();
+
+    public TerrainBlendProperties Blend { get; init; } = new();
 }
 
 public sealed record TerrainTextureVariant
@@ -49,7 +60,9 @@ public sealed record TerrainTextureVariant
     public string RoughnessTexture { get; init; } = "";
     public string HeightTexture { get; init; } = "";
 
-    public float TilingMeters { get; init; } = 4.0f;
+    public float TilingMeters { get; init; } = 4f;
+
+    public float SlopeBias { get; init; }
 
     public override string ToString()
     {
