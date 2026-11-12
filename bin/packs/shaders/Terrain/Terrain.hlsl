@@ -16,6 +16,8 @@ cbuffer TerrainBuffer : register(b0)
     float4 CoveringSlope;
     float4 RoughnessFlags;
     float4 HeightFlags;
+	float4 WeatherSurface;
+	float4 WeatherPattern;
 };
 
 Texture2D Albedo0 : register(t0);
@@ -288,6 +290,61 @@ float3 FresnelSchlick(
         pow(1.0 - saturate(voH), 5.0);
 }
 
+float CalculateSurfaceWetness(
+    float3 world,
+    float3 surface,
+    out float puddle)
+{
+    float wetness = saturate(WeatherSurface.x);
+
+    puddle = 0.0;
+
+    if (wetness <= 0.0001)
+    {
+        return 0.0;
+    }
+
+    float patchScale = max(
+        WeatherPattern.y,
+        1.0);
+
+    float largeNoise = Noise(
+        world.xz / patchScale);
+
+    float smallNoise = Noise(
+        world.xz / (patchScale * 0.34));
+
+    float pattern = saturate(
+        largeNoise * 0.72 +
+        smallNoise * 0.28);
+
+    float wetAreas = smoothstep(
+        0.25,
+        0.78,
+        pattern);
+
+    float localWetness = wetness * lerp(
+        1.0,
+        wetAreas,
+        saturate(WeatherPattern.x));
+
+    float flatness = saturate(
+        (surface.y - 0.8) * 5.0);
+
+    float puddleMask = smoothstep(
+        0.60,
+        0.88,
+        pattern);
+
+    puddle = wetness *
+        saturate(WeatherPattern.z) *
+        flatness *
+        puddleMask;
+
+    return saturate(
+        localWetness + puddle * 0.3);
+}
+
 float4 PSMain(PixelInput input) : SV_TARGET
 {
     if (WorldExtent.w > 0.5)
@@ -345,6 +402,21 @@ float4 PSMain(PixelInput input) : SV_TARGET
 
     float3 albedo = Albedo0.Sample(
         MaterialSampler, uv0).rgb * weights.x;
+		
+	float puddle = 0.0;
+
+	float surfaceWetness = CalculateSurfaceWetness(
+		input.World,
+		surface,
+		puddle);
+
+	float darkening = saturate(
+		WeatherSurface.y);
+
+	albedo *= lerp(
+		1.0,
+		1.0 - darkening,
+		surfaceWetness);
 
     float3 detail = (
         Normal0.Sample(
@@ -448,6 +520,29 @@ float4 PSMain(PixelInput input) : SV_TARGET
 
     float metallic = saturate(PbrProperties.y);
     float specularLevel = saturate(PbrProperties.z);
+	
+	float wetRoughness = clamp(
+		WeatherSurface.z,
+		0.045,
+		1.0);
+
+	float wetSpecular = saturate(
+		WeatherSurface.w);
+
+	roughness = lerp(
+		roughness,
+		wetRoughness,
+		surfaceWetness);
+
+	roughness = lerp(
+		roughness,
+		min(roughness, 0.075),
+		saturate(puddle));
+
+	specularLevel = lerp(
+		specularLevel,
+		wetSpecular,
+		surfaceWetness);
 
     float3 view = normalize(
         Camera.xyz - input.World);

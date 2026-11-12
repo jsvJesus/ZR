@@ -144,6 +144,15 @@ namespace Editor.Viewport
             _weatherFrame = _weatherRuntime.Advance(
                 _environmentSettings,
                 deltaTime);
+
+            float rainIntensity = Math.Clamp(
+                _weatherFrame.Rain * _environmentSettings.Precipitation,
+                0f,
+                1f);
+
+            _terrain?.UpdateWeatherWetness(
+                rainIntensity,
+                deltaTime);
         }
 
         private Vector3 UpdateEnvironmentLighting(

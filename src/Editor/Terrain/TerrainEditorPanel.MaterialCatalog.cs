@@ -318,7 +318,7 @@ public sealed partial class TerrainEditorPanel
             return;
         }
 
-        var settings = new TerrainMaterialSettings
+        var settings = layer.Settings with
         {
             SurfaceType = (TerrainSurfaceType)_catalogSurface.SelectedIndex,
 

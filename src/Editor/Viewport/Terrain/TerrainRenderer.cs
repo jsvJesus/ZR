@@ -273,6 +273,24 @@ internal sealed partial class TerrainRenderer : IDisposable
         var visual = layer.Settings.Visual;
         var blend = layer.Settings.Blend;
 
+        var weather = layer.Settings.Weather;
+
+        float wetness = weather.ReactToRain
+            ? _level.TerrainDocument?.MaterialWetness(layer.Index) ?? 0f
+            : 0f;
+
+        constants.WeatherSurface = new Vector4(
+            wetness,
+            weather.Darkening,
+            weather.WetRoughness,
+            weather.WetSpecular);
+
+        constants.WeatherPattern = new Vector4(
+            weather.Patchiness,
+            weather.PatchScaleMeters,
+            weather.PuddleStrength,
+            0f);
+
         constants.Layer = new Vector4(
             layer.ScaleU,
             layer.ScaleV,
@@ -528,5 +546,8 @@ internal sealed partial class TerrainRenderer : IDisposable
         public Vector4 CoveringSlope;
         public Vector4 RoughnessFlags;
         public Vector4 HeightFlags;
+
+        public Vector4 WeatherSurface;
+        public Vector4 WeatherPattern;
     }
 }

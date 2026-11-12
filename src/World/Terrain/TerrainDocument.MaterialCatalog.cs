@@ -100,6 +100,18 @@ public sealed partial class TerrainDocument
             1024,
             "Macro Scale");
 
+        var weather = updated.Settings.Weather;
+
+        CheckRange(weather.SoakSeconds, 1, 3600, "Время намокания");
+        CheckRange(weather.DrySeconds, 1, 7200, "Время высыхания");
+        CheckRange(weather.Darkening, 0, 1, "Потемнение");
+        CheckRange(weather.WetRoughness, 0.045f, 1, "Мокрый Roughness");
+        CheckRange(weather.WetSpecular, 0, 1, "Мокрый Specular");
+        CheckRange(weather.Patchiness, 0, 1, "Влажные пятна");
+        CheckRange(weather.PatchScaleMeters, 1, 512, "Масштаб пятен");
+        CheckRange(weather.PuddleStrength, 0, 1, "Лужицы");
+        CheckRange(weather.WetFriction, 0, 3, "Мокрое трение");
+
         SetLayer(updated with
         {
             Name = name,

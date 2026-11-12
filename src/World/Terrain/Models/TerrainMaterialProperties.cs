@@ -30,6 +30,25 @@ public sealed record TerrainVisualProperties
     public float Opacity { get; init; } = 1f;
 }
 
+public sealed record TerrainWeatherProperties
+{
+    public bool ReactToRain { get; init; } = true;
+
+    public float SoakSeconds { get; init; } = 35f;
+    public float DrySeconds { get; init; } = 180f;
+
+    public float Darkening { get; init; } = 0.28f;
+    public float WetRoughness { get; init; } = 0.28f;
+    public float WetSpecular { get; init; } = 0.75f;
+
+    public float Patchiness { get; init; } = 0.55f;
+    public float PatchScaleMeters { get; init; } = 10f;
+    public float PuddleStrength { get; init; } = 0.35f;
+
+    public float WetFriction { get; init; } = 0.65f;
+    public string WetFootstepSound { get; init; } = "";
+}
+
 public sealed record TerrainBlendProperties
 {
     public float NoiseIntensity { get; init; } = 1f;
@@ -49,6 +68,8 @@ public sealed record TerrainMaterialSettings
     public TerrainVisualProperties Visual { get; init; } = new();
 
     public TerrainBlendProperties Blend { get; init; } = new();
+
+    public TerrainWeatherProperties Weather { get; init; } = new();
 }
 
 public sealed record TerrainTextureVariant
