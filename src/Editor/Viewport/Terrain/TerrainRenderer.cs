@@ -232,10 +232,17 @@ internal sealed partial class TerrainRenderer : IDisposable
                 DrawLayer(tile, _level.Layers[index], mask, false, ref constants);
             }
         }
-        for (int index = 0; index <= 20; index++)
+
+        for (int index = 0; index <= 21; index++)
         {
+            if (index == 7)
+            {
+                continue;
+            }
+
             _context.PixelShader.SetShaderResource(index, null);
         }
+
         _context.OutputMerger.SetBlendState(null);
         _context.OutputMerger.SetDepthStencilState(null);
         _context.Rasterizer.State = null;
@@ -428,7 +435,7 @@ internal sealed partial class TerrainRenderer : IDisposable
         {
             albedoSlot = 0;
             normalSlot = 1;
-            roughnessSlot = 7;
+            roughnessSlot = 21;
             heightSlot = 8;
         }
         else

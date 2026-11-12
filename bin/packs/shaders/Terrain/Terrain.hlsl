@@ -26,7 +26,7 @@ Texture2D LayerMask : register(t3);
 Texture2D WeightSum : register(t4);
 Texture2D TerrainHoles : register(t5);
 
-Texture2D Roughness0 : register(t7);
+Texture2D Roughness0 : register(t21);
 Texture2D Height0 : register(t8);
 
 Texture2D Albedo1 : register(t9);
