@@ -74,6 +74,7 @@ public sealed partial class TerrainEditorPanel
                 .ToString("G4", CultureInfo.InvariantCulture);
         };
         root.Children.Add(_materialControls);
+        BuildMaterialCatalogControls();
 
         void Add(string title, Func<CancellationToken, Task> operation)
         {
@@ -85,9 +86,19 @@ public sealed partial class TerrainEditorPanel
 
     private void RefreshPalette(int? selected = null)
     {
-        int index = selected ?? (_palette.SelectedItem as TerrainLayer)?.Index ?? 0;
-        _palette.ItemsSource = _level?.Layers.ToArray();
-        _palette.SelectedIndex = _level == null ? -1 : Math.Clamp(index, 0, _level.Layers.Count - 1);
+        int index = selected ??
+                    (_palette.SelectedItem as TerrainLayer)?.Index ?? 0;
+
+        var visible = _level?.Layers
+            .Where(layer => !layer.IsArchived)
+            .OrderBy(layer => layer.Index)
+            .ToArray() ?? [];
+
+        _palette.ItemsSource = visible;
+
+        _palette.SelectedItem = visible.FirstOrDefault(
+                                    layer => layer.Index == index) ??
+                                visible.FirstOrDefault();
     }
 
     private async Task MaterialOperationAsync(Func<CancellationToken, Task> operation)
@@ -203,8 +214,24 @@ public sealed partial class TerrainEditorPanel
         }
         token.ThrowIfCancellationRequested();
         layer = document.Layers[layer.Index];
-        document.SetLayer(normal ? layer with { NormalTexture = texture }
-            : layer with { DiffuseTexture = texture, NeedsTexture = false, AverageColor = average });
+
+        var updated = normal
+            ? layer with
+            {
+                NormalTexture = texture
+            }
+            : layer with
+            {
+                DiffuseTexture = texture,
+                NeedsTexture = false,
+                AverageColor = average
+            };
+
+        document.SetLayer(updated with
+        {
+            TextureVariants = updated.GetTextureVariants()
+        });
+
         _status.Text = "Текстура назначена всем участкам материала. Сохраните Terrain.";
     }
 }

@@ -30,7 +30,18 @@ public sealed partial class TerrainDocument
                 if (matches.Length == 1) index = matches[0];
             }
             if (index < 0) merged.Add(item with { Index = merged.Count });
-            else if (!item.NeedsTexture && merged[index].NeedsTexture) merged[index] = item with { Index = index };
+            else if (!item.NeedsTexture && merged[index].NeedsTexture)
+            {
+                var existing = merged[index];
+
+                merged[index] = item with
+                {
+                    Index = index,
+                    Settings = existing.Settings,
+                    TextureVariants = existing.TextureVariants,
+                    IsArchived = existing.IsArchived
+                };
+            }
             else merged[index] = merged[index] with { SourceMaterial = item.SourceMaterial };
         }
         if (merged.Count > 255) throw new InvalidOperationException("Terrain поддерживает до 255 слоёв.");
@@ -92,6 +103,12 @@ public sealed partial class TerrainDocument
     {
         if (!float.IsFinite(x) || !float.IsFinite(z) || !float.IsFinite(radius) || radius <= 0 || radius > 100
             || !float.IsFinite(strength) || strength <= 0 || strength > 1 || layerIndex < 0 || layerIndex >= layers.Count) return false;
+
+        if (layers[layerIndex].IsArchived)
+        {
+            return false;
+        }
+
         if (layers[layerIndex].NeedsTexture) throw new InvalidOperationException("Сначала выберите изображение для этого материала.");
         var change = _stroke ?? new Change();
         var d = Descriptor;
