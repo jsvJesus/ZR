@@ -16,6 +16,7 @@ cbuffer TerrainBuffer : register(b0)
     float4 CoveringSlope;
     float4 RoughnessFlags;
     float4 HeightFlags;
+	
 	float4 WeatherSurface;
 	float4 WeatherPattern;
 };
@@ -308,19 +309,19 @@ float CalculateSurfaceWetness(
         WeatherPattern.y,
         1.0);
 
-    float largeNoise = Noise(
-        world.xz / patchScale);
+    float2 patchUv = world.xz / patchScale;
 
-    float smallNoise = Noise(
-        world.xz / (patchScale * 0.34));
+    float largeNoise = Noise(patchUv);
+    float detailNoise = Noise(
+        patchUv * 3.2 + float2(13.7, 27.4));
 
     float pattern = saturate(
-        largeNoise * 0.72 +
-        smallNoise * 0.28);
+        largeNoise * 0.82 +
+        detailNoise * 0.18);
 
     float wetAreas = smoothstep(
         0.25,
-        0.78,
+        0.75,
         pattern);
 
     float localWetness = wetness * lerp(
@@ -328,21 +329,69 @@ float CalculateSurfaceWetness(
         wetAreas,
         saturate(WeatherPattern.x));
 
-    float flatness = saturate(
-        (surface.y - 0.8) * 5.0);
+    float flatness = smoothstep(
+        0.68,
+        0.96,
+        saturate(surface.y));
+
+    float threshold = lerp(
+        0.85,
+        0.46,
+        wetness);
 
     float puddleMask = smoothstep(
-        0.60,
-        0.88,
+        threshold - 0.035,
+        threshold + 0.045,
         pattern);
 
-    puddle = wetness *
-        saturate(WeatherPattern.z) *
+    puddle = saturate(
+        puddleMask *
         flatness *
-        puddleMask;
+        wetness *
+        saturate(WeatherPattern.z));
 
     return saturate(
-        localWetness + puddle * 0.3);
+        localWetness + puddle * 0.2);
+}
+
+float3 PuddleSkyReflection(
+    float3 world,
+    float3 view,
+    float3 waterNormal)
+{
+    float3 reflected = reflect(
+        -view,
+        waterNormal);
+
+    float skyFacing = saturate(reflected.y);
+
+    float daylight = saturate(EnvironmentSun.w);
+
+    float3 nightSky = float3(
+        0.012,
+        0.018,
+        0.028);
+
+    float3 daySky = lerp(
+        float3(0.12, 0.16, 0.19),
+        float3(0.25, 0.33, 0.39),
+        skyFacing);
+
+    float3 sky = lerp(
+        nightSky,
+        daySky,
+        daylight);
+
+    float clouds = Noise(
+        world.xz * 0.028 +
+        reflected.xz * 2.5);
+
+    sky *= lerp(
+        0.82,
+        1.18,
+        clouds);
+
+    return sky;
 }
 
 float4 PSMain(PixelInput input) : SV_TARGET
@@ -409,14 +458,6 @@ float4 PSMain(PixelInput input) : SV_TARGET
 		input.World,
 		surface,
 		puddle);
-
-	float darkening = saturate(
-		WeatherSurface.y);
-
-	albedo *= lerp(
-		1.0,
-		1.0 - darkening,
-		surfaceWetness);
 
     float3 detail = (
         Normal0.Sample(
@@ -492,6 +533,13 @@ float4 PSMain(PixelInput input) : SV_TARGET
         saturate(BlendProperties.w));
 
     albedo *= macroFactor;
+	
+	float darkening = saturate(WeatherSurface.y);
+
+	albedo *= lerp(
+		1.0,
+		1.0 - darkening,
+		surfaceWetness);
 
     detail = normalize(
         detail + float3(0, 0, 0.00001));
@@ -512,6 +560,18 @@ float4 PSMain(PixelInput input) : SV_TARGET
         tangent * detail.x +
         bitangent * detail.y +
         surface * detail.z);
+		
+	float3 puddleNormal = normalize(
+		lerp(
+			surface,
+			float3(0.0, 1.0, 0.0),
+			0.92));
+
+	normal = normalize(
+		lerp(
+			normal,
+			puddleNormal,
+			saturate(puddle)));
 
     float roughness = clamp(
         saturate(PbrProperties.x) * roughnessValue,
@@ -600,6 +660,33 @@ float4 PSMain(PixelInput input) : SV_TARGET
 
     float3 finalColor =
         diffuseLighting + directSpecular;
+		
+	float viewFacing = saturate(
+		dot(view, puddleNormal));
+
+	float waterFresnel =
+		0.04 +
+		0.96 * pow(
+			1.0 - viewFacing,
+			5.0);
+
+	float3 reflectedSky = PuddleSkyReflection(
+		input.World,
+		view,
+		puddleNormal);
+
+	float reflectionAmount = saturate(
+		0.58 + waterFresnel * 0.42);
+
+	float3 waterColor = lerp(
+		finalColor * 0.22,
+		reflectedSky,
+		reflectionAmount);
+
+	finalColor = lerp(
+		finalColor,
+		waterColor,
+		saturate(puddle));
 
     return float4(
         finalColor * layerWeight,
