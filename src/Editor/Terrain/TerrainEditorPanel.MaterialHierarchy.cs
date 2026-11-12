@@ -85,14 +85,14 @@ public sealed partial class TerrainEditorPanel
             MoveSelectedMaterial(1);
         };
 
-        _materialLock.Checked += (_, _) =>
+        _materialLock.IsCheckedChanged += (_, _) =>
         {
-            ChangeSelectedMaterialLock(true);
-        };
+            if (_updatingMaterialHierarchy)
+            {
+                return;
+            }
 
-        _materialLock.Unchecked += (_, _) =>
-        {
-            ChangeSelectedMaterialLock(false);
+            ChangeSelectedMaterialLock(_materialLock.IsChecked == true);
         };
 
         _palette.SelectionChanged += (_, _) =>
