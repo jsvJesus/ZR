@@ -39,7 +39,9 @@ public sealed partial class TerrainDocument
                     Index = index,
                     Settings = existing.Settings,
                     TextureVariants = existing.TextureVariants,
-                    IsArchived = existing.IsArchived
+                    IsArchived = existing.IsArchived,
+                    PaintOrder = existing.PaintOrder,
+                    IsPaintLocked = existing.IsPaintLocked
                 };
             }
             else merged[index] = merged[index] with { SourceMaterial = item.SourceMaterial };
@@ -99,78 +101,318 @@ public sealed partial class TerrainDocument
         _undo.Add(change);
     }
 
-    public bool Paint(float x, float z, float radius, float strength, int layerIndex)
+    public bool Paint(
+        float x,
+        float z,
+        float radius,
+        float strength,
+        int layerIndex)
     {
-        if (!float.IsFinite(x) || !float.IsFinite(z) || !float.IsFinite(radius) || radius <= 0 || radius > 100
-            || !float.IsFinite(strength) || strength <= 0 || strength > 1 || layerIndex < 0 || layerIndex >= layers.Count) return false;
-
-        if (layers[layerIndex].IsArchived)
+        if (!float.IsFinite(x) ||
+            !float.IsFinite(z) ||
+            !float.IsFinite(radius) ||
+            !float.IsFinite(strength) ||
+            radius <= 0 ||
+            radius > 100 ||
+            strength <= 0 ||
+            strength > 1 ||
+            layerIndex < 0 ||
+            layerIndex >= layers.Count)
         {
             return false;
         }
 
-        if (layers[layerIndex].NeedsTexture) throw new InvalidOperationException("Сначала выберите изображение для этого материала.");
+        var selectedLayer = layers[layerIndex];
+
+        if (selectedLayer.IsArchived)
+        {
+            return false;
+        }
+
+        if (selectedLayer.IsPaintLocked)
+        {
+            throw new InvalidOperationException(
+                "Материал заблокирован для рисования.");
+        }
+
+        if (selectedLayer.NeedsTexture)
+        {
+            throw new InvalidOperationException(
+                "Сначала выберите изображение для материала.");
+        }
+
         var change = _stroke ?? new Change();
         var d = Descriptor;
-        float pixelSize = 256f / 248 * d.CellSize, border = 5 * pixelSize;
-        int tx0 = Math.Clamp((int)MathF.Floor((x - radius - border) / (256 * d.CellSize)), 0, d.TilesX - 1);
-        int tx1 = Math.Clamp((int)MathF.Floor((x + radius + border) / (256 * d.CellSize)), 0, d.TilesX - 1);
-        int tz0 = Math.Clamp((int)MathF.Floor((z - radius - border) / (256 * d.CellSize)), 0, d.TilesZ - 1);
-        int tz1 = Math.Clamp((int)MathF.Floor((z + radius + border) / (256 * d.CellSize)), 0, d.TilesZ - 1);
+
+        int selectedOrder = GetPaintOrder(selectedLayer);
+
+        float pixelSize = 256f / 248f * d.CellSize;
+        float border = 5f * pixelSize;
+
+        int tx0 = Math.Clamp(
+            (int)MathF.Floor(
+                (x - radius - border) / (256 * d.CellSize)),
+            0,
+            d.TilesX - 1);
+
+        int tx1 = Math.Clamp(
+            (int)MathF.Floor(
+                (x + radius + border) / (256 * d.CellSize)),
+            0,
+            d.TilesX - 1);
+
+        int tz0 = Math.Clamp(
+            (int)MathF.Floor(
+                (z - radius - border) / (256 * d.CellSize)),
+            0,
+            d.TilesZ - 1);
+
+        int tz1 = Math.Clamp(
+            (int)MathF.Floor(
+                (z + radius + border) / (256 * d.CellSize)),
+            0,
+            d.TilesZ - 1);
+
         bool changed = false;
+
         for (int tz = tz0; tz <= tz1; tz++)
-        for (int tx = tx0; tx <= tx1; tx++)
         {
-            var tile = Raw(tx, tz);
-            var masks = tile.Masks.ToDictionary(mask => mask.Group, mask => TerrainMaskCodec.Editable(mask.Data));
-            if (layerIndex > 0) masks.TryAdd((layerIndex - 1) / 3, new byte[256 * 256 * 4]);
-            if (layerIndex > 0 && !tile.ActiveLayers.Contains((byte)layerIndex))
+            for (int tx = tx0; tx <= tx1; tx++)
             {
-                // BC1 can contain values in channels the renderer has never enabled.
-                // Activating a new layer must not reveal that unused data outside the brush.
-                byte[] channel = masks[(layerIndex - 1) / 3];
-                for (int offset = (layerIndex - 1) % 3; offset < channel.Length; offset += 4) channel[offset] = 0;
-            }
-            int[] active = tile.ActiveLayers.Where(index => index > 0 && index < layers.Count)
-                .Select(index => (int)index).Append(layerIndex).Where(index => index > 0).Distinct().ToArray();
-            bool tileChanged = false;
-            int px0 = Math.Clamp((int)MathF.Floor((x - radius - tx * 256 * d.CellSize) / pixelSize + 3.5f), 0, 255);
-            int px1 = Math.Clamp((int)MathF.Ceiling((x + radius - tx * 256 * d.CellSize) / pixelSize + 3.5f), 0, 255);
-            int pz0 = Math.Clamp((int)MathF.Floor((z - radius - tz * 256 * d.CellSize) / pixelSize + 3.5f), 0, 255);
-            int pz1 = Math.Clamp((int)MathF.Ceiling((z + radius - tz * 256 * d.CellSize) / pixelSize + 3.5f), 0, 255);
-            for (int pz = pz0; pz <= pz1; pz++)
-            for (int px = px0; px <= px1; px++)
-            {
-                float wx = Math.Clamp(tx * 256 * d.CellSize + (px - 3.5f) * pixelSize, 0, d.WorldSizeX);
-                float wz = Math.Clamp(tz * 256 * d.CellSize + (pz - 3.5f) * pixelSize, 0, d.WorldSizeZ);
-                float distance = MathF.Sqrt((wx - x) * (wx - x) + (wz - z) * (wz - z));
-                if (distance >= radius || !HasSurface(wx, wz)) continue;
-                float alpha = strength * (1 - distance / radius);
-                int offset = (pz * 256 + px) * 4;
-                float sum = 0;
-                foreach (int index in active)
-                    if (masks.TryGetValue((index - 1) / 3, out var data)) sum += data[offset + (index - 1) % 3] / 255f;
-                foreach (int index in active)
+                var tile = Raw(tx, tz);
+
+                var masks = tile.Masks.ToDictionary(
+                    mask => mask.Group,
+                    mask => TerrainMaskCodec.Editable(mask.Data));
+
+                if (layerIndex > 0)
                 {
-                    if (!masks.TryGetValue((index - 1) / 3, out var data)) continue;
-                    int channel = offset + (index - 1) % 3;
-                    float weight = data[channel] / 255f / Math.Max(1, sum) * (1 - alpha) + (index == layerIndex ? alpha : 0);
-                    byte value = (byte)Math.Clamp((int)MathF.Round(weight * 255), 0, 255);
-                    if (value != data[channel]) { data[channel] = value; tileChanged = true; }
+                    masks.TryAdd(
+                        (layerIndex - 1) / 3,
+                        new byte[256 * 256 * 4]);
                 }
+
+                if (layerIndex > 0 &&
+                    !tile.ActiveLayers.Contains((byte)layerIndex))
+                {
+                    byte[] data = masks[(layerIndex - 1) / 3];
+
+                    int channel = (layerIndex - 1) % 3;
+
+                    for (int offset = channel;
+                         offset < data.Length;
+                         offset += 4)
+                    {
+                        data[offset] = 0;
+                    }
+                }
+
+                int[] active = tile.ActiveLayers
+                    .Where(index =>
+                        index > 0 &&
+                        index < layers.Count)
+                    .Select(index => (int)index)
+                    .Append(layerIndex)
+                    .Where(index => index > 0)
+                    .Distinct()
+                    .ToArray();
+
+                var protectedChannels = active
+                    .Where(index =>
+                        index != layerIndex &&
+                        (
+                            layers[index].IsPaintLocked ||
+                            GetPaintOrder(layers[index]) < selectedOrder
+                        ))
+                    .Where(index =>
+                        masks.ContainsKey((index - 1) / 3))
+                    .Select(index => (
+                        Data: masks[(index - 1) / 3],
+                        Channel: (index - 1) % 3
+                    ))
+                    .ToArray();
+
+                int px0 = Math.Clamp(
+                    (int)MathF.Floor(
+                        (x - radius - tx * 256 * d.CellSize)
+                        / pixelSize + 3.5f),
+                    0,
+                    255);
+
+                int px1 = Math.Clamp(
+                    (int)MathF.Ceiling(
+                        (x + radius - tx * 256 * d.CellSize)
+                        / pixelSize + 3.5f),
+                    0,
+                    255);
+
+                int pz0 = Math.Clamp(
+                    (int)MathF.Floor(
+                        (z - radius - tz * 256 * d.CellSize)
+                        / pixelSize + 3.5f),
+                    0,
+                    255);
+
+                int pz1 = Math.Clamp(
+                    (int)MathF.Ceiling(
+                        (z + radius - tz * 256 * d.CellSize)
+                        / pixelSize + 3.5f),
+                    0,
+                    255);
+
+                bool tileChanged = false;
+
+                for (int pz = pz0; pz <= pz1; pz++)
+                {
+                    for (int px = px0; px <= px1; px++)
+                    {
+                        float wx = Math.Clamp(
+                            tx * 256 * d.CellSize +
+                            (px - 3.5f) * pixelSize,
+                            0,
+                            d.WorldSizeX);
+
+                        float wz = Math.Clamp(
+                            tz * 256 * d.CellSize +
+                            (pz - 3.5f) * pixelSize,
+                            0,
+                            d.WorldSizeZ);
+
+                        float dx = wx - x;
+                        float dz = wz - z;
+
+                        float distance = MathF.Sqrt(
+                            dx * dx + dz * dz);
+
+                        if (distance >= radius ||
+                            !HasSurface(wx, wz))
+                        {
+                            continue;
+                        }
+
+                        int offset = (pz * 256 + px) * 4;
+
+                        bool protectedPixel = false;
+
+                        foreach (var protectedChannel
+                                 in protectedChannels)
+                        {
+                            if (protectedChannel.Data[
+                                    offset + protectedChannel.Channel] > 0)
+                            {
+                                protectedPixel = true;
+                                break;
+                            }
+                        }
+
+                        if (protectedPixel)
+                        {
+                            continue;
+                        }
+
+                        float alpha = strength *
+                            (1f - distance / radius);
+
+                        float sum = 0;
+
+                        foreach (int index in active)
+                        {
+                            if (!masks.TryGetValue(
+                                    (index - 1) / 3,
+                                    out var data))
+                            {
+                                continue;
+                            }
+
+                            int channel = offset +
+                                (index - 1) % 3;
+
+                            sum += data[channel] / 255f;
+                        }
+
+                        foreach (int index in active)
+                        {
+                            if (!masks.TryGetValue(
+                                    (index - 1) / 3,
+                                    out var data))
+                            {
+                                continue;
+                            }
+
+                            int channel = offset +
+                                (index - 1) % 3;
+
+                            float current = data[channel] / 255f;
+
+                            float weight =
+                                current / Math.Max(1f, sum) *
+                                (1f - alpha);
+
+                            if (index == layerIndex)
+                            {
+                                weight += alpha;
+                            }
+
+                            byte value = (byte)Math.Clamp(
+                                (int)MathF.Round(weight * 255f),
+                                0,
+                                255);
+
+                            if (data[channel] != value)
+                            {
+                                data[channel] = value;
+                                tileChanged = true;
+                            }
+                        }
+                    }
+                }
+
+                if (!tileChanged)
+                {
+                    continue;
+                }
+
+                change.Materials.TryAdd((tx, tz), tile);
+
+                _tiles[(tx, tz)] = tile with
+                {
+                    Masks = masks
+                        .OrderBy(pair => pair.Key)
+                        .Select(pair => new TerrainMask(
+                            pair.Key,
+                            pair.Value))
+                        .ToArray(),
+
+                    ActiveLayers = active
+                        .Order()
+                        .Select(index => (byte)index)
+                        .ToArray()
+                };
+
+                _dirty.Add((tx, tz));
+
+                _materialVersions[(tx, tz)] =
+                    MaterialRevision + 1;
+
+                _paintOverviewDirty.Add((tx, tz));
+
+                changed = true;
             }
-            if (!tileChanged) continue;
-            change.Materials.TryAdd((tx, tz), tile);
-            _tiles[(tx, tz)] = tile with
-            {
-                Masks = masks.OrderBy(pair => pair.Key).Select(pair => new TerrainMask(pair.Key, pair.Value)).ToArray(),
-                ActiveLayers = active.Order().Select(index => (byte)index).ToArray()
-            };
-            _dirty.Add((tx, tz)); _materialVersions[(tx, tz)] = MaterialRevision + 1; changed = true;
-            _paintOverviewDirty.Add((tx, tz));
         }
-        if (!changed) return false;
-        if (_stroke == null) PushPaintUndo(change);
-        Revision++; MaterialRevision++; return true;
+
+        if (!changed)
+        {
+            return false;
+        }
+
+        if (_stroke == null)
+        {
+            PushPaintUndo(change);
+        }
+
+        Revision++;
+        MaterialRevision++;
+
+        return true;
     }
 }

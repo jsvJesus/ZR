@@ -87,6 +87,7 @@ public sealed partial class TerrainEditorPanel
                 };
             }
 
+            document.SetLayer(updated);
             RefreshPalette(layer.Index); RefreshMode();
         };
 
@@ -102,6 +103,7 @@ public sealed partial class TerrainEditorPanel
         };
         root.Children.Add(_materialControls);
         BuildMaterialCatalogControls();
+        BuildMaterialHierarchyControls();
 
         void Add(string title, Func<CancellationToken, Task> operation)
         {
@@ -116,16 +118,19 @@ public sealed partial class TerrainEditorPanel
         int index = selected ??
                     (_palette.SelectedItem as TerrainLayer)?.Index ?? 0;
 
-        var visible = _level?.Layers
-            .Where(layer => !layer.IsArchived)
-            .OrderBy(layer => layer.Index)
-            .ToArray() ?? [];
+        TerrainLayer[] visible = _level?.TerrainDocument is { } document
+            ? document.GetMaterialHierarchy()
+                .Where(layer => !layer.IsArchived)
+                .ToArray()
+            : [];
 
         _palette.ItemsSource = visible;
 
         _palette.SelectedItem = visible.FirstOrDefault(
                                     layer => layer.Index == index) ??
                                 visible.FirstOrDefault();
+
+        RefreshMaterialHierarchy();
     }
 
     private async Task MaterialOperationAsync(Func<CancellationToken, Task> operation)

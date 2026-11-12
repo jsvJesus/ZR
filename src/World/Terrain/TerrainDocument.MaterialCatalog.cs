@@ -31,6 +31,11 @@ public sealed partial class TerrainDocument
             Index = layers.Count,
             Name = name,
             NeedsTexture = true,
+            PaintOrder = layers
+                .Where(layer => layer.Index != 0)
+                .Select(layer => layer.PaintOrder ?? layer.Index)
+                .DefaultIfEmpty(-1)
+                .Max() + 1,
             ScaleU = Descriptor.SamplesX * Descriptor.CellSize / 4f,
             ScaleV = Descriptor.SamplesZ * Descriptor.CellSize / 4f
         };

@@ -28,6 +28,10 @@ public sealed record TerrainLayer
 
     public bool IsArchived { get; init; }
 
+    public int? PaintOrder { get; init; }
+
+    public bool IsPaintLocked { get; init; }
+
     public TerrainMaterialSettings Settings { get; init; } = new();
 
     public List<TerrainTextureVariant> TextureVariants { get; init; } = [];
