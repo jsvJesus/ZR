@@ -17,7 +17,7 @@ using Vector4 = System.Numerics.Vector4;
 
 namespace Editor.Viewport.Roads
 {
-    internal sealed class RoadRenderer : IDisposable
+    internal sealed partial class RoadRenderer : IDisposable
     {
         private readonly Device _device;
         private readonly DeviceContext _context;
@@ -166,14 +166,22 @@ namespace Editor.Viewport.Roads
             var normalMap = GetTexture(normal, "flat-normal", 128, 128, 255);
             var specularMap = GetTexture(specular, "white-specular", 255, 255, 255);
             var powerMap = GetTexture(power, "white-specular", 255, 255, 255);
+
             var constants = new Constants
             {
                 ViewProjection = viewProjection,
                 Parameters = new Vector4(!playing && item.Road == SelectedRoad && segment == SelectedSegment ? 1 : 0,
                     normal != null ? 1 : 0, power != null ? 1 : 0, 0),
                 CameraPosition = new Vector4(camera, 0),
-                SpecularParameters = new Vector4(color.SpecularStrength, color.Gloss, 0, 0)
+                SpecularParameters = new Vector4(color.SpecularStrength, color.Gloss, 0, 0),
+
+                WeatherParameters = new Vector4(
+                    _roadWetness,
+                    _uniformRoadWetness ? 1f : 0f,
+                    12f,
+                    0.9f)
             };
+
             _context.UpdateSubresource(ref constants, _constants);
             _context.InputAssembler.SetVertexBuffers(0, new VertexBufferBinding(item.VertexBuffer!, 32, 0));
             _context.InputAssembler.SetIndexBuffer(item.IndexBuffer!, Format.R32_UInt, 0);
@@ -270,6 +278,7 @@ namespace Editor.Viewport.Roads
             public Vector4 Parameters;
             public Vector4 CameraPosition;
             public Vector4 SpecularParameters;
+            public Vector4 WeatherParameters;
         }
 
         private sealed class SegmentResources(SourceRoad road, RoadSegment segment)

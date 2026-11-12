@@ -288,6 +288,16 @@ namespace Editor.Environment
                         2,
                         () => _settings.Precipitation,
                         value => _settings.Precipitation = value);
+
+                    AddToggle(
+                        "Равномерное намокание дорог (Roads)",
+                        () => _settings.UniformRoadWetness,
+                        value => _settings.UniformRoadWetness = value);
+
+                    AddInfo(
+                        "Включено — вся поверхность дорожных мешей " +
+                        "постепенно намокает. Выключено — влажность " +
+                        "распределяется отдельными пятнами.");
                     break;
             }
         }

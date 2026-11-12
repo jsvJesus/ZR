@@ -153,6 +153,11 @@ namespace Editor.Viewport
             _terrain?.UpdateWeatherWetness(
                 rainIntensity,
                 deltaTime);
+
+            _roads?.AdvanceWeatherWetness(
+                rainIntensity,
+                deltaTime,
+                _environmentSettings.UniformRoadWetness);
         }
 
         private Vector3 UpdateEnvironmentLighting(

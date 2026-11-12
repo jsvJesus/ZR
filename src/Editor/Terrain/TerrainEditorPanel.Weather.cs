@@ -11,6 +11,11 @@ public sealed partial class TerrainEditorPanel
         Content = "Реагирует на дождь"
     };
 
+    private readonly CheckBox _weatherUniform = new()
+    {
+        Content = "Равномерное намокание материала"
+    };
+
     private readonly TextBox _weatherSoak = new();
     private readonly TextBox _weatherDry = new();
     private readonly TextBox _weatherDarkening = new();
@@ -30,6 +35,7 @@ public sealed partial class TerrainEditorPanel
         };
 
         controls.Children.Add(_weatherEnabled);
+        controls.Children.Add(_weatherUniform);
 
         AddWeatherField(
             controls,
@@ -150,7 +156,7 @@ public sealed partial class TerrainEditorPanel
         var weather = layer.Settings.Weather;
 
         _weatherEnabled.IsChecked = weather.ReactToRain;
-
+        _weatherUniform.IsChecked = weather.UniformWetness;
         _weatherSoak.Text = Format(weather.SoakSeconds);
         _weatherDry.Text = Format(weather.DrySeconds);
         _weatherDarkening.Text = Format(weather.Darkening);
@@ -176,6 +182,7 @@ public sealed partial class TerrainEditorPanel
         var weather = new TerrainWeatherProperties
         {
             ReactToRain = _weatherEnabled.IsChecked == true,
+            UniformWetness = _weatherUniform.IsChecked == true,
 
             SoakSeconds = Parse(
                 _weatherSoak, 1, 3600, "Время намокания"),

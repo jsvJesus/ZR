@@ -286,10 +286,10 @@ internal sealed partial class TerrainRenderer : IDisposable
             weather.WetSpecular);
 
         constants.WeatherPattern = new Vector4(
-            weather.Patchiness,
+            weather.UniformWetness ? 0f : weather.Patchiness,
             weather.PatchScaleMeters,
             weather.PuddleStrength,
-            0f);
+            weather.UniformWetness ? 1f : 0f);
 
         constants.Layer = new Vector4(
             layer.ScaleU,

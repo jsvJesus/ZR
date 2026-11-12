@@ -45,6 +45,7 @@ namespace Editor.Environment
         public float WindSpeed { get; set; } = 2f;
         public float FogDensity { get; set; } = 0.002f;
         public float Precipitation { get; set; } = 1f;
+        public bool UniformRoadWetness { get; set; }
 
         public static EnvironmentSettings Load(
             string levelDirectory,

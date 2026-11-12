@@ -33,6 +33,7 @@ public sealed record TerrainVisualProperties
 public sealed record TerrainWeatherProperties
 {
     public bool ReactToRain { get; init; } = true;
+    public bool UniformWetness { get; init; }
 
     public float SoakSeconds { get; init; } = 35f;
     public float DrySeconds { get; init; } = 180f;
