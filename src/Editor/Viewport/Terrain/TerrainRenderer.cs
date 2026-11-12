@@ -238,19 +238,111 @@ internal sealed partial class TerrainRenderer : IDisposable
         _context.Rasterizer.State = null;
     }
 
-    private void DrawLayer(TerrainTileResources tile, TerrainLayer layer, TerrainTexture? mask,
-        bool isBase, ref Constants constants)
+    private void DrawLayer(
+        TerrainTileResources tile,
+        TerrainLayer layer,
+        TerrainTexture? mask,
+        bool isBase,
+        ref Constants constants)
     {
-        constants.Layer = new Vector4(layer.ScaleU, layer.ScaleV, layer.NormalUvMultiplier, layer.Specular);
-        constants.LayerPassParameters = new Vector4(isBase ? 1 : 0, isBase ? 0 : (layer.Index - 1) % 3, 0, 0);
-        _context.UpdateSubresource(ref constants, _constants);
-        _context.PixelShader.SetShaderResource(0, _materials.Get(layer.DiffuseTexture, false).View);
-        _context.PixelShader.SetShaderResource(1, _materials.Get(layer.NormalTexture, true).View);
-        _context.PixelShader.SetShaderResource(3, (mask ?? _materials.DiffuseFallback).View);
-        _context.DrawIndexed(tile.IndexCount, 0, 0);
-        for (int edge = 0; edge < 4; edge++)
-            if ((tile.SkirtEdges & (1 << edge)) != 0)
-                _context.DrawIndexed(tile.EdgeIndexCount, tile.IndexCount + edge * tile.EdgeIndexCount, 0);
+        var variants = layer.GetTextureVariants();
+
+        var activeVariants = new List<TerrainTextureVariant>
+        {
+            variants[0]
+        };
+
+        for (int i = 1; i < variants.Count; i++)
+        {
+            if (!string.IsNullOrWhiteSpace(variants[i].AlbedoTexture))
+            {
+                activeVariants.Add(variants[i]);
+            }
+        }
+
+        constants.Layer = new Vector4(
+            layer.ScaleU,
+            layer.ScaleV,
+            layer.NormalUvMultiplier,
+            layer.Specular);
+
+        constants.LayerPassParameters = new Vector4(
+            isBase ? 1 : 0,
+            isBase ? 0 : (layer.Index - 1) % 3,
+            0,
+            0);
+
+        bool useVariantTiling = layer.TextureVariants is { Count: > 0 };
+
+        _context.PixelShader.SetShaderResource(
+            3,
+            (mask ?? _materials.DiffuseFallback).View);
+
+        for (int variantIndex = 0;
+             variantIndex < activeVariants.Count;
+             variantIndex++)
+        {
+            var variant = activeVariants[variantIndex];
+
+            bool firstBasePass = isBase && variantIndex == 0;
+
+            _context.OutputMerger.SetBlendState(
+                firstBasePass ? null : _add);
+
+            _context.OutputMerger.SetDepthStencilState(
+                firstBasePass ? _depthWrite : _depthRead);
+
+            float meters = variant.TilingMeters;
+
+            if (!float.IsFinite(meters) || meters <= 0)
+            {
+                meters = 4f;
+            }
+
+            constants.Covering = new Vector4(
+                activeVariants.Count,
+                variantIndex,
+                1f / meters,
+                useVariantTiling ? 1f : 0f);
+
+            _context.UpdateSubresource(
+                ref constants,
+                _constants);
+
+            string diffuse = variantIndex == 0
+                ? layer.DiffuseTexture
+                : variant.AlbedoTexture;
+
+            string normal = variantIndex == 0
+                ? layer.NormalTexture
+                : variant.NormalTexture;
+
+            _context.PixelShader.SetShaderResource(
+                0,
+                _materials.Get(diffuse, false).View);
+
+            _context.PixelShader.SetShaderResource(
+                1,
+                _materials.Get(normal, true).View);
+
+            _context.DrawIndexed(
+                tile.IndexCount,
+                0,
+                0);
+
+            for (int edge = 0; edge < 4; edge++)
+            {
+                if ((tile.SkirtEdges & (1 << edge)) == 0)
+                {
+                    continue;
+                }
+
+                _context.DrawIndexed(
+                    tile.EdgeIndexCount,
+                    tile.IndexCount + edge * tile.EdgeIndexCount,
+                    0);
+            }
+        }
     }
 
     private TerrainTileData? Read(int x, int z)
@@ -290,5 +382,6 @@ internal sealed partial class TerrainRenderer : IDisposable
         public Vector4 WorldExtent;
         public Vector4 Layer;
         public Vector4 LayerPassParameters;
+        public Vector4 Covering;
     }
 }

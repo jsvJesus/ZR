@@ -43,6 +43,10 @@ public sealed partial class TerrainEditorPanel
     private readonly TextBox _catalogVariantName = new();
     private readonly TextBox _catalogVariantScale = new();
 
+    private int _selectedVariantIndex;
+    private int _selectedVariantLayer = -1;
+    private bool _restoringVariantSelection;
+
     private readonly ComboBox _catalogTextureChannel = new()
     {
         ItemsSource = new[]
@@ -140,11 +144,29 @@ public sealed partial class TerrainEditorPanel
 
         _palette.SelectionChanged += (_, _) =>
         {
+            if (_palette.SelectedItem is not TerrainLayer layer)
+            {
+                return;
+            }
+
+            if (_selectedVariantLayer != layer.Index)
+            {
+                _selectedVariantLayer = layer.Index;
+                _selectedVariantIndex = 0;
+            }
+
             RefreshMaterialCatalog();
         };
 
         _catalogVariants.SelectionChanged += (_, _) =>
         {
+            if (_restoringVariantSelection ||
+                _catalogVariants.SelectedIndex < 0)
+            {
+                return;
+            }
+
+            _selectedVariantIndex = _catalogVariants.SelectedIndex;
             RefreshCatalogVariant();
         };
 
@@ -195,10 +217,25 @@ public sealed partial class TerrainEditorPanel
 
         if (_palette.SelectedItem is not TerrainLayer layer)
         {
-            _catalogVariants.ItemsSource =
-                Array.Empty<TerrainTextureVariant>();
+            _restoringVariantSelection = true;
+
+            try
+            {
+                _catalogVariants.ItemsSource =
+                    Array.Empty<TerrainTextureVariant>();
+            }
+            finally
+            {
+                _restoringVariantSelection = false;
+            }
 
             return;
+        }
+
+        if (_selectedVariantLayer != layer.Index)
+        {
+            _selectedVariantLayer = layer.Index;
+            _selectedVariantIndex = 0;
         }
 
         var settings = layer.Settings;
@@ -215,16 +252,26 @@ public sealed partial class TerrainEditorPanel
         _catalogSpecular.Text = Format(settings.Visual.Specular);
         _catalogOpacity.Text = Format(settings.Visual.Opacity);
 
-        int selected = variantIndex ??
-            Math.Max(0, _catalogVariants.SelectedIndex);
-
         var variants = layer.GetTextureVariants();
 
-        _catalogVariants.ItemsSource = variants;
-        _catalogVariants.SelectedIndex = Math.Clamp(
-            selected,
+        int selected = Math.Clamp(
+            variantIndex ?? _selectedVariantIndex,
             0,
             variants.Count - 1);
+
+        _selectedVariantIndex = selected;
+
+        _restoringVariantSelection = true;
+
+        try
+        {
+            _catalogVariants.ItemsSource = variants;
+            _catalogVariants.SelectedIndex = selected;
+        }
+        finally
+        {
+            _restoringVariantSelection = false;
+        }
 
         RefreshCatalogVariant();
     }

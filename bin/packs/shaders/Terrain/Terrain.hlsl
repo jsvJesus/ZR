@@ -7,6 +7,7 @@ cbuffer TerrainBuffer : register(b0)
     float4 WorldExtent;
     float4 Layer;
     float4 LayerPassParameters;
+    float4 Covering;
 };
 
 Texture2D Diffuse : register(t0);
@@ -46,6 +47,93 @@ PixelInput VSMain(VertexInput input)
     return output;
 }
 
+float TerrainVariantHash(float2 position)
+{
+    return frac(
+        sin(dot(position, float2(127.1, 311.7)))
+        * 43758.5453);
+}
+
+float TerrainVariantNoise(float2 position)
+{
+    float2 cell = floor(position);
+    float2 fraction = frac(position);
+
+    fraction = fraction * fraction *
+        (3.0 - 2.0 * fraction);
+
+    float a = TerrainVariantHash(cell);
+    float b = TerrainVariantHash(cell + float2(1, 0));
+    float c = TerrainVariantHash(cell + float2(0, 1));
+    float d = TerrainVariantHash(cell + float2(1, 1));
+
+    return lerp(
+        lerp(a, b, fraction.x),
+        lerp(c, d, fraction.x),
+        fraction.y);
+}
+
+float CalculateCoveringWeight(float3 worldPosition)
+{
+    float count = max(Covering.x, 1.0);
+
+    if (count < 1.5)
+    {
+        return 1.0;
+    }
+
+    float index = Covering.y;
+
+    float largeNoise = TerrainVariantNoise(
+        worldPosition.xz * 0.085);
+
+    float detailNoise = TerrainVariantNoise(
+        worldPosition.xz * 0.29);
+
+    float noiseValue = saturate(
+        largeNoise * 0.78 +
+        detailNoise * 0.22);
+
+    float transition = min(
+        0.1,
+        0.4 / count);
+
+    float left = 1.0;
+    float right = 0.0;
+
+    if (index > 0.5)
+    {
+        float threshold = index / count;
+
+        left = smoothstep(
+            threshold - transition,
+            threshold + transition,
+            noiseValue);
+    }
+
+    if (index < count - 1.5)
+    {
+        float threshold = (index + 1.0) / count;
+
+        right = smoothstep(
+            threshold - transition,
+            threshold + transition,
+            noiseValue);
+    }
+
+    if (index < 0.5)
+    {
+        return 1.0 - right;
+    }
+
+    if (index >= count - 1.5)
+    {
+        return left;
+    }
+
+    return max(left - right, 0.0);
+}
+
 float4 PSMain(PixelInput input) : SV_TARGET
 {
     if (WorldExtent.w > 0.5)
@@ -76,13 +164,23 @@ float4 PSMain(PixelInput input) : SV_TARGET
             ? mask.g
             : mask.b;
 
-    float weight = LayerPassParameters.x > 0.5
+    float layerWeight = LayerPassParameters.x > 0.5
         ? max(1 - sum, 0)
         : channel / max(sum, 1);
+
+    float coveringWeight = CalculateCoveringWeight(
+        input.World);
+
+    float weight = layerWeight * coveringWeight;
 
     float2 uv = input.World.xz
         / WorldExtent.xy
         * Layer.xy;
+
+    if (Covering.w > 0.5)
+    {
+        uv = input.World.xz * Covering.z;
+    }
 
     float3 color = Diffuse.Sample(
         MaterialSampler,

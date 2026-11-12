@@ -150,6 +150,25 @@ public sealed partial class TerrainDocument
                 "Максимум 32 покрытия у одного материала.");
         }
 
+        if (layer.TextureVariants is not { Count: > 0 })
+        {
+            float meters = Descriptor.SamplesX *
+                Descriptor.CellSize / layer.ScaleU;
+
+            if (!float.IsFinite(meters) || meters <= 0)
+            {
+                meters = 4f;
+            }
+
+            variants[0] = variants[0] with
+            {
+                TilingMeters = Math.Clamp(
+                    meters,
+                    0.05f,
+                    10000f)
+            };
+        }
+
         int index = variants.Count;
 
         variants.Add(new TerrainTextureVariant
@@ -176,7 +195,8 @@ public sealed partial class TerrainDocument
 
         if (variantIndex < 0 || variantIndex >= variants.Count)
         {
-            throw new ArgumentOutOfRangeException(nameof(variantIndex));
+            throw new ArgumentOutOfRangeException(
+                nameof(variantIndex));
         }
 
         if (string.IsNullOrWhiteSpace(variant.Name))
@@ -203,13 +223,21 @@ public sealed partial class TerrainDocument
 
         if (variantIndex == 0)
         {
+            float scaleU = Descriptor.SamplesX *
+                Descriptor.CellSize / variant.TilingMeters;
+
+            float scaleV = Descriptor.SamplesZ *
+                Descriptor.CellSize / variant.TilingMeters;
+
             updated = updated with
             {
                 DiffuseTexture = variant.AlbedoTexture,
                 NormalTexture = variant.NormalTexture,
                 NeedsTexture = string.IsNullOrWhiteSpace(
                     variant.AlbedoTexture),
-                AverageColor = averageColor ?? layer.AverageColor
+                AverageColor = averageColor ?? layer.AverageColor,
+                ScaleU = scaleU,
+                ScaleV = scaleV
             };
         }
 

@@ -244,6 +244,9 @@ public sealed partial class TerrainEditorPanel : UserControl
 
         _level = level;
 
+        _selectedVariantIndex = 0;
+        _selectedVariantLayer = -1;
+
         RefreshPalette();
         RefreshMode();
     }

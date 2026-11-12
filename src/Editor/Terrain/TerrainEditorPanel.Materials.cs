@@ -52,17 +52,44 @@ public sealed partial class TerrainEditorPanel
         Add("Выбрать normal map…", token => AssignTextureAsync(true, token));
         _materialControls.Children.Add(new TextBlock { Text = "Размер повторения текстуры, м" });
         _materialControls.Children.Add(_repeat);
+
         var apply = new Button { Content = "Применить размер" };
         apply.Click += (_, _) =>
         {
             if (!Active || _palette.SelectedItem is not TerrainLayer layer || _level?.TerrainDocument is not { } document) return;
-            if (!float.TryParse((_repeat.Text ?? "").Replace(',', '.'), NumberStyles.Float, CultureInfo.InvariantCulture, out float meters)
+
+            if (!float.TryParse((_repeat.Text ?? "").Replace(',', '.'), NumberStyles.Float,
+                    CultureInfo.InvariantCulture, out float meters)
                 || !float.IsFinite(meters) || meters < 0.05f || meters > 10000)
-            { _status.Text = "Размер повторения: от 0.05 до 10000 метров."; return; }
+            {
+                _status.Text = "Размер повторения: от 0.05 до 10000 метров."; return;
+            }
             var d = document.Descriptor;
-            document.SetLayer(layer with { ScaleU = d.SamplesX * d.CellSize / meters, ScaleV = d.SamplesZ * d.CellSize / meters });
+
+            var updated = layer with
+            {
+                ScaleU = d.SamplesX * d.CellSize / meters,
+                ScaleV = d.SamplesZ * d.CellSize / meters
+            };
+
+            if (updated.TextureVariants is { Count: > 0 })
+            {
+                var variants = updated.GetTextureVariants();
+
+                variants[0] = variants[0] with
+                {
+                    TilingMeters = meters
+                };
+
+                updated = updated with
+                {
+                    TextureVariants = variants
+                };
+            }
+
             RefreshPalette(layer.Index); RefreshMode();
         };
+
         _materialControls.Children.Add(apply);
         _palette.SelectionChanged += (_, _) =>
         {
