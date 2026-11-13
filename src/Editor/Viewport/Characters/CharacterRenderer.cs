@@ -219,7 +219,6 @@ internal sealed partial class CharacterRenderer : IDisposable
                         Texture(source.Surface.OpacityMaskPath),
                         centre
                     ));
-                    BuildFirstPersonParts(device);
                 }
                 catch
                 {
@@ -228,6 +227,7 @@ internal sealed partial class CharacterRenderer : IDisposable
                     throw;
                 }
             }
+            BuildFirstPersonParts(device);
         }
         catch
         {
