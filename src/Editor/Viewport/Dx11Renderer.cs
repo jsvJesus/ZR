@@ -428,7 +428,7 @@ namespace Editor.Viewport
                 nearPlane = Math.Clamp(radius * 0.001f, 0.001f, 0.5f);
             }
             var projection = CreateProjectionMatrix(
-                playing ? 0.78f : 1.05f,
+                playing ? _playFieldOfView : 1.05f,
                 (float)_width / _height,
                 nearPlane,
                 farPlane);
@@ -519,6 +519,15 @@ namespace Editor.Viewport
 
             _objects?.RenderTransparent(camera, viewProjection);
             RenderEnvironmentWeather(camera, viewProjection);
+
+            if (playing)
+            {
+                RenderFirstPersonScene(
+                    camera,
+                    characterView,
+                    farPlane
+                );
+            }
 
             if (!playing && _selectedObject != null && _scene?.Find(_selectedObject) is { } selected)
             {
@@ -613,6 +622,8 @@ namespace Editor.Viewport
             _inputLayout?.Dispose();
             _pixelShader?.Dispose();
             _vertexShader?.Dispose();
+
+            DisposeFirstPersonScene();
 
             _swapChain?.Dispose();
             _context?.Dispose();

@@ -44,6 +44,32 @@ namespace ZoneReborn.World.Characters
 
         public bool IsFirstPerson { get; private set; }
 
+        public float FirstPersonBlend => _firstPersonBlend;
+
+        public float AimBlend => _aimBlend;
+
+        public float FieldOfView
+        {
+            get
+            {
+                const float thirdPersonFov = 0.78f;
+                const float thirdPersonAimFov = 0.74f;
+                const float firstPersonFov = 0.70f;
+                const float firstPersonAimFov = 0.67f;
+
+                float thirdPerson =
+                    thirdPersonFov +
+                    (thirdPersonAimFov - thirdPersonFov) * _aimBlend;
+
+                float firstPerson =
+                    firstPersonFov +
+                    (firstPersonAimFov - firstPersonFov) * _aimBlend;
+
+                return thirdPerson +
+                       (firstPerson - thirdPerson) * _firstPersonBlend;
+            }
+        }
+
         public Vector3 CameraPosition { get; private set; }
 
         public ThirdPersonCamera(float yaw)

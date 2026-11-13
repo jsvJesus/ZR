@@ -17,7 +17,7 @@ using Vector4 = System.Numerics.Vector4;
 
 namespace Editor.Viewport.Characters;
 
-internal sealed class CharacterRenderer : IDisposable
+internal sealed partial class CharacterRenderer : IDisposable
 {
     private const float HideDistance = 0.85f;
     private const float ShowDistance = 1.65f;
@@ -219,6 +219,7 @@ internal sealed class CharacterRenderer : IDisposable
                         Texture(source.Surface.OpacityMaskPath),
                         centre
                     ));
+                    BuildFirstPersonParts(device);
                 }
                 catch
                 {
@@ -423,6 +424,8 @@ internal sealed class CharacterRenderer : IDisposable
 
     public void Dispose()
     {
+        DisposeFirstPersonParts();
+
         foreach (var mesh in _meshes)
         {
             mesh.Indices.Dispose();

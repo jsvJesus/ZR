@@ -274,6 +274,13 @@ public sealed partial class DxViewportHost
             _surface == null ||
             _player == null)
         {
+            _renderer?.SetPlayCameraState(
+                0f,
+                0f,
+                0.78f,
+                false
+            );
+
             return;
         }
 
@@ -287,6 +294,13 @@ public sealed partial class DxViewportHost
             _orbit.Pitch,
             _camera.Speed
         ));
+
+        _renderer?.SetPlayCameraState(
+            _orbit.FirstPersonBlend,
+            _orbit.AimBlend,
+            _orbit.FieldOfView,
+            !IsCharacterEditing
+        );
     }
 
     private void UpdatePlayer(float deltaTime)
