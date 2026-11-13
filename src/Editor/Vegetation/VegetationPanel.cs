@@ -70,6 +70,7 @@ namespace Editor.Vegetation
             _viewport = viewport; _assets = assets;
             _entries = SpeedTreeReader.Catalog(assets); FilterCatalog();
             RefreshScatterControls();
+            RefreshBatchMaterials();
             viewport.TreePlaced += tree =>
             {
                 RefreshInstances(tree); _status.Text = "Дерево поставлено. ЛКМ — следующее дерево.";
@@ -81,6 +82,7 @@ namespace Editor.Vegetation
         {
             _level = level;
             RefreshScatterControls();
+            RefreshBatchMaterials();
             RefreshInstances(null);
             RefreshMode();
             _status.Text = level.Vegetation.Warnings.Count > 0 ? string.Join("\n", level.Vegetation.Warnings)

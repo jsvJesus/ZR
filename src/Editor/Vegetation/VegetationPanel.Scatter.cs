@@ -59,6 +59,7 @@ public sealed partial class VegetationPanel
 
         controls.Children.Add(Title("ПРАВИЛА ГЕНЕРАЦИИ"));
         controls.Children.Add(_scatterRules);
+        BuildScatterBatchControls(controls);
 
         Button(
             controls,
@@ -113,6 +114,7 @@ public sealed partial class VegetationPanel
             "Удалить правило",
             DeleteScatterRule);
 
+        BuildScatterBatchActions(controls);
         controls.Children.Add(Title("ГЕНЕРАЦИЯ ПО ТАЙЛАМ"));
 
         ScatterField(controls, "Тайл X", _scatterTileX);
@@ -367,6 +369,7 @@ public sealed partial class VegetationPanel
         scene.IsDirty = true;
 
         RefreshScatterControls(rule.Id);
+        LoadBatchModelSelection();
         UpdateSummary();
 
         _status.Text =
@@ -394,6 +397,7 @@ public sealed partial class VegetationPanel
         scene.IsDirty = true;
 
         RefreshScatterControls();
+        LoadBatchModelSelection();
         UpdateSummary();
 
         _status.Text =

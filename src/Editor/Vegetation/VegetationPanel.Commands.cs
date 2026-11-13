@@ -40,12 +40,29 @@ namespace Editor.Vegetation
             _status.Text = "Дерево удалено.";
         }
 
-        public Task SavePendingAsync()
+        public async Task SavePendingAsync()
         {
-            if (IsSaving) return _saveTask;
-            if (_level == null || !_level.Vegetation.IsDirty) return Task.CompletedTask;
-            _saveTask = SaveCoreAsync(); return _saveTask;
+            if (!_batchTask.IsCompleted)
+            {
+                await _batchTask;
+            }
+
+            if (IsSaving)
+            {
+                await _saveTask;
+                return;
+            }
+
+            if (_level == null || !_level.Vegetation.IsDirty)
+            {
+                return;
+            }
+
+            _saveTask = SaveCoreAsync();
+
+            await _saveTask;
         }
+
         private async Task SaveCoreAsync()
         {
             var level = _level!;
@@ -70,6 +87,10 @@ namespace Editor.Vegetation
             }
         }
 
-        public void CancelLoading() => _loading?.Cancel();
+        public void CancelLoading()
+        {
+            _loading?.Cancel();
+            _batchCancellation?.Cancel();
+        }
     }
 }
