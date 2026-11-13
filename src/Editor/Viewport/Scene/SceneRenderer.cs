@@ -109,6 +109,7 @@ internal sealed partial class SceneRenderer : IDisposable
             _alpha = new(device, blend);
             _white = TerrainTexture.Solid(device, 255, 255, 255);
             _flatNormal = TerrainTexture.Solid(device, 128, 128, 255);
+            InitializeShadowPipeline(assets);
         }
         catch { Dispose(); throw; }
     }
@@ -590,6 +591,7 @@ internal sealed partial class SceneRenderer : IDisposable
     {
         if (_disposed) return;
         _disposed = true;
+        DisposeShadowPipeline();
         _stop.Cancel(); _stop.Dispose();
         // Workers own CPU-only data and observe cancellation; disposal never waits for disk IO.
         _pendingTextures.Clear();
