@@ -42,7 +42,7 @@ float SkyVisibility(float3 worldPosition)
     }
 
     float3 projected = lightPosition.xyz
-        / max(lightPosition.w, 0.00001);
+        / lightPosition.w;
 
     float2 uv = float2(
         projected.x * 0.5 + 0.5,
@@ -56,28 +56,54 @@ float SkyVisibility(float3 worldPosition)
         return 1.0;
     }
 
-    float texel = 1.0 /
-        max(EnvironmentSkyShadowParams.y, 1.0);
+    return EnvironmentSkyShadowTexture.SampleCmpLevelZero(
+        EnvironmentSkyShadowSampler,
+        uv,
+        projected.z - EnvironmentSkyShadowParams.z);
+}
 
-    float visibility = 0.0;
+float SurfaceSkyVisibility(
+    float3 worldPosition,
+    float3 surfaceNormal)
+{
+    float overhead = SkyVisibility(worldPosition);
 
-    [unroll]
-    for (int y = -1; y <= 1; y++)
+    if (overhead >= 0.999)
     {
-        [unroll]
-        for (int x = -1; x <= 1; x++)
-        {
-            float2 offset = float2(x, y) * texel;
-
-            visibility +=
-                EnvironmentSkyShadowTexture.SampleCmpLevelZero(
-                    EnvironmentSkyShadowSampler,
-                    uv + offset,
-                    projected.z - EnvironmentSkyShadowParams.z);
-        }
+        return overhead;
     }
 
-    return saturate(visibility / 9.0);
+    float horizontal = length(surfaceNormal.xz);
+
+    if (horizontal < 0.35)
+    {
+        return overhead;
+    }
+
+    float3 outwardDirection = float3(
+        surfaceNormal.x / horizontal,
+        0.0,
+        surfaceNormal.z / horizontal);
+
+    // Проверяем небо с открытой стороны стены,
+    // а не только строго над точкой поверхности.
+    float3 outsidePosition =
+        worldPosition +
+        outwardDirection * 1.8 +
+        float3(0.0, 0.1, 0.0);
+
+    float sideVisibility = SkyVisibility(
+        outsidePosition);
+
+    float wallFactor = smoothstep(
+        0.35,
+        0.75,
+        horizontal);
+
+    return lerp(
+        overhead,
+        max(overhead, sideVisibility),
+        wallFactor);
 }
 
 float ShadowVisibility(float3 worldPosition)
@@ -91,8 +117,13 @@ float ShadowVisibility(float3 worldPosition)
         float4(worldPosition, 1.0),
         EnvironmentShadowMatrix);
 
+    if (lightPosition.w <= 0.0)
+    {
+        return 1.0;
+    }
+
     float3 projected = lightPosition.xyz
-        / max(lightPosition.w, 0.00001);
+        / lightPosition.w;
 
     float2 uv = float2(
         projected.x * 0.5 + 0.5,
@@ -127,19 +158,21 @@ float ShadowVisibility(float3 worldPosition)
         }
     }
 
-    visibility /= 9.0;
+    visibility = saturate(visibility / 9.0);
 
-    float sky = SkyVisibility(worldPosition);
+    // В закрытом пространстве солнечный свет
+    // должен полностью блокироваться геометрией.
+    float overhead = SkyVisibility(worldPosition);
 
-    float shadowStrength = lerp(
+    float strength = lerp(
         1.0,
         saturate(EnvironmentShadowParams.y),
-        sky);
+        overhead);
 
     return lerp(
         1.0,
-        saturate(visibility),
-        shadowStrength);
+        visibility,
+        strength);
 }
 
 float3 ShadeEnvironment(
@@ -152,35 +185,50 @@ float3 ShadeEnvironment(
     float diffuse = saturate(
         dot(n, EnvironmentSun.xyz));
 
-    float visibility = ShadowVisibility(worldPosition);
+    float sunlightVisibility = ShadowVisibility(
+        worldPosition);
 
-    float skyVisibility = SkyVisibility(worldPosition);
+    // Для окружающего освещения выбираем сторону
+    // поверхности, обращённую к наблюдателю.
+    float3 skyNormal = n;
 
+    float3 toCamera =
+        EnvironmentCamera.xyz - worldPosition;
+
+    if (dot(skyNormal, toCamera) < 0.0)
+    {
+        skyNormal = -skyNormal;
+    }
+
+    float skyVisibility = SurfaceSkyVisibility(
+        worldPosition,
+        skyNormal);
+
+    // Минимальный фоновый свет для закрытых помещений.
     float ambientFactor = lerp(
         0.08,
         1.0,
         skyVisibility);
 
     float3 ambientLighting =
-        EnvironmentAmbient.rgb * ambientFactor;
+        EnvironmentAmbient.rgb *
+        ambientFactor;
 
     float3 directLighting =
-        EnvironmentSunColor.rgb
-        * EnvironmentSun.w
-        * diffuse
-        * visibility;
+        EnvironmentSunColor.rgb *
+        EnvironmentSun.w *
+        diffuse *
+        sunlightVisibility;
 
-    float3 lighting =
-        ambientLighting + directLighting;
-
-    float3 result = surfaceColor * lighting;
+    float3 result = surfaceColor *
+        (ambientLighting + directLighting);
 
     float distanceToCamera = length(
         worldPosition - EnvironmentCamera.xyz);
 
     float fog = 1.0 - exp(
-        -max(EnvironmentFog.w, 0.0)
-        * distanceToCamera);
+        -max(EnvironmentFog.w, 0.0) *
+        distanceToCamera);
 
     return lerp(
         result,
