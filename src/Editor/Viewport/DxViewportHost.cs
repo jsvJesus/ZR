@@ -40,6 +40,7 @@ namespace Editor.Viewport
         private const int KeyControl = 0x11;
         private const int KeyAlt = 0x12;
         private const int KeyC = 0x43;
+        private const int KeyV = 0x56;
         private const int KeyH = 0x48;
 
         private readonly FreeCamera _camera = new();
@@ -478,6 +479,22 @@ namespace Editor.Viewport
                         return nint.Zero;
                     }
 
+                    if ((int)wParam == KeyC && IsPlaying)
+                    {
+                        bool firstPress =
+                            (lParam.ToInt64() & (1L << 30)) == 0;
+
+                        if (firstPress &&
+                            !IsStarting &&
+                            !IsCharacterEditing &&
+                            !IsPlayInspecting)
+                        {
+                            _orbit?.ToggleView();
+                        }
+
+                        return nint.Zero;
+                    }
+
                     if ((int)wParam == 0x1B && (IsPlaying || IsStarting))
                     {
                         StopPlay();
@@ -498,7 +515,7 @@ namespace Editor.Viewport
                             && (lParam.ToInt64() & (1L << 30)) == 0)
                         {
                             if ((int)wParam == KeySpace) _jumpRequested = true;
-                            if ((int)wParam == KeyC) _toggleCrouchRequested = true;
+                            if ((int)wParam == KeyV) _toggleCrouchRequested = true;
                         }
                         return nint.Zero;
                     }
@@ -573,7 +590,7 @@ namespace Editor.Viewport
                    key == KeySpace ||
                    key == KeyControl ||
                    key == KeyAlt ||
-                   key == KeyC ||
+                   key == KeyV ||
                    key == KeyShift;
         }
 

@@ -6,15 +6,22 @@ namespace ZoneReborn.World.Characters
     public sealed class ThirdPersonCamera
     {
         private const float MouseSensitivity = 0.003f;
+
         private const float DefaultDistance = 3.1f;
         private const float AimDistance = 1.8f;
+        private const float FirstPersonDistance = 0.04f;
+
         private const float DefaultShoulderOffset = 0.38f;
         private const float AimShoulderOffset = 0.52f;
 
+        private const float ThirdPersonPivotLift = 0.4f;
+        private const float FirstPersonEyeLift = 0.43f;
+
         private const float FollowSpeed = 14f;
         private const float AimBlendSpeed = 12f;
-        private const float DistanceBlendSpeed = 9f;
-        private const float ShoulderBlendSpeed = 12f;
+        private const float ViewBlendSpeed = 12f;
+        private const float DistanceBlendSpeed = 15f;
+        private const float ShoulderBlendSpeed = 15f;
         private const float CollisionReturnSpeed = 5f;
 
         private const float CameraRadius = 0.16f;
@@ -26,13 +33,16 @@ namespace ZoneReborn.World.Characters
         private float _smoothedShoulder = DefaultShoulderOffset;
         private float _clearRayDistance;
         private float _aimBlend;
+        private float _firstPersonBlend;
         private bool _initialized;
 
         public float Yaw { get; private set; }
 
-        public float Pitch { get; private set; } = -0.12f;
+        public float Pitch { get; private set; } = -0.16f;
 
         public float Distance => DefaultDistance;
+
+        public bool IsFirstPerson { get; private set; }
 
         public Vector3 CameraPosition { get; private set; }
 
@@ -62,8 +72,17 @@ namespace ZoneReborn.World.Characters
 
         public void Zoom(int delta)
         {
-            // TPS has a fixed camera distance.
-            // Preserve the method for existing mouse input calls.
+            // The TPS camera has a fixed distance.
+        }
+
+        public void ToggleView()
+        {
+            SetFirstPerson(!IsFirstPerson);
+        }
+
+        public void SetFirstPerson(bool enabled)
+        {
+            IsFirstPerson = enabled;
         }
 
         public void Update(
@@ -80,26 +99,28 @@ namespace ZoneReborn.World.Characters
 
             deltaTime = Math.Clamp(deltaTime, 0f, 0.08f);
 
-            Vector3 targetPivot = playerAnchor + new Vector3(
-                0f,
-                MathF.Max(0.3f, cameraHeight),
-                0f
-            );
-
-            float targetAimBlend = aiming ? 1f : 0f;
             bool firstUpdate = !_initialized;
+
+            float targetFirstPersonBlend = IsFirstPerson
+                ? 1f
+                : 0f;
+
+            float targetAimBlend = aiming
+                ? 1f
+                : 0f;
 
             if (firstUpdate)
             {
-                _smoothedPivot = targetPivot;
+                _firstPersonBlend = targetFirstPersonBlend;
                 _aimBlend = targetAimBlend;
             }
             else
             {
-                _smoothedPivot = Vector3.Lerp(
-                    _smoothedPivot,
-                    targetPivot,
-                    Response(FollowSpeed, deltaTime)
+                _firstPersonBlend = Smooth(
+                    _firstPersonBlend,
+                    targetFirstPersonBlend,
+                    ViewBlendSpeed,
+                    deltaTime
                 );
 
                 _aimBlend = Smooth(
@@ -110,11 +131,54 @@ namespace ZoneReborn.World.Characters
                 );
             }
 
-            float targetDistance = DefaultDistance +
+            float pivotLift = ThirdPersonPivotLift +
+                (FirstPersonEyeLift - ThirdPersonPivotLift) *
+                _firstPersonBlend;
+
+            Vector3 targetPivot = playerAnchor + new Vector3(
+                0f,
+                MathF.Max(0.3f, cameraHeight) + pivotLift,
+                0f
+            );
+
+            if (firstUpdate)
+            {
+                _smoothedPivot = targetPivot;
+            }
+            else
+            {
+                _smoothedPivot = Vector3.Lerp(
+                    _smoothedPivot,
+                    targetPivot,
+                    Response(FollowSpeed, deltaTime)
+                );
+            }
+
+            // FPS follows the actual player position.
+            // TPS keeps smooth camera following.
+            Vector3 pivot = Vector3.Lerp(
+                _smoothedPivot,
+                targetPivot,
+                _firstPersonBlend
+            );
+
+            float thirdPersonDistance =
+                DefaultDistance +
                 (AimDistance - DefaultDistance) * _aimBlend;
 
-            float targetShoulder = DefaultShoulderOffset +
-                (AimShoulderOffset - DefaultShoulderOffset) * _aimBlend;
+            float thirdPersonShoulder =
+                DefaultShoulderOffset +
+                (AimShoulderOffset - DefaultShoulderOffset) *
+                _aimBlend;
+
+            float targetDistance =
+                thirdPersonDistance +
+                (FirstPersonDistance - thirdPersonDistance) *
+                _firstPersonBlend;
+
+            float targetShoulder =
+                thirdPersonShoulder *
+                (1f - _firstPersonBlend);
 
             if (firstUpdate)
             {
@@ -160,16 +224,16 @@ namespace ZoneReborn.World.Characters
             );
 
             Vector3 desiredPosition =
-                _smoothedPivot -
+                pivot -
                 forward * _smoothedDistance +
                 right * _smoothedShoulder;
 
-            Vector3 offset = desiredPosition - _smoothedPivot;
+            Vector3 offset = desiredPosition - pivot;
             float maximumDistance = offset.Length();
 
             if (maximumDistance < 0.0001f)
             {
-                CameraPosition = _smoothedPivot;
+                CameraPosition = pivot;
                 _clearRayDistance = 0f;
                 _initialized = true;
                 return;
@@ -179,7 +243,7 @@ namespace ZoneReborn.World.Characters
 
             float availableDistance = FindAvailableDistance(
                 surface,
-                _smoothedPivot,
+                pivot,
                 direction,
                 right,
                 up,
@@ -189,12 +253,10 @@ namespace ZoneReborn.World.Characters
             if (firstUpdate ||
                 availableDistance < _clearRayDistance)
             {
-                // Move inward immediately to prevent clipping.
                 _clearRayDistance = availableDistance;
             }
             else
             {
-                // Return outward smoothly after an obstacle clears.
                 _clearRayDistance = Smooth(
                     _clearRayDistance,
                     availableDistance,
@@ -210,7 +272,7 @@ namespace ZoneReborn.World.Characters
             );
 
             CameraPosition =
-                _smoothedPivot + direction * _clearRayDistance;
+                pivot + direction * _clearRayDistance;
 
             _initialized = true;
         }
@@ -227,7 +289,11 @@ namespace ZoneReborn.World.Characters
 
             available = MathF.Min(
                 available,
-                surface.CameraDistance(origin, direction, maximum)
+                surface.CameraDistance(
+                    origin,
+                    direction,
+                    maximum
+                )
             );
 
             available = MathF.Min(
@@ -302,7 +368,9 @@ namespace ZoneReborn.World.Characters
 
             int steps = Math.Max(
                 1,
-                (int)MathF.Ceiling(maximum / TerrainProbeStep)
+                (int)MathF.Ceiling(
+                    maximum / TerrainProbeStep
+                )
             );
 
             for (int i = 1; i <= steps; i++)

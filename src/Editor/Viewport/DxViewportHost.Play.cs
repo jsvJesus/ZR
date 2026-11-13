@@ -301,7 +301,8 @@ public sealed partial class DxViewportHost
 
         if (IsCharacterEditing)
         {
-            // Preserve the existing character animation behavior.
+            // Character Editor always uses the third-person view.
+            _orbit.SetFirstPerson(false);
             _aimHeld = false;
 
             _player.Update(
