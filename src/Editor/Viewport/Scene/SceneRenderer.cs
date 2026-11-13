@@ -17,7 +17,7 @@ using Vector4 = System.Numerics.Vector4;
 namespace Editor.Viewport.Scene;
 
 /// <summary>Streams shared scene geometry; instances only contribute one world matrix.</summary>
-internal sealed class SceneRenderer : IDisposable
+internal sealed partial class SceneRenderer : IDisposable
 {
     private const long ModelCacheBytes = 128L * 1024 * 1024;
     private const long TextureCacheBytes = 128L * 1024 * 1024;
