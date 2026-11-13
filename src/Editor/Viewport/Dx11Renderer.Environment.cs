@@ -29,6 +29,8 @@ namespace Editor.Viewport
         private WeatherType _loadedWeather = (WeatherType)(-1);
 
         private readonly WeatherRuntime _weatherRuntime = new();
+        private readonly WeatherOcclusion _weatherOcclusion = new();
+
         private readonly Dictionary<
             WeatherType,
             (float Rate, float FallSpeed)> _weatherEmitterCache = new();
@@ -288,6 +290,16 @@ namespace Editor.Viewport
                 return;
             }
 
+            if (_weatherFrame.Rain > 0.001f ||
+                _weatherFrame.Snow > 0.001f)
+            {
+                _weatherOcclusion.Prepare(
+                    _scene,
+                    camera.Position,
+                    35f,
+                    _environmentSettings.WindSpeed);
+            }
+
             WeatherType rainType =
                 _environmentSettings.Weather == WeatherType.Thunderstorm
                     ? WeatherType.Thunderstorm
@@ -419,12 +431,21 @@ namespace Editor.Viewport
                         -0.65f,
                         wind.Z * 0.025f);
 
+                Vector3 end = position + offset;
+
+                if (!_weatherOcclusion.Clip(
+                        ref position,
+                        ref end))
+                {
+                    continue;
+                }
+
                 vertices[vertexCount++] = new GridVertex(
                     position,
                     color);
 
                 vertices[vertexCount++] = new GridVertex(
-                    position + offset,
+                    end,
                     color);
             }
 
@@ -581,8 +602,7 @@ namespace Editor.Viewport
                     }
                     catch (InvalidDataException)
                     {
-                        // При повреждённом ресурсе используем
-                        // безопасные параметры по умолчанию.
+                        // Используем параметры по умолчанию.
                     }
                 }
             }
@@ -614,6 +634,7 @@ namespace Editor.Viewport
 
         private void DisposeEnvironment()
         {
+            _weatherOcclusion.Dispose();
             DisposeShadowResources();
 
             _skyRenderer?.Dispose();
