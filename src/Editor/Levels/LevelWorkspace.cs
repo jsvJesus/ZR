@@ -36,7 +36,14 @@ public sealed class LevelWorkspace
             return network;
         }, cancellationToken);
         await RoadEditStorage.LoadAsync(level.Directory, roads, cancellationToken);
+
         var vegetation = await ZoneReborn.World.Vegetation.VegetationStorage.LoadAsync(level.Directory, Assets, cancellationToken);
+        await ZoneReborn.World.Vegetation.VegetationScatterStorage.LoadAsync(
+            level.Directory,
+            Assets,
+            vegetation,
+            cancellationToken);
+
         var objects = level.Manifest.Terrain.ImportedFromMesh
             ? new SceneData(Assets, [], sourceName: level.Manifest.Name)
             : await Task.Run(() => SourceSceneReader.Read(source, Assets, cancellationToken), cancellationToken);

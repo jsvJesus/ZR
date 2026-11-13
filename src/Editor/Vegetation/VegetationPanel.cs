@@ -44,11 +44,14 @@ namespace Editor.Vegetation
             root.Children.Add(Title("ДЕРЕВЬЯ УРОВНЯ")); root.Children.Add(_instances);
             Button(root, "Показать выбранное", () => { if (Selected is { } tree) _viewport?.FocusTree(tree); });
             root.Children.Add(_grounded);
+
             Field(root, "X", _x); root.Children.Add(_heightLabel); root.Children.Add(_y); Field(root, "Z", _z);
             Field(root, "Поворот, градусы", _yaw); Field(root, "Масштаб", _scale);
             Button(root, "Применить параметры", ApplyProperties);
             Button(root, "Поставить на Terrain", SnapToGround);
             Button(root, "Удалить выбранное дерево", DeleteSelected);
+            BuildScatterControls(root);
+
             var save = new Button { Content = "Сохранить растительность", HorizontalAlignment = HorizontalAlignment.Stretch };
             save.Click += async (_, _) =>
             {
@@ -66,6 +69,7 @@ namespace Editor.Vegetation
         {
             _viewport = viewport; _assets = assets;
             _entries = SpeedTreeReader.Catalog(assets); FilterCatalog();
+            RefreshScatterControls();
             viewport.TreePlaced += tree =>
             {
                 RefreshInstances(tree); _status.Text = "Дерево поставлено. ЛКМ — следующее дерево.";
@@ -75,7 +79,10 @@ namespace Editor.Vegetation
 
         public void Bind(LoadedLevel level)
         {
-            _level = level; RefreshInstances(null); RefreshMode();
+            _level = level;
+            RefreshScatterControls();
+            RefreshInstances(null);
+            RefreshMode();
             _status.Text = level.Vegetation.Warnings.Count > 0 ? string.Join("\n", level.Vegetation.Warnings)
                 : "Расстановка доступна в режиме редактирования.";
         }
@@ -153,8 +160,14 @@ namespace Editor.Vegetation
         private void UpdateSummary()
         {
             if (_level == null) return;
-            _summary.Text = $"{_level.Manifest.Name}: {_level.Vegetation.Instances.Count} деревьев\nКаталог: {_entries.Count} моделей"
-                + (_level.Vegetation.IsDirty ? "\nЕсть несохранённые изменения." : "");
+            _summary.Text =
+                $"{_level.Manifest.Name}\n" +
+                $"Ручных деревьев: {_level.Vegetation.Instances.Count}\n" +
+                $"Сгенерировано: {_level.Vegetation.Generated.Count}\n" +
+                $"Каталог SpeedTree: {_entries.Count} моделей" +
+                (_level.Vegetation.IsDirty
+                    ? "\nЕсть несохранённые изменения."
+                    : "");
         }
 
         private static TextBlock Text(string value) => new() { Text = value, TextWrapping = TextWrapping.Wrap, FontSize = 12 };

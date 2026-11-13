@@ -43,5 +43,9 @@ namespace ZoneReborn.World.Vegetation
         public List<string> Warnings { get; } = [];
         public bool IsDirty { get; set; }
         public bool CanSave { get; set; } = true;
+
+        public List<VegetationScatterRule> ScatterRules { get; } = [];
+
+        public List<GeneratedVegetationInstance> Generated { get; } = [];
     }
 }

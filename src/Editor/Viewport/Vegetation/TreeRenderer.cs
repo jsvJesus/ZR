@@ -73,7 +73,7 @@ namespace Editor.Viewport.Vegetation
             _context.Rasterizer.State = _rasterizer;
             _context.OutputMerger.SetDepthStencilState(_depth);
             _context.OutputMerger.SetBlendState(null);
-            foreach (var tree in _scene.Instances)
+            foreach (var tree in _scene.Instances.Concat(_scene.Generated.Select(item => item.Tree)))
             {
                 if (!_scene.Assets.TryGetValue(tree.Model, out var asset)) continue;
                 var world = World(tree, _terrain);

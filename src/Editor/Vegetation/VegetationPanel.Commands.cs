@@ -52,10 +52,22 @@ namespace Editor.Vegetation
             IsSaving = true; BusyChanged?.Invoke(); RefreshMode();
             try
             {
+                await VegetationScatterStorage.SaveAsync(
+                    level.Directory,
+                    level.Vegetation);
+
                 await VegetationStorage.SaveAsync(level.Directory, level.Vegetation);
-                if (_level == level) { _status.Text = $"Сохранено: {Path.Combine(level.Directory, VegetationStorage.FileName)}"; UpdateSummary(); }
+
+                if (_level == level)
+                {
+                    _status.Text = $"Сохранено: {Path.Combine(level.Directory, VegetationStorage.FileName)}";
+                    UpdateSummary();
+                }
             }
-            finally { IsSaving = false; BusyChanged?.Invoke(); RefreshMode(); }
+            finally
+            {
+                IsSaving = false; BusyChanged?.Invoke(); RefreshMode();
+            }
         }
 
         public void CancelLoading() => _loading?.Cancel();
