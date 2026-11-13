@@ -6,19 +6,15 @@ namespace ZoneReborn.World.Characters
     public sealed class ThirdPersonCamera
     {
         private const float MouseSensitivity = 0.003f;
-
         private const float DefaultDistance = 3.1f;
-        private const float MinimumDistance = 1.65f;
-        private const float MaximumDistance = 7.0f;
         private const float AimDistance = 1.8f;
-
         private const float DefaultShoulderOffset = 0.38f;
         private const float AimShoulderOffset = 0.52f;
 
         private const float FollowSpeed = 14f;
         private const float AimBlendSpeed = 12f;
-        private const float ZoomSpeed = 9f;
-        private const float ShoulderSpeed = 12f;
+        private const float DistanceBlendSpeed = 9f;
+        private const float ShoulderBlendSpeed = 12f;
         private const float CollisionReturnSpeed = 5f;
 
         private const float CameraRadius = 0.16f;
@@ -36,7 +32,7 @@ namespace ZoneReborn.World.Characters
 
         public float Pitch { get; private set; } = -0.12f;
 
-        public float Distance { get; private set; } = DefaultDistance;
+        public float Distance => DefaultDistance;
 
         public Vector3 CameraPosition { get; private set; }
 
@@ -66,16 +62,8 @@ namespace ZoneReborn.World.Characters
 
         public void Zoom(int delta)
         {
-            if (delta == 0)
-            {
-                return;
-            }
-
-            Distance = Math.Clamp(
-                Distance * MathF.Pow(1.12f, -delta / 120f),
-                MinimumDistance,
-                MaximumDistance
-            );
+            // TPS has a fixed camera distance.
+            // Preserve the method for existing mouse input calls.
         }
 
         public void Update(
@@ -94,7 +82,7 @@ namespace ZoneReborn.World.Characters
 
             Vector3 targetPivot = playerAnchor + new Vector3(
                 0f,
-                Math.Max(0.3f, cameraHeight),
+                MathF.Max(0.3f, cameraHeight),
                 0f
             );
 
@@ -108,15 +96,10 @@ namespace ZoneReborn.World.Characters
             }
             else
             {
-                float followFactor = Response(
-                    FollowSpeed,
-                    deltaTime
-                );
-
                 _smoothedPivot = Vector3.Lerp(
                     _smoothedPivot,
                     targetPivot,
-                    followFactor
+                    Response(FollowSpeed, deltaTime)
                 );
 
                 _aimBlend = Smooth(
@@ -127,13 +110,11 @@ namespace ZoneReborn.World.Characters
                 );
             }
 
-            float targetDistance =
-                Distance + (AimDistance - Distance) * _aimBlend;
+            float targetDistance = DefaultDistance +
+                (AimDistance - DefaultDistance) * _aimBlend;
 
-            float targetShoulder =
-                DefaultShoulderOffset +
-                (AimShoulderOffset - DefaultShoulderOffset) *
-                _aimBlend;
+            float targetShoulder = DefaultShoulderOffset +
+                (AimShoulderOffset - DefaultShoulderOffset) * _aimBlend;
 
             if (firstUpdate)
             {
@@ -145,14 +126,14 @@ namespace ZoneReborn.World.Characters
                 _smoothedDistance = Smooth(
                     _smoothedDistance,
                     targetDistance,
-                    ZoomSpeed,
+                    DistanceBlendSpeed,
                     deltaTime
                 );
 
                 _smoothedShoulder = Smooth(
                     _smoothedShoulder,
                     targetShoulder,
-                    ShoulderSpeed,
+                    ShoulderBlendSpeed,
                     deltaTime
                 );
             }
@@ -183,13 +164,10 @@ namespace ZoneReborn.World.Characters
                 forward * _smoothedDistance +
                 right * _smoothedShoulder;
 
-            Vector3 cameraOffset =
-                desiredPosition - _smoothedPivot;
+            Vector3 offset = desiredPosition - _smoothedPivot;
+            float maximumDistance = offset.Length();
 
-            float requestedRayDistance =
-                cameraOffset.Length();
-
-            if (requestedRayDistance <= 0.0001f)
+            if (maximumDistance < 0.0001f)
             {
                 CameraPosition = _smoothedPivot;
                 _clearRayDistance = 0f;
@@ -197,30 +175,26 @@ namespace ZoneReborn.World.Characters
                 return;
             }
 
-            Vector3 rayDirection =
-                cameraOffset / requestedRayDistance;
+            Vector3 direction = offset / maximumDistance;
 
             float availableDistance = FindAvailableDistance(
                 surface,
                 _smoothedPivot,
-                rayDirection,
+                direction,
                 right,
                 up,
-                requestedRayDistance
+                maximumDistance
             );
 
-            if (firstUpdate)
+            if (firstUpdate ||
+                availableDistance < _clearRayDistance)
             {
-                _clearRayDistance = availableDistance;
-            }
-            else if (availableDistance < _clearRayDistance)
-            {
-                // A wall must never be crossed while easing inward.
+                // Move inward immediately to prevent clipping.
                 _clearRayDistance = availableDistance;
             }
             else
             {
-                // Restore the normal distance gradually.
+                // Return outward smoothly after an obstacle clears.
                 _clearRayDistance = Smooth(
                     _clearRayDistance,
                     availableDistance,
@@ -236,8 +210,7 @@ namespace ZoneReborn.World.Characters
             );
 
             CameraPosition =
-                _smoothedPivot +
-                rayDirection * _clearRayDistance;
+                _smoothedPivot + direction * _clearRayDistance;
 
             _initialized = true;
         }
@@ -252,55 +225,48 @@ namespace ZoneReborn.World.Characters
         {
             float available = maximum;
 
-            // Center ray.
-            available = Math.Min(
+            available = MathF.Min(
                 available,
-                surface.CameraDistance(
-                    origin,
-                    direction,
-                    available
-                )
+                surface.CameraDistance(origin, direction, maximum)
             );
 
-            // Approximate camera volume with four additional rays.
-            available = Math.Min(
+            available = MathF.Min(
                 available,
                 surface.CameraDistance(
                     origin + right * CameraRadius,
                     direction,
-                    available
+                    maximum
                 )
             );
 
-            available = Math.Min(
+            available = MathF.Min(
                 available,
                 surface.CameraDistance(
                     origin - right * CameraRadius,
                     direction,
-                    available
+                    maximum
                 )
             );
 
-            available = Math.Min(
+            available = MathF.Min(
                 available,
                 surface.CameraDistance(
                     origin + up * CameraRadius,
                     direction,
-                    available
+                    maximum
                 )
             );
 
-            available = Math.Min(
+            available = MathF.Min(
                 available,
                 surface.CameraDistance(
                     origin - up * CameraRadius,
                     direction,
-                    available
+                    maximum
                 )
             );
 
-            // The terrain heightfield is not part of the scene raycast.
-            available = Math.Min(
+            available = MathF.Min(
                 available,
                 FindTerrainDistance(
                     surface,
@@ -310,7 +276,7 @@ namespace ZoneReborn.World.Characters
                 )
             );
 
-            available = Math.Min(
+            available = MathF.Min(
                 available,
                 FindTerrainDistance(
                     surface,
@@ -336,18 +302,13 @@ namespace ZoneReborn.World.Characters
 
             int steps = Math.Max(
                 1,
-                (int)MathF.Ceiling(
-                    maximum / TerrainProbeStep
-                )
+                (int)MathF.Ceiling(maximum / TerrainProbeStep)
             );
 
             for (int i = 1; i <= steps; i++)
             {
-                float distance =
-                    maximum * i / steps;
-
-                Vector3 point =
-                    origin + direction * distance;
+                float distance = maximum * i / steps;
+                Vector3 point = origin + direction * distance;
 
                 if (!surface.TryGetHeight(
                         point.X,
@@ -362,7 +323,7 @@ namespace ZoneReborn.World.Characters
                     continue;
                 }
 
-                return Math.Max(
+                return MathF.Max(
                     0f,
                     distance - TerrainProbeStep
                 );
@@ -386,9 +347,7 @@ namespace ZoneReborn.World.Characters
             float speed,
             float deltaTime)
         {
-            return 1f - MathF.Exp(
-                -speed * deltaTime
-            );
+            return 1f - MathF.Exp(-speed * deltaTime);
         }
     }
 }

@@ -45,17 +45,20 @@ PixelInput VSMain(VertexInput input)
 
     float4 position = mul(
         float4(input.Position, 1),
-        World);
+        World
+    );
 
     output.Position = mul(
         position,
-        ViewProjection);
+        ViewProjection
+    );
 
     output.RelativeWorld = position.xyz;
 
     output.Normal = mul(
         float4(input.Normal, 0),
-        World).xyz;
+        World
+    ).xyz;
 
     output.Uv = input.Uv;
     output.Uv2 = input.Uv2;
@@ -67,7 +70,8 @@ float4 PSMain(PixelInput input) : SV_TARGET
 {
     float4 color = Diffuse.Sample(
         SurfaceSampler,
-        input.Uv);
+        input.Uv
+    );
 
     color.rgb *= DiffuseColor.rgb;
 
@@ -76,7 +80,8 @@ float4 PSMain(PixelInput input) : SV_TARGET
         float2 uv = lerp(
             input.Uv,
             input.Uv2,
-            PatternOptions.z) * PatternScaleShift.xy;
+            PatternOptions.z
+        ) * PatternScaleShift.xy;
 
         uv = float2(
             uv.x * PatternOptions.x -
@@ -88,15 +93,18 @@ float4 PSMain(PixelInput input) : SV_TARGET
 
         float4 weights = ColourMask.Sample(
             SurfaceSampler,
-            uv) * float4(
-                ColourR.a,
-                ColourG.a,
-                ColourB.a,
-                ColourA.a);
+            uv
+        ) * float4(
+            ColourR.a,
+            ColourG.a,
+            ColourB.a,
+            ColourA.a
+        );
 
         float total = dot(
             weights,
-            float4(1, 1, 1, 1));
+            float4(1, 1, 1, 1)
+        );
 
         float3 tint = (
             weights.r * ColourR.rgb +
@@ -109,23 +117,27 @@ float4 PSMain(PixelInput input) : SV_TARGET
         float3 coverage = saturate(
             DiffuseMask.Sample(
                 SurfaceSampler,
-                input.Uv).rgb);
+                input.Uv
+            ).rgb
+        );
 
         color.rgb *= lerp(
             float3(1, 1, 1),
             tint,
-            coverage);
+            coverage
+        );
     }
 
     if (SurfaceOptions.x > 0.5)
     {
-        float2 opacityUv = input.Uv
-            * OpacityScaleShift.xy
-            + OpacityScaleShift.zw;
+        float2 opacityUv =
+            input.Uv * OpacityScaleShift.xy +
+            OpacityScaleShift.zw;
 
         color.a *= OpacityMask.Sample(
             SurfaceSampler,
-            opacityUv).r;
+            opacityUv
+        ).r;
 
         clip(color.a - SurfaceOptions.y);
     }
@@ -134,13 +146,18 @@ float4 PSMain(PixelInput input) : SV_TARGET
         color.a = 1;
     }
 
-    float3 worldPosition = input.RelativeWorld
-        + EnvironmentCamera.xyz;
+    // Character visibility when the TPS camera approaches
+    // the player's body because of scene collisions.
+    color.a *= saturate(SurfaceOptions.z);
+
+    float3 worldPosition =
+        input.RelativeWorld + EnvironmentCamera.xyz;
 
     color.rgb = ShadeEnvironment(
         color.rgb,
         normalize(input.Normal),
-        worldPosition);
+        worldPosition
+    );
 
     return color;
 }
