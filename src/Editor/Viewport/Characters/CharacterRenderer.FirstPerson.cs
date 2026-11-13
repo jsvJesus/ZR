@@ -4,7 +4,6 @@ using SharpDX.Direct3D;
 using SharpDX.Direct3D11;
 using SharpDX.DXGI;
 using ZoneReborn.World.Characters;
-using ZoneReborn.World.Characters.Formats;
 using Buffer = SharpDX.Direct3D11.Buffer;
 using Device = SharpDX.Direct3D11.Device;
 using Vector3 = System.Numerics.Vector3;
@@ -15,6 +14,16 @@ namespace Editor.Viewport.Characters;
 internal sealed partial class CharacterRenderer
 {
     private const float ArmWeightThreshold = 0.45f;
+    private const float ViewModelScale = 0.82f;
+
+    private static readonly Vector3 UnarmedPosition =
+        new(0.10f, -0.22f, 0.95f);
+
+    private static readonly Vector3 WeaponPosition =
+        new(0.10f, -0.14f, 0.98f);
+
+    private static readonly Vector3 AimingPosition =
+        new(0.00f, -0.055f, 0.93f);
 
     private readonly List<(
         Buffer? Indices,
@@ -145,15 +154,117 @@ internal sealed partial class CharacterRenderer
             "RightHand";
     }
 
+    private Vector3 GetSpinePosition()
+    {
+        if (_pose.TryGetAnimatedNodePosition(
+                "Spine3",
+                out Vector3 position))
+        {
+            return position;
+        }
+
+        if (_pose.TryGetAnimatedNodePosition(
+                "Spine2",
+                out position))
+        {
+            return position;
+        }
+
+        if (_pose.TryGetAnimatedNodePosition(
+                "Spine1",
+                out position))
+        {
+            return position;
+        }
+
+        return new Vector3(
+            0f,
+            _locomotion.CameraHeight - _pose.FloorOffset,
+            0f
+        );
+    }
+
+    private Vector3 GetWeaponAnchor(Vector3 fallback)
+    {
+        if (_pose.TryGetAnimatedNodePosition(
+                "HP_GUNR",
+                out Vector3 position))
+        {
+            return position;
+        }
+
+        if (_pose.TryGetAnimatedNodePosition(
+                "HP_Rhand",
+                out position))
+        {
+            return position;
+        }
+
+        if (_pose.TryGetAnimatedNodePosition(
+                "RightHand",
+                out position))
+        {
+            return position;
+        }
+
+        return fallback;
+    }
+
+    private Matrix4x4 CreateFirstPersonTransform(
+        float aimBlend)
+    {
+        Vector3 spine = GetSpinePosition();
+        Vector3 weaponAnchor = GetWeaponAnchor(spine);
+
+        float weaponBlend = _locomotion.Weapon.InHands
+            ? Math.Clamp(
+                _locomotion.Weapon.TrackingWeight,
+                0f,
+                1f
+            )
+            : 0f;
+
+        Vector3 anchor = Vector3.Lerp(
+            spine,
+            weaponAnchor,
+            weaponBlend
+        );
+
+        Vector3 weaponPosition = Vector3.Lerp(
+            WeaponPosition,
+            AimingPosition,
+            aimBlend
+        );
+
+        Vector3 target = Vector3.Lerp(
+            UnarmedPosition,
+            weaponPosition,
+            weaponBlend
+        );
+
+        // Remove the avatar's world-facing body twist.
+        // Camera rotation is already represented by the game view.
+        float torsoYaw = _locomotion.Animator.TorsoYaw;
+
+        // The world animation pitches the upper body toward
+        // the camera. Compensate it in the viewmodel pass.
+        float aimPitch = _pose.AimPitch;
+
+        return Matrix4x4.CreateTranslation(-anchor) *
+               Matrix4x4.CreateRotationY(-torsoYaw) *
+               Matrix4x4.CreateRotationX(aimPitch) *
+               Matrix4x4.CreateScale(ViewModelScale) *
+               Matrix4x4.CreateTranslation(target);
+    }
+
     public void RenderFirstPerson(
-        Matrix4x4 relativeViewProjection,
-        Vector3 cameraPosition,
-        float cameraYaw,
-        float cameraPitch,
+        Matrix4x4 projection,
         float firstPersonBlend,
         float aimBlend)
     {
-        if (_firstPersonParts.Count == 0)
+        if (_firstPersonParts.Count == 0 ||
+            _firstPersonParts.Count != _asset.Meshes.Length ||
+            _firstPersonParts.Count != _meshes.Count)
         {
             return;
         }
@@ -164,8 +275,8 @@ internal sealed partial class CharacterRenderer
             1f
         );
 
-        visibility = visibility * visibility *
-            (3f - 2f * visibility);
+        visibility =
+            visibility * visibility * (3f - 2f * visibility);
 
         if (visibility < 0.001f)
         {
@@ -175,44 +286,10 @@ internal sealed partial class CharacterRenderer
         bool fading = visibility < 0.999f;
         bool weaponInHands = _locomotion.Weapon.InHands;
 
-        float sinYaw = MathF.Sin(cameraYaw);
-        float cosYaw = MathF.Cos(cameraYaw);
-        float sinPitch = MathF.Sin(cameraPitch);
-        float cosPitch = MathF.Cos(cameraPitch);
-
-        Vector3 forward = new Vector3(
-            sinYaw * cosPitch,
-            sinPitch,
-            cosYaw * cosPitch
-        );
-
-        Vector3 right = new Vector3(
-            cosYaw,
-            0f,
-            -sinYaw
-        );
-
-        Vector3 aimOffset =
-            -right * (0.10f * aimBlend) +
-            Vector3.UnitY * (0.025f * aimBlend) +
-            forward * (0.06f * aimBlend);
-
-        Matrix4x4 rotation = Matrix4x4.CreateRotationY(
-            cameraYaw
-        );
-
-        Vector3 offset = new Vector3(
-            0f,
-            _pose.FloorOffset,
-            0f
-        );
-
         var constants = new Constants
         {
-            World = rotation * Matrix4x4.CreateTranslation(
-                Position - cameraPosition + offset + aimOffset
-            ),
-            ViewProjection = relativeViewProjection
+            World = CreateFirstPersonTransform(aimBlend),
+            ViewProjection = projection
         };
 
         _context.InputAssembler.InputLayout = _layout;
@@ -222,18 +299,25 @@ internal sealed partial class CharacterRenderer
         _context.VertexShader.Set(_vertex);
         _context.PixelShader.Set(_pixel);
 
-        _context.VertexShader.SetConstantBuffer(0, _constants);
-        _context.PixelShader.SetConstantBuffer(0, _constants);
-        _context.PixelShader.SetSampler(0, _sampler);
-
-        IEnumerable<int> ordered = Enumerable.Range(
+        _context.VertexShader.SetConstantBuffer(
             0,
-            _firstPersonParts.Count
+            _constants
         );
 
-        // Opaque meshes first. Transparent parts are drawn afterwards.
-        ordered = ordered
-            .OrderBy(i => _asset.Meshes[i].Alpha);
+        _context.PixelShader.SetConstantBuffer(
+            0,
+            _constants
+        );
+
+        _context.PixelShader.SetSampler(
+            0,
+            _sampler
+        );
+
+        var ordered = Enumerable.Range(
+            0,
+            _firstPersonParts.Count
+        ).OrderBy(i => _asset.Meshes[i].Alpha);
 
         foreach (int i in ordered)
         {
@@ -349,7 +433,10 @@ internal sealed partial class CharacterRenderer
 
         for (int slot = 0; slot < 4; slot++)
         {
-            _context.PixelShader.SetShaderResource(slot, null);
+            _context.PixelShader.SetShaderResource(
+                slot,
+                null
+            );
         }
 
         _context.OutputMerger.SetBlendState(null);

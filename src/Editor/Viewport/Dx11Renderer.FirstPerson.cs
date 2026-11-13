@@ -71,10 +71,7 @@ namespace Editor.Viewport
                 );
 
                 _character.RenderFirstPerson(
-                    characterView * projection,
-                    camera.Position,
-                    camera.Yaw,
-                    camera.Pitch,
+                    projection,
                     _playFirstPersonBlend,
                     _playAimBlend
                 );
