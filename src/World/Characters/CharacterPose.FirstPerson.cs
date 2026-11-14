@@ -46,7 +46,7 @@ public sealed partial class CharacterPose
     private bool CanTrackFirstPersonWeapon() =>
         Weapon?.Relaxed != true && _weaponAttachment?.Weapon is { Legacy: false, Aim: not null };
 
-    private Matrix4x4 TrackFirstPersonWeapon(CharacterWeaponAnchors anchors, Matrix4x4 transform)
+    private Matrix4x4 TrackFirstPersonWeapon(CharacterWeaponAnchors anchors, Matrix4x4 transform, Vector3 gunPosition)
     {
         float weight = Math.Clamp(FirstPersonWeight, 0, 1);
         if (weight <= 0.001f || !CanTrackFirstPersonWeapon() || anchors.Aim is not { } aim)
@@ -76,19 +76,28 @@ public sealed partial class CharacterPose
                 axis = Vector3.Cross(from, MathF.Abs(from.Y) < 0.9f ? Vector3.UnitY : Vector3.UnitX);
             }
 
-            delta = Matrix4x4.CreateFromAxisAngle(Vector3.Normalize(axis), MathF.Acos(cosine));
+            delta = Matrix4x4.CreateFromAxisAngle(Vector3.Normalize(axis), MathF.Acos(cosine) * weight);
         }
 
-        var pivot = (anchors.GunPivot * transform).Translation;
-        var tracked = transform * Matrix4x4.CreateTranslation(-pivot) * delta * Matrix4x4.CreateTranslation(pivot);
-        if (anchors.Sight is { } sight && TryGetFirstPersonEye(FirstPersonAimBlend, out var eye))
+        // The original direction tracker rotates HP_GUNR, preserving its origin.
+        // HP_GUNRW is a child pivot displaced along the gun; using it here makes
+        // pitch/yaw corrections orbit the entire weapon toward/away from the eye.
+        return transform * Matrix4x4.CreateTranslation(-gunPosition) * delta * Matrix4x4.CreateTranslation(gunPosition);
+    }
+
+    private Matrix4x4 AlignFirstPersonWeaponSight(CharacterWeaponAnchors anchors, Matrix4x4 transform)
+    {
+        float weight = Math.Clamp(FirstPersonWeight, 0, 1) * Math.Clamp(FirstPersonAimBlend, 0, 1);
+        if (weight > 0.001f && CanTrackFirstPersonWeapon() && anchors.Sight is { } sight &&
+            TryGetFirstPersonEye(FirstPersonAimBlend, out var eye))
         {
             // GunNode._apply_fps_mode moves the sight target to the skeleton
-            // camera before the hand trackers; it never moves the camera to the gun.
-            tracked.Translation += (eye - (sight * tracked).Translation) * Math.Clamp(FirstPersonAimBlend, 0, 1);
+            // camera before the hand trackers. Account for the final GUNRW
+            // profile here without making the camera follow a weapon pivot.
+            transform.Translation += (eye - (sight * transform).Translation) * weight;
         }
 
-        return Blend(transform, tracked, weight);
+        return transform;
     }
 
     private bool TryConstrainFirstPersonAimReach(CharacterRig rig, CharacterWeaponAnchors anchors,

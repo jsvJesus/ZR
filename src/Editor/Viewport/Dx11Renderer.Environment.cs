@@ -275,7 +275,7 @@ namespace Editor.Viewport
                 daylight,
                 _width,
                 _height,
-                playing,
+                playing ? _playFieldOfView : 1.05f,
                 _environmentTime);
         }
 

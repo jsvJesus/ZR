@@ -119,7 +119,7 @@ namespace Editor.Viewport.Environment
             float daylight,
             int width,
             int height,
-            bool playing,
+            float fieldOfView,
             float elapsed)
         {
             Vector3 forward = Vector3.Normalize(camera.LookDirection);
@@ -127,7 +127,6 @@ namespace Editor.Viewport.Environment
             Vector3 right = camera.RightDirection;
             Vector3 up = camera.UpDirection;
 
-            float fieldOfView = playing ? 0.78f : 1.05f;
             float tangent = MathF.Tan(fieldOfView * 0.5f);
             float aspect = (float)width / height;
 

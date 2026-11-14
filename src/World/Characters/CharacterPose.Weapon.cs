@@ -112,11 +112,30 @@ public sealed partial class CharacterPose
             var gunAnchor = avatar[anchors.AvatarGun];
             gunAnchor.Translation += Vector3.TransformNormal(profile.GunPosition, gunAnchor);
             tracked = anchors.InverseGun * gunAnchor;
+            // Direction belongs to avatar HP_GUNR. The weapon's GUNRW
+            // offset/roll is a child transform evaluated after that tracker.
+            tracked = TrackFirstPersonWeapon(anchors, tracked, gunAnchor.Translation);
             // GUNRW is the weapon's authored roll pivot, not its mesh origin.
             if (Matrix4x4.Invert(anchors.GunPivot, out var inversePivot))
-                tracked = inversePivot * Matrix4x4.CreateRotationZ(profile.GunRootRoll)
-                    * Matrix4x4.CreateTranslation(profile.GunRootPosition) * anchors.GunPivot * tracked;
-            tracked = TrackFirstPersonWeapon(anchors, tracked);
+            {
+                // WeaponGunRWmover.lookAt applies T(addPos) * R(weaponRoll)
+                // before the authored local pivot. Keep the established TPS
+                // placement and blend to that original order only for FPS.
+                var translation = Matrix4x4.CreateTranslation(profile.GunRootPosition);
+                var roll = Matrix4x4.CreateRotationZ(profile.GunRootRoll);
+                float viewWeight = Math.Clamp(FirstPersonWeight, 0, 1);
+                if (viewWeight == 0)
+                {
+                    tracked = inversePivot * roll * translation * anchors.GunPivot * tracked;
+                }
+                else
+                {
+                    var adjustment = viewWeight == 1 ? translation * roll
+                        : Blend(roll * translation, translation * roll, viewWeight);
+                    tracked = inversePivot * adjustment * anchors.GunPivot * tracked;
+                }
+            }
+            tracked = AlignFirstPersonWeaponSight(anchors, tracked);
             if (!TryConstrainFirstPersonAimReach(attachment.AvatarRig, anchors, profile, ref tracked))
                 tracked = ConstrainWeaponReach(attachment.AvatarRig, anchors, profile, tracked);
         }

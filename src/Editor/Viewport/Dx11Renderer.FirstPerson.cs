@@ -24,6 +24,12 @@ namespace Editor.Viewport
             float fieldOfView,
             bool showCrosshair)
         {
+            if (!float.IsFinite(fieldOfView) || fieldOfView <= 0 || fieldOfView >= MathF.PI)
+            {
+                throw new ArgumentOutOfRangeException(nameof(fieldOfView),
+                    "Camera FOV must be finite and between 0 and PI radians.");
+            }
+
             _playFirstPersonBlend = Math.Clamp(
                 firstPersonBlend,
                 0f,
@@ -36,11 +42,9 @@ namespace Editor.Viewport
                 1f
             );
 
-            _playFieldOfView = Math.Clamp(
-                fieldOfView,
-                0.5f,
-                1.1f
-            );
+            // Preserve the requested projection. A hidden clamp made different
+            // camera settings render identically and invalidated FOV tuning.
+            _playFieldOfView = fieldOfView;
 
             _showPlayCrosshair = showCrosshair;
         }
