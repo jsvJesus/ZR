@@ -16,19 +16,19 @@ namespace Editor.Viewport.Characters;
 internal sealed partial class CharacterRenderer
 {
     private const float ViewModelScale = 0.82f;
-    private const float HandMeshThreshold = 0.60f;
+    private const float ViewModelMeshThreshold = 0.32f;
 
     private const float MotionResponse = 11f;
-    private const float MovementInfluence = 0.12f;
+    private const float ReferenceInfluence = 0.10f;
 
     private static readonly Vector3 UnarmedPosition =
-        new(0.05f, -0.32f, 0.85f);
+        new(0.03f, -0.30f, 0.84f);
 
     private static readonly Vector3 WeaponPosition =
-        new(0.12f, -0.23f, 0.85f);
+        new(0.10f, -0.21f, 0.84f);
 
     private static readonly Vector3 AimPosition =
-        new(0f, -0.08f, 0.85f);
+        new(0.00f, -0.075f, 0.82f);
 
     private readonly List<(
         Buffer? Indices,
@@ -56,9 +56,9 @@ internal sealed partial class CharacterRenderer
         foreach (CharacterMesh mesh in _asset.Meshes)
         {
             bool isWeapon = mesh.Attachment?.Weapon != null;
-            bool isHandMesh = !isWeapon && IsHandMesh(mesh);
+            bool isViewModelMesh = !isWeapon && IsViewModelMesh(mesh);
 
-            int[] indices = isWeapon || isHandMesh
+            int[] indices = isWeapon || isViewModelMesh
                 ? mesh.Indices
                 : [];
 
@@ -85,7 +85,7 @@ internal sealed partial class CharacterRenderer
         }
     }
 
-    private static bool IsHandMesh(CharacterMesh mesh)
+    private static bool IsViewModelMesh(CharacterMesh mesh)
     {
         if (mesh.Attachment != null ||
             mesh.Vertices.Length == 0 ||
@@ -94,20 +94,25 @@ internal sealed partial class CharacterRenderer
             return false;
         }
 
-        bool[] handBones = new bool[mesh.Rig.Nodes.Length];
+        bool[] viewModelBones = new bool[mesh.Rig.Nodes.Length];
 
-        for (int i = 0; i < handBones.Length; i++)
+        for (int i = 0; i < viewModelBones.Length; i++)
         {
             int nodeIndex = i;
 
-            while ((uint)nodeIndex <
-                   (uint)mesh.Rig.Nodes.Length)
+            while ((uint)nodeIndex < (uint)mesh.Rig.Nodes.Length)
             {
                 var node = mesh.Rig.Nodes[nodeIndex];
 
-                if (node.Name is "LeftHand" or "RightHand")
+                if (node.Name is
+                    "LeftForeArm" or
+                    "RightForeArm" or
+                    "LeftForeArmRoll" or
+                    "RightForeArmRoll" or
+                    "LeftHand" or
+                    "RightHand")
                 {
-                    handBones[i] = true;
+                    viewModelBones[i] = true;
                     break;
                 }
 
@@ -115,49 +120,49 @@ internal sealed partial class CharacterRenderer
             }
         }
 
-        int handVertices = 0;
+        int influencedVertices = 0;
 
         foreach (var vertex in mesh.Vertices)
         {
             float weight = 0f;
 
-            if (IsHandInfluence(
+            if (IsViewModelInfluence(
                     mesh,
-                    handBones,
+                    viewModelBones,
                     vertex.Bone0))
             {
                 weight += vertex.Weights.X;
             }
 
-            if (IsHandInfluence(
+            if (IsViewModelInfluence(
                     mesh,
-                    handBones,
+                    viewModelBones,
                     vertex.Bone1))
             {
                 weight += vertex.Weights.Y;
             }
 
-            if (IsHandInfluence(
+            if (IsViewModelInfluence(
                     mesh,
-                    handBones,
+                    viewModelBones,
                     vertex.Bone2))
             {
                 weight += vertex.Weights.Z;
             }
 
-            if (weight >= 0.5f)
+            if (weight >= 0.35f)
             {
-                handVertices++;
+                influencedVertices++;
             }
         }
 
-        return handVertices >=
-            mesh.Vertices.Length * HandMeshThreshold;
+        return influencedVertices >=
+            mesh.Vertices.Length * ViewModelMeshThreshold;
     }
 
-    private static bool IsHandInfluence(
+    private static bool IsViewModelInfluence(
         CharacterMesh mesh,
-        bool[] handBones,
+        bool[] viewModelBones,
         int boneIndex)
     {
         if ((uint)boneIndex >= (uint)mesh.Palette.Length)
@@ -167,8 +172,60 @@ internal sealed partial class CharacterRenderer
 
         int nodeIndex = mesh.Palette[boneIndex];
 
-        return (uint)nodeIndex < (uint)handBones.Length &&
-               handBones[nodeIndex];
+        return (uint)nodeIndex < (uint)viewModelBones.Length &&
+               viewModelBones[nodeIndex];
+    }
+
+    private float GetWeaponBlend()
+    {
+        float tracking = Math.Clamp(
+            _locomotion.Weapon.TrackingWeight,
+            0f,
+            1f
+        );
+
+        if (_locomotion.Weapon.InHands)
+        {
+            return MathF.Max(tracking, 1f);
+        }
+
+        if (_locomotion.Weapon.Armed)
+        {
+            return MathF.Max(tracking, 0.001f);
+        }
+
+        return tracking;
+    }
+
+    private bool HasWeaponViewModel()
+    {
+        return GetWeaponBlend() > 0.001f ||
+               _locomotion.Weapon.Armed ||
+               _locomotion.Weapon.InHands;
+    }
+
+    private bool IsWeaponTransitioning()
+    {
+        float tracking = Math.Clamp(
+            _locomotion.Weapon.TrackingWeight,
+            0f,
+            1f
+        );
+
+        return tracking > 0.001f &&
+               tracking < 0.999f;
+    }
+
+    private bool IsAirborne()
+    {
+        return _locomotion.Snapshot.State is
+            AnimState.JumpWaiting or
+            AnimState.JumpTakeoff or
+            AnimState.JumpAir or
+            AnimState.Falling or
+            AnimState.LandingMoving or
+            AnimState.LandingIdle or
+            AnimState.LandingHard;
     }
 
     private void UpdateReferencePose(float aimBlend)
@@ -188,12 +245,11 @@ internal sealed partial class CharacterRenderer
             ? "crouch"
             : "stay";
 
-        string equipment = _locomotion.Weapon.Armed
+        string equipment = HasWeaponViewModel()
             ? "incombat"
             : "unarmed";
 
-        string idleName =
-            $"idle_0_{posture}_{equipment}";
+        string idleName = $"idle_0_{posture}_{equipment}";
 
         if (!library.Actions.TryGetValue(
                 idleName,
@@ -202,16 +258,16 @@ internal sealed partial class CharacterRenderer
             idle = library.Idle;
         }
 
-        float blend = _locomotion.Weapon.InHands
+        float aim = HasWeaponViewModel()
             ? Math.Clamp(aimBlend, 0f, 1f)
             : 0f;
 
         string aimName = $"idle_0_{posture}_aim";
 
-        if (blend > 0.001f &&
+        if (aim > 0.001f &&
             library.Actions.TryGetValue(
                 aimName,
-                out CharacterAction? aim))
+                out CharacterAction? aimAction))
         {
             pose.CaptureBlend(
                 idle,
@@ -221,9 +277,9 @@ internal sealed partial class CharacterRenderer
             );
 
             pose.Apply(
-                aim,
-                aim.Clip.FirstFrame,
-                blend
+                aimAction,
+                aimAction.Clip.FirstFrame,
+                aim
             );
         }
         else
@@ -238,9 +294,9 @@ internal sealed partial class CharacterRenderer
 
     private static Vector3 GetPoseAnchor(
         CharacterPose pose,
-        bool weaponInHands)
+        bool weaponVisible)
     {
-        if (weaponInHands &&
+        if (weaponVisible &&
             pose.TryGetAnimatedWeaponPivot(
                 out Matrix4x4 weaponPivot))
         {
@@ -265,12 +321,14 @@ internal sealed partial class CharacterRenderer
     }
 
     private Matrix4x4 GetMovementCompensation(
-        bool weaponInHands,
+        bool weaponVisible,
+        bool useReferenceStabilization,
         out bool valid)
     {
         valid = false;
 
-        if (!weaponInHands ||
+        if (!weaponVisible ||
+            !useReferenceStabilization ||
             _firstPersonReferencePose == null)
         {
             return Matrix4x4.Identity;
@@ -291,10 +349,7 @@ internal sealed partial class CharacterRenderer
             return Matrix4x4.Identity;
         }
 
-        // Align both the position and rotation of the animated
-        // weapon to its stable FPS reference orientation.
         valid = true;
-
         return inverseAnimated * referencePivot;
     }
 
@@ -314,19 +369,11 @@ internal sealed partial class CharacterRenderer
         deltaTime = Math.Clamp(deltaTime, 0f, 0.05f);
 
         var snapshot = _locomotion.Snapshot;
-
-        bool jumping = snapshot.State is
-            AnimState.JumpWaiting or
-            AnimState.JumpTakeoff or
-            AnimState.JumpAir or
-            AnimState.Falling or
-            AnimState.LandingMoving or
-            AnimState.LandingIdle or
-            AnimState.LandingHard;
+        bool airborne = IsAirborne();
 
         bool moving = snapshot.Grounded &&
             snapshot.Speed > 0.12f &&
-            !jumping;
+            !airborne;
 
         bool sprinting =
             moving &&
@@ -344,7 +391,7 @@ internal sealed partial class CharacterRenderer
             response;
 
         _jumpBlend +=
-            ((jumping ? 1f : 0f) - _jumpBlend) *
+            ((airborne ? 1f : 0f) - _jumpBlend) *
             response;
 
         return Math.Clamp(
@@ -356,21 +403,26 @@ internal sealed partial class CharacterRenderer
 
     private Matrix4x4 CreateFirstPersonTransform(
         float aimBlend,
-        bool weaponInHands,
+        bool weaponVisible,
+        float weaponBlend,
         float movementSpeed)
     {
         Vector3 anchor = GetPoseAnchor(
             _firstPersonReferencePose!,
-            weaponInHands
+            weaponVisible
         );
 
-        Vector3 target = weaponInHands
-            ? Vector3.Lerp(
-                WeaponPosition,
-                AimPosition,
-                Math.Clamp(aimBlend, 0f, 1f)
-            )
-            : UnarmedPosition;
+        Vector3 armedTarget = Vector3.Lerp(
+            WeaponPosition,
+            AimPosition,
+            Math.Clamp(aimBlend, 0f, 1f)
+        );
+
+        Vector3 target = Vector3.Lerp(
+            UnarmedPosition,
+            armedTarget,
+            weaponBlend
+        );
 
         float movement = _movementBlend *
             Math.Clamp(movementSpeed, 0f, 1f) *
@@ -380,15 +432,13 @@ internal sealed partial class CharacterRenderer
             _locomotion.Animator.Phase * MathF.Tau;
 
         float horizontalBob =
-            MathF.Sin(phase) * 0.014f * movement;
+            MathF.Sin(phase) * 0.010f * movement;
 
         float verticalBob =
-            -MathF.Abs(MathF.Cos(phase)) *
-            0.018f * movement;
+            -MathF.Abs(MathF.Cos(phase)) * 0.012f * movement;
 
         float forwardBob =
-            MathF.Sin(phase * 2f) *
-            0.006f * movement;
+            MathF.Sin(phase * 2f) * 0.004f * movement;
 
         target += new Vector3(
             horizontalBob,
@@ -396,29 +446,24 @@ internal sealed partial class CharacterRenderer
             forwardBob
         );
 
-        // Sprint lowers and slightly tilts the weapon.
-        target += new Vector3(
-            0.035f,
-            -0.11f,
-            -0.07f
-        ) * _sprintBlend;
-
-        // Jumping and landing are driven by the real
-        // locomotion state, not a stationary idle loop.
         target += new Vector3(
             0f,
-            -0.065f,
-            -0.035f
+            -0.085f,
+            -0.050f
+        ) * _sprintBlend;
+
+        target += new Vector3(
+            0f,
+            -0.055f,
+            -0.030f
         ) * _jumpBlend;
 
         float roll =
-            MathF.Sin(phase) *
-            0.015f * movement +
-            0.045f * _sprintBlend;
+            MathF.Sin(phase) * 0.006f * movement;
 
         float pitch =
-            -0.06f * _sprintBlend +
-            0.035f * _jumpBlend;
+            -0.035f * _sprintBlend +
+            0.020f * _jumpBlend;
 
         return Matrix4x4.CreateTranslation(-anchor) *
                Matrix4x4.CreateScale(ViewModelScale) *
@@ -430,53 +475,49 @@ internal sealed partial class CharacterRenderer
     private void UpdateFirstPersonVertices(
         int meshIndex,
         Matrix4x4 compensation,
-        bool hasCompensation,
-        float aimBlend)
+        float referenceBlend)
     {
-        var reference = _firstPersonReferencePose!.Vertices[meshIndex];
-        var animated = _pose.Vertices[meshIndex];
         var target = _firstPersonVertices[meshIndex];
 
-        float movementInfluence = hasCompensation
-            ? MovementInfluence
-            : 0f;
+        if (_firstPersonReferencePose == null ||
+            referenceBlend <= 0.001f)
+        {
+            Array.Copy(
+                _pose.Vertices[meshIndex],
+                target,
+                target.Length
+            );
 
-        // Keep the sights stable during aiming.
-        movementInfluence *= 1f - 0.75f * aimBlend;
+            return;
+        }
+
+        var reference = _firstPersonReferencePose.Vertices[meshIndex];
+        var animated = _pose.Vertices[meshIndex];
 
         for (int i = 0; i < target.Length; i++)
         {
             var referenceVertex = reference[i];
-
-            if (movementInfluence <= 0.001f)
-            {
-                target[i] = referenceVertex;
-                continue;
-            }
-
             var animatedVertex = animated[i];
 
-            Vector3 position = Vector3.Transform(
+            Vector3 compensatedPosition = Vector3.Transform(
                 animatedVertex.Position,
                 compensation
             );
 
-            Vector3 normal = Vector3.TransformNormal(
+            Vector3 compensatedNormal = Vector3.TransformNormal(
                 animatedVertex.Normal,
                 compensation
             );
 
             Vector3 blendedNormal = Vector3.Lerp(
                 referenceVertex.Normal,
-                normal,
-                movementInfluence
+                compensatedNormal,
+                referenceBlend
             );
 
             if (blendedNormal.LengthSquared() > 0.000001f)
             {
-                blendedNormal = Vector3.Normalize(
-                    blendedNormal
-                );
+                blendedNormal = Vector3.Normalize(blendedNormal);
             }
             else
             {
@@ -486,8 +527,8 @@ internal sealed partial class CharacterRenderer
             target[i] = new SkinnedVertex(
                 Vector3.Lerp(
                     referenceVertex.Position,
-                    position,
-                    movementInfluence
+                    compensatedPosition,
+                    referenceBlend
                 ),
                 blendedNormal,
                 referenceVertex.Uv,
@@ -524,7 +565,14 @@ internal sealed partial class CharacterRenderer
             return;
         }
 
-        bool weaponInHands = _locomotion.Weapon.InHands;
+        bool weaponVisible = HasWeaponViewModel();
+        float weaponBlend = GetWeaponBlend();
+
+        bool useReferenceStabilization =
+            weaponVisible &&
+            !IsAirborne() &&
+            !IsWeaponTransitioning();
+
         bool fading = visibility < 0.999f;
 
         UpdateReferencePose(aimBlend);
@@ -532,15 +580,21 @@ internal sealed partial class CharacterRenderer
         float movementSpeed = UpdateMotionBlends();
 
         Matrix4x4 compensation = GetMovementCompensation(
-            weaponInHands,
+            weaponVisible,
+            useReferenceStabilization,
             out bool hasCompensation
         );
+
+        float referenceBlend = hasCompensation
+            ? ReferenceInfluence * (1f - 0.70f * aimBlend)
+            : 0f;
 
         var constants = new Constants
         {
             World = CreateFirstPersonTransform(
                 aimBlend,
-                weaponInHands,
+                weaponVisible,
+                weaponBlend,
                 movementSpeed
             ),
             ViewProjection = projection
@@ -553,16 +607,8 @@ internal sealed partial class CharacterRenderer
         _context.VertexShader.Set(_vertex);
         _context.PixelShader.Set(_pixel);
 
-        _context.VertexShader.SetConstantBuffer(
-            0,
-            _constants
-        );
-
-        _context.PixelShader.SetConstantBuffer(
-            0,
-            _constants
-        );
-
+        _context.VertexShader.SetConstantBuffer(0, _constants);
+        _context.PixelShader.SetConstantBuffer(0, _constants);
         _context.PixelShader.SetSampler(0, _sampler);
 
         var ordered = Enumerable.Range(
@@ -574,13 +620,12 @@ internal sealed partial class CharacterRenderer
         {
             var part = _firstPersonParts[i];
 
-            if (part.Indices == null ||
-                part.Count == 0)
+            if (part.Indices == null || part.Count == 0)
             {
                 continue;
             }
 
-            if (part.Weapon && !weaponInHands)
+            if (part.Weapon && !weaponVisible)
             {
                 continue;
             }
@@ -590,7 +635,6 @@ internal sealed partial class CharacterRenderer
             var surface = source.Surface;
 
             constants.DiffuseColor = source.DiffuseColor;
-
             constants.ColourR = surface.ColourR;
             constants.ColourG = surface.ColourG;
             constants.ColourB = surface.ColourB;
@@ -620,15 +664,10 @@ internal sealed partial class CharacterRenderer
             UpdateFirstPersonVertices(
                 i,
                 compensation,
-                hasCompensation,
-                aimBlend
+                referenceBlend
             );
 
-            _context.UpdateSubresource(
-                ref constants,
-                _constants
-            );
-
+            _context.UpdateSubresource(ref constants, _constants);
             _context.UpdateSubresource(
                 _firstPersonVertices[i],
                 mesh.Vertices
@@ -692,10 +731,7 @@ internal sealed partial class CharacterRenderer
 
         for (int slot = 0; slot < 4; slot++)
         {
-            _context.PixelShader.SetShaderResource(
-                slot,
-                null
-            );
+            _context.PixelShader.SetShaderResource(slot, null);
         }
 
         _context.OutputMerger.SetBlendState(null);
