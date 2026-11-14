@@ -1,9 +1,11 @@
+using System.Diagnostics;
 using System.Numerics;
 using SharpDX;
 using SharpDX.Direct3D;
 using SharpDX.Direct3D11;
 using SharpDX.DXGI;
 using ZoneReborn.World.Characters;
+using ZoneReborn.World.Characters.Locomotion;
 using Buffer = SharpDX.Direct3D11.Buffer;
 using Device = SharpDX.Direct3D11.Device;
 using Vector3 = System.Numerics.Vector3;
@@ -16,6 +18,9 @@ internal sealed partial class CharacterRenderer
     private const float ViewModelScale = 0.82f;
     private const float HandMeshThreshold = 0.60f;
 
+    private const float MotionResponse = 11f;
+    private const float MovementInfluence = 0.12f;
+
     private static readonly Vector3 UnarmedPosition =
         new(0.05f, -0.32f, 0.85f);
 
@@ -23,16 +28,30 @@ internal sealed partial class CharacterRenderer
         new(0.12f, -0.23f, 0.85f);
 
     private static readonly Vector3 AimPosition =
-        new(0.0f, -0.08f, 0.85f);
+        new(0f, -0.08f, 0.85f);
 
     private readonly List<(
         Buffer? Indices,
         int Count,
         bool Weapon)> _firstPersonParts = [];
 
+    private readonly List<SkinnedVertex[]> _firstPersonVertices = [];
+
+    private CharacterPose? _firstPersonReferencePose;
+
+    private long _lastFirstPersonTick;
+    private float _movementBlend;
+    private float _sprintBlend;
+    private float _jumpBlend;
+
     private void BuildFirstPersonParts(Device device)
     {
         DisposeFirstPersonParts();
+
+        _firstPersonReferencePose = new CharacterPose(_asset)
+        {
+            Weapon = _locomotion.Weapon
+        };
 
         foreach (CharacterMesh mesh in _asset.Meshes)
         {
@@ -59,6 +78,10 @@ internal sealed partial class CharacterRenderer
                 indices.Length,
                 isWeapon
             ));
+
+            _firstPersonVertices.Add(
+                new SkinnedVertex[mesh.Vertices.Length]
+            );
         }
     }
 
@@ -77,8 +100,8 @@ internal sealed partial class CharacterRenderer
         {
             int nodeIndex = i;
 
-            while (nodeIndex >= 0 &&
-                   nodeIndex < mesh.Rig.Nodes.Length)
+            while ((uint)nodeIndex <
+                   (uint)mesh.Rig.Nodes.Length)
             {
                 var node = mesh.Rig.Nodes[nodeIndex];
 
@@ -148,42 +171,196 @@ internal sealed partial class CharacterRenderer
                handBones[nodeIndex];
     }
 
-    private Vector3 GetAnimatedViewAnchor(
+    private void UpdateReferencePose(float aimBlend)
+    {
+        if (_firstPersonReferencePose == null ||
+            _asset.Locomotion is not { } library)
+        {
+            return;
+        }
+
+        var pose = _firstPersonReferencePose;
+
+        pose.Weapon = _locomotion.Weapon;
+        pose.AimPitch = 0f;
+
+        string posture = _locomotion.Crouched
+            ? "crouch"
+            : "stay";
+
+        string equipment = _locomotion.Weapon.Armed
+            ? "incombat"
+            : "unarmed";
+
+        string idleName =
+            $"idle_0_{posture}_{equipment}";
+
+        if (!library.Actions.TryGetValue(
+                idleName,
+                out CharacterAction? idle))
+        {
+            idle = library.Idle;
+        }
+
+        float blend = _locomotion.Weapon.InHands
+            ? Math.Clamp(aimBlend, 0f, 1f)
+            : 0f;
+
+        string aimName = $"idle_0_{posture}_aim";
+
+        if (blend > 0.001f &&
+            library.Actions.TryGetValue(
+                aimName,
+                out CharacterAction? aim))
+        {
+            pose.CaptureBlend(
+                idle,
+                idle.Clip.FirstFrame,
+                1f,
+                0f
+            );
+
+            pose.Apply(
+                aim,
+                aim.Clip.FirstFrame,
+                blend
+            );
+        }
+        else
+        {
+            pose.Apply(
+                idle,
+                idle.Clip.FirstFrame,
+                1f
+            );
+        }
+    }
+
+    private static Vector3 GetPoseAnchor(
+        CharacterPose pose,
         bool weaponInHands)
     {
         if (weaponInHands &&
-            _pose.TryGetAnimatedWeaponPivot(
+            pose.TryGetAnimatedWeaponPivot(
                 out Matrix4x4 weaponPivot))
         {
             return weaponPivot.Translation;
         }
 
-        if (_pose.TryGetAnimatedNodePosition(
+        if (pose.TryGetAnimatedNodePosition(
                 "Spine3",
-                out Vector3 position))
+                out Vector3 spine))
         {
-            return position;
+            return spine;
         }
 
-        if (_pose.TryGetAnimatedNodePosition(
+        if (pose.TryGetAnimatedNodePosition(
                 "Spine2",
-                out position))
+                out spine))
         {
-            return position;
+            return spine;
         }
 
-        return new Vector3(
+        return new Vector3(0f, 1.4f, 0f);
+    }
+
+    private Matrix4x4 GetMovementCompensation(
+        bool weaponInHands,
+        out bool valid)
+    {
+        valid = false;
+
+        if (!weaponInHands ||
+            _firstPersonReferencePose == null)
+        {
+            return Matrix4x4.Identity;
+        }
+
+        if (!_pose.TryGetAnimatedWeaponPivot(
+                out Matrix4x4 animatedPivot) ||
+            !_firstPersonReferencePose.TryGetAnimatedWeaponPivot(
+                out Matrix4x4 referencePivot))
+        {
+            return Matrix4x4.Identity;
+        }
+
+        if (!Matrix4x4.Invert(
+                animatedPivot,
+                out Matrix4x4 inverseAnimated))
+        {
+            return Matrix4x4.Identity;
+        }
+
+        // Align both the position and rotation of the animated
+        // weapon to its stable FPS reference orientation.
+        valid = true;
+
+        return inverseAnimated * referencePivot;
+    }
+
+    private float UpdateMotionBlends()
+    {
+        long now = Stopwatch.GetTimestamp();
+
+        float deltaTime = _lastFirstPersonTick == 0
+            ? 1f / 60f
+            : (float)Stopwatch.GetElapsedTime(
+                _lastFirstPersonTick,
+                now
+            ).TotalSeconds;
+
+        _lastFirstPersonTick = now;
+
+        deltaTime = Math.Clamp(deltaTime, 0f, 0.05f);
+
+        var snapshot = _locomotion.Snapshot;
+
+        bool jumping = snapshot.State is
+            AnimState.JumpWaiting or
+            AnimState.JumpTakeoff or
+            AnimState.JumpAir or
+            AnimState.Falling or
+            AnimState.LandingMoving or
+            AnimState.LandingIdle or
+            AnimState.LandingHard;
+
+        bool moving = snapshot.Grounded &&
+            snapshot.Speed > 0.12f &&
+            !jumping;
+
+        bool sprinting =
+            moving &&
+            snapshot.State == AnimState.Sprint;
+
+        float response =
+            1f - MathF.Exp(-MotionResponse * deltaTime);
+
+        _movementBlend +=
+            ((moving ? 1f : 0f) - _movementBlend) *
+            response;
+
+        _sprintBlend +=
+            ((sprinting ? 1f : 0f) - _sprintBlend) *
+            response;
+
+        _jumpBlend +=
+            ((jumping ? 1f : 0f) - _jumpBlend) *
+            response;
+
+        return Math.Clamp(
+            snapshot.Speed / 3.6f,
             0f,
-            1.4f,
-            0f
+            1.5f
         );
     }
 
     private Matrix4x4 CreateFirstPersonTransform(
         float aimBlend,
-        bool weaponInHands)
+        bool weaponInHands,
+        float movementSpeed)
     {
-        Vector3 anchor = GetAnimatedViewAnchor(
+        Vector3 anchor = GetPoseAnchor(
+            _firstPersonReferencePose!,
             weaponInHands
         );
 
@@ -191,12 +368,132 @@ internal sealed partial class CharacterRenderer
             ? Vector3.Lerp(
                 WeaponPosition,
                 AimPosition,
-                Math.Clamp(aimBlend, 0f, 1f))
+                Math.Clamp(aimBlend, 0f, 1f)
+            )
             : UnarmedPosition;
+
+        float movement = _movementBlend *
+            Math.Clamp(movementSpeed, 0f, 1f) *
+            (1f - 0.85f * aimBlend);
+
+        float phase =
+            _locomotion.Animator.Phase * MathF.Tau;
+
+        float horizontalBob =
+            MathF.Sin(phase) * 0.014f * movement;
+
+        float verticalBob =
+            -MathF.Abs(MathF.Cos(phase)) *
+            0.018f * movement;
+
+        float forwardBob =
+            MathF.Sin(phase * 2f) *
+            0.006f * movement;
+
+        target += new Vector3(
+            horizontalBob,
+            verticalBob,
+            forwardBob
+        );
+
+        // Sprint lowers and slightly tilts the weapon.
+        target += new Vector3(
+            0.035f,
+            -0.11f,
+            -0.07f
+        ) * _sprintBlend;
+
+        // Jumping and landing are driven by the real
+        // locomotion state, not a stationary idle loop.
+        target += new Vector3(
+            0f,
+            -0.065f,
+            -0.035f
+        ) * _jumpBlend;
+
+        float roll =
+            MathF.Sin(phase) *
+            0.015f * movement +
+            0.045f * _sprintBlend;
+
+        float pitch =
+            -0.06f * _sprintBlend +
+            0.035f * _jumpBlend;
 
         return Matrix4x4.CreateTranslation(-anchor) *
                Matrix4x4.CreateScale(ViewModelScale) *
+               Matrix4x4.CreateRotationX(pitch) *
+               Matrix4x4.CreateRotationZ(roll) *
                Matrix4x4.CreateTranslation(target);
+    }
+
+    private void UpdateFirstPersonVertices(
+        int meshIndex,
+        Matrix4x4 compensation,
+        bool hasCompensation,
+        float aimBlend)
+    {
+        var reference = _firstPersonReferencePose!.Vertices[meshIndex];
+        var animated = _pose.Vertices[meshIndex];
+        var target = _firstPersonVertices[meshIndex];
+
+        float movementInfluence = hasCompensation
+            ? MovementInfluence
+            : 0f;
+
+        // Keep the sights stable during aiming.
+        movementInfluence *= 1f - 0.75f * aimBlend;
+
+        for (int i = 0; i < target.Length; i++)
+        {
+            var referenceVertex = reference[i];
+
+            if (movementInfluence <= 0.001f)
+            {
+                target[i] = referenceVertex;
+                continue;
+            }
+
+            var animatedVertex = animated[i];
+
+            Vector3 position = Vector3.Transform(
+                animatedVertex.Position,
+                compensation
+            );
+
+            Vector3 normal = Vector3.TransformNormal(
+                animatedVertex.Normal,
+                compensation
+            );
+
+            Vector3 blendedNormal = Vector3.Lerp(
+                referenceVertex.Normal,
+                normal,
+                movementInfluence
+            );
+
+            if (blendedNormal.LengthSquared() > 0.000001f)
+            {
+                blendedNormal = Vector3.Normalize(
+                    blendedNormal
+                );
+            }
+            else
+            {
+                blendedNormal = referenceVertex.Normal;
+            }
+
+            target[i] = new SkinnedVertex(
+                Vector3.Lerp(
+                    referenceVertex.Position,
+                    position,
+                    movementInfluence
+                ),
+                blendedNormal,
+                referenceVertex.Uv,
+                referenceVertex.Uv2
+            );
+        }
     }
 
     public void RenderFirstPerson(
@@ -204,9 +501,11 @@ internal sealed partial class CharacterRenderer
         float firstPersonBlend,
         float aimBlend)
     {
-        if (_firstPersonParts.Count == 0 ||
+        if (_firstPersonReferencePose == null ||
+            _firstPersonParts.Count == 0 ||
             _firstPersonParts.Count != _asset.Meshes.Length ||
-            _firstPersonParts.Count != _meshes.Count)
+            _firstPersonParts.Count != _meshes.Count ||
+            _firstPersonVertices.Count != _asset.Meshes.Length)
         {
             return;
         }
@@ -228,11 +527,21 @@ internal sealed partial class CharacterRenderer
         bool weaponInHands = _locomotion.Weapon.InHands;
         bool fading = visibility < 0.999f;
 
+        UpdateReferencePose(aimBlend);
+
+        float movementSpeed = UpdateMotionBlends();
+
+        Matrix4x4 compensation = GetMovementCompensation(
+            weaponInHands,
+            out bool hasCompensation
+        );
+
         var constants = new Constants
         {
             World = CreateFirstPersonTransform(
                 aimBlend,
-                weaponInHands
+                weaponInHands,
+                movementSpeed
             ),
             ViewProjection = projection
         };
@@ -281,6 +590,7 @@ internal sealed partial class CharacterRenderer
             var surface = source.Surface;
 
             constants.DiffuseColor = source.DiffuseColor;
+
             constants.ColourR = surface.ColourR;
             constants.ColourG = surface.ColourG;
             constants.ColourB = surface.ColourB;
@@ -307,16 +617,20 @@ internal sealed partial class CharacterRenderer
                 0f
             );
 
+            UpdateFirstPersonVertices(
+                i,
+                compensation,
+                hasCompensation,
+                aimBlend
+            );
+
             _context.UpdateSubresource(
                 ref constants,
                 _constants
             );
 
-            // Reuse the actual animated pose.
-            // This includes running, jumping, landing,
-            // weapon overlays and hand IK.
             _context.UpdateSubresource(
-                _pose.Vertices[i],
+                _firstPersonVertices[i],
                 mesh.Vertices
             );
 
@@ -378,7 +692,10 @@ internal sealed partial class CharacterRenderer
 
         for (int slot = 0; slot < 4; slot++)
         {
-            _context.PixelShader.SetShaderResource(slot, null);
+            _context.PixelShader.SetShaderResource(
+                slot,
+                null
+            );
         }
 
         _context.OutputMerger.SetBlendState(null);
@@ -394,5 +711,13 @@ internal sealed partial class CharacterRenderer
         }
 
         _firstPersonParts.Clear();
+        _firstPersonVertices.Clear();
+
+        _firstPersonReferencePose = null;
+        _lastFirstPersonTick = 0;
+
+        _movementBlend = 0f;
+        _sprintBlend = 0f;
+        _jumpBlend = 0f;
     }
 }
