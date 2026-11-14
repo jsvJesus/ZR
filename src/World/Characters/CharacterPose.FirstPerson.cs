@@ -27,10 +27,27 @@ public sealed partial class CharacterPose
             }
 
             position = matrices[i].Translation;
-
             return true;
         }
 
         return false;
+    }
+
+    public bool TryGetAnimatedWeaponPivot(
+        out Matrix4x4 pivot)
+    {
+        pivot = Matrix4x4.Identity;
+
+        if (_weaponAttachment?.Weapon is not { } anchors ||
+            Weapon?.InHands != true)
+        {
+            return false;
+        }
+
+        pivot = anchors.GunPivot * _weaponTransform;
+
+        return float.IsFinite(pivot.M41) &&
+               float.IsFinite(pivot.M42) &&
+               float.IsFinite(pivot.M43);
     }
 }
