@@ -34,6 +34,7 @@ namespace ZoneReborn.World.Characters
         private float _clearRayDistance;
         private float _aimBlend;
         private float _firstPersonBlend;
+        private float _sprintBlend;
         private bool _initialized;
 
         public float Yaw { get; private set; }
@@ -64,6 +65,7 @@ namespace ZoneReborn.World.Characters
                 float firstPerson =
                     firstPersonFov +
                     (firstPersonAimFov - firstPersonFov) * _aimBlend;
+                firstPerson += (0.78f - firstPersonFov) * _sprintBlend * (1 - _aimBlend);
 
                 return thirdPerson +
                        (firstPerson - thirdPerson) * _firstPersonBlend;
@@ -116,7 +118,10 @@ namespace ZoneReborn.World.Characters
             Vector3 playerAnchor,
             TerrainSurface surface,
             float cameraHeight,
-            bool aiming)
+            bool aiming,
+            Vector3? firstPersonEye = null,
+            Vector3? firstPersonAimEye = null,
+            bool sprinting = false)
         {
             if (!float.IsFinite(deltaTime))
             {
@@ -134,6 +139,8 @@ namespace ZoneReborn.World.Characters
             float targetAimBlend = aiming
                 ? 1f
                 : 0f;
+
+            _sprintBlend = Smooth(_sprintBlend, sprinting ? 1f : 0f, AimBlendSpeed, deltaTime);
 
             if (firstUpdate)
             {
@@ -167,6 +174,12 @@ namespace ZoneReborn.World.Characters
                 0f
             );
 
+            if (firstPersonEye is { } eye)
+            {
+                var fpsPivot = Vector3.Lerp(eye, firstPersonAimEye ?? eye, _aimBlend);
+                targetPivot = Vector3.Lerp(targetPivot, fpsPivot, _firstPersonBlend);
+            }
+
             if (firstUpdate)
             {
                 _smoothedPivot = targetPivot;
@@ -199,7 +212,7 @@ namespace ZoneReborn.World.Characters
 
             float targetDistance =
                 thirdPersonDistance +
-                (FirstPersonDistance - thirdPersonDistance) *
+                ((firstPersonEye.HasValue ? 0f : FirstPersonDistance) - thirdPersonDistance) *
                 _firstPersonBlend;
 
             float targetShoulder =
@@ -253,6 +266,14 @@ namespace ZoneReborn.World.Characters
                 pivot -
                 forward * _smoothedDistance +
                 right * _smoothedShoulder;
+
+            if (_firstPersonBlend >= 0.999f && firstPersonEye.HasValue)
+            {
+                CameraPosition = targetPivot;
+                _clearRayDistance = 0;
+                _initialized = true;
+                return;
+            }
 
             Vector3 offset = desiredPosition - pivot;
             float maximumDistance = offset.Length();

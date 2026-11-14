@@ -9,6 +9,7 @@ public sealed record CharacterPartSelection(
     string? OriginNode = null)
 {
     public CharacterWeaponDefinition? Weapon { get; init; }
+    public bool FirstPersonVisible { get; init; } = true;
 }
 
 public sealed record CharacterOutfit(int[] ItemTypes, int? WeaponType = null);

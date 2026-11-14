@@ -227,7 +227,6 @@ internal sealed partial class CharacterRenderer : IDisposable
                     throw;
                 }
             }
-            BuildFirstPersonParts(device);
         }
         catch
         {
@@ -238,10 +237,19 @@ internal sealed partial class CharacterRenderer : IDisposable
 
     public void Render(
         Matrix4x4 relativeViewProjection,
-        Vector3 cameraPosition)
+        Vector3 cameraPosition,
+        float firstPersonBlend = 0)
     {
-        float visibility = CalculateVisibility(cameraPosition);
+        float visibility = CalculateVisibility(cameraPosition) * (1 - Math.Clamp(firstPersonBlend, 0, 1));
+        RenderMeshes(relativeViewProjection, cameraPosition, visibility, firstPerson: false);
+    }
 
+    private void RenderMeshes(
+        Matrix4x4 relativeViewProjection,
+        Vector3 cameraPosition,
+        float visibility,
+        bool firstPerson)
+    {
         if (visibility <= 0.001f)
         {
             return;
@@ -301,6 +309,10 @@ internal sealed partial class CharacterRenderer : IDisposable
         {
             var mesh = _meshes[i];
             var source = _asset.Meshes[i];
+            if (firstPerson && !source.FirstPersonVisible)
+            {
+                continue;
+            }
             var surface = source.Surface;
 
             constants.DiffuseColor = source.DiffuseColor;
@@ -424,7 +436,6 @@ internal sealed partial class CharacterRenderer : IDisposable
 
     public void Dispose()
     {
-        DisposeFirstPersonParts();
 
         foreach (var mesh in _meshes)
         {

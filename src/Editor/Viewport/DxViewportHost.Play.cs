@@ -318,6 +318,8 @@ public sealed partial class DxViewportHost
             // Character Editor always uses the third-person view.
             _orbit.SetFirstPerson(false);
             _aimHeld = false;
+            _player.Animator.Pose.FirstPersonWeight = 0;
+            _player.Animator.Pose.FirstPersonAimBlend = 0;
 
             _player.Update(
                 deltaTime,
@@ -360,6 +362,8 @@ public sealed partial class DxViewportHost
         );
 
         // Character rotation and locomotion remain unchanged.
+        _player.Animator.Pose.FirstPersonWeight = _orbit.FirstPersonBlend;
+        _player.Animator.Pose.FirstPersonAimBlend = _orbit.AimBlend;
         _player.Update(
             deltaTime,
             input,
@@ -369,15 +373,22 @@ public sealed partial class DxViewportHost
 
         // The camera follows the updated character position.
         bool aiming =
-            _aimHeld &&
-            _player.Weapon.InHands;
+            _orbit.IsFirstPerson
+                ? _player.IsAiming
+                : _aimHeld && _player.Weapon.InHands;
+
+        Vector3? firstPersonEye = _player.TryGetFirstPersonEye(0, out var eye) ? eye : null;
+        Vector3? firstPersonAimEye = _player.TryGetFirstPersonEye(1, out var aimEye) ? aimEye : null;
 
         _orbit.Update(
             deltaTime,
             _player.CameraAnchor,
             _surface,
             _player.CameraHeight,
-            aiming
+            aiming,
+            firstPersonEye,
+            firstPersonAimEye,
+            _player.State == AnimState.Sprint
         );
 
         PublishCharacterWeaponState();

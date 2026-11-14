@@ -23,7 +23,12 @@ public sealed record CharacterAttachment(CharacterRig AvatarRig, int AvatarNode,
 
 public sealed record CharacterWeaponAnchors(int AvatarHand, int AvatarGun,
     Matrix4x4 InverseHand, Matrix4x4 InverseGun, Matrix4x4 GunPivot,
-    Matrix4x4 RightHand, Matrix4x4? LeftHand, bool Legacy);
+    Matrix4x4 RightHand, Matrix4x4? LeftHand, bool Legacy)
+{
+    public Matrix4x4? Aim { get; init; }
+    public Matrix4x4? Sight { get; init; }
+    public Matrix4x4? Barrel { get; init; }
+}
 
 public sealed record CharacterMesh(
     SourceVertex[] Vertices,
@@ -35,6 +40,7 @@ public sealed record CharacterMesh(
 )
 {
     public CharacterAttachment? Attachment { get; init; }
+    public bool FirstPersonVisible { get; init; } = true;
     public Vector4 DiffuseColor { get; init; } = Vector4.One;
     public CharacterSurfaceMaterial Surface { get; init; } = new();
 }

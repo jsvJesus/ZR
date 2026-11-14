@@ -29,6 +29,21 @@ public sealed partial class CharacterLocomotion
     public float CameraHeight => _cameraHeight;
     public Vector3 CameraAnchor => Position with { Y = _cameraBaseY };
     public IReadOnlySet<int> MatchCaps => _caps;
+    public bool IsAiming => _caps.Contains((int)AnimationCap.Aiming) &&
+        Weapon.State == CharacterWeaponState.Held && Grounded && !IsLanding && !IsPostureTransition &&
+        State != AnimState.JumpWaiting;
+
+    public bool TryGetFirstPersonEye(float aimBlend, out Vector3 position)
+    {
+        if (!Animator.Pose.TryGetFirstPersonEye(aimBlend, out position))
+        {
+            return false;
+        }
+
+        position = Vector3.Transform(position, Matrix4x4.CreateRotationY(Yaw)) +
+            Position + Vector3.UnitY * Animator.Pose.FloorOffset;
+        return true;
+    }
 
     public LocomotionSnapshot Snapshot => new(
         State,
@@ -161,7 +176,9 @@ public sealed partial class CharacterLocomotion
             deltaTime,
             Animator.Current,
             !Grounded || IsLanding,
-            _caps.Contains((int)AnimationCap.Aiming)
+            Animator.Pose.FirstPersonWeight > 0.001f
+                ? IsAiming
+                : _caps.Contains((int)AnimationCap.Aiming)
         );
 
         float targetPitch =
@@ -179,6 +196,8 @@ public sealed partial class CharacterLocomotion
             (targetPitch - Animator.Pose.AimPitch) *
             pitchBlend;
 
+        Animator.Pose.LookYaw = Wrap(cameraYaw - Yaw);
+        Animator.Pose.LookPitch = Math.Clamp(cameraPitch, -1.15f, 0.65f);
         Animator.EvaluatePose();
     }
 

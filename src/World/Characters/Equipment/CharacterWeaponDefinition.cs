@@ -31,6 +31,7 @@ public sealed class CharacterWeaponDefinition
     // The game chooses this from the inventory slot, including secondary SMGs and short rifles.
     public string HolsterNode => WeaponSlot == 2 ? "Pistol" : "weaponback";
     public float EquipSpeed { get; }
+    public float SightOffset { get; private init; }
     public bool IsPistol => GunType is 1 or 2;
     public string TypeName => GunType switch
     {
@@ -150,7 +151,10 @@ public sealed class CharacterWeaponDefinition
                 profiles.Add(status, new ReadOnlyDictionary<string, CharacterWeaponProfile>(states));
             }
         }
-        return new(typeId, category, gunType, weaponSlot, equipSpeed, profiles);
+        return new(typeId, category, gunType, weaponSlot, equipSpeed, profiles)
+        {
+            SightOffset = Number(data, "sight_offset_add", 0, context)
+        };
     }
 
     private static Dictionary<object, object?> Map(object? value, string context) =>

@@ -47,39 +47,17 @@ namespace Editor.Viewport
 
         private void RenderFirstPersonScene(
             FreeCamera camera,
-            Matrix4x4 characterView,
-            float farPlane)
+            Matrix4x4 relativeViewProjection)
         {
             if (_character != null &&
                 _playFirstPersonBlend > 0.01f &&
                 _depthTarget != null)
             {
-                // The first-person weapon has an independent depth pass.
-                // This avoids cutting off hands at the near plane.
-                _context.ClearDepthStencilView(
-                    _depthTarget,
-                    DepthStencilClearFlags.Depth,
-                    1f,
-                    0
-                );
-
-                var projection = CreateProjectionMatrix(
-                    _playFieldOfView,
-                    (float)_width / _height,
-                    0.035f,
-                    MathF.Max(10f, farPlane)
-                );
-
                 _character.RenderFirstPerson(
-                    projection,
-                    _playFirstPersonBlend,
-                    _playAimBlend
+                    relativeViewProjection,
+                    camera.Position,
+                    _playFirstPersonBlend
                 );
-            }
-
-            if (_showPlayCrosshair)
-            {
-                RenderPlayCrosshair();
             }
         }
 

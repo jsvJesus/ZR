@@ -515,18 +515,20 @@ namespace Editor.Viewport
 
             var characterView = view;
             characterView.Translation = Vector3.Zero;
-            _character?.Render(characterView * projection, camera.Position);
+            _character?.Render(characterView * projection, camera.Position,
+                playing ? _playFirstPersonBlend : 0);
+
+            if (playing)
+            {
+                RenderFirstPersonScene(camera, characterView * projection);
+            }
 
             _objects?.RenderTransparent(camera, viewProjection);
             RenderEnvironmentWeather(camera, viewProjection);
 
-            if (playing)
+            if (playing && _showPlayCrosshair)
             {
-                RenderFirstPersonScene(
-                    camera,
-                    characterView,
-                    farPlane
-                );
+                RenderPlayCrosshair();
             }
 
             if (!playing && _selectedObject != null && _scene?.Find(_selectedObject) is { } selected)

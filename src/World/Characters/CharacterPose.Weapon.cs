@@ -108,7 +108,9 @@ public sealed partial class CharacterPose
             if (Matrix4x4.Invert(anchors.GunPivot, out var inversePivot))
                 tracked = inversePivot * Matrix4x4.CreateRotationZ(profile.GunRootRoll)
                     * Matrix4x4.CreateTranslation(profile.GunRootPosition) * anchors.GunPivot * tracked;
-            tracked = ConstrainWeaponReach(attachment.AvatarRig, anchors, profile, tracked);
+            tracked = TrackFirstPersonWeapon(anchors, tracked);
+            if (!TryConstrainFirstPersonAimReach(attachment.AvatarRig, anchors, profile, ref tracked))
+                tracked = ConstrainWeaponReach(attachment.AvatarRig, anchors, profile, tracked);
         }
         _weaponTransform = Blend(carried, tracked, weapon.TrackingWeight * (1 - rightCarry));
 

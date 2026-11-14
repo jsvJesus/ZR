@@ -137,6 +137,7 @@ public sealed class CharacterEquipmentCatalog
             }
 
         var parts = new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
+        var firstPersonVisibility = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
         var body = _nudeParts.Where(part => !equipped.Any(item => item.SlotTypes.Intersect(part.SlotTypes).Any()));
         foreach (var item in equipped.Concat(body))
         {
@@ -157,12 +158,21 @@ public sealed class CharacterEquipmentCatalog
                 if (!parts.TryGetValue(model, out var tints))
                     parts[model] = tints = new Dictionary<string, string>(StringComparer.Ordinal);
                 foreach (var tint in item.Tints) tints[tint.Key] = tint.Value;
+                // Keep entire authored models. A suit that also contains body
+                // geometry must not disappear just because it occupies a head slot.
+                bool visible = item.SlotTypes.Length == 0 || !item.SlotTypes.All(slot =>
+                    slot is 101 or 105 or 106 or 107 or 108 or 115 or 116 or 130 or 131 or 132);
+                firstPersonVisibility[model] = visible || firstPersonVisibility.GetValueOrDefault(model);
             }
         }
         ValidateModel(_assets, TeethModel, "Базовая модель зубов");
         parts.TryAdd(TeethModel, new Dictionary<string, string>(StringComparer.Ordinal));
+        firstPersonVisibility[TeethModel] = false;
         var result = parts.Select(part => new CharacterPartSelection(part.Key,
-            new ReadOnlyDictionary<string, string>(part.Value))).ToList();
+            new ReadOnlyDictionary<string, string>(part.Value))
+        {
+            FirstPersonVisible = firstPersonVisibility[part.Key]
+        }).ToList();
         if (outfit.WeaponType is int weaponType)
         {
             var weapon = Find(weaponType);

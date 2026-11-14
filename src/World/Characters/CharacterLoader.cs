@@ -15,9 +15,9 @@ public static class CharacterLoader
         new("characters2/clothing/body/body_adidas/body_adidas", DefaultTints),
         new("characters2/clothing/legs/legs_adidas/legs_adidas", DefaultTints),
         new("characters2/clothing/boots/boots_adidas/boots_adidas", DefaultTints),
-        new("characters2/clothing/ManNude/ManHead", DefaultTints),
+        new("characters2/clothing/ManNude/ManHead", DefaultTints) { FirstPersonVisible = false },
         new("characters2/clothing/ManNude/ManHands", DefaultTints),
-        new("characters2/clothing/ManNude/ManTeeth", DefaultTints)
+        new("characters2/clothing/ManNude/ManTeeth", DefaultTints) { FirstPersonVisible = false }
     ];
 
     public static CharacterAsset Load(AssetPaths assets) => Load(assets, CancellationToken.None);
@@ -65,6 +65,9 @@ public static class CharacterLoader
             ArgumentNullException.ThrowIfNull(selection.Tints);
             string modelPath = WithExtension(selection.Model, ".model");
             var model = PackedSection.Read(Resolve(modelPath));
+            var bodyType = model.Find("bodyType");
+            bool headOnly = bodyType?.Find("head")?.Value is true &&
+                bodyType.Find("torso")?.Value is not true && bodyType.Find("foot")?.Value is not true;
             string visualPath = model.String("nodefullVisual");
             if (string.IsNullOrWhiteSpace(visualPath)) visualPath = model.String("nodelessVisual");
             if (string.IsNullOrWhiteSpace(visualPath)) throw new InvalidDataException($"Missing visual in character model: {modelPath}");
@@ -96,10 +99,22 @@ public static class CharacterLoader
                     var pivot = nodeIndices.TryGetValue("HP_GUNRW", out int gunPivot) ? globals[gunPivot] : gunOrigin;
                     string leftName = legacy ? "HP_effectorleft" : "HP_Lhand";
                     Matrix4x4? leftHand = nodeIndices.TryGetValue(leftName, out int left) ? globals[left] : null;
+                    Matrix4x4? sight = nodeIndices.TryGetValue("HP_SIGHT", out int sightNode) ? globals[sightNode] : null;
+                    if (sight is { } cameraNode)
+                    {
+                        cameraNode.Translation += Vector3.TransformNormal(
+                            new Vector3(0, 0, selection.Weapon.SightOffset), gunOrigin);
+                        sight = cameraNode;
+                    }
                     if (!Matrix4x4.Invert(rightHand, out var inverseHand) || !Matrix4x4.Invert(gunOrigin, out var inverseGun))
                         throw new InvalidDataException($"Non-invertible weapon hand target in {modelPath}.");
                     attachment = attachment with { Weapon = new(avatarNodes["HP_Rhand"], avatarNodes["HP_GUNR"],
-                        inverseHand, inverseGun, pivot, rightHand, leftHand, legacy) };
+                        inverseHand, inverseGun, pivot, rightHand, leftHand, legacy)
+                    {
+                        Aim = nodeIndices.TryGetValue("HP_AIMSYS", out int aimNode) ? globals[aimNode] : null,
+                        Sight = sight,
+                        Barrel = nodeIndices.TryGetValue("HP_barrel", out int barrelNode) ? globals[barrelNode] : null
+                    } };
                 }
             }
             // Parent normally names the next LOD; never append its geometry.
@@ -148,6 +163,7 @@ public static class CharacterLoader
                         meshes.Add(new(vertices, indices.AsSpan(group.StartIndex, checked(group.TriangleCount * 3)).ToArray(), diffusePath, rig, palette, alpha)
                         {
                             Attachment = attachment,
+                            FirstPersonVisible = selection.FirstPersonVisible && !headOnly,
                             DiffuseColor = BaseColour(material),
                             Surface = surface
                         });
