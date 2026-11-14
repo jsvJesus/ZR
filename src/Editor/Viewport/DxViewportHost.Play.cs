@@ -292,7 +292,8 @@ public sealed partial class DxViewportHost
             position.Z,
             _orbit.Yaw,
             _orbit.Pitch,
-            _camera.Speed
+            _camera.Speed,
+            _orbit.Roll
         ));
 
         _renderer?.SetPlayCameraState(
@@ -320,6 +321,7 @@ public sealed partial class DxViewportHost
             _aimHeld = false;
             _player.Animator.Pose.FirstPersonWeight = 0;
             _player.Animator.Pose.FirstPersonAimBlend = 0;
+            _orbit.SetTorsoRoll(0);
 
             _player.Update(
                 deltaTime,
@@ -358,7 +360,8 @@ public sealed partial class DxViewportHost
             IsPressed(KeyControl),
             _jumpRequested,
             _toggleCrouchRequested,
-            _aimHeld
+            _aimHeld,
+            (IsPressed(KeyQ) ? 1 : 0) - (IsPressed(KeyE) ? 1 : 0)
         );
 
         // Character rotation and locomotion remain unchanged.
@@ -379,6 +382,7 @@ public sealed partial class DxViewportHost
 
         Vector3? firstPersonEye = _player.TryGetFirstPersonEye(0, out var eye) ? eye : null;
         Vector3? firstPersonAimEye = _player.TryGetFirstPersonEye(1, out var aimEye) ? aimEye : null;
+        _orbit.SetTorsoRoll(_player.TorsoRoll);
 
         _orbit.Update(
             deltaTime,
@@ -404,5 +408,6 @@ public sealed partial class DxViewportHost
         _aimHeld = false;
 
         _player?.ReleaseInput();
+        _orbit?.SetTorsoRoll(0);
     }
 }

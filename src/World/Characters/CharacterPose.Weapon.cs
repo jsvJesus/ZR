@@ -54,16 +54,10 @@ public sealed partial class CharacterPose
         return new(arm, elbow, roll, hand, inverse);
     }
 
-    private void ApplyWeaponPose(float feetYaw, float torsoYaw)
+    private void ApplyWeaponLayers(float feetYaw, float torsoYaw)
     {
         var weapon = Weapon;
-        var attachment = _weaponAttachment;
-        if (attachment?.Weapon is not { } anchors) return;
-        if (weapon?.Profile is not { } profile)
-        {
-            _weaponTransform = attachment.InverseOrigin * _rigs[attachment.AvatarRig][attachment.AvatarNode];
-            return;
-        }
+        if (_weaponAttachment?.Weapon == null || weapon?.Profile is not { } profile) return;
 
         foreach (var (rig, matrices) in _rigs)
         {
@@ -91,6 +85,20 @@ public sealed partial class CharacterPose
                 );
             }
         }
+    }
+
+    private void ApplyWeaponPose(float feetYaw, float torsoYaw)
+    {
+        var weapon = Weapon;
+        var attachment = _weaponAttachment;
+        if (attachment?.Weapon is not { } anchors) return;
+        if (weapon?.Profile is not { } profile)
+        {
+            _weaponTransform = attachment.InverseOrigin * _rigs[attachment.AvatarRig][attachment.AvatarNode];
+            return;
+        }
+
+        ApplyWeaponLayers(feetYaw, torsoYaw);
 
         var avatar = _rigs[attachment.AvatarRig];
         var holster = attachment.InverseOrigin * avatar[attachment.AvatarNode];

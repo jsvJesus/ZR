@@ -64,8 +64,8 @@ namespace Editor.Viewport.Vegetation
         public void Render(FreeCamera camera, Matrix4x4 viewProjection, bool playing)
         {
             var forward = Vector3.Normalize(camera.LookDirection);
-            var right = Vector3.Normalize(Vector3.Cross(Vector3.UnitY, forward));
-            var up = Vector3.Cross(forward, right);
+            var right = camera.RightDirection;
+            var up = camera.UpDirection;
             _context.InputAssembler.InputLayout = _layout;
             _context.VertexShader.Set(_vertex); _context.VertexShader.SetConstantBuffer(0, _constants);
             _context.PixelShader.Set(_pixel); _context.PixelShader.SetConstantBuffer(0, _constants);

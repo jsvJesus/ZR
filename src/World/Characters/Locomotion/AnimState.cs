@@ -37,7 +37,8 @@ public readonly record struct CharacterInput(
     bool Crouch,
     bool JumpPressed,
     bool ToggleCrouchPressed,
-    bool AimPressed = false
+    bool AimPressed = false,
+    float Lean = 0
 );
 
 public readonly record struct LocomotionSnapshot(
@@ -66,6 +67,8 @@ public static class LocomotionSettings
     public const float TurnAngle = 45f * DegreesToRadians;
     public const float MaximumFootYaw = 35f * DegreesToRadians;
     public const float MaximumTorsoYaw = 70f * DegreesToRadians;
+    public const float MaximumTorsoRoll = 38.1f * DegreesToRadians;
+    public const float FirstPersonRollMultiplier = 0.2f;
 
     public const float JumpHeight = 0.9f;
 

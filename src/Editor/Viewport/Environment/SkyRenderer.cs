@@ -124,15 +124,8 @@ namespace Editor.Viewport.Environment
         {
             Vector3 forward = Vector3.Normalize(camera.LookDirection);
 
-            Vector3 axis = MathF.Abs(forward.Y) > 0.99f
-                ? Vector3.UnitZ
-                : Vector3.UnitY;
-
-            Vector3 right = Vector3.Normalize(
-                Vector3.Cross(axis, forward));
-
-            Vector3 up = Vector3.Normalize(
-                Vector3.Cross(forward, right));
+            Vector3 right = camera.RightDirection;
+            Vector3 up = camera.UpDirection;
 
             float fieldOfView = playing ? 0.78f : 1.05f;
             float tangent = MathF.Tan(fieldOfView * 0.5f);

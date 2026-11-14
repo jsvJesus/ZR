@@ -14,7 +14,7 @@ public sealed partial class DxViewportHost
         if (!IsPlayInspecting)
         {
             UpdatePlayCamera();
-            _inspectionCamera.Restore(_playCamera.Pose);
+            _inspectionCamera.Restore(_playCamera.Pose with { Roll = 0 });
         }
         SetPlayInspection(!IsPlayInspecting);
     }

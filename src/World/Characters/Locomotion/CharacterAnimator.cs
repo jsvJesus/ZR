@@ -92,7 +92,7 @@ public sealed class CharacterAnimator
     }
 
     // Skin once per display frame, not once per physics substep.
-    public void EvaluatePose() => Pose.Apply(Current, Frame, BlendWeight, FeetYaw, TorsoYaw, _baseTime);
+    public void EvaluatePose(bool skin = true) => Pose.Apply(Current, Frame, BlendWeight, FeetYaw, TorsoYaw, _baseTime, skin);
 
     private float PlaybackScale(float speed) => Current.ScalePlaybackSpeed && Current.Movement && Current.Clip.NaturalSpeed > 0.01f
         ? Math.Clamp(speed / Current.Clip.NaturalSpeed, 0.05f, 3f) : 1;

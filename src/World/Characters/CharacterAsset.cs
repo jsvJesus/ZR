@@ -160,7 +160,8 @@ public sealed partial class CharacterPose
         float blend,
         float feetYaw = 0,
         float torsoYaw = 0,
-        float baseTime = 0)
+        float baseTime = 0,
+        bool skin = true)
     {
         Evaluate(
             action.Clip.Animation,
@@ -169,7 +170,9 @@ public sealed partial class CharacterPose
             blend,
             feetYaw,
             torsoYaw,
-            baseTime
+            baseTime,
+            skin,
+            includeWeaponLayers: !skin
         );
     }
 
@@ -181,7 +184,8 @@ public sealed partial class CharacterPose
         float feetYaw = 0,
         float torsoYaw = 0,
         float baseTime = 0,
-        bool skin = true)
+        bool skin = true,
+        bool includeWeaponLayers = false)
     {
         CharacterClip? baseClip = action?.Turn == true && action.Track != 0
             ? _asset.Locomotion?.Actions[$"idle_0_{(action.Name.Contains("_crouch_", StringComparison.Ordinal) ? "crouch" : "stay")}_{(Weapon?.Armed == true ? "incombat" : "unarmed")}"].Clip
@@ -276,7 +280,14 @@ public sealed partial class CharacterPose
             }
         }
 
-        if (!skin) return;
+        if (!skin)
+        {
+            // Collision previews need the same spine as the rendered pose,
+            // including track-12 equip/holster layers. CaptureBlend keeps its
+            // original base-local snapshot by leaving this option disabled.
+            if (includeWeaponLayers) ApplyWeaponLayers(feetYaw, torsoYaw);
+            return;
+        }
 
         ApplyWeaponPose(feetYaw, torsoYaw);
 

@@ -551,10 +551,8 @@ namespace Editor.Viewport
         {
             var forward = Vector3.Normalize(camera.LookDirection);
 
-            var right = Vector3.Normalize(
-                Vector3.Cross(Vector3.UnitY, forward));
-
-            var up = Vector3.Cross(forward, right);
+            var right = camera.RightDirection;
+            var up = camera.UpDirection;
             var position = camera.Position;
 
             return new Matrix4x4

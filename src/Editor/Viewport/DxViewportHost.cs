@@ -35,6 +35,8 @@ namespace Editor.Viewport
         private const int KeyA = 0x41;
         private const int KeyS = 0x53;
         private const int KeyD = 0x44;
+        private const int KeyQ = 0x51;
+        private const int KeyE = 0x45;
         private const int KeySpace = 0x20;
         private const int KeyShift = 0x10;
         private const int KeyControl = 0x11;
@@ -508,6 +510,12 @@ namespace Editor.Viewport
                         return nint.Zero;
                     }
 
+                    if (IsPlaying && !IsCharacterEditing && !IsPlayInspecting && ((int)wParam is KeyQ or KeyE))
+                    {
+                        _pressedKeys.Add((int)wParam);
+                        return nint.Zero;
+                    }
+
                     if (IsMovementKey((int)wParam) && ((int)wParam != KeyAlt || IsPlaying))
                     {
                         bool firstPress = _pressedKeys.Add((int)wParam);
@@ -524,6 +532,11 @@ namespace Editor.Viewport
 
                 case WmKeyUp:
                 case WmSysKeyUp:
+                    if (((int)wParam is KeyQ or KeyE) && _pressedKeys.Remove((int)wParam))
+                    {
+                        return nint.Zero;
+                    }
+
                     if ((int)wParam == KeyH)
                     {
                         _pressedKeys.Remove(KeyH);

@@ -1,4 +1,5 @@
 using System.Numerics;
+using ZoneReborn.World.Characters.Locomotion;
 
 namespace ZoneReborn.World.Characters;
 
@@ -8,6 +9,10 @@ public sealed partial class CharacterPose
     public float FirstPersonAimBlend { get; set; }
     public float LookYaw { get; set; }
     public float LookPitch { get; set; }
+
+    private Matrix4x4 FirstPersonLookRotation =>
+        Matrix4x4.CreateRotationZ(TorsoRoll * LocomotionSettings.FirstPersonRollMultiplier)
+        * Matrix4x4.CreateRotationX(-LookPitch) * Matrix4x4.CreateRotationY(LookYaw);
 
     public bool TryGetFirstPersonEye(float aimBlend, out Vector3 position)
     {
@@ -31,7 +36,7 @@ public sealed partial class CharacterPose
             : 0;
         var pivot = Vector3.Lerp(new Vector3(0, 0.1f, 0.28f), new Vector3(-0.05f, 0.1f, 0.28f), aim);
         position = Vector3.Transform(pivot, matrices[spineIndex]);
-        var look = Matrix4x4.CreateRotationX(-LookPitch) * Matrix4x4.CreateRotationY(LookYaw);
+        var look = FirstPersonLookRotation;
         var offset = Vector3.Lerp(new Vector3(0, 0, -0.045f), new Vector3(0, 0.05f, -0.045f), aim);
         position -= Vector3.TransformNormal(offset, look);
 
@@ -59,7 +64,7 @@ public sealed partial class CharacterPose
         }
 
         from = Vector3.Normalize(from);
-        var look = Matrix4x4.CreateRotationX(-LookPitch) * Matrix4x4.CreateRotationY(LookYaw);
+        var look = FirstPersonLookRotation;
         var to = Vector3.TransformNormal(Vector3.UnitZ, look);
         float cosine = Math.Clamp(Vector3.Dot(from, to), -1, 1);
         var delta = Matrix4x4.Identity;
@@ -96,7 +101,7 @@ public sealed partial class CharacterPose
             return false;
         }
 
-        var look = Matrix4x4.CreateRotationX(-LookPitch) * Matrix4x4.CreateRotationY(LookYaw);
+        var look = FirstPersonLookRotation;
         var direction = Vector3.TransformNormal(Vector3.UnitZ, look);
         float minimum = float.NegativeInfinity;
         float maximum = float.PositiveInfinity;

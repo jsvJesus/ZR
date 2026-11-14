@@ -1,4 +1,5 @@
 using System.Numerics;
+using ZoneReborn.World.Characters.Locomotion;
 using ZoneReborn.World.Terrain;
 
 namespace ZoneReborn.World.Characters
@@ -35,11 +36,13 @@ namespace ZoneReborn.World.Characters
         private float _aimBlend;
         private float _firstPersonBlend;
         private float _sprintBlend;
+        private float _torsoRoll;
         private bool _initialized;
 
         public float Yaw { get; private set; }
 
         public float Pitch { get; private set; } = -0.16f;
+        public float Roll => _torsoRoll * LocomotionSettings.FirstPersonRollMultiplier * _firstPersonBlend;
 
         public float Distance => DefaultDistance;
 
@@ -55,8 +58,11 @@ namespace ZoneReborn.World.Characters
             {
                 const float thirdPersonFov = 0.78f;
                 const float thirdPersonAimFov = 0.74f;
-                const float firstPersonFov = 0.70f;
-                const float firstPersonAimFov = 0.67f;
+                // A wider hip-fire view makes the weapon less prominent without
+                // moving the skeleton camera or changing the authored pose.
+                const float firstPersonFov = 2.0f;
+                const float firstPersonAimFov = 0.75f;
+                const float firstPersonSprintFov = firstPersonFov + 0.08f;
 
                 float thirdPerson =
                     thirdPersonFov +
@@ -65,7 +71,7 @@ namespace ZoneReborn.World.Characters
                 float firstPerson =
                     firstPersonFov +
                     (firstPersonAimFov - firstPersonFov) * _aimBlend;
-                firstPerson += (0.78f - firstPersonFov) * _sprintBlend * (1 - _aimBlend);
+                firstPerson += (firstPersonSprintFov - firstPersonFov) * _sprintBlend * (1 - _aimBlend);
 
                 return thirdPerson +
                        (firstPerson - thirdPerson) * _firstPersonBlend;
@@ -86,13 +92,16 @@ namespace ZoneReborn.World.Characters
                 return;
             }
 
+            // Mouse motion is expressed in the rolled screen basis. At zero
+            // roll this is the original yaw += dx, pitch -= dy behaviour.
+            var motion = Vector2.Transform(new Vector2(dx, -dy), Matrix3x2.CreateRotation(Roll));
             Yaw = MathF.IEEERemainder(
-                Yaw + dx * MouseSensitivity,
+                Yaw + motion.X * MouseSensitivity,
                 MathF.Tau
             );
 
             Pitch = Math.Clamp(
-                Pitch - dy * MouseSensitivity,
+                Pitch + motion.Y * MouseSensitivity,
                 -1.15f,
                 0.65f
             );
@@ -111,6 +120,13 @@ namespace ZoneReborn.World.Characters
         public void SetFirstPerson(bool enabled)
         {
             IsFirstPerson = enabled;
+        }
+
+        public void SetTorsoRoll(float angle)
+        {
+            _torsoRoll = float.IsFinite(angle)
+                ? Math.Clamp(angle, -LocomotionSettings.MaximumTorsoRoll, LocomotionSettings.MaximumTorsoRoll)
+                : 0;
         }
 
         public void Update(
@@ -252,11 +268,9 @@ namespace ZoneReborn.World.Characters
                 cosYaw * cosPitch
             );
 
-            Vector3 right = new Vector3(
-                cosYaw,
-                0f,
-                -sinYaw
-            );
+            var orientation = Matrix4x4.CreateRotationZ(Roll) *
+                Matrix4x4.CreateRotationX(-Pitch) * Matrix4x4.CreateRotationY(Yaw);
+            Vector3 right = Vector3.TransformNormal(Vector3.UnitX, orientation);
 
             Vector3 up = Vector3.Normalize(
                 Vector3.Cross(forward, right)

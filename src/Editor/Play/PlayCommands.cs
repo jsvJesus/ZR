@@ -21,7 +21,7 @@ namespace Editor
                 StatusText.Text = "Загрузка персонажа…";
                 await Viewport.StartPlayAsync();
                 if (!_isClosing) StatusText.Text = Viewport.IsPlaying
-                    ? "Play: мышь — обзор, WASD — бег, Alt — ходьба, Shift — спринт, Ctrl/C — присед, Space — прыжок, F8 — осмотр, Esc — Stop."
+                    ? "Play: мышь — обзор, WASD — бег, Alt — ходьба, Shift — спринт, Ctrl/V — присед, C — TPS/FPS, Q/E — наклон, Space — прыжок, F8 — осмотр, Esc — Stop."
                     : "Play остановлен.";
             }
             catch (Exception exception)
@@ -38,7 +38,7 @@ namespace Editor
             PlayButton.IsEnabled = _level != null && _importCancellation == null && !_levelOpening;
             PlayHint.Text = CharacterPanel.IsActive ? "Character Editor · ПКМ — осмотр · колесо — расстояние"
                 : Viewport.IsPlayInspecting ? "Осмотр · WASD — полёт · Space/Shift — вверх/вниз · F8 — к персонажу"
-                : active ? "WASD · Alt — шаг · Shift — спринт · Ctrl — присед · Space — прыжок · F8 — осмотр" : "Персонаж появится на Terrain под камерой";
+                : active ? "WASD · Alt — шаг · Shift — спринт · Ctrl — присед · Q/E — наклон · Space — прыжок · F8 — осмотр" : "Персонаж появится на Terrain под камерой";
             CameraSpeedSlider.IsEnabled = !active && !Viewport.IsObjectDragging;
             PlayNavigationHints.IsVisible = active && !CharacterPanel.IsActive && !Viewport.IsPlayInspecting;
             InspectionNavigationHints.IsVisible = Viewport.IsPlayInspecting && !CharacterPanel.IsActive;

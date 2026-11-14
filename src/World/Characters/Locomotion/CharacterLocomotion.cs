@@ -26,6 +26,7 @@ public sealed partial class CharacterLocomotion
     public AnimState State { get; private set; } = AnimState.Idle;
     public bool Grounded { get; private set; } = true;
     public bool Crouched => _crouched;
+    public float TorsoRoll => Animator.Pose.TorsoRoll;
     public float CameraHeight => _cameraHeight;
     public Vector3 CameraAnchor => Position with { Y = _cameraBaseY };
     public IReadOnlySet<int> MatchCaps => _caps;
@@ -198,11 +199,18 @@ public sealed partial class CharacterLocomotion
 
         Animator.Pose.LookYaw = Wrap(cameraYaw - Yaw);
         Animator.Pose.LookPitch = Math.Clamp(cameraPitch, -1.15f, 0.65f);
+        UpdateTorsoRoll(deltaTime, input.Lean);
         Animator.EvaluatePose();
     }
 
     public void ReleaseInput()
     {
+        if (TorsoRoll != 0)
+        {
+            Animator.Pose.TorsoRoll = 0;
+            Animator.EvaluatePose();
+        }
+
         if (State != AnimState.JumpWaiting)
         {
             return;

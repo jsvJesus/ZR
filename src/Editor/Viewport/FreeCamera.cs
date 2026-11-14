@@ -8,7 +8,8 @@ namespace Editor.Viewport
         float Z,
         float Yaw,
         float Pitch,
-        float Speed);
+        float Speed,
+        float Roll = 0);
 
     public sealed class FreeCamera
     {
@@ -21,6 +22,13 @@ namespace Editor.Viewport
         public float Yaw { get; private set; }
 
         public float Pitch { get; private set; } = -0.18f;
+        public float Roll { get; private set; }
+
+        private Matrix4x4 Orientation => Matrix4x4.CreateRotationZ(Roll) *
+            Matrix4x4.CreateRotationX(-Pitch) * Matrix4x4.CreateRotationY(Yaw);
+
+        public Vector3 RightDirection => Vector3.TransformNormal(Vector3.UnitX, Orientation);
+        public Vector3 UpDirection => Vector3.TransformNormal(Vector3.UnitY, Orientation);
 
         public float Speed { get; set; } = 8f;
 
@@ -30,7 +38,8 @@ namespace Editor.Viewport
             Position.Z,
             Yaw,
             Pitch,
-            Speed);
+            Speed,
+            Roll);
 
         public Vector3 LookDirection
         {
@@ -133,6 +142,7 @@ namespace Editor.Viewport
             Position = new Vector3(pose.X, pose.Y, pose.Z);
             Yaw = pose.Yaw;
             Pitch = Math.Clamp(pose.Pitch, -1.50f, 1.50f);
+            Roll = float.IsFinite(pose.Roll) ? pose.Roll : 0;
             Speed = Math.Clamp(pose.Speed, MinimumSpeed, MaximumSpeed);
         }
     }
