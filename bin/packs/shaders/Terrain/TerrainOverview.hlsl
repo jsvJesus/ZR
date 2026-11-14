@@ -3,6 +3,7 @@
 cbuffer TerrainOverviewBuffer : register(b0)
 {
     row_major float4x4 ViewProjection;
+    float4 TerrainOrigin;
     float4 WorldExtent;
     float4 Material;
     float4 MapMode;
@@ -51,15 +52,17 @@ float4 PSMain(PixelInput input) : SV_TARGET
             0.5 -
             TerrainHoles.Load(
                 int3(
-                    int2(input.World.xz / WorldExtent.z),
+                    int2((input.World.xz - TerrainOrigin.xy) / WorldExtent.z),
                     0)).r);
     }
 
-    float2 levelUv = input.World.xz
+    float2 levelUv = (input.World.xz - TerrainOrigin.xy)
         / WorldExtent.xy;
 
-    float2 diffuseUv = levelUv * Material.xy;
-    float2 normalUv = levelUv * Material.zw;
+    // Atlas maps follow terrain samples; repeating fallback materials follow the world.
+    float2 tiledUv = input.World.xz / WorldExtent.xy;
+    float2 diffuseUv = (MapMode.x > 0.5 ? levelUv : tiledUv) * Material.xy;
+    float2 normalUv = (MapMode.y > 0.5 ? levelUv : tiledUv) * Material.zw;
 
     float3 surface = normalize(input.Normal);
 

@@ -38,10 +38,7 @@ public sealed partial class TerrainDocument
                 "Параметры водоёма должны быть конечными числами.");
         }
 
-        if (body.CenterX < 0 ||
-            body.CenterX > Descriptor.WorldSizeX ||
-            body.CenterZ < 0 ||
-            body.CenterZ > Descriptor.WorldSizeZ)
+        if (!Descriptor.Contains(body.CenterX, body.CenterZ))
         {
             throw new InvalidOperationException(
                 "Центр водоёма находится за пределами Terrain.");
@@ -104,11 +101,11 @@ public sealed partial class TerrainDocument
     {
         var d = Descriptor;
 
-        x = Math.Clamp(x, 0f, d.WorldSizeX);
-        z = Math.Clamp(z, 0f, d.WorldSizeZ);
+        x = Math.Clamp(x, d.OriginX, d.MaxX);
+        z = Math.Clamp(z, d.OriginZ, d.MaxZ);
 
-        float gx = x / d.CellSize;
-        float gz = z / d.CellSize;
+        float gx = (x - d.OriginX) / d.CellSize;
+        float gz = (z - d.OriginZ) / d.CellSize;
 
         int x0 = Math.Clamp(
             (int)MathF.Floor(gx), 0, d.SamplesX - 1);

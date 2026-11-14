@@ -1,6 +1,7 @@
 using System.Numerics;
 using Assimp;
 using Assimp.Configs;
+using ZoneReborn.World.Terrain.Models;
 
 namespace ZoneReborn.World.Terrain.Import;
 
@@ -9,7 +10,8 @@ internal sealed record RasterizedTerrain(int Width, int Height, float CellSize, 
 
 internal static class FbxTerrainRasterizer
 {
-    public static RasterizedTerrain Read(string[] files, float cellSize, Action<string> progress, CancellationToken token)
+    public static RasterizedTerrain Read(string[] files, float cellSize, Action<string> progress, CancellationToken token,
+        TerrainDescriptor? existing = null)
     {
         if (!float.IsFinite(cellSize) || cellSize < 0.25f || cellSize > 4)
             throw new InvalidDataException("Шаг сетки должен быть от 0,25 до 4 метров.");
@@ -38,8 +40,18 @@ internal static class FbxTerrainRasterizer
             }
         }
         if (triangles.Count == 0) throw new InvalidDataException("В FBX нет треугольных поверхностей.");
-        double sizeX = Math.Ceiling((maximum.X - minimum.X) / cellSize) + 1;
-        double sizeZ = Math.Ceiling((maximum.Z - minimum.Z) / cellSize) + 1;
+        var offset = new Vector2(minimum.X, minimum.Z);
+        if (existing != null)
+        {
+            if (cellSize != existing.CellSize) throw new InvalidDataException("При обновлении шаг Terrain должен сохраняться.");
+            float span = 256 * cellSize;
+            offset.X = existing.SourceOffsetX + Math.Min(0, MathF.Floor((minimum.X - existing.SourceOffsetX + cellSize * 1e-4f) / span)) * span;
+            offset.Y = existing.SourceOffsetZ + Math.Min(0, MathF.Floor((minimum.Z - existing.SourceOffsetZ + cellSize * 1e-4f) / span)) * span;
+            maximum.X = Math.Max(maximum.X, existing.SourceOffsetX + (existing.SamplesX - 1) * cellSize);
+            maximum.Z = Math.Max(maximum.Z, existing.SourceOffsetZ + (existing.SamplesZ - 1) * cellSize);
+        }
+        double sizeX = Math.Ceiling((maximum.X - offset.X) / cellSize) + 1;
+        double sizeZ = Math.Ceiling((maximum.Z - offset.Y) / cellSize) + 1;
         if (sizeX <= 1 || sizeZ <= 1 || sizeX > 8192 || sizeZ > 8192)
             throw new InvalidDataException("Размер земли не поддерживается. Проверьте единицы FBX или увеличьте шаг сетки.");
         int width = Math.Max(256, ((int)sizeX + 255) / 256 * 256), height = Math.Max(256, ((int)sizeZ + 255) / 256 * 256);
@@ -119,9 +131,9 @@ internal static class FbxTerrainRasterizer
             if (z > 0) Visit(current - width); if (z + 1 < height) Visit(current + width);
             void Visit(int next) { if (float.IsFinite(values[next])) return; values[next] = values[current]; queue[tail++] = next; }
         }
-        return new(width, height, cellSize, new(minimum.X, minimum.Z), values, holes, triangles.Count, overlaps);
+        return new(width, height, cellSize, offset, values, holes, triangles.Count, overlaps);
 
-        Vector3 Project(Vector3 point) => new((point.X - minimum.X) / cellSize, point.Y, (point.Z - minimum.Z) / cellSize);
+        Vector3 Project(Vector3 point) => new((point.X - offset.X) / cellSize, point.Y, (point.Z - offset.Y) / cellSize);
     }
 
     private static bool Finite(Vector3 v) => float.IsFinite(v.X) && float.IsFinite(v.Y) && float.IsFinite(v.Z);

@@ -58,19 +58,19 @@ internal sealed class TerrainShoreDistanceField
         float margin = water.ShoreWidth + step * 2f;
 
         float minX = Math.Max(
-            0f,
+            descriptor.OriginX,
             water.CenterX - water.RadiusX - margin);
 
         float maxX = Math.Min(
-            descriptor.WorldSizeX,
+            descriptor.MaxX,
             water.CenterX + water.RadiusX + margin);
 
         float minZ = Math.Max(
-            0f,
+            descriptor.OriginZ,
             water.CenterZ - water.RadiusZ - margin);
 
         float maxZ = Math.Min(
-            descriptor.WorldSizeZ,
+            descriptor.MaxZ,
             water.CenterZ + water.RadiusZ + margin);
 
         int width = (int)MathF.Ceiling(
@@ -102,11 +102,11 @@ internal sealed class TerrainShoreDistanceField
             {
                 float worldX = Math.Min(
                     minX + x * step,
-                    descriptor.WorldSizeX);
+                    descriptor.MaxX);
 
                 float worldZ = Math.Min(
                     minZ + z * step,
-                    descriptor.WorldSizeZ);
+                    descriptor.MaxZ);
 
                 if (!water.Contains(worldX, worldZ) ||
                     !document.HasSurface(worldX, worldZ))

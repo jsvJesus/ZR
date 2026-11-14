@@ -32,8 +32,8 @@ internal static class TerrainMeshBuilder
             // On one outer edge the adjacent tile on the other axis still owns the corner.
             source ??= localX == 256 && localZ == 256 ? right ?? bottom ?? tile : tile;
             ushort height = source.Heights[sampleZ * 256 + sampleX];
-            vertices[z * Side + x] = new TerrainVertex(new Vector3(globalX * descriptor.CellSize,
-                descriptor.DecodeHeight(height), globalZ * descriptor.CellSize), new Vector2(localX / 256f, localZ / 256f));
+            vertices[z * Side + x] = new TerrainVertex(new Vector3(descriptor.OriginX + globalX * descriptor.CellSize,
+                descriptor.DecodeHeight(height), descriptor.OriginZ + globalZ * descriptor.CellSize), new Vector2(localX / 256f, localZ / 256f));
         }
         var indices = new int[(Side - 1) * (Side - 1) * 6];
         int offset = 0;

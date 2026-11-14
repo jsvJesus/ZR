@@ -145,25 +145,25 @@ public sealed partial class TerrainDocument
 
         int tx0 = Math.Clamp(
             (int)MathF.Floor(
-                (x - radius - border) / (256 * d.CellSize)),
+                (x - d.OriginX - radius - border) / (256 * d.CellSize)),
             0,
             d.TilesX - 1);
 
         int tx1 = Math.Clamp(
             (int)MathF.Floor(
-                (x + radius + border) / (256 * d.CellSize)),
+                (x - d.OriginX + radius + border) / (256 * d.CellSize)),
             0,
             d.TilesX - 1);
 
         int tz0 = Math.Clamp(
             (int)MathF.Floor(
-                (z - radius - border) / (256 * d.CellSize)),
+                (z - d.OriginZ - radius - border) / (256 * d.CellSize)),
             0,
             d.TilesZ - 1);
 
         int tz1 = Math.Clamp(
             (int)MathF.Floor(
-                (z + radius + border) / (256 * d.CellSize)),
+                (z - d.OriginZ + radius + border) / (256 * d.CellSize)),
             0,
             d.TilesZ - 1);
 
@@ -228,28 +228,28 @@ public sealed partial class TerrainDocument
 
                 int px0 = Math.Clamp(
                     (int)MathF.Floor(
-                        (x - radius - tx * 256 * d.CellSize)
+                        (x - d.OriginX - radius - tx * 256 * d.CellSize)
                         / pixelSize + 3.5f),
                     0,
                     255);
 
                 int px1 = Math.Clamp(
                     (int)MathF.Ceiling(
-                        (x + radius - tx * 256 * d.CellSize)
+                        (x - d.OriginX + radius - tx * 256 * d.CellSize)
                         / pixelSize + 3.5f),
                     0,
                     255);
 
                 int pz0 = Math.Clamp(
                     (int)MathF.Floor(
-                        (z - radius - tz * 256 * d.CellSize)
+                        (z - d.OriginZ - radius - tz * 256 * d.CellSize)
                         / pixelSize + 3.5f),
                     0,
                     255);
 
                 int pz1 = Math.Clamp(
                     (int)MathF.Ceiling(
-                        (z + radius - tz * 256 * d.CellSize)
+                        (z - d.OriginZ + radius - tz * 256 * d.CellSize)
                         / pixelSize + 3.5f),
                     0,
                     255);
@@ -261,16 +261,16 @@ public sealed partial class TerrainDocument
                     for (int px = px0; px <= px1; px++)
                     {
                         float wx = Math.Clamp(
-                            tx * 256 * d.CellSize +
+                            d.OriginX + tx * 256 * d.CellSize +
                             (px - 3.5f) * pixelSize,
-                            0,
-                            d.WorldSizeX);
+                            d.OriginX,
+                            d.MaxX);
 
                         float wz = Math.Clamp(
-                            tz * 256 * d.CellSize +
+                            d.OriginZ + tz * 256 * d.CellSize +
                             (pz - 3.5f) * pixelSize,
-                            0,
-                            d.WorldSizeZ);
+                            d.OriginZ,
+                            d.MaxZ);
 
                         float dx = wx - x;
                         float dz = wz - z;

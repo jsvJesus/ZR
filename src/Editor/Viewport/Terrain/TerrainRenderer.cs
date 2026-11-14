@@ -142,8 +142,8 @@ internal sealed partial class TerrainRenderer : IDisposable
         // A bounded neighborhood keeps large levels usable without expanding the whole map.
         var nearest = _references.Values.OrderBy(tile =>
         {
-            float dx = (tile.X + 0.5f) * tileWorldSize - camera.Position.X;
-            float dz = (tile.Z + 0.5f) * tileWorldSize - camera.Position.Z;
+            float dx = descriptor.OriginX + (tile.X + 0.5f) * tileWorldSize - camera.Position.X;
+            float dz = descriptor.OriginZ + (tile.Z + 0.5f) * tileWorldSize - camera.Position.Z;
             return dx * dx + dz * dz;
         }).Take(Capacity).ToArray();
         var wanted = nearest.Select(tile => (tile.X, tile.Z)).ToHashSet();
@@ -196,6 +196,7 @@ internal sealed partial class TerrainRenderer : IDisposable
         {
             ViewProjection = viewProjection,
             Camera = new Vector4(camera.Position, 1),
+            TerrainOrigin = new Vector4(descriptor.OriginX, descriptor.OriginZ, 0, 0),
             WorldExtent = new Vector4(descriptor.SamplesX * descriptor.CellSize, descriptor.SamplesZ * descriptor.CellSize,
                 descriptor.CellSize, _holes == null ? 0 : 1)
         };
@@ -537,6 +538,7 @@ internal sealed partial class TerrainRenderer : IDisposable
         public Matrix4x4 ViewProjection;
 
         public Vector4 Camera;
+        public Vector4 TerrainOrigin;
         public Vector4 WorldExtent;
         public Vector4 Layer;
         public Vector4 LayerPassParameters;

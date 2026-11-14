@@ -110,16 +110,20 @@ public static class VegetationScatterGenerator
 
         float tileSize = 256f * descriptor.CellSize;
 
-        float minX = tileX * tileSize;
-        float minZ = tileZ * tileSize;
+        // Keep seeded candidates and IDs stable when expansion reindexes existing tiles.
+        int worldTileX = tileX + (int)MathF.Round(descriptor.OriginX / tileSize);
+        int worldTileZ = tileZ + (int)MathF.Round(descriptor.OriginZ / tileSize);
+
+        float minX = descriptor.OriginX + tileX * tileSize;
+        float minZ = descriptor.OriginZ + tileZ * tileSize;
 
         float maxX = Math.Min(
             minX + tileSize,
-            descriptor.WorldSizeX);
+            descriptor.MaxX);
 
         float maxZ = Math.Min(
             minZ + tileSize,
-            descriptor.WorldSizeZ);
+            descriptor.MaxZ);
 
         var surface = new TerrainSurface(level);
         var tile = document.Tile(tileX, tileZ);
@@ -207,8 +211,8 @@ public static class VegetationScatterGenerator
 
             uint random = CreateSeed(
                 rule,
-                tileX,
-                tileZ);
+                worldTileX,
+                worldTileZ);
 
             int count = (int)MathF.Floor(expected);
 
@@ -306,8 +310,8 @@ public static class VegetationScatterGenerator
                 Guid id = DeterministicId(
                     rule.Id,
                     rule.Seed,
-                    tileX,
-                    tileZ,
+                    worldTileX,
+                    worldTileZ,
                     candidate);
 
                 var tree = new TreeInstance
@@ -376,14 +380,14 @@ public static class VegetationScatterGenerator
 
         int px = Math.Clamp(
             (int)MathF.Round(
-                (x - tileX * 256f * document.Descriptor.CellSize)
+                (x - document.Descriptor.OriginX - tileX * 256f * document.Descriptor.CellSize)
                 / pixelSize + 3.5f),
             0,
             255);
 
         int pz = Math.Clamp(
             (int)MathF.Round(
-                (z - tileZ * 256f * document.Descriptor.CellSize)
+                (z - document.Descriptor.OriginZ - tileZ * 256f * document.Descriptor.CellSize)
                 / pixelSize + 3.5f),
             0,
             255);

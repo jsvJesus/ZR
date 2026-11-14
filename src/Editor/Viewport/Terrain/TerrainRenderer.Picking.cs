@@ -12,7 +12,7 @@ namespace Editor.Viewport.Terrain
         {
             height = 0;
             var d = Descriptor;
-            if (x < 0 || z < 0 || x > d.WorldSizeX || z > d.WorldSizeZ) return false;
+            if (!d.Contains(x, z)) return false;
 
             if (!includeHoles &&
                 _level.TerrainDocument is { } document &&
@@ -21,8 +21,8 @@ namespace Editor.Viewport.Terrain
                 return false;
             }
 
-            int tx = Math.Clamp((int)(x / (d.CellSize * 256)), 0, d.TilesX - 1);
-            int tz = Math.Clamp((int)(z / (d.CellSize * 256)), 0, d.TilesZ - 1);
+            int tx = Math.Clamp((int)((x - d.OriginX) / (d.CellSize * 256)), 0, d.TilesX - 1);
+            int tz = Math.Clamp((int)((z - d.OriginZ) / (d.CellSize * 256)), 0, d.TilesZ - 1);
             var grid = GetSurfaceGrid(tx, tz);
             int ix = Math.Clamp((int)((x - grid.MinX) / grid.StepX), 0, grid.Side - 2);
             int iz = Math.Clamp((int)((z - grid.MinZ) / grid.StepZ), 0, grid.Side - 2);
@@ -37,16 +37,16 @@ namespace Editor.Viewport.Terrain
         {
             position = default;
             var d = Descriptor;
-            if (!ViewportPicking.Box(origin, direction, new Vector3(0, -1e8f, 0),
-                new Vector3(d.WorldSizeX, 1e8f, d.WorldSizeZ), out float near, out float far)) return false;
+            if (!ViewportPicking.Box(origin, direction, new Vector3(d.OriginX, -1e8f, d.OriginZ),
+                new Vector3(d.MaxX, 1e8f, d.MaxZ), out float near, out float far)) return false;
             far = Math.Min(far, FarPlane);
             float distance = near;
             for (int iteration = 0; iteration < 32768 && distance <= far; iteration++)
             {
                 var point = origin + direction * distance;
-                float x = Math.Clamp(point.X, 0, d.WorldSizeX), z = Math.Clamp(point.Z, 0, d.WorldSizeZ);
-                int tx = Math.Clamp((int)(x / (d.CellSize * 256)), 0, d.TilesX - 1);
-                int tz = Math.Clamp((int)(z / (d.CellSize * 256)), 0, d.TilesZ - 1);
+                float x = Math.Clamp(point.X, d.OriginX, d.MaxX), z = Math.Clamp(point.Z, d.OriginZ, d.MaxZ);
+                int tx = Math.Clamp((int)((x - d.OriginX) / (d.CellSize * 256)), 0, d.TilesX - 1);
+                int tz = Math.Clamp((int)((z - d.OriginZ) / (d.CellSize * 256)), 0, d.TilesZ - 1);
                 var grid = GetSurfaceGrid(tx, tz);
                 int ix = Math.Clamp((int)((x - grid.MinX) / grid.StepX), 0, grid.Side - 2);
                 int iz = Math.Clamp((int)((z - grid.MinZ) / grid.StepZ), 0, grid.Side - 2);

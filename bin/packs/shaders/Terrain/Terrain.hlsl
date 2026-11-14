@@ -5,6 +5,7 @@ cbuffer TerrainBuffer : register(b0)
     row_major float4x4 ViewProjection;
 
     float4 Camera;
+    float4 TerrainOrigin;
     float4 WorldExtent;
     float4 Layer;
     float4 LayerPassParameters;
@@ -402,7 +403,7 @@ float4 PSMain(PixelInput input) : SV_TARGET
             0.5 -
             TerrainHoles.Load(
                 int3(
-                    int2(input.World.xz / WorldExtent.z),
+                    int2((input.World.xz - TerrainOrigin.xy) / WorldExtent.z),
                     0)).r);
     }
 
@@ -433,6 +434,7 @@ float4 PSMain(PixelInput input) : SV_TARGET
             TileSampler,
             tileUv).rgb * 2.0 - 1.0);
 
+    // Repeating materials stay anchored in world space when the terrain grows.
     float2 uv0 = input.World.xz
         / WorldExtent.xy
         * Layer.xy;

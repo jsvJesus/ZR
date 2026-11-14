@@ -43,6 +43,9 @@ public sealed class LevelWorkspace
             Assets,
             vegetation,
             cancellationToken);
+        ZoneReborn.World.Vegetation.VegetationScatterStorage.NormalizeTileAssociations(
+            vegetation,
+            level.Manifest.Terrain);
 
         var objects = level.Manifest.Terrain.ImportedFromMesh
             ? new SceneData(Assets, [], sourceName: level.Manifest.Name)

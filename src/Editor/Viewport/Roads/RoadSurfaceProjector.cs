@@ -33,15 +33,15 @@ namespace Editor.Viewport.Roads
             for (int i = 0; i < source.Indices.Length; i += 3)
             {
                 Vertex a = input[source.Indices[i]], b = input[source.Indices[i + 1]], c = input[source.Indices[i + 2]];
-                float minX = Math.Max(0, Math.Min(a.Value.Position.X, Math.Min(b.Value.Position.X, c.Value.Position.X)));
-                float minZ = Math.Max(0, Math.Min(a.Value.Position.Z, Math.Min(b.Value.Position.Z, c.Value.Position.Z)));
-                float maxX = Math.Min(descriptor.WorldSizeX, Math.Max(a.Value.Position.X, Math.Max(b.Value.Position.X, c.Value.Position.X)));
-                float maxZ = Math.Min(descriptor.WorldSizeZ, Math.Max(a.Value.Position.Z, Math.Max(b.Value.Position.Z, c.Value.Position.Z)));
+                float minX = Math.Max(descriptor.OriginX, Math.Min(a.Value.Position.X, Math.Min(b.Value.Position.X, c.Value.Position.X)));
+                float minZ = Math.Max(descriptor.OriginZ, Math.Min(a.Value.Position.Z, Math.Min(b.Value.Position.Z, c.Value.Position.Z)));
+                float maxX = Math.Min(descriptor.MaxX, Math.Max(a.Value.Position.X, Math.Max(b.Value.Position.X, c.Value.Position.X)));
+                float maxZ = Math.Min(descriptor.MaxZ, Math.Max(a.Value.Position.Z, Math.Max(b.Value.Position.Z, c.Value.Position.Z)));
                 if (minX >= maxX || minZ >= maxZ) continue;
-                int minTileX = Math.Clamp((int)(minX / tileSize), 0, descriptor.TilesX - 1);
-                int minTileZ = Math.Clamp((int)(minZ / tileSize), 0, descriptor.TilesZ - 1);
-                int maxTileX = Math.Clamp((int)(maxX / tileSize), 0, descriptor.TilesX - 1);
-                int maxTileZ = Math.Clamp((int)(maxZ / tileSize), 0, descriptor.TilesZ - 1);
+                int minTileX = Math.Clamp((int)((minX - descriptor.OriginX) / tileSize), 0, descriptor.TilesX - 1);
+                int minTileZ = Math.Clamp((int)((minZ - descriptor.OriginZ) / tileSize), 0, descriptor.TilesZ - 1);
+                int maxTileX = Math.Clamp((int)((maxX - descriptor.OriginX) / tileSize), 0, descriptor.TilesX - 1);
+                int maxTileZ = Math.Clamp((int)((maxZ - descriptor.OriginZ) / tileSize), 0, descriptor.TilesZ - 1);
                 for (int tz = minTileZ; tz <= maxTileZ; tz++)
                 for (int tx = minTileX; tx <= maxTileX; tx++)
                 {

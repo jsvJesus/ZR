@@ -33,6 +33,7 @@ public sealed partial class MainWindow
         ObjectsEditorMenu.IsEnabled = !dragging;
         TerrainMaterialsPanel.IsEnabled = !locked;
         TerrainEditorPanel.IsEnabled = !locked;
+        EnvironmentPanel.IsEnabled = !busy && !_levelOpening && !saving;
         TerrainEditorPanel.RefreshMode();
         CharacterPanel.IsEnabled = !dragging;
         RoadSegmentsPanel.IsEnabled = !locked;

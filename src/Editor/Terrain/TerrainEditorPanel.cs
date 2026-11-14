@@ -90,6 +90,7 @@ public sealed partial class TerrainEditorPanel : UserControl
     {
         Content = "Сохранить Terrain"
     };
+    private readonly Button _updateTerrain = new() { Content = "Обновить Terrain из FBX" };
 
     private LoadedLevel? _level;
     private DxViewportHost? _viewport;
@@ -105,6 +106,7 @@ public sealed partial class TerrainEditorPanel : UserControl
         _level?.TerrainDocument?.IsDirty == true || IsBusy;
 
     public event Action? BusyChanged;
+    public event Action? UpdateTerrainRequested;
 
     public TerrainEditorPanel()
     {
@@ -120,6 +122,7 @@ public sealed partial class TerrainEditorPanel : UserControl
         });
 
         _sculptControls.Children.Add(_mode);
+        _sculptControls.Children.Add(_updateTerrain);
         root.Children.Add(_sculptControls);
 
         root.Children.Add(_materialMode);
@@ -210,6 +213,11 @@ public sealed partial class TerrainEditorPanel : UserControl
             {
                 _status.Text = error.Message;
             }
+        };
+        _updateTerrain.Click += (_, _) =>
+        {
+            if (!Active || _level?.Manifest.Terrain.ImportedFromMesh != true) return;
+            _viewport?.EndTerrainPaint(); UpdateTerrainRequested?.Invoke();
         };
 
         RefreshMode();
@@ -326,6 +334,7 @@ public sealed partial class TerrainEditorPanel : UserControl
 
         _save.IsEnabled =
             active && _level?.TerrainDocument?.IsDirty == true;
+        _updateTerrain.IsEnabled = active && _level?.Manifest.Terrain.ImportedFromMesh == true;
 
         if (_level == null)
         {

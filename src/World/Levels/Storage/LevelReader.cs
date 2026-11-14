@@ -18,6 +18,9 @@ public static class LevelReader
             terrain.SamplesX > 32768 || terrain.SamplesZ > 32768 ||
             terrain.SamplesX % 256 != 0 || terrain.SamplesZ % 256 != 0 ||
             !float.IsFinite(terrain.CellSize) || terrain.CellSize <= 0 ||
+            !float.IsFinite(terrain.OriginX) || !float.IsFinite(terrain.OriginZ) ||
+            !float.IsFinite(terrain.MaxX) || !float.IsFinite(terrain.MaxZ) ||
+            terrain.MaxX <= terrain.OriginX || terrain.MaxZ <= terrain.OriginZ ||
             !float.IsFinite(terrain.HeightScale) || terrain.HeightScale <= 0 ||
             !float.IsFinite(terrain.HeightOffset) || terrain.MeshStep is not (1 or 2 or 4)
             || !float.IsFinite(terrain.SourceOffsetX) || !float.IsFinite(terrain.SourceOffsetZ))

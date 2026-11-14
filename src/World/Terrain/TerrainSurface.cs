@@ -25,8 +25,7 @@ public sealed class TerrainSurface
 
     public bool HasSceneObjects => _level.Objects?.Instances.Count > 0;
     public bool HasTerrainHoles => _level.TerrainDocument?.Holes.Any == true;
-    public bool Contains(float x, float z) => float.IsFinite(x) && float.IsFinite(z)
-        && x >= 0 && z >= 0 && x <= _level.Manifest.Terrain.WorldSizeX && z <= _level.Manifest.Terrain.WorldSizeZ;
+    public bool Contains(float x, float z) => _level.Manifest.Terrain.Contains(x, z);
 
     // Editing and road attachment keep using the terrain-only queries above.
     // Gameplay selects the floor beneath the feet, rather than a roof above the player.
@@ -71,10 +70,10 @@ public sealed class TerrainSurface
     {
         height = 0;
         var d = _level.Manifest.Terrain;
-        if (!float.IsFinite(x) || !float.IsFinite(z) || x < 0 || z < 0 || x > d.WorldSizeX || z > d.WorldSizeZ || d.CellSize <= 0)
+        if (!d.Contains(x, z) || d.CellSize <= 0)
             return false;
         if (_level.TerrainDocument is { } document && !document.HasSurface(x, z)) return false;
-        float sampleX = x / d.CellSize, sampleZ = z / d.CellSize;
+        float sampleX = (x - d.OriginX) / d.CellSize, sampleZ = (z - d.OriginZ) / d.CellSize;
         // Match TerrainMeshBuilder's step and triangle diagonal, including the last, shortened cell.
         int x0 = Math.Min((int)(sampleX / step) * step, (d.SamplesX - 2) / step * step);
         int z0 = Math.Min((int)(sampleZ / step) * step, (d.SamplesZ - 2) / step * step);

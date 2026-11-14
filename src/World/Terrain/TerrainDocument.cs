@@ -64,9 +64,9 @@ public sealed partial class TerrainDocument(string directory, LevelManifest mani
         return Descriptor.DecodeHeight(Raw(x / 256, z / 256).Heights[(z % 256) * 256 + x % 256]);
     }
 
-    public bool HasSurface(float x, float z) => x >= 0 && z >= 0 && x <= Descriptor.WorldSizeX && z <= Descriptor.WorldSizeZ
-        && !Holes.Contains(Math.Min((int)(x / Descriptor.CellSize), Holes.Width - 1),
-            Math.Min((int)(z / Descriptor.CellSize), Holes.Height - 1));
+    public bool HasSurface(float x, float z) => Descriptor.Contains(x, z)
+        && !Holes.Contains(Math.Min((int)((x - Descriptor.OriginX) / Descriptor.CellSize), Holes.Width - 1),
+            Math.Min((int)((z - Descriptor.OriginZ) / Descriptor.CellSize), Holes.Height - 1));
 
     public bool Apply(float x, float z, float radius, float strength, TerrainBrushMode mode)
     {
@@ -80,16 +80,17 @@ public sealed partial class TerrainDocument(string directory, LevelManifest mani
         var change = _sculptStroke ?? new Change();
         bool holesChanged = false;
 
-        int x0 = Math.Clamp((int)MathF.Floor((x - radius) / d.CellSize), 0, d.SamplesX - 1);
-        int x1 = Math.Clamp((int)MathF.Ceiling((x + radius) / d.CellSize), 0, d.SamplesX - 1);
-        int z0 = Math.Clamp((int)MathF.Floor((z - radius) / d.CellSize), 0, d.SamplesZ - 1);
-        int z1 = Math.Clamp((int)MathF.Ceiling((z + radius) / d.CellSize), 0, d.SamplesZ - 1);
+        int x0 = Math.Clamp((int)MathF.Floor((x - d.OriginX - radius) / d.CellSize), 0, d.SamplesX - 1);
+        int x1 = Math.Clamp((int)MathF.Ceiling((x - d.OriginX + radius) / d.CellSize), 0, d.SamplesX - 1);
+        int z0 = Math.Clamp((int)MathF.Floor((z - d.OriginZ - radius) / d.CellSize), 0, d.SamplesZ - 1);
+        int z1 = Math.Clamp((int)MathF.Ceiling((z - d.OriginZ + radius) / d.CellSize), 0, d.SamplesZ - 1);
         var pending = new List<(int X, int Z, ushort Value)>();
         for (int gz = z0; gz <= z1; gz++)
         for (int gx = x0; gx <= x1; gx++)
         {
             bool cut = mode is TerrainBrushMode.CutHole or TerrainBrushMode.FillHole;
-            float px = (gx + (cut ? 0.5f : 0)) * d.CellSize, pz = (gz + (cut ? 0.5f : 0)) * d.CellSize;
+            float px = d.OriginX + (gx + (cut ? 0.5f : 0)) * d.CellSize;
+            float pz = d.OriginZ + (gz + (cut ? 0.5f : 0)) * d.CellSize;
             float distance = MathF.Sqrt((px - x) * (px - x) + (pz - z) * (pz - z));
             if (distance > radius) continue;
             if (cut)
@@ -221,7 +222,7 @@ public sealed partial class TerrainDocument(string directory, LevelManifest mani
         }
         if (Holes.Any || !string.IsNullOrWhiteSpace(Descriptor.HolesFile))
         {
-            Descriptor.HolesFile = "terrain/holes.bin";
+            if (string.IsNullOrWhiteSpace(Descriptor.HolesFile)) Descriptor.HolesFile = "terrain/holes.bin";
             Atomic(Descriptor.HolesFile, Holes.Write);
         }
         Atomic(manifest.OverviewFile, path => TerrainOverviewWriter.Write(path, BuildOverview()));
@@ -234,7 +235,7 @@ public sealed partial class TerrainDocument(string directory, LevelManifest mani
         finally { if (File.Exists(layerTemporary)) File.Delete(layerTemporary); }
 
         if (BuildPaintOverview() is { } paintOverview)
-            Atomic("terrain/paint-overview.bin", path => WritePaintOverview(path, paintOverview));
+            Atomic(Descriptor.PaintOverviewFile, path => WritePaintOverview(path, paintOverview));
         SaveWaterBodies();
 
         string temporary = AssetPathResolver.Resolve(directory, $".terrain-manifest-{Guid.NewGuid():N}.tmp");

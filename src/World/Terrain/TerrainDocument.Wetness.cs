@@ -98,12 +98,12 @@ public sealed partial class TerrainDocument
         var descriptor = Descriptor;
 
         int tileX = Math.Clamp(
-            (int)(worldX / (256f * descriptor.CellSize)),
+            (int)((worldX - descriptor.OriginX) / (256f * descriptor.CellSize)),
             0,
             descriptor.TilesX - 1);
 
         int tileZ = Math.Clamp(
-            (int)(worldZ / (256f * descriptor.CellSize)),
+            (int)((worldZ - descriptor.OriginZ) / (256f * descriptor.CellSize)),
             0,
             descriptor.TilesZ - 1);
 
@@ -114,14 +114,14 @@ public sealed partial class TerrainDocument
 
         int pixelX = Math.Clamp(
             (int)MathF.Round(
-                (worldX - tileX * 256f * descriptor.CellSize)
+                (worldX - descriptor.OriginX - tileX * 256f * descriptor.CellSize)
                 / pixelSize + 3.5f),
             0,
             255);
 
         int pixelZ = Math.Clamp(
             (int)MathF.Round(
-                (worldZ - tileZ * 256f * descriptor.CellSize)
+                (worldZ - descriptor.OriginZ - tileZ * 256f * descriptor.CellSize)
                 / pixelSize + 3.5f),
             0,
             255);

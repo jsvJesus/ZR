@@ -209,14 +209,14 @@ public sealed partial class TerrainEditorPanel
         var pose = _viewport?.CameraPose;
 
         float x = Math.Clamp(
-            pose?.X ?? document.Descriptor.WorldSizeX * 0.5f,
-            0,
-            document.Descriptor.WorldSizeX);
+            pose?.X ?? document.Descriptor.OriginX + document.Descriptor.WorldSizeX * 0.5f,
+            document.Descriptor.OriginX,
+            document.Descriptor.MaxX);
 
         float z = Math.Clamp(
-            pose?.Z ?? document.Descriptor.WorldSizeZ * 0.5f,
-            0,
-            document.Descriptor.WorldSizeZ);
+            pose?.Z ?? document.Descriptor.OriginZ + document.Descriptor.WorldSizeZ * 0.5f,
+            document.Descriptor.OriginZ,
+            document.Descriptor.MaxZ);
 
         _updatingWaterControls = true;
 

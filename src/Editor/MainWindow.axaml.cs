@@ -13,6 +13,7 @@ namespace Editor
             EnvironmentPanel.Attach(Viewport, _workspace.Assets);
             TerrainEditorPanel.Attach(Viewport, _workspace.Assets);
             TerrainEditorPanel.BusyChanged += UpdatePlayControls;
+            TerrainEditorPanel.UpdateTerrainRequested += UpdateTerrainFromFbx;
             RoadSegmentsPanel.Attach(Viewport);
             Viewport.RoadSegmentPicked += RoadSegmentsPanel.Select;
             RoadSegmentsPanel.BusyChanged += UpdatePlayControls;

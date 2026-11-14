@@ -1,6 +1,7 @@
 using System.Text.Json;
 using ZoneReborn.World.Assets;
 using ZoneReborn.World.Levels.Storage;
+using ZoneReborn.World.Terrain.Models;
 
 namespace ZoneReborn.World.Vegetation;
 
@@ -8,6 +9,43 @@ public static class VegetationScatterStorage
 {
     public const string FileName = "vegetation.generated.json";
     public const int MaximumGenerated = 20000;
+
+    public static void NormalizeTileAssociations(
+        VegetationScene scene,
+        TerrainDescriptor terrain)
+    {
+        float tileSize = terrain.TileSize * terrain.CellSize;
+
+        for (int i = 0; i < scene.Generated.Count; i++)
+        {
+            var item = scene.Generated[i];
+            var tree = item.Tree;
+
+            if (!terrain.Contains(tree.X, tree.Z))
+            {
+                continue;
+            }
+
+            int tileX = Math.Clamp(
+                (int)((tree.X - terrain.OriginX) / tileSize),
+                0,
+                terrain.TilesX - 1);
+
+            int tileZ = Math.Clamp(
+                (int)((tree.Z - terrain.OriginZ) / tileSize),
+                0,
+                terrain.TilesZ - 1);
+
+            if (item.TileX == tileX && item.TileZ == tileZ)
+            {
+                continue;
+            }
+
+            // Expansion shifts tile indices while trees keep their world positions.
+            scene.Generated[i] = item with { TileX = tileX, TileZ = tileZ };
+            scene.IsDirty = true;
+        }
+    }
 
     public static async Task LoadAsync(
         string directory,

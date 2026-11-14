@@ -421,12 +421,12 @@ public sealed partial class VegetationPanel
         float tileSize = 256f * descriptor.CellSize;
 
         int tx = Math.Clamp(
-            (int)MathF.Floor(pose.X / tileSize),
+            (int)MathF.Floor((pose.X - descriptor.OriginX) / tileSize),
             0,
             descriptor.TilesX - 1);
 
         int tz = Math.Clamp(
-            (int)MathF.Floor(pose.Z / tileSize),
+            (int)MathF.Floor((pose.Z - descriptor.OriginZ) / tileSize),
             0,
             descriptor.TilesZ - 1);
 

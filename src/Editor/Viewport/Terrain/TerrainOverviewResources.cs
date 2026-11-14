@@ -60,9 +60,9 @@ internal sealed class TerrainOverviewResources : IDisposable
                 float spacingX = (Math.Min(right * _step, terrain.SamplesX - 1) - Math.Min(left * _step, terrain.SamplesX - 1)) * terrain.CellSize;
                 float spacingZ = (Math.Min(bottom * _step, terrain.SamplesZ - 1) - Math.Min(top * _step, terrain.SamplesZ - 1)) * terrain.CellSize;
                 vertices[z * _width + x] = new Vertex(new Vector3(
-                    Math.Min(x * _step, terrain.SamplesX - 1) * terrain.CellSize,
+                    terrain.OriginX + Math.Min(x * _step, terrain.SamplesX - 1) * terrain.CellSize,
                     terrain.DecodeHeight(overview.Heights[z * _width + x]),
-                    Math.Min(z * _step, terrain.SamplesZ - 1) * terrain.CellSize),
+                    terrain.OriginZ + Math.Min(z * _step, terrain.SamplesZ - 1) * terrain.CellSize),
                     Vector3.Normalize(new Vector3(-dx / spacingX, 1, -dz / spacingZ)));
             }
             _vertices = Buffer.Create(device, BindFlags.VertexBuffer, vertices);
@@ -120,8 +120,8 @@ internal sealed class TerrainOverviewResources : IDisposable
         for (int x = 0; x < side; x++)
         {
             int gx = tileX * 256 / _step + x, gz = tileZ * 256 / _step + z;
-            positions[z * side + x] = new Vector3(Math.Min(gx * _step, terrain.SamplesX - 1) * terrain.CellSize,
-                terrain.DecodeHeight(_heights[gz * _width + gx]), Math.Min(gz * _step, terrain.SamplesZ - 1) * terrain.CellSize);
+            positions[z * side + x] = new Vector3(terrain.OriginX + Math.Min(gx * _step, terrain.SamplesX - 1) * terrain.CellSize,
+                terrain.DecodeHeight(_heights[gz * _width + gx]), terrain.OriginZ + Math.Min(gz * _step, terrain.SamplesZ - 1) * terrain.CellSize);
         }
         var grid = new TerrainSurfaceGrid(positions, side);
         _surfaceGrids.Add((tileX, tileZ), grid);
@@ -155,6 +155,7 @@ internal sealed class TerrainOverviewResources : IDisposable
         var constants = new Constants
         {
             ViewProjection = viewProjection,
+            TerrainOrigin = new Vector4(terrain.OriginX, terrain.OriginZ, 0, 0),
             WorldExtent = new Vector4(terrain.SamplesX * terrain.CellSize, terrain.SamplesZ * terrain.CellSize,
                 terrain.CellSize, _level.TerrainDocument?.Holes.Any == true ? 1 : 0),
             Material = new Vector4(
@@ -196,6 +197,7 @@ internal sealed class TerrainOverviewResources : IDisposable
     private struct Constants
     {
         public Matrix4x4 ViewProjection;
+        public Vector4 TerrainOrigin;
         public Vector4 WorldExtent;
         public Vector4 Material;
         public Vector4 MapMode;

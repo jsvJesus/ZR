@@ -1,4 +1,5 @@
 using System.Numerics;
+using ZoneReborn.World.Assets;
 
 namespace ZoneReborn.World.Terrain;
 
@@ -24,7 +25,7 @@ public sealed partial class TerrainDocument
         _paintOverviewLoaded = true;
         if (Descriptor.HasSourceMaterialLayout)
             _paintedTiles.UnionWith(manifest.Tiles.Select(tile => (tile.X, tile.Z)));
-        string path = Path.Combine(directory, "terrain", "paint-overview.bin");
+        string path = AssetPathResolver.Resolve(directory, Descriptor.PaintOverviewFile);
         if (!File.Exists(path)) { _paintOverviewDirty.UnionWith(_paintedTiles); return; }
         using var reader = new BinaryReader(File.OpenRead(path));
         if (!reader.ReadBytes(8).AsSpan().SequenceEqual("ZRPAINT1"u8)

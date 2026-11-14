@@ -57,25 +57,25 @@ public sealed partial class TerrainDocument
 
         int tx0 = Math.Clamp(
             (int)MathF.Floor(
-                (water.CenterX - extentX) / tileSize),
+                (water.CenterX - d.OriginX - extentX) / tileSize),
             0,
             d.TilesX - 1);
 
         int tx1 = Math.Clamp(
             (int)MathF.Floor(
-                (water.CenterX + extentX) / tileSize),
+                (water.CenterX - d.OriginX + extentX) / tileSize),
             0,
             d.TilesX - 1);
 
         int tz0 = Math.Clamp(
             (int)MathF.Floor(
-                (water.CenterZ - extentZ) / tileSize),
+                (water.CenterZ - d.OriginZ - extentZ) / tileSize),
             0,
             d.TilesZ - 1);
 
         int tz1 = Math.Clamp(
             (int)MathF.Floor(
-                (water.CenterZ + extentZ) / tileSize),
+                (water.CenterZ - d.OriginZ + extentZ) / tileSize),
             0,
             d.TilesZ - 1);
 
@@ -140,16 +140,16 @@ public sealed partial class TerrainDocument
                     for (int px = 0; px < 256; px++)
                     {
                         float worldX = Math.Clamp(
-                            tx * tileSize +
+                            d.OriginX + tx * tileSize +
                             (px - 3.5f) * pixelSize,
-                            0f,
-                            d.WorldSizeX);
+                            d.OriginX,
+                            d.MaxX);
 
                         float worldZ = Math.Clamp(
-                            tz * tileSize +
+                            d.OriginZ + tz * tileSize +
                             (pz - 3.5f) * pixelSize,
-                            0f,
-                            d.WorldSizeZ);
+                            d.OriginZ,
+                            d.MaxZ);
 
                         if (!HasSurface(worldX, worldZ))
                         {
