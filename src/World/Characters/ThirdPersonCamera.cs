@@ -58,11 +58,11 @@ namespace ZoneReborn.World.Characters
             {
                 const float thirdPersonFov = 0.78f;
                 const float thirdPersonAimFov = 0.74f;
-                // A wider hip-fire view makes the weapon less prominent without
-                // moving the skeleton camera or changing the authored pose.
-                const float firstPersonFov = 2.0f;
+                // Restore the actual FPS projection used before the renderer's
+                // 1.1-radian clamp was removed. Keep this explicit at the source.
+                const float firstPersonFov = 1.1f;
                 const float firstPersonAimFov = 0.75f;
-                const float firstPersonSprintFov = firstPersonFov + 0.08f;
+                const float firstPersonSprintFov = firstPersonFov;
 
                 float thirdPerson =
                     thirdPersonFov +
