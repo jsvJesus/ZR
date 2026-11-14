@@ -351,11 +351,13 @@ public sealed partial class TerrainEditorPanel : UserControl
 
     private void UpdateBrushSettings()
     {
-        bool normalized =
-            IsTexturePainting ||
-            (!_materialsSection && _mode.SelectedIndex == 2);
+        bool smooth =
+            !_materialsSection &&
+            _mode.SelectedIndex == 2;
 
-        double maximum = normalized ? 1 : 5;
+        bool normalized = IsTexturePainting || smooth;
+
+        double maximum = IsTexturePainting ? 1 : 5;
 
         _strength.Maximum = maximum;
 

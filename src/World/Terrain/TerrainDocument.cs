@@ -77,6 +77,11 @@ public sealed partial class TerrainDocument(string directory, LevelManifest mani
             && (long)(d.SamplesX - 1) * (d.SamplesZ - 1) > 16_777_216)
             throw new InvalidOperationException("Для отверстий поддерживается не более 16 миллионов ячеек.");
 
+        if (mode == TerrainBrushMode.Smooth && strength > 1f)
+        {
+            return ApplyStrongSmooth(x, z, radius, strength);
+        }
+
         var change = _sculptStroke ?? new Change();
         bool holesChanged = false;
 
