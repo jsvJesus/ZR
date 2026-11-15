@@ -135,13 +135,25 @@ public static class VegetationScatterStorage
                     token);
             }
 
+            var models = file.Instances.Select(item => item.Tree.Model)
+                .Concat(file.Rules.Select(rule => rule.Model)).Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(model => model, model => SpeedTreeReader.ResolveModel(assets, model), StringComparer.OrdinalIgnoreCase);
+
             foreach (var pair in loaded)
             {
-                scene.Assets[pair.Key] = pair.Value;
+                scene.Assets[pair.Value.File] = pair.Value;
             }
 
-            scene.ScatterRules.AddRange(file.Rules);
-            scene.Generated.AddRange(file.Instances);
+            scene.ScatterRules.AddRange(file.Rules.Select(rule => rule with
+            {
+                Model = models[rule.Model],
+                Kind = VegetationCategory.FromModel(models[rule.Model]) is "Tree" or "Bush" or "Grass"
+                    ? VegetationCategory.ScatterKind(models[rule.Model]) : rule.Kind
+            }));
+            scene.Generated.AddRange(file.Instances.Select(item => item with
+            {
+                Tree = item.Tree.WithModel(models[item.Tree.Model])
+            }));
         }
         catch (OperationCanceledException)
         {

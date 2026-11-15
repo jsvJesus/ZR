@@ -25,13 +25,15 @@ namespace ZoneReborn.World.Vegetation
                     Validate(tree);
                     if (!ids.Add(tree.Id)) throw new InvalidDataException("Повторяющийся ID дерева.");
                 }
+                var models = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                 foreach (string model in document.Instances.Select(t => t.Model).Distinct(StringComparer.OrdinalIgnoreCase))
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     var asset = await Task.Run(() => SpeedTreeReader.Read(assets, model, cancellationToken), cancellationToken);
-                    scene.Assets.Add(model, asset);
+                    scene.Assets.TryAdd(asset.File, asset);
+                    models.Add(model, asset.File);
                 }
-                scene.Instances.AddRange(document.Instances);
+                scene.Instances.AddRange(document.Instances.Select(tree => tree.WithModel(models[tree.Model])));
             }
             catch (Exception exception) when (exception is IOException or InvalidDataException or JsonException or ArgumentException)
             {
@@ -46,7 +48,7 @@ namespace ZoneReborn.World.Vegetation
             if (!scene.CanSave) throw new InvalidOperationException("Предыдущий файл растительности не прочитан; перезапись отключена.");
             var document = new Document { Instances = scene.Instances.Select(t => new TreeInstance
             {
-                Id = t.Id, Model = t.Model, X = t.X, Y = t.Y, Z = t.Z, Yaw = t.Yaw, Scale = t.Scale,
+                Id = t.Id, Model = t.Model, X = t.X, Y = t.Y, Z = t.Z, Yaw = t.Yaw, Pitch = t.Pitch, Roll = t.Roll, Scale = t.Scale,
                 FollowTerrain = t.FollowTerrain, HeightOffset = t.HeightOffset
             }).ToList() };
             foreach (var tree in document.Instances) Validate(tree);
@@ -66,7 +68,8 @@ namespace ZoneReborn.World.Vegetation
                 !tree.Model.StartsWith("speedtree/", StringComparison.OrdinalIgnoreCase) ||
                 !Path.GetExtension(tree.Model).Equals(".ctree", StringComparison.OrdinalIgnoreCase) ||
                 !float.IsFinite(tree.X) || !float.IsFinite(tree.Y) || !float.IsFinite(tree.Z) ||
-                !float.IsFinite(tree.Yaw) || !float.IsFinite(tree.Scale) || !float.IsFinite(tree.HeightOffset) ||
+                !float.IsFinite(tree.Yaw) || !float.IsFinite(tree.Pitch) || !float.IsFinite(tree.Roll) ||
+                !float.IsFinite(tree.Scale) || !float.IsFinite(tree.HeightOffset) ||
                 MathF.Abs(tree.HeightOffset) > 1e6 || tree.Scale is < 0.05f or > 100 ||
                 MathF.Abs(tree.X) > 1e7 || MathF.Abs(tree.Y) > 1e7 || MathF.Abs(tree.Z) > 1e7)
                 throw new InvalidDataException("Некорректный экземпляр дерева.");

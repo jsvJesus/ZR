@@ -8,7 +8,8 @@ namespace Editor.Vegetation
     {
         private void RequireEditable()
         {
-            if (_level == null || !_level.Vegetation.CanSave || IsSaving || _viewport?.IsPlaying == true || _viewport?.IsStarting == true)
+            if (_level == null || !_level.Vegetation.CanSave || IsSaving || _viewport?.IsPlaying == true ||
+                _viewport?.IsStarting == true || _viewport?.IsTreeDragging == true)
                 throw new InvalidOperationException("Редактирование растительности сейчас недоступно.");
         }
         private void ApplyProperties()
@@ -16,12 +17,42 @@ namespace Editor.Vegetation
             RequireEditable();
             if (Selected is not { } tree) { RefreshMode(); _status.Text = "Параметры расстановки обновлены."; return; }
             bool follow = _grounded.IsChecked == true;
-            var changed = new TreeInstance { Id = tree.Id, Model = tree.Model, X = Read(_x), Y = follow ? tree.Y : Read(_y), Z = Read(_z),
-                Yaw = Read(_yaw), Scale = Read(_scale), FollowTerrain = follow, HeightOffset = follow ? Read(_y) : tree.HeightOffset };
+            var changed = new TreeInstance { Id = tree.Id, Model = tree.Model, X = Read(_x), Y = follow ? TreeHeight(tree) : Read(_y), Z = Read(_z),
+                Yaw = Read(_yaw), Pitch = Read(_pitch), Roll = Read(_roll), Scale = Read(_scale),
+                FollowTerrain = follow, HeightOffset = follow ? Read(_y) : tree.HeightOffset };
+            if (follow && new TerrainSurface(_level!).TryGetHeight(changed.X, changed.Z, out float ground))
+                changed.Y = ground + changed.HeightOffset;
             VegetationStorage.Validate(changed);
             tree.X = changed.X; tree.Y = changed.Y; tree.Z = changed.Z; tree.Yaw = changed.Yaw; tree.Scale = changed.Scale;
+            tree.Pitch = changed.Pitch; tree.Roll = changed.Roll;
             tree.FollowTerrain = changed.FollowTerrain; tree.HeightOffset = changed.HeightOffset;
-            _level!.Vegetation.IsDirty = true; RefreshInstances(tree); _status.Text = "Параметры дерева применены.";
+            _level!.Vegetation.IsDirty = true; RefreshInstances(tree); _status.Text = "Параметры растения применены.";
+        }
+
+        private float TreeHeight(TreeInstance tree) => tree.FollowTerrain && _level != null &&
+            new TerrainSurface(_level).TryGetHeight(tree.X, tree.Z, out float ground) ? ground + tree.HeightOffset : tree.Y;
+
+        private void ChangeTerrainAttachment()
+        {
+            RequireEditable();
+            if (Selected is { } tree)
+            {
+                float y = TreeHeight(tree);
+                bool follow = _grounded.IsChecked == true;
+                float offset = tree.HeightOffset;
+                if (follow)
+                {
+                    if (!new TerrainSurface(_level!).TryGetHeight(tree.X, tree.Z, out float ground))
+                        throw new InvalidOperationException("Растение вне Terrain.");
+                    offset = y - ground;
+                    if (!float.IsFinite(offset) || MathF.Abs(offset) > 1e6)
+                        throw new InvalidOperationException("Слишком большое смещение высоты.");
+                }
+                tree.Y = y; tree.HeightOffset = offset; tree.FollowTerrain = follow;
+                _level!.Vegetation.IsDirty = true;
+                UpdateSummary();
+            }
+            FillHeight(); RefreshMode();
         }
         private void SnapToGround()
         {
@@ -42,6 +73,7 @@ namespace Editor.Vegetation
 
         public async Task SavePendingAsync()
         {
+            _viewport?.CancelTreeDrag();
             if (!_batchTask.IsCompleted)
             {
                 await _batchTask;

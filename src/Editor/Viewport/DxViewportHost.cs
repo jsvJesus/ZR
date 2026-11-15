@@ -180,6 +180,7 @@ namespace Editor.Viewport
             IPlatformHandle control)
         {
             CancelObjectDrag();
+            CancelTreeDrag();
             CancelObjectPlacement();
             StopPlay();
             _timer.Stop();
@@ -239,7 +240,7 @@ namespace Editor.Viewport
                     IsPressed(KeySpace),
                     IsPressed(KeyShift),
                     deltaTime);
-                if (!IsPlaying && !IsStarting && !IsObjectDragging) _camera.Move(
+                if (!IsPlaying && !IsStarting && !IsObjectDragging && !IsTreeDragging) _camera.Move(
                     IsPressed(KeyW),
                     IsPressed(KeyS),
                     IsPressed(KeyA),
@@ -262,6 +263,8 @@ namespace Editor.Viewport
                         _renderer.SetObjectGizmo(ObjectTransformMode, _objectDrag?.Axis ?? _hoveredObjectAxis,
                             ObjectEditingEnabled && !IsObjectPlacing && !IsPlaying && !IsStarting && !_rotating && _level?.Objects?.CanSave == true);
                         _renderer.ShowSelectedCollision = ShowSelectedCollision;
+                        _renderer.SetTreeGizmo(_rotating ? null : TreeSelection(), TreeTransformMode,
+                            _treeDrag?.Axis ?? _hoveredTreeAxis);
 
                         UpdateTerrainBrushPreview();
 
@@ -299,6 +302,7 @@ namespace Editor.Viewport
         public void SetCamera(CameraPose pose)
         {
             CancelObjectDrag();
+            CancelTreeDrag();
             _camera.Restore(pose);
             _pressedKeys.Clear();
 
@@ -308,6 +312,9 @@ namespace Editor.Viewport
         public void SetLevel(LoadedLevel level, AssetPaths assets)
         {
             CancelObjectDrag();
+            CancelTreeDrag();
+            SelectTree(null);
+            SetTreePlacement(null);
             CancelObjectPlacement();
             StopPlay();
             _renderer?.SetLevel(level, assets);
@@ -375,6 +382,12 @@ namespace Editor.Viewport
 
                 case WmLeftUp:
                     if (_terrainPainting) { PaintTerrain(ReadX(lParam), ReadY(lParam)); EndTerrainPaint(); return nint.Zero; }
+                    if (IsTreeDragging)
+                    {
+                        MoveTreeDrag(ReadX(lParam), ReadY(lParam));
+                        EndTreeDrag(true);
+                        return nint.Zero;
+                    }
                     if (IsObjectDragging)
                     {
                         MoveObjectDrag(ReadX(lParam), ReadY(lParam));
@@ -385,6 +398,7 @@ namespace Editor.Viewport
 
                 case WmRightDown:
                     EndTerrainPaint();
+                    if (IsTreeDragging) { CancelTreeDrag(); return nint.Zero; }
                     if (IsObjectDragging)
                     {
                         CancelObjectDrag();
@@ -422,14 +436,17 @@ namespace Editor.Viewport
                 case WmCaptureChanged:
                     EndTerrainPaint();
                     CancelObjectDrag();
+                    CancelTreeDrag();
                     _rotating = false;
                     break;
 
                 case WmMouseMove:
                     if (_terrainPainting) { PaintTerrain(ReadX(lParam), ReadY(lParam)); return nint.Zero; }
+                    if (MoveTreeDrag(ReadX(lParam), ReadY(lParam))) return nint.Zero;
                     if (MoveObjectDrag(ReadX(lParam), ReadY(lParam))) return nint.Zero;
                     HandleMouseMove(lParam);
                     HoverObjectGizmo(ReadX(lParam), ReadY(lParam));
+                    HoverTreeGizmo(ReadX(lParam), ReadY(lParam));
                     return nint.Zero;
 
                 case WmInput:
@@ -446,7 +463,7 @@ namespace Editor.Viewport
                     break;
 
                 case WmMouseWheel:
-                    if (IsObjectDragging) return nint.Zero;
+                    if (IsObjectDragging || IsTreeDragging) return nint.Zero;
                     int wheelDelta = unchecked(
                         (short)((wParam.ToInt64() >> 16) & 0xFFFF));
 
@@ -470,7 +487,7 @@ namespace Editor.Viewport
                         return nint.Zero;
                     }
 
-                    if (HandleObjectKey((int)wParam, lParam))
+                    if (HandleTreeKey((int)wParam, lParam) || HandleObjectKey((int)wParam, lParam))
                     {
                         return nint.Zero;
                     }
@@ -553,6 +570,7 @@ namespace Editor.Viewport
                 case WmKillFocus:
                     EndTerrainPaint();
                     CancelObjectDrag();
+                    CancelTreeDrag();
                     ReleasePlayMouse(false);
                     _pressedKeys.Clear();
                     ReleasePlayerInput();

@@ -544,6 +544,7 @@ namespace Editor.Viewport
                         ObjectGizmoFarPlane))
                     _objectGizmo?.Render(frame, _objectGizmoMode, _objectGizmoAxis, viewProjection);
             }
+            if (!playing) RenderTreeEditing(camera, viewProjection);
             _swapChain.Present(1, PresentFlags.None);
         }
 

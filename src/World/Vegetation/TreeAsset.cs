@@ -19,7 +19,9 @@ namespace ZoneReborn.World.Vegetation
     public sealed record TreeAsset(string File, Vector3 Minimum, Vector3 Maximum, TreePart[] Parts);
     public sealed record TreeCatalogEntry(string File, string Name)
     {
-        public override string ToString() => Name;
+        public string Category => VegetationCategory.FromModel(File);
+        public string DisplayName => Name.Contains('/') ? Name[(Name.IndexOf('/') + 1)..] : Name;
+        public override string ToString() => DisplayName;
     }
 
     public sealed class TreeInstance
@@ -30,9 +32,19 @@ namespace ZoneReborn.World.Vegetation
         public float Y { get; set; }
         public float Z { get; set; }
         public float Yaw { get; set; }
+        public float Pitch { get; set; }
+        public float Roll { get; set; }
         public float Scale { get; set; } = 1;
         public bool FollowTerrain { get; set; } = true;
         public float HeightOffset { get; set; }
+        public Matrix4x4 World(float height) => Matrix4x4.CreateScale(Scale)
+            * Matrix4x4.CreateFromYawPitchRoll(Yaw * MathF.PI / 180, Pitch * MathF.PI / 180, Roll * MathF.PI / 180)
+            * Matrix4x4.CreateTranslation(X, height, Z);
+        internal TreeInstance WithModel(string model) => new()
+        {
+            Id = Id, Model = model, X = X, Y = Y, Z = Z, Yaw = Yaw, Pitch = Pitch, Roll = Roll, Scale = Scale,
+            FollowTerrain = FollowTerrain, HeightOffset = HeightOffset
+        };
         public override string ToString() => $"{Path.GetFileNameWithoutExtension(Model)} · {X:F1}, {Z:F1}";
     }
 

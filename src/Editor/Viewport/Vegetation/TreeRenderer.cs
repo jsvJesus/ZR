@@ -116,8 +116,7 @@ namespace Editor.Viewport.Vegetation
             float y = tree.Y;
             if (tree.FollowTerrain && terrain != null && terrain.SurfaceHeight(tree.X, tree.Z, out float ground))
                 y = ground + tree.HeightOffset;
-            return Matrix4x4.CreateScale(tree.Scale) * Matrix4x4.CreateRotationY(tree.Yaw * MathF.PI / 180)
-                * Matrix4x4.CreateTranslation(tree.X, y, tree.Z);
+            return tree.World(y);
         }
 
         private TerrainTexture Texture(string path, bool normal)

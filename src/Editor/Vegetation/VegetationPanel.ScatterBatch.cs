@@ -10,6 +10,7 @@ namespace Editor.Vegetation;
 public sealed partial class VegetationPanel
 {
     private readonly ComboBox _batchMaterial = new();
+    private readonly ComboBox _batchCategory = new();
 
     private readonly TextBox _batchSearch = new()
     {
@@ -62,6 +63,7 @@ public sealed partial class VegetationPanel
             "Материал Terrain для выбранных моделей",
             _batchMaterial);
 
+        ScatterField(parent, "Категория моделей", _batchCategory);
         parent.Children.Add(_batchSearch);
         parent.Children.Add(_batchModelCount);
 
@@ -111,6 +113,7 @@ public sealed partial class VegetationPanel
         {
             RebuildBatchModelList();
         };
+        _batchCategory.SelectionChanged += (_, _) => RebuildBatchModelList();
 
         _batchMaterial.SelectionChanged += (_, _) =>
         {
@@ -217,8 +220,10 @@ public sealed partial class VegetationPanel
     private IEnumerable<TreeCatalogEntry> FilteredBatchModels()
     {
         string search = (_batchSearch.Text ?? "").Trim();
+        string? category = _batchCategory.SelectedItem as string;
 
         return _entries.Where(entry =>
+            (category == null || category == "Все категории" || entry.Category == category) &&
             entry.Name.Contains(
                 search,
                 StringComparison.OrdinalIgnoreCase));
@@ -236,7 +241,7 @@ public sealed partial class VegetationPanel
 
             var checkbox = new CheckBox
             {
-                Content = entry.Name,
+                Content = _batchCategory.SelectedItem as string == "Все категории" ? entry.Name : entry.DisplayName,
                 IsChecked = _batchCheckedModels.Contains(entry.File)
             };
 
@@ -286,7 +291,7 @@ public sealed partial class VegetationPanel
     private void UpdateBatchModelCount()
     {
         _batchModelCount.Text =
-            $"Всего моделей: {_entries.Count} · " +
+            $"Показано: {FilteredBatchModels().Count()} · Всего: {_entries.Count} · " +
             $"Отмечено: {_batchCheckedModels.Count}";
     }
 
@@ -301,14 +306,8 @@ public sealed partial class VegetationPanel
                 "Seed должен быть целым числом.");
         }
 
-        var kind = _scatterKind.SelectedItem is
-            VegetationScatterKind selectedKind
-                ? selectedKind
-                : VegetationScatterKind.Tree;
-
         var template = new VegetationScatterRule
         {
-            Kind = kind,
             MaterialIndex = material.Index,
             Seed = seed,
 
@@ -362,6 +361,7 @@ public sealed partial class VegetationPanel
                 Id = previous?.Id ?? Guid.NewGuid(),
                 Name = previous?.Name ?? model.Name,
                 Model = model.File,
+                Kind = VegetationCategory.ScatterKind(model.File),
                 Enabled = true
             };
 
@@ -455,6 +455,7 @@ public sealed partial class VegetationPanel
         _batchCancel.IsEnabled = true;
         _batchMaterial.IsEnabled = false;
         _batchSearch.IsEnabled = false;
+        _batchCategory.IsEnabled = false;
         _batchModelList.IsEnabled = false;
 
         _batchProgress.Maximum = totalTiles;
@@ -548,6 +549,7 @@ public sealed partial class VegetationPanel
             _batchCancel.IsEnabled = false;
             _batchMaterial.IsEnabled = true;
             _batchSearch.IsEnabled = true;
+            _batchCategory.IsEnabled = true;
             _batchModelList.IsEnabled = true;
 
             IsSaving = false;

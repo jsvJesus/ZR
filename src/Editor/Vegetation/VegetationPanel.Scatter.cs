@@ -146,6 +146,20 @@ public sealed partial class VegetationPanel
                 FillScatterRule();
             }
         };
+        _scatterKind.SelectionChanged += (_, _) =>
+        {
+            if (!_scatterBinding) FilterScatterModels();
+        };
+    }
+
+    private void FilterScatterModels()
+    {
+        var selected = _scatterModels.SelectedItem as TreeCatalogEntry;
+        var entries = _entries.Where(entry =>
+            VegetationCategory.ScatterKind(entry.File) ==
+            (_scatterKind.SelectedItem as VegetationScatterKind? ?? VegetationScatterKind.Grass)).ToArray();
+        _scatterModels.ItemsSource = entries;
+        _scatterModels.SelectedItem = selected != null && entries.Contains(selected) ? selected : entries.FirstOrDefault();
     }
 
     private static void ScatterField(
@@ -174,7 +188,7 @@ public sealed partial class VegetationPanel
             _scatterRules.SelectedItem = rules.FirstOrDefault(
                 rule => rule.Id == selectedId);
 
-            _scatterModels.ItemsSource = _entries;
+            FilterScatterModels();
 
             _scatterMaterials.ItemsSource =
                 _level?.TerrainDocument?.Layers
@@ -216,7 +230,8 @@ public sealed partial class VegetationPanel
         try
         {
             _scatterName.Text = rule.Name;
-            _scatterKind.SelectedItem = rule.Kind;
+            _scatterKind.SelectedItem = VegetationCategory.ScatterKind(rule.Model);
+            FilterScatterModels();
 
             _scatterModels.SelectedItem = _entries.FirstOrDefault(
                 item => string.Equals(
@@ -272,6 +287,7 @@ public sealed partial class VegetationPanel
             _scatterRules.SelectedItem = null;
             _scatterName.Text = "Новое правило";
             _scatterKind.SelectedIndex = 0;
+            FilterScatterModels();
 
             _scatterEnabled.IsChecked = true;
             _scatterNearWater.IsChecked = false;
@@ -327,9 +343,7 @@ public sealed partial class VegetationPanel
             Name = (_scatterName.Text ?? "").Trim(),
             Model = model.File,
 
-            Kind = (VegetationScatterKind)(
-                _scatterKind.SelectedItem ??
-                VegetationScatterKind.Grass),
+            Kind = VegetationCategory.ScatterKind(model.File),
 
             MaterialIndex = material.Index,
 

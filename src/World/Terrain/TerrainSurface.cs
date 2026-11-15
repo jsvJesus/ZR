@@ -1,8 +1,10 @@
 using System.Numerics;
 using ZoneReborn.World.Assets;
 using ZoneReborn.World.Levels.Models;
+using ZoneReborn.World.Scene;
 using ZoneReborn.World.Terrain.Models;
 using ZoneReborn.World.Terrain.Storage;
+using ZoneReborn.World.Vegetation;
 
 namespace ZoneReborn.World.Terrain;
 
@@ -12,6 +14,9 @@ public sealed class TerrainSurface
     private readonly Dictionary<(int X, int Z), TerrainTileReference> _references;
     private readonly Dictionary<(int X, int Z), TerrainTileData> _tiles = [];
     private readonly Queue<(int X, int Z)> _order = new();
+    private SceneCollision? _playCollision;
+    private bool _hasVegetationCollision;
+    private SceneCollision? Collision => _playCollision ?? _level.Objects?.Collision;
 
     public TerrainSurface(LoadedLevel level)
     {
@@ -26,7 +31,15 @@ public sealed class TerrainSurface
 
     public bool TryGetSourceHeight(float x, float z, out float height) => TryGetHeight(x, z, 1, out height);
 
-    public bool HasSceneObjects => _level.Objects?.Instances.Count > 0;
+    public void PreparePlayCollision(AssetPaths assets, CancellationToken cancellationToken = default)
+    {
+        _playCollision = VegetationCollision.Create(_level, assets, this, cancellationToken);
+        _hasVegetationCollision = _level.Vegetation.Instances.Concat(_level.Vegetation.Generated.Select(item => item.Tree))
+            .Any(tree => _level.Vegetation.Assets.TryGetValue(tree.Model, out var asset) &&
+                VegetationCategory.HasBarkCollision(asset.File) && asset.Parts.Any(part => part.Kind == TreePartKind.Branches));
+    }
+
+    public bool HasSceneObjects => _level.Objects?.Instances.Count > 0 || _hasVegetationCollision;
     public bool HasTerrainHoles => _level.TerrainDocument?.Holes.Any == true;
     public bool Contains(float x, float z) => _level.Manifest.Terrain.Contains(x, z);
 
@@ -35,8 +48,8 @@ public sealed class TerrainSurface
     public bool TryGetGround(float x, float z, float maximumY, out float height)
     {
         bool found = TryGetHeight(x, z, out height);
-        if (_level.Objects is { } objects &&
-            objects.Collision.TryGround(x, z, maximumY, found ? height : -1e7f, out float modelHeight, 0.32f))
+        if (Collision is { } collision &&
+            collision.TryGround(x, z, maximumY, found ? height : -1e7f, out float modelHeight, 0.32f))
         {
             height = found ? Math.Max(height, modelHeight) : modelHeight;
             found = true;
@@ -45,10 +58,10 @@ public sealed class TerrainSurface
     }
 
     public Vector3 MoveCharacter(Vector3 from, Vector3 target, float height) =>
-        _level.Objects?.Collision.MoveCapsule(from, target, 0.32f, height) ?? target;
+        Collision?.MoveCapsule(from, target, 0.32f, height) ?? target;
 
     public bool CanOccupy(Vector3 feet, float height) =>
-        _level.Objects?.Collision.CanOccupy(feet, 0.32f, height) ?? true;
+        Collision?.CanOccupy(feet, 0.32f, height) ?? true;
 
     public bool TrySnapToObject(Vector3 feet, float height, float maximumDrop, out Vector3 supported,
         float maximumSurfaceY = float.PositiveInfinity) =>
@@ -59,13 +72,13 @@ public sealed class TerrainSurface
     {
         supported = feet;
         surfaceY = feet.Y;
-        return _level.Objects is { } objects &&
-            objects.Collision.TrySnapDown(feet, 0.32f, height, maximumDrop, out supported, out surfaceY, maximumSurfaceY);
+        return Collision is { } collision &&
+            collision.TrySnapDown(feet, 0.32f, height, maximumDrop, out supported, out surfaceY, maximumSurfaceY);
     }
 
     public float CameraDistance(Vector3 origin, Vector3 direction, float maximum)
     {
-        return _level.Objects is { } objects && objects.Collision.Raycast(origin, direction, maximum, out float distance)
+        return Collision is { } collision && collision.Raycast(origin, direction, maximum, out float distance)
             ? Math.Max(0, distance - 0.15f) : maximum;
     }
 

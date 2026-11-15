@@ -33,6 +33,7 @@ public sealed partial class DxViewportHost
             return;
         }
 
+        CancelTreeDrag();
         CancelObjectPlacement();
 
         var renderer = _renderer ??
@@ -85,6 +86,7 @@ public sealed partial class DxViewportHost
                 cancellation.Token.ThrowIfCancellationRequested();
 
                 var surface = new TerrainSurface(level);
+                surface.PreparePlayCollision(assets, cancellation.Token);
 
                 level.Objects?.Preload(
                     new Vector3(saved.X, saved.Y, saved.Z),

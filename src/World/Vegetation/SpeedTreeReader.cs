@@ -8,6 +8,7 @@ namespace ZoneReborn.World.Vegetation
     {
         public static IReadOnlyList<TreeCatalogEntry> Catalog(AssetPaths assets)
         {
+            SpeedTreePaths.Refresh(assets);
             string root = Path.Combine(assets.Root, "speedtree");
             if (!Directory.Exists(root)) return [];
             return Directory.EnumerateFiles(root, "*.ctree", SearchOption.AllDirectories)
@@ -18,11 +19,28 @@ namespace ZoneReborn.World.Vegetation
 
         public static TreeAsset Read(AssetPaths assets, string file, CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+            file = ResolveModel(assets, file);
+            var paths = SpeedTreePaths.For(assets);
+            string modelFile = AssetPathResolver.Resolve(assets.Root, file);
+            using var stream = File.OpenRead(modelFile);
+            return ReadGeometry(file, paths, modelFile, stream, cancellationToken);
+        }
+
+        public static string ResolveModel(AssetPaths assets, string file)
+        {
+            file = file.Replace('\\', '/');
             if (Path.GetExtension(file).Equals(".spt", StringComparison.OrdinalIgnoreCase)) file = Path.ChangeExtension(file, ".ctree");
             if (!file.StartsWith("speedtree/", StringComparison.OrdinalIgnoreCase) ||
                 !Path.GetExtension(file).Equals(".ctree", StringComparison.OrdinalIgnoreCase))
                 throw new InvalidDataException("Ожидается дерево speedtree/*.ctree.");
-            using var stream = File.OpenRead(AssetPathResolver.Resolve(assets.Root, file));
+            string modelFile = SpeedTreePaths.For(assets).Resolve(file);
+            return Path.GetRelativePath(assets.Root, modelFile).Replace('\\', '/');
+        }
+
+        private static TreeAsset ReadGeometry(string file, SpeedTreePaths paths,
+            string modelFile, Stream stream, CancellationToken cancellationToken)
+        {
             if (stream.Length > 128 * 1024 * 1024) throw new InvalidDataException("Слишком большой CTREE.");
             using var reader = new BinaryReader(stream, Encoding.UTF8);
             if (reader.ReadInt32() != 105) throw new InvalidDataException("Поддерживается CTREE версии 105.");
@@ -75,7 +93,7 @@ namespace ZoneReborn.World.Vegetation
                     }
                     if (part == 2 && indices % 3 != 0) throw new InvalidDataException("Неполный треугольник листвы.");
                 }
-                string diffuse = Texture(reader, assets), normalMap = Texture(reader, assets);
+                string diffuse = Texture(reader, paths, modelFile), normalMap = Texture(reader, paths, modelFile);
                 if (vertices.Length > 0 && lods.Any(l => l.Length > 0))
                     parts.Add(new((TreePartKind)part, vertices, lods, diffuse, normalMap));
             }
@@ -95,7 +113,7 @@ namespace ZoneReborn.World.Vegetation
                         if (reader.ReadUInt16() >= count) throw new InvalidDataException("Индекс billboard вне массива.");
                 }
             }
-            _ = Texture(reader, assets); _ = Texture(reader, assets);
+            _ = Texture(reader, paths, modelFile); _ = Texture(reader, paths, modelFile);
             if (stream.Position != stream.Length) throw new InvalidDataException("Неизвестные данные в конце CTREE.");
             if (parts.Count == 0) throw new InvalidDataException("В CTREE отсутствует геометрия дерева.");
             foreach (var part in parts)
@@ -114,14 +132,14 @@ namespace ZoneReborn.World.Vegetation
             return new(file, minimum, maximum, parts.ToArray());
         }
 
-        private static string Texture(BinaryReader reader, AssetPaths assets)
+        private static string Texture(BinaryReader reader, SpeedTreePaths paths, string modelFile)
         {
             int count = Count(reader, 4096); Ensure(reader, count);
             string path = Encoding.UTF8.GetString(reader.ReadBytes(count)).Replace('\\', '/');
             if (path.Length == 0) return "";
             if (!Path.GetExtension(path).Equals(".dds", StringComparison.OrdinalIgnoreCase))
                 throw new InvalidDataException($"Неизвестная текстура дерева: {path}");
-            return AssetPathResolver.Resolve(assets.Root, path);
+            return paths.Resolve(path, modelFile);
         }
         private static int Count(BinaryReader reader, int maximum)
         {
