@@ -1,5 +1,6 @@
 using System.Numerics;
 using System.Runtime.InteropServices;
+using System.Text.Json.Serialization;
 
 namespace ZoneReborn.World.Scene;
 
@@ -53,4 +54,11 @@ public sealed record SceneInstance(string Model, Matrix4x4 World, Matrix4x4 Inve
     public bool IsAdded { get; init; }
     public SceneBounds LocalBounds { get; init; }
     public SceneBounds VisualLocalBounds { get; init; }
+    public bool FollowTerrain { get; init; } = true;
+    public SceneTerrainAnchor? TerrainAnchor { get; init; }
 }
+
+/// <summary>Stable reference height and world Y; repeated terrain edits never accumulate translation error.</summary>
+public sealed record SceneTerrainAnchor(
+    [property: JsonRequired] float Height,
+    [property: JsonRequired] float WorldY);

@@ -7,7 +7,7 @@ namespace Editor
 {
     public sealed partial class MainWindow
     {
-        private void SetMode(
+        private bool SetMode(
             string category,
             string name,
             string description,
@@ -19,9 +19,9 @@ namespace Editor
             bool showTerrainEditing = false,
             bool showEnvironment = false)
         {
-            if (Viewport.IsObjectDragging)
+            if (!CanSwitchWorkspace)
             {
-                return;
+                return false;
             }
 
             if (!showObjects || !ObjectsPanel.IsVisible)
@@ -60,9 +60,17 @@ namespace Editor
             CharacterPanel.IsVisible = showCharacterEditor;
             CharacterPanel.SetActive(showCharacterEditor);
 
+            _activeWorkspace = showObjects ? "objects"
+                : showCharacterEditor ? "character"
+                : showVegetation ? "vegetation"
+                : showRoadSegments ? "roads"
+                : showEnvironment ? "environment"
+                : showTerrainMaterials ? "materials" : "terrain";
+            UpdateWorkspaceNavigation();
             UpdatePlayControls();
 
             StatusText.Text = $"Выбран раздел: {name}";
+            return true;
         }
 
         private async void CharacterEditor_Click(
@@ -83,12 +91,12 @@ namespace Editor
                 return;
             }
 
-            SetMode(
-                "Character Editor",
+            if (!SetMode(
+                "Персонаж",
                 "Экипировка персонажа",
                 "Одежда, снаряжение и оружие на персонаже текущего уровня.",
                 showCharacterEditor: true
-            );
+            )) return;
 
             await CharacterPanel.ActivateAsync();
         }
@@ -98,8 +106,8 @@ namespace Editor
             RoutedEventArgs e)
         {
             SetMode(
-                "Level editor",
-                "Terrain",
+                "Ландшафт",
+                "Рельеф",
                 "Поднятие, опускание, сглаживание поверхности и редактирование отверстий.",
                 showTerrainEditing: true
             );
@@ -110,8 +118,8 @@ namespace Editor
             RoutedEventArgs e)
         {
             SetMode(
-                "Level editor",
-                "Road Segments",
+                "Ландшафт",
+                "Дороги",
                 "Редактирование дорог, сегментов и общих узлов.",
                 showRoadSegments: true
             );
@@ -122,8 +130,8 @@ namespace Editor
             RoutedEventArgs e)
         {
             SetMode(
-                "Materials editor",
-                "Terrain Materials",
+                "Ландшафт",
+                "Материалы",
                 "Материалы поверхности, слои, текстуры и кисть покраски.",
                 showTerrainMaterials: true
             );
@@ -134,8 +142,8 @@ namespace Editor
             RoutedEventArgs e)
         {
             SetMode(
-                "Vegetation editor",
-                "Vegetation",
+                "Растительность",
+                "Растительность",
                 "Каталог SpeedTree и размещение растительности.",
                 showVegetation: true
             );
@@ -145,12 +153,12 @@ namespace Editor
             object? sender,
             RoutedEventArgs e)
         {
-            SetMode(
-                "Scene editor",
+            if (!SetMode(
+                "Окружение",
                 "Освещение",
                 "Солнце, время суток и окружающее освещение.",
                 showEnvironment: true
-            );
+            )) return;
 
             EnvironmentPanel.ShowSection(
                 EnvironmentSection.Lighting
@@ -161,12 +169,12 @@ namespace Editor
             object? sender,
             RoutedEventArgs e)
         {
-            SetMode(
-                "Scene editor",
+            if (!SetMode(
+                "Окружение",
                 "Тени",
                 "Параметры динамических теней.",
                 showEnvironment: true
-            );
+            )) return;
 
             EnvironmentPanel.ShowSection(
                 EnvironmentSection.Shadows
@@ -177,12 +185,12 @@ namespace Editor
             object? sender,
             RoutedEventArgs e)
         {
-            SetMode(
-                "Scene editor",
+            if (!SetMode(
+                "Окружение",
                 "Облака",
                 "Облачность и движение облачных слоёв.",
                 showEnvironment: true
-            );
+            )) return;
 
             EnvironmentPanel.ShowSection(
                 EnvironmentSection.Clouds
@@ -193,12 +201,12 @@ namespace Editor
             object? sender,
             RoutedEventArgs e)
         {
-            SetMode(
-                "Scene editor",
+            if (!SetMode(
+                "Окружение",
                 "Погода",
                 "Осадки, ветер и туман.",
                 showEnvironment: true
-            );
+            )) return;
 
             EnvironmentPanel.ShowSection(
                 EnvironmentSection.Weather
@@ -240,12 +248,12 @@ namespace Editor
                 return;
             }
 
-            SetMode(
-                "Objects editor",
+            if (!SetMode(
+                "Объекты",
                 "Объекты",
                 "Импорт, размещение, редактирование и коллизия.",
                 showObjects: true
-            );
+            )) return;
 
             ObjectsPanel.ShowSection(section);
         }
@@ -261,34 +269,35 @@ namespace Editor
             var (name, description) = section switch
             {
                 ObjectsSection.Import => (
-                    "Import",
+                    "Импорт объектов",
                     "Импорт FBX-моделей и настройка исходных текстур."
                 ),
 
                 ObjectsSection.ObjectsInScene => (
-                    "Objects in Scene",
+                    "Объекты сцены",
                     "Редактирование объектов текущего уровня."
                 ),
 
                 ObjectsSection.PlaceObjects => (
-                    "Place Objects",
+                    "Размещение объектов",
                     "Выбор моделей из каталога и размещение на сцене."
                 ),
 
                 ObjectsSection.ObjectsCollision => (
-                    "Objects Collision",
+                    "Коллизия объектов",
                     "Просмотр, генерация и оптимизация коллизий."
                 ),
 
                 _ => (
-                    "Objects editor",
+                    "Объекты",
                     "Инструменты работы с объектами."
                 )
             };
 
-            CurrentModeText.Text = $"Objects editor / {name}";
+            CurrentModeText.Text = $"Объекты / {name}";
             ModeTitle.Text = name;
             ModeDetails.Text = description;
+            UpdateWorkspaceNavigation();
             StatusText.Text = $"Выбран раздел: {name}";
         }
     }

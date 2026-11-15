@@ -223,12 +223,6 @@ public sealed partial class TerrainDocument
                     continue;
                 }
 
-                if (_sculptStroke == null ||
-                    _sculptHeightsTouched.Add((gx, gz)))
-                {
-                    change.Heights.Add((gx, gz, old));
-                }
-
                 pending.Add((gx, gz, encoded));
             }
         }
@@ -238,10 +232,7 @@ public sealed partial class TerrainDocument
             return false;
         }
 
-        foreach (var value in pending)
-        {
-            SetHeight(value.X, value.Z, value.Value);
-        }
+        WriteHeightChanges(pending, change);
 
         if (_sculptStroke == null)
         {

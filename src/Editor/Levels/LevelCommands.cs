@@ -28,10 +28,10 @@ public sealed partial class MainWindow
         SaveLevelMenu.IsEnabled = !locked;
         PlayButton.IsEnabled = _level != null && !busy && !_levelOpening && !saving && !dragging && !CharacterPanel.IsActive;
         CharacterEditorMenu.IsEnabled = !busy && !_levelOpening && !saving && !dragging;
-        LevelEditorMenu.IsEnabled = !dragging;
-        SceneEditorMenu.IsEnabled = !dragging;
-        ObjectsEditorMenu.IsEnabled = !dragging;
-        TerrainMaterialsPanel.IsEnabled = !locked;
+        LevelEditorMenu.IsEnabled = CanSwitchWorkspace;
+        SceneEditorMenu.IsEnabled = CanSwitchWorkspace;
+        ObjectsEditorMenu.IsEnabled = CanSwitchWorkspace;
+        WorkspaceNavigation.IsEnabled = CanSwitchWorkspace;
         TerrainEditorPanel.IsEnabled = !locked;
         EnvironmentPanel.IsEnabled = !busy && !_levelOpening && !saving;
         TerrainEditorPanel.RefreshMode();
@@ -42,5 +42,6 @@ public sealed partial class MainWindow
         ObjectsPanel.IsEnabled = !baseLocked;
         ObjectsPanel.RefreshMode();
         CancelImportMenu.IsEnabled = busy;
+        UpdateHistoryButtons();
     }
 }

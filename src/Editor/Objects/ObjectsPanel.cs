@@ -40,6 +40,12 @@ namespace Editor.Objects
             Spacing = 6
         };
 
+        private readonly CheckBox _followTerrain = new()
+        {
+            Content = "Следовать за рельефом"
+        };
+        private bool _updatingTerrainAttachment;
+
         private Button _move = null!;
         private Button _rotate = null!;
         private Button _apply = null!;
@@ -54,6 +60,7 @@ namespace Editor.Objects
         private string? _selectedId;
 
         private bool _binding;
+        private bool _instancesNeedRefresh;
         private bool _transformSupported;
         private Task _saveTask = Task.CompletedTask;
 
@@ -106,11 +113,20 @@ namespace Editor.Objects
 
         private void BuildSceneSection(StackPanel root)
         {
-            root.Children.Add(Text("ОБЪЕКТЫ УРОВНЯ"));
-            root.Children.Add(_summary);
-            root.Children.Add(_search);
-            root.Children.Add(_instances);
+            _sceneBrowser.Children.Add(Text("ОБЪЕКТЫ УРОВНЯ"));
+            _sceneBrowser.Children.Add(_summary);
+            _sceneBrowser.Children.Add(_search);
+            _instances.MaxHeight = 420;
+            _sceneBrowser.Children.Add(_instances);
             root.Children.Add(_selection);
+            root.Children.Add(_followTerrain);
+            ToolTip.SetTip(_followTerrain, "Перемещать по высоте земли под центром модели, сохраняя смещение, поворот и масштаб.");
+            _followTerrain.IsCheckedChanged += (_, _) =>
+            {
+                if (_updatingTerrainAttachment || !CanInteract || IsDragging || Selected is not { } selected) return;
+                Run(() => _level!.Objects!.SetFollowTerrain(selected.Id, _followTerrain.IsChecked == true));
+                RefreshMode();
+            };
 
             root.Children.Add(Text(
                 "ЛКМ — выбрать объект на сцене. " +
@@ -162,7 +178,12 @@ namespace Editor.Objects
                 _scale
             );
 
-            root.Children.Add(_transformFields);
+            root.Children.Add(new Expander
+            {
+                Header = "Трансформация",
+                IsExpanded = true,
+                Content = _transformFields
+            });
 
             _apply = Button(
                 root,
@@ -190,7 +211,7 @@ namespace Editor.Objects
 
             _save = new Button
             {
-                Content = "Сохранить объекты",
+                Content = "Сохранить объекты и Terrain",
                 HorizontalAlignment = HorizontalAlignment.Stretch
             };
 
@@ -315,16 +336,35 @@ namespace Editor.Objects
 
         public void RefreshMode()
         {
+            if (_instancesNeedRefresh && IsVisible)
+            {
+                _instancesNeedRefresh = false;
+                RefreshInstances();
+                return;
+            }
             RefreshLibraryMode();
             RefreshCollisionMode();
 
             bool active = CanInteract;
             bool controlsEnabled = active && !IsDragging;
+            bool canNavigate = IsEnabled && !IsBusy && !IsDragging &&
+                _viewport?.IsPlaying != true && _viewport?.IsStarting != true;
+            _importTab.IsEnabled = canNavigate;
+            _sceneTab.IsEnabled = canNavigate;
+            _placeTab.IsEnabled = canNavigate;
+            _collisionTab.IsEnabled = canNavigate;
             bool editable =
                 controlsEnabled &&
                 _level?.Objects?.CanSave == true;
 
             bool selected = Selected != null;
+            _updatingTerrainAttachment = true;
+            try
+            {
+                _followTerrain.IsChecked = Selected?.FollowTerrain == true;
+                _followTerrain.IsEnabled = editable && Selected is { } attachmentTarget && SceneData.CanFollowTerrain(attachmentTarget);
+            }
+            finally { _updatingTerrainAttachment = false; }
 
             _search.IsEnabled = controlsEnabled;
             _instances.IsEnabled = controlsEnabled;
@@ -365,7 +405,9 @@ namespace Editor.Objects
             _redo.IsEnabled =
                 editable && _level?.Objects?.CanRedo == true;
             _save.IsEnabled =
-                editable && _level?.Objects?.IsDirty == true;
+                editable && (_level?.Objects?.IsDirty == true || _level?.TerrainDocument?.IsDirty == true);
+
+            HistoryAvailabilityChanged?.Invoke();
 
             if (_viewport == null)
             {
@@ -403,12 +445,21 @@ namespace Editor.Objects
         {
             if (Dispatcher.UIThread.CheckAccess())
             {
-                RefreshInstances();
+                RefreshChangedInstances();
             }
             else
             {
-                Dispatcher.UIThread.Post(RefreshInstances);
+                Dispatcher.UIThread.Post(RefreshChangedInstances);
             }
+        }
+
+        private void RefreshChangedInstances()
+        {
+            // Terrain stamps can move many models while this panel is hidden.
+            // Refresh the catalogue when it is opened, not once per brush stamp.
+            if (!IsVisible) { _instancesNeedRefresh = true; return; }
+            _instancesNeedRefresh = false;
+            RefreshInstances();
         }
 
         private void RefreshInstances()

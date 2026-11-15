@@ -21,6 +21,9 @@ public sealed class TerrainSurface
 
     public bool TryGetHeight(float x, float z, out float height) => TryGetHeight(x, z, _level.Manifest.Terrain.MeshStep, out height);
 
+    public bool TryGetHeight(float x, float z, Func<int, int, float> sample, out float height) =>
+        TryGetHeight(x, z, _level.Manifest.Terrain.MeshStep, out height, sample);
+
     public bool TryGetSourceHeight(float x, float z, out float height) => TryGetHeight(x, z, 1, out height);
 
     public bool HasSceneObjects => _level.Objects?.Instances.Count > 0;
@@ -66,7 +69,7 @@ public sealed class TerrainSurface
             ? Math.Max(0, distance - 0.15f) : maximum;
     }
 
-    private bool TryGetHeight(float x, float z, int step, out float height)
+    private bool TryGetHeight(float x, float z, int step, out float height, Func<int, int, float>? sample = null)
     {
         height = 0;
         var d = _level.Manifest.Terrain;
@@ -78,10 +81,17 @@ public sealed class TerrainSurface
         int x0 = Math.Min((int)(sampleX / step) * step, (d.SamplesX - 2) / step * step);
         int z0 = Math.Min((int)(sampleZ / step) * step, (d.SamplesZ - 2) / step * step);
         int x1 = Math.Min(x0 + step, d.SamplesX - 1), z1 = Math.Min(z0 + step, d.SamplesZ - 1);
-        if (!Sample(x0, z0, out float a) || !Sample(x1, z0, out float b)
-            || !Sample(x0, z1, out float c) || !Sample(x1, z1, out float e)) return false;
+        if (!Read(x0, z0, out float a) || !Read(x1, z0, out float b)
+            || !Read(x0, z1, out float c) || !Read(x1, z1, out float e)) return false;
         height = Interpolate(a, b, c, e, (sampleX - x0) / (x1 - x0), (sampleZ - z0) / (z1 - z0));
-        return true;
+        return float.IsFinite(height);
+
+        bool Read(int gx, int gz, out float value)
+        {
+            if (sample == null) return Sample(gx, gz, out value);
+            value = sample(gx, gz);
+            return float.IsFinite(value);
+        }
     }
 
     public static float Interpolate(float a, float b, float c, float d, float u, float v) =>

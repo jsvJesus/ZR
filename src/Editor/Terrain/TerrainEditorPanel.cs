@@ -1,4 +1,5 @@
 using System.Numerics;
+using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Media;
 using Editor.Viewport;
@@ -10,6 +11,19 @@ namespace Editor.Terrain;
 
 public sealed partial class TerrainEditorPanel : UserControl
 {
+    public StackPanel BrowserContent { get; } = new() { Spacing = 10 };
+    private readonly StackPanel _materialBrowser = new() { Spacing = 8 };
+    public event Action? HistoryAvailabilityChanged;
+    public bool CanUndo => _undo.IsEnabled;
+
+    public void UndoFromToolbar()
+    {
+        if (!CanUndo) return;
+        _viewport?.EndTerrainPaint();
+        _level?.TerrainDocument?.Undo();
+        RefreshMode();
+    }
+
     private readonly ComboBox _mode = new()
     {
         ItemsSource = new[]
@@ -18,7 +32,8 @@ public sealed partial class TerrainEditorPanel : UserControl
             "Опустить поверхность",
             "Сгладить поверхность",
             "Вырезать отверстие",
-            "Заполнить отверстие"
+            "Заполнить отверстие",
+            "Выровнять поверхность"
         },
         SelectedIndex = 0
     };
@@ -88,7 +103,7 @@ public sealed partial class TerrainEditorPanel : UserControl
 
     private readonly Button _save = new()
     {
-        Content = "Сохранить Terrain"
+        Content = "Сохранить Terrain и объекты"
     };
     private readonly Button _updateTerrain = new() { Content = "Обновить Terrain из FBX" };
 
@@ -96,6 +111,7 @@ public sealed partial class TerrainEditorPanel : UserControl
     private DxViewportHost? _viewport;
     private Task _saveTask = Task.CompletedTask;
     private bool _materialsSection;
+    private float? _flattenHeight;
 
     public bool IsSaving { get; private set; }
 
@@ -123,10 +139,14 @@ public sealed partial class TerrainEditorPanel : UserControl
 
         _sculptControls.Children.Add(_mode);
         _sculptControls.Children.Add(_updateTerrain);
-        root.Children.Add(_sculptControls);
+        BrowserContent.Children.Add(_sculptControls);
 
-        root.Children.Add(_materialMode);
+        BrowserContent.Children.Add(_materialMode);
         BuildMaterialControls(root);
+        _materialControls.Children.Remove(_palette);
+        _materialBrowser.Children.Add(new TextBlock { Text = "МАТЕРИАЛ ПОВЕРХНОСТИ", FontWeight = FontWeight.SemiBold });
+        _materialBrowser.Children.Add(_palette);
+        BrowserContent.Children.Add(_materialBrowser);
 
         var radiusHeader = new Grid
         {
@@ -162,7 +182,9 @@ public sealed partial class TerrainEditorPanel : UserControl
         _brushSettings.Children.Add(_strength);
         _brushSettings.Children.Add(_brushDescription);
 
-        root.Children.Add(_brushSettings);
+        var brushSection = new Expander { Header = "Параметры кисти", IsExpanded = true, Content = _brushSettings };
+        brushSection.Bind(IsVisibleProperty, new Avalonia.Data.ReflectionBinding(nameof(IsVisible)) { Source = _brushSettings });
+        root.Children.Add(brushSection);
         root.Children.Add(_undo);
         root.Children.Add(_save);
         root.Children.Add(_status);
@@ -172,6 +194,7 @@ public sealed partial class TerrainEditorPanel : UserControl
         _mode.SelectionChanged += (_, _) =>
         {
             _viewport?.EndTerrainPaint();
+            _flattenHeight = null;
             RefreshMode();
         };
 
@@ -193,14 +216,7 @@ public sealed partial class TerrainEditorPanel : UserControl
 
         _undo.Click += (_, _) =>
         {
-            if (!Active)
-            {
-                return;
-            }
-
-            _viewport?.EndTerrainPaint();
-            _level?.TerrainDocument?.Undo();
-            RefreshMode();
+            UndoFromToolbar();
         };
 
         _save.Click += async (_, _) =>
@@ -251,6 +267,7 @@ public sealed partial class TerrainEditorPanel : UserControl
         _viewport?.EndTerrainPaint();
 
         _level = level;
+        _flattenHeight = null;
 
         _selectedVariantIndex = 0;
         _selectedVariantLayer = -1;
@@ -262,6 +279,7 @@ public sealed partial class TerrainEditorPanel : UserControl
 
     private void OnStrokeStarted()
     {
+        _flattenHeight = null;
         if (!Active || _level?.TerrainDocument is not { } document)
         {
             return;
@@ -279,6 +297,7 @@ public sealed partial class TerrainEditorPanel : UserControl
 
     private void OnStrokeEnded()
     {
+        _flattenHeight = null;
         if (_level?.TerrainDocument is { } document)
         {
             document.EndSculptStroke();
@@ -301,6 +320,8 @@ public sealed partial class TerrainEditorPanel : UserControl
         _materialMode.IsVisible = _materialsSection;
         _materialControls.IsVisible = _materialsSection;
         _materialControls.IsEnabled = active;
+        _materialBrowser.IsVisible = _materialsSection;
+        _materialBrowser.IsEnabled = active;
 
         _brushSettings.IsVisible = painting;
         _mode.IsEnabled = active;
@@ -333,8 +354,9 @@ public sealed partial class TerrainEditorPanel : UserControl
             active && _level?.TerrainDocument?.CanUndo == true;
 
         _save.IsEnabled =
-            active && _level?.TerrainDocument?.IsDirty == true;
+            active && (_level?.TerrainDocument?.IsDirty == true || _level?.Objects?.IsDirty == true);
         _updateTerrain.IsEnabled = active && _level?.Manifest.Terrain.ImportedFromMesh == true;
+        HistoryAvailabilityChanged?.Invoke();
 
         if (_level == null)
         {
@@ -355,9 +377,10 @@ public sealed partial class TerrainEditorPanel : UserControl
             !_materialsSection &&
             _mode.SelectedIndex == 2;
 
-        bool normalized = IsTexturePainting || smooth;
+        bool flatten = !_materialsSection && _mode.SelectedIndex == (int)TerrainBrushMode.Flatten;
+        bool normalized = IsTexturePainting || smooth || flatten;
 
-        double maximum = IsTexturePainting ? 1 : 5;
+        double maximum = IsTexturePainting || flatten ? 1 : 5;
 
         _strength.Maximum = maximum;
 
@@ -375,8 +398,11 @@ public sealed partial class TerrainEditorPanel : UserControl
         _brushDescription.Text = IsTexturePainting
             ? "ЛКМ + движение — рисование выбранным материалом. " +
               "ПКМ — управление камерой."
-            : "ЛКМ + движение — непрерывное редактирование Terrain. " +
-              "ПКМ — управление камерой.";
+            : flatten
+                ? (_flattenHeight is { } height ? $"Высота выравнивания: {height:0.00} м. " : "ЛКМ — взять высоту первого касания. ") +
+                  "Ведите кистью для выравнивания. Привязанные модели следуют за землёй."
+                : "ЛКМ + движение — непрерывное редактирование Terrain. " +
+                  "Привязанные модели следуют за землёй. ПКМ — управление камерой.";
 
         UpdateBrushSpacing();
     }
@@ -435,17 +461,21 @@ public sealed partial class TerrainEditorPanel : UserControl
             {
                 int index = _mode.SelectedIndex;
 
-                if (index < 0 || index > 4)
+                if (index < 0 || index > (int)TerrainBrushMode.Flatten)
                 {
                     return;
                 }
+
+                if (index == (int)TerrainBrushMode.Flatten)
+                    _flattenHeight ??= point.Y;
 
                 document.Apply(
                     point.X,
                     point.Z,
                     radius,
                     strength,
-                    (TerrainBrushMode)index
+                    (TerrainBrushMode)index,
+                    _flattenHeight
                 );
             }
 
@@ -469,7 +499,7 @@ public sealed partial class TerrainEditorPanel : UserControl
             return;
         }
 
-        if (_level?.TerrainDocument?.IsDirty != true)
+        if (_level?.TerrainDocument?.IsDirty != true && _level?.Objects?.IsDirty != true)
         {
             return;
         }
@@ -486,7 +516,7 @@ public sealed partial class TerrainEditorPanel : UserControl
 
         try
         {
-            await _level!.TerrainDocument!.SaveAsync();
+            await ZoneReborn.World.Levels.Storage.LevelGeometryStorage.SaveAsync(_level!);
         }
         finally
         {

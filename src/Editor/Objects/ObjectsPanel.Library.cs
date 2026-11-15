@@ -82,23 +82,24 @@ public sealed partial class ObjectsPanel
 
     private void BuildLibrary(StackPanel root)
     {
-        root.Children.Add(Text("КАТАЛОГ МОДЕЛЕЙ · objects / models2"));
-        root.Children.Add(_assetLocation);
+        var browser = _libraryBrowser;
+        browser.Children.Add(Text("КАТАЛОГ МОДЕЛЕЙ"));
+        browser.Children.Add(_assetLocation);
 
         _parentFolderButton = Button(
-            root,
+            browser,
             "← На уровень выше",
             NavigateParentFolder
         );
 
-        root.Children.Add(Text("ПАПКИ"));
-        root.Children.Add(_assetFolders);
+        browser.Children.Add(Text("ПАПКИ"));
+        browser.Children.Add(_assetFolders);
 
-        root.Children.Add(Text("МОДЕЛИ"));
-        root.Children.Add(_assetSearch);
-        root.Children.Add(_catalogueSummary);
-        root.Children.Add(_assetsList);
-        root.Children.Add(_assetPageSummary);
+        browser.Children.Add(Text("МОДЕЛИ"));
+        browser.Children.Add(_assetSearch);
+        browser.Children.Add(_catalogueSummary);
+        browser.Children.Add(_assetsList);
+        browser.Children.Add(_assetPageSummary);
 
         var pageControls = new StackPanel
         {
@@ -141,7 +142,7 @@ public sealed partial class ObjectsPanel
         pageControls.Children.Add(_previousPageButton);
         pageControls.Children.Add(_nextPageButton);
 
-        root.Children.Add(pageControls);
+        browser.Children.Add(pageControls);
         root.Children.Add(_assetStatus);
 
         _previewButton = Button(

@@ -11,6 +11,7 @@ namespace Editor.Characters;
 
 public sealed class CharacterEditorPanel : UserControl
 {
+    public StackPanel BrowserContent { get; } = new() { Spacing = 8 };
     private readonly ComboBox _category = new() { HorizontalAlignment = HorizontalAlignment.Stretch };
     private readonly TextBox _search = new() { Watermark = "Название вещи или номер…" };
     private readonly ListBox _catalogList = new() { MaxHeight = 210, MinHeight = 90 };
@@ -41,19 +42,22 @@ public sealed class CharacterEditorPanel : UserControl
         root.Children.Add(_summary);
         root.Children.Add(_show);
         root.Children.Add(Text("ПКМ + мышь — осмотр · колесо — расстояние"));
-        root.Children.Add(Title("КАТАЛОГ ЭКИПИРОВКИ"));
-        root.Children.Add(_category);
-        root.Children.Add(_search);
-        root.Children.Add(_catalogList);
+        BrowserContent.Children.Add(Title("КАТАЛОГ ЭКИПИРОВКИ"));
+        BrowserContent.Children.Add(_category);
+        BrowserContent.Children.Add(_search);
+        _catalogList.MaxHeight = 380;
+        BrowserContent.Children.Add(_catalogList);
         root.Children.Add(_details);
         root.Children.Add(_equip);
-        root.Children.Add(Title("НАДЕТО НА ПЕРСОНАЖЕ"));
-        root.Children.Add(_equippedList);
-        root.Children.Add(_weaponState);
-        root.Children.Add(_drawWeapon);
-        root.Children.Add(_holsterWeapon);
-        root.Children.Add(_remove);
-        root.Children.Add(_reset);
+        var equipped = new StackPanel { Spacing = 8 };
+        equipped.Children.Add(Title("НАДЕТО НА ПЕРСОНАЖЕ"));
+        equipped.Children.Add(_equippedList);
+        equipped.Children.Add(_weaponState);
+        equipped.Children.Add(_drawWeapon);
+        equipped.Children.Add(_holsterWeapon);
+        equipped.Children.Add(_remove);
+        equipped.Children.Add(_reset);
+        root.Children.Add(new Expander { Header = "Экипировка и оружие", IsExpanded = true, Content = equipped });
         root.Children.Add(Text("В Play: H — достать / убрать оружие. Комплект сохраняется для следующего Play."));
         root.Children.Add(_status);
         Content = root;
@@ -227,7 +231,7 @@ public sealed class CharacterEditorPanel : UserControl
         bool requestedHeld = _viewport?.CharacterWeaponRequestedHeld == true;
         bool weaponChanging = state != null && (state is not (CharacterWeaponState.Holstered or CharacterWeaponState.Held)
             || requestedHeld != (state == CharacterWeaponState.Held));
-        _summary.Text = viewing ? "Персонаж на открытом уровне. Выбирайте экипировку справа."
+        _summary.Text = viewing ? "Выбирайте экипировку в каталоге слева; надетые вещи показаны ниже."
             : _viewport?.HasLoadedLevel == true ? "Покажите персонажа на текущем уровне."
             : "Откройте уровень для просмотра персонажа.";
         _show.IsEnabled = IsActive && !IsBusy && !viewing && _viewport?.HasLoadedLevel == true;

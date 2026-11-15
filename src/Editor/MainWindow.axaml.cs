@@ -10,6 +10,7 @@ namespace Editor
         public MainWindow()
         {
             InitializeComponent();
+            InitializeWorkspaceLayout();
             EnvironmentPanel.Attach(Viewport, _workspace.Assets);
             TerrainEditorPanel.Attach(Viewport, _workspace.Assets);
             TerrainEditorPanel.BusyChanged += UpdatePlayControls;
@@ -52,6 +53,7 @@ namespace Editor
             );
 
             UpdateCamera(Viewport.CameraPose);
+            Terrain_Click(this, new RoutedEventArgs());
             Closing += SaveChangesBeforeClosing;
             Closed += (_, _) =>
             {

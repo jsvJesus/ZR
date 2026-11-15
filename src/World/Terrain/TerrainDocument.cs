@@ -7,7 +7,7 @@ using ZoneReborn.World.Terrain.Storage;
 
 namespace ZoneReborn.World.Terrain;
 
-public enum TerrainBrushMode { Raise, Lower, Smooth, CutHole, FillHole }
+public enum TerrainBrushMode { Raise, Lower, Smooth, CutHole, FillHole, Flatten }
 
 /// <summary>Shared CPU terrain data used by editing, rendering and gameplay.</summary>
 public sealed partial class TerrainDocument(string directory, LevelManifest manifest, TerrainHoles holes, List<TerrainLayer> layers)
@@ -68,11 +68,13 @@ public sealed partial class TerrainDocument(string directory, LevelManifest mani
         && !Holes.Contains(Math.Min((int)((x - Descriptor.OriginX) / Descriptor.CellSize), Holes.Width - 1),
             Math.Min((int)((z - Descriptor.OriginZ) / Descriptor.CellSize), Holes.Height - 1));
 
-    public bool Apply(float x, float z, float radius, float strength, TerrainBrushMode mode)
+    public bool Apply(float x, float z, float radius, float strength, TerrainBrushMode mode, float? flattenHeight = null)
     {
         var d = Descriptor;
         if (!float.IsFinite(x) || !float.IsFinite(z) || !float.IsFinite(radius) || !float.IsFinite(strength)
             || radius <= 0 || radius > 100 || strength <= 0 || strength > 100) return false;
+        if ((uint)mode > (uint)TerrainBrushMode.Flatten) return false;
+        if (mode == TerrainBrushMode.Flatten && (flattenHeight is not { } target || !float.IsFinite(target))) return false;
         if ((mode is TerrainBrushMode.CutHole or TerrainBrushMode.FillHole)
             && (long)(d.SamplesX - 1) * (d.SamplesZ - 1) > 16_777_216)
             throw new InvalidOperationException("Для отверстий поддерживается не более 16 миллионов ячеек.");
@@ -121,19 +123,15 @@ public sealed partial class TerrainDocument(string directory, LevelManifest mani
             float next = mode == TerrainBrushMode.Smooth
                 ? height + ((Height(gx - 1, gz) + Height(gx + 1, gz) + Height(gx, gz - 1) + Height(gx, gz + 1)) / 4 - height)
                     * Math.Min(1, strength) * weight
-                : height + strength * weight * (mode == TerrainBrushMode.Lower ? -1 : 1);
+                : mode == TerrainBrushMode.Flatten
+                    ? height + (flattenHeight!.Value - height) * Math.Min(1, strength) * weight
+                    : height + strength * weight * (mode == TerrainBrushMode.Lower ? -1 : 1);
             ushort encoded = (ushort)Math.Clamp((int)MathF.Round((next - d.HeightOffset) / d.HeightScale * 65535), 0, 65535);
             if (encoded == old) continue;
 
-            if (_sculptStroke == null ||
-                _sculptHeightsTouched.Add((gx, gz)))
-            {
-                change.Heights.Add((gx, gz, old));
-            }
-
             pending.Add((gx, gz, encoded));
         }
-        foreach (var value in pending) SetHeight(value.X, value.Z, value.Value);
+        WriteHeightChanges(pending, change);
 
         if (pending.Count == 0 && !holesChanged)
         {
@@ -168,9 +166,10 @@ public sealed partial class TerrainDocument(string directory, LevelManifest mani
     public void Undo()
     {
         if (_undo.Count == 0) return;
-        var change = _undo[^1]; _undo.RemoveAt(_undo.Count - 1);
+        var change = _undo[^1];
+        WriteHeightChanges(change.Heights, null);
+        _undo.RemoveAt(_undo.Count - 1);
         if (change.SourceMaterialLayout is { } sourceLayout) Descriptor.HasSourceMaterialLayout = sourceLayout;
-        foreach (var value in change.Heights) SetHeight(value.X, value.Z, value.Value);
         foreach (var value in change.Holes) Holes.Set(value.X, value.Z, value.Value);
         foreach (var value in change.Materials)
         {

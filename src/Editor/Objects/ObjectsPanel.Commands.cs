@@ -5,6 +5,20 @@ namespace Editor.Objects
 {
     public sealed partial class ObjectsPanel
     {
+        public event Action? HistoryAvailabilityChanged;
+        public bool CanUndo => _undo.IsEnabled;
+        public bool CanRedo => _redo.IsEnabled;
+
+        public void UndoFromToolbar()
+        {
+            if (CanUndo) Run(Undo);
+        }
+
+        public void RedoFromToolbar()
+        {
+            if (CanRedo) Run(Redo);
+        }
+
         private void RequireEditable()
         {
             if (!CanInteract ||
@@ -126,7 +140,7 @@ namespace Editor.Objects
                 );
             }
 
-            if (_level?.Objects?.IsDirty != true)
+            if (_level?.Objects?.IsDirty != true && _level?.TerrainDocument?.IsDirty != true)
             {
                 return Task.CompletedTask;
             }
@@ -158,10 +172,7 @@ namespace Editor.Objects
 
             try
             {
-                await SceneEditStorage.SaveAsync(
-                    level.Directory,
-                    level.Objects
-                );
+                await ZoneReborn.World.Levels.Storage.LevelGeometryStorage.SaveAsync(level);
 
                 if (_level == level)
                 {

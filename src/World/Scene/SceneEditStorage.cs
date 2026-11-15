@@ -20,10 +20,10 @@ public static class SceneEditStorage
         {
             if (new FileInfo(path).Length > MaximumDocumentBytes) throw new InvalidDataException("Слишком большой файл правок объектов.");
             var document = await LevelJson.ReadAsync<Document>(path, cancellationToken);
-            if (document.Format != "ZoneReborn.SceneObjects" || document.Version is not (1 or 2) ||
+            if (document.Format != "ZoneReborn.SceneObjects" || document.Version is not (1 or 2 or 3) ||
                 document.Level != scene.SourceName || document.Edits == null || document.Edits.Length > 1_000_000)
                 throw new InvalidDataException("Неподдерживаемый документ правок объектов или другой исходный уровень.");
-            if ((document.Version == 2 && document.Added == null) ||
+            if ((document.Version >= 2 && document.Added == null) ||
                 (document.Version == 1 && document.Added is { Length: > 0 }) || document.Added?.Length > MaximumAddedObjects)
                 throw new InvalidDataException("Некорректный список добавленных объектов.");
             var ids = new HashSet<string>(StringComparer.Ordinal);
@@ -36,12 +36,16 @@ public static class SceneEditStorage
                 var source = scene.Original(edit.Id);
                 if (source == null || source.SourceStamp != edit.SourceStamp || source.Model != edit.Model)
                     throw new InvalidDataException($"Исходный объект {edit.Id} изменился или отсутствует. Правки не применены.");
+                ValidateAnchor(edit.TerrainAnchor);
                 if (edit.Deleted)
                 {
                     if (edit.World != null) throw new InvalidDataException("У удалённого объекта не должно быть трансформации.");
                     replacements.Add((edit.Id, null));
                 }
-                else replacements.Add((edit.Id, SceneData.Transform(source, ReadMatrix(edit.World))));
+                else replacements.Add((edit.Id, SceneData.Transform(source, ReadMatrix(edit.World)) with
+                {
+                    FollowTerrain = edit.FollowTerrain, TerrainAnchor = edit.TerrainAnchor
+                }));
             }
             var addedEntries = document.Added ?? [];
             foreach (var entry in addedEntries)
@@ -51,6 +55,7 @@ public static class SceneEditStorage
                     throw new InvalidDataException("Некорректный или повторяющийся ID добавленного объекта.");
                 if (string.IsNullOrWhiteSpace(entry.Model)) throw new InvalidDataException("Не задана модель добавленного объекта.");
                 SceneObjectTransform.ValidateWorld(ReadMatrix(entry.World));
+                ValidateAnchor(entry.TerrainAnchor);
             }
             if ((long)scene.Instances.Count - replacements.Count(change => change.Instance == null) + addedEntries.Length > 1_000_000)
                 throw new InvalidDataException("Превышен лимит объектов уровня.");
@@ -62,7 +67,10 @@ public static class SceneEditStorage
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     var entry = addedEntries[i];
-                    result[i] = scene.PrepareAddedInstance(entry.Id, entry.Model, ReadMatrix(entry.World), requireLoaded: false);
+                    result[i] = scene.PrepareAddedInstance(entry.Id, entry.Model, ReadMatrix(entry.World), requireLoaded: false) with
+                    {
+                        FollowTerrain = entry.FollowTerrain, TerrainAnchor = entry.TerrainAnchor
+                    };
                 }
                 return result;
             }, cancellationToken);
@@ -98,6 +106,12 @@ public static class SceneEditStorage
         [world.M11, world.M12, world.M13, world.M14, world.M21, world.M22, world.M23, world.M24,
          world.M31, world.M32, world.M33, world.M34, world.M41, world.M42, world.M43, world.M44];
 
+    private static void ValidateAnchor(SceneTerrainAnchor? anchor)
+    {
+        if (anchor != null && (!float.IsFinite(anchor.Height) || !float.IsFinite(anchor.WorldY)))
+            throw new InvalidDataException("Некорректная высота привязки объекта к Terrain.");
+    }
+
     private static Matrix4x4 ReadMatrix(float[]? values)
     {
         if (values == null || values.Length != 16) throw new InvalidDataException("Трансформация должна содержать 16 чисел.");
@@ -110,7 +124,7 @@ public static class SceneEditStorage
         [JsonRequired]
         public string Format { get; init; } = "ZoneReborn.SceneObjects";
         [JsonRequired]
-        public int Version { get; init; } = 2;
+        public int Version { get; init; } = 3;
         [JsonRequired]
         public string Level { get; init; } = "";
         [JsonRequired]
@@ -121,6 +135,8 @@ public static class SceneEditStorage
 
 public sealed class SceneAddedObject
 {
+    public bool FollowTerrain { get; init; } = true;
+    public SceneTerrainAnchor? TerrainAnchor { get; init; }
     [JsonRequired]
     public string Id { get; init; } = "";
     [JsonRequired]
@@ -131,6 +147,8 @@ public sealed class SceneAddedObject
 
 public sealed class SceneObjectOverride
 {
+    public bool FollowTerrain { get; init; } = true;
+    public SceneTerrainAnchor? TerrainAnchor { get; init; }
     [JsonRequired]
     public string Id { get; init; } = "";
     [JsonRequired]

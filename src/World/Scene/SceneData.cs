@@ -4,7 +4,7 @@ using ZoneReborn.World.Assets;
 
 namespace ZoneReborn.World.Scene;
 
-public sealed class SceneData
+public sealed partial class SceneData
 {
     private const int CellSize = 64;
     private readonly Dictionary<(int X, int Z), List<SceneInstance>> _cells = [];
@@ -100,7 +100,7 @@ public sealed class SceneData
     public void BeginTransformPreview(string id)
     {
         RequireEditable();
-        _previewOriginal = Find(id) ?? throw new InvalidOperationException("Объект не найден или уже удалён.");
+        _previewOriginal = EnsureTerrainAnchor(Find(id) ?? throw new InvalidOperationException("Объект не найден или уже удалён."));
     }
 
     public SceneInstance PreviewTransform(string id, Matrix4x4 world)
@@ -161,9 +161,11 @@ public sealed class SceneData
     {
         RequireEditable();
         if (!CanUndo) return false;
-        var change = _history[--_historyPosition];
+        var change = _history[_historyPosition - 1];
+        var restored = change.Before == null ? null : ProjectToTerrain(change.Before);
+        _historyPosition--;
         if (change.Before == null) _current.Remove(change.After!.Id);
-        else _current[change.Before.Id] = change.Before;
+        else _current[change.Before.Id] = restored!;
         PublishChange();
         return true;
     }
@@ -172,13 +174,17 @@ public sealed class SceneData
     {
         RequireEditable();
         if (!CanRedo) return false;
-        Apply(_history[_historyPosition++]);
+        Apply(_history[_historyPosition]);
+        _historyPosition++;
         PublishChange();
         return true;
     }
 
     private void Record(Change change)
     {
+        change = new(
+            change.Before == null ? null : EnsureTerrainAnchor(change.Before),
+            change.After == null ? null : ReanchorTerrain(change.After));
         if (_historyPosition < _history.Count) _history.RemoveRange(_historyPosition, _history.Count - _historyPosition);
         if (_history.Count == 256) { _history.RemoveAt(0); _historyPosition--; }
         _history.Add(change); _historyPosition++;
@@ -189,7 +195,7 @@ public sealed class SceneData
     private void Apply(Change change)
     {
         if (change.After == null) _current.Remove(change.Before!.Id);
-        else _current[change.After.Id] = change.After;
+        else _current[change.After.Id] = ProjectToTerrain(change.After);
     }
 
     private void PublishChange()
@@ -247,16 +253,21 @@ public sealed class SceneData
         foreach (var source in _sources)
         {
             var current = Find(source.Id);
-            if (current != null && current.World == source.World) continue;
+            // Keep anchors even after undo returns a model to its exact source matrix:
+            // they are also the recovery record if the subsequent terrain save is interrupted.
+            if (current != null && current.World == source.World && current.FollowTerrain == source.FollowTerrain &&
+                current.TerrainAnchor == null) continue;
             edits.Add(new()
             {
                 Id = source.Id, SourceStamp = source.SourceStamp, Model = source.Model,
-                Deleted = current == null, World = current == null ? null : SceneEditStorage.MatrixValues(current.World)
+                Deleted = current == null, World = current == null ? null : SceneEditStorage.MatrixValues(current.World),
+                FollowTerrain = current?.FollowTerrain ?? true, TerrainAnchor = current?.TerrainAnchor
             });
         }
         var added = _addedOrder.Select(Find).OfType<SceneInstance>().Select(instance => new SceneAddedObject
         {
-            Id = instance.Id, Model = instance.Model, World = SceneEditStorage.MatrixValues(instance.World)
+            Id = instance.Id, Model = instance.Model, World = SceneEditStorage.MatrixValues(instance.World),
+            FollowTerrain = instance.FollowTerrain, TerrainAnchor = instance.TerrainAnchor
         }).ToArray();
         return (_revision, edits.ToArray(), added);
     }

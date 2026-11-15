@@ -15,6 +15,9 @@ public enum ObjectsSection
 
 public sealed partial class ObjectsPanel
 {
+    public StackPanel BrowserContent { get; } = new() { Spacing = 10 };
+    private readonly StackPanel _sceneBrowser = new() { Spacing = 8 };
+    private readonly StackPanel _libraryBrowser = new() { Spacing = 8 };
     private ObjectsSection _section = ObjectsSection.ObjectsInScene;
 
     private readonly StackPanel _importContent = new()
@@ -37,10 +40,10 @@ public sealed partial class ObjectsPanel
         Spacing = 8
     };
 
-    private readonly Button _importTab = CreateSectionButton("Import");
-    private readonly Button _sceneTab = CreateSectionButton("Objects in Scene");
-    private readonly Button _placeTab = CreateSectionButton("Place Objects");
-    private readonly Button _collisionTab = CreateSectionButton("Objects Collision");
+    private readonly Button _importTab = CreateSectionButton("Импорт");
+    private readonly Button _sceneTab = CreateSectionButton("Сцена");
+    private readonly Button _placeTab = CreateSectionButton("Размещение");
+    private readonly Button _collisionTab = CreateSectionButton("Коллизия");
 
     public event Action<ObjectsSection>? SectionChanged;
 
@@ -69,7 +72,9 @@ public sealed partial class ObjectsPanel
         _collisionTab.Click += (_, _) =>
             ShowSection(ObjectsSection.ObjectsCollision);
 
-        root.Children.Add(navigation);
+        BrowserContent.Children.Add(navigation);
+        BrowserContent.Children.Add(_sceneBrowser);
+        BrowserContent.Children.Add(_libraryBrowser);
 
         _importContent.Children.Add(Text("ИМПОРТ ОБЪЕКТОВ"));
         _importContent.Children.Add(Text(
@@ -95,6 +100,8 @@ public sealed partial class ObjectsPanel
 
     public void ShowSection(ObjectsSection section)
     {
+        if (IsBusy || IsDragging) return;
+
         bool leavingPlacement =
             _section == ObjectsSection.PlaceObjects &&
             section != ObjectsSection.PlaceObjects;
@@ -125,6 +132,8 @@ public sealed partial class ObjectsPanel
 
     private void UpdateSectionVisibility()
     {
+        _sceneBrowser.IsVisible = _section is ObjectsSection.ObjectsInScene or ObjectsSection.ObjectsCollision;
+        _libraryBrowser.IsVisible = _section == ObjectsSection.PlaceObjects;
         _importContent.IsVisible =
             _section == ObjectsSection.Import;
 

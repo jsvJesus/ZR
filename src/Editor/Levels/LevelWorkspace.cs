@@ -51,7 +51,9 @@ public sealed class LevelWorkspace
             ? new SceneData(Assets, [], sourceName: level.Manifest.Name)
             : await Task.Run(() => SourceSceneReader.Read(source, Assets, cancellationToken), cancellationToken);
         await SceneEditStorage.LoadAsync(level.Directory, objects, cancellationToken);
-        return level with { Roads = roads, Vegetation = vegetation, Objects = objects };
+        level = level with { Roads = roads, Vegetation = vegetation, Objects = objects };
+        objects.AttachTerrain(level);
+        return level;
     }
 
     public static async Task SaveCameraAsync(LoadedLevel level, LevelCamera camera)

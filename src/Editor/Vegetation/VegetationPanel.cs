@@ -13,6 +13,7 @@ namespace Editor.Vegetation
 {
     public sealed partial class VegetationPanel : UserControl
     {
+        public StackPanel BrowserContent { get; } = new() { Spacing = 8 };
         private readonly TextBox _search = new() { Watermark = "Поиск дерева…" };
         private readonly ListBox _catalog = new() { MaxHeight = 170 };
         private readonly ListBox _instances = new() { MaxHeight = 150 };
@@ -37,20 +38,25 @@ namespace Editor.Vegetation
         public VegetationPanel()
         {
             var root = new StackPanel { Spacing = 8 };
-            root.Children.Add(_summary); root.Children.Add(Title("КАТАЛОГ ДЕРЕВЬЕВ"));
-            root.Children.Add(_search); root.Children.Add(_catalog); root.Children.Add(_modelInfo);
+            BrowserContent.Children.Add(_summary); BrowserContent.Children.Add(Title("КАТАЛОГ ДЕРЕВЬЕВ"));
+            BrowserContent.Children.Add(_search); BrowserContent.Children.Add(_catalog);
+            BrowserContent.Children.Add(Title("ДЕРЕВЬЯ УРОВНЯ")); BrowserContent.Children.Add(_instances);
+            root.Children.Add(_modelInfo);
             root.Children.Add(_placing);
             root.Children.Add(Text("Снимите флажок, чтобы выбирать уже поставленные деревья щелчком."));
-            root.Children.Add(Title("ДЕРЕВЬЯ УРОВНЯ")); root.Children.Add(_instances);
             Button(root, "Показать выбранное", () => { if (Selected is { } tree) _viewport?.FocusTree(tree); });
-            root.Children.Add(_grounded);
+            var properties = new StackPanel { Spacing = 8 };
+            properties.Children.Add(_grounded);
 
-            Field(root, "X", _x); root.Children.Add(_heightLabel); root.Children.Add(_y); Field(root, "Z", _z);
-            Field(root, "Поворот, градусы", _yaw); Field(root, "Масштаб", _scale);
-            Button(root, "Применить параметры", ApplyProperties);
-            Button(root, "Поставить на Terrain", SnapToGround);
-            Button(root, "Удалить выбранное дерево", DeleteSelected);
-            BuildScatterControls(root);
+            Field(properties, "X", _x); properties.Children.Add(_heightLabel); properties.Children.Add(_y); Field(properties, "Z", _z);
+            Field(properties, "Поворот, градусы", _yaw); Field(properties, "Масштаб", _scale);
+            Button(properties, "Применить параметры", ApplyProperties);
+            Button(properties, "Поставить на Terrain", SnapToGround);
+            Button(properties, "Удалить выбранное дерево", DeleteSelected);
+            root.Children.Add(new Expander { Header = "Размещение и трансформация", IsExpanded = true, Content = properties });
+            var scatter = new StackPanel { Spacing = 8 };
+            BuildScatterControls(scatter);
+            root.Children.Add(new Expander { Header = "Массовая расстановка", Content = scatter });
 
             var save = new Button { Content = "Сохранить растительность", HorizontalAlignment = HorizontalAlignment.Stretch };
             save.Click += async (_, _) =>

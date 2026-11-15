@@ -13,6 +13,7 @@ namespace Editor.RoadSegments
 {
     public sealed partial class RoadSegmentsPanel : UserControl
     {
+        public StackPanel BrowserContent { get; } = new() { Spacing = 8 };
         private readonly ListBox _roads = new() { MaxHeight = 150 };
         private readonly ListBox _segments = new() { MaxHeight = 130 };
         private readonly ComboBox _endpoint = new() { ItemsSource = new[] { "Начало сегмента", "Конец сегмента" }, SelectedIndex = 0 };
@@ -35,33 +36,37 @@ namespace Editor.RoadSegments
         public RoadSegmentsPanel()
         {
             var root = new StackPanel { Spacing = 8 };
-            root.Children.Add(_summary);
-            root.Children.Add(Title("ДОРОГИ")); root.Children.Add(_roads);
-            root.Children.Add(Title("СЕГМЕНТЫ")); root.Children.Add(_segments);
+            BrowserContent.Children.Add(_summary);
+            BrowserContent.Children.Add(Title("ДОРОГИ")); BrowserContent.Children.Add(_roads);
+            BrowserContent.Children.Add(Title("СЕГМЕНТЫ")); BrowserContent.Children.Add(_segments);
             AddButton(root, "Показать сегмент", () =>
             {
                 if (SelectedRoad is { } road && SelectedSegment is { } segment) _viewport?.FocusRoadSegment(road, segment);
             });
-            root.Children.Add(Title("УЗЕЛ")); root.Children.Add(_followTerrain); root.Children.Add(_endpoint);
-            AddField(root, "X", _x); root.Children.Add(_heightLabel); root.Children.Add(_y); AddField(root, "Z", _z);
-            AddField(root, "Ручка Bézier X", _tx); AddField(root, "Ручка Bézier Z", _tz); AddField(root, "Ширина, м", _width);
-            AddButton(root, "Применить узел и размещение", ApplyNode);
-            root.Children.Add(Text("Общий узел изменяет оба соседних сегмента."));
-            AddButton(root, "Высоты узлов по Terrain", FitToTerrain);
-            root.Children.Add(Title("МАТЕРИАЛ СЕГМЕНТА")); root.Children.Add(_materials);
-            AddField(root, "Текстура DDS (пусто — из материала)", _diffuse);
-            AddAsyncButton(root, "Выбрать текстуру…", () => BrowseTextureAsync(_diffuse));
-            AddField(root, "Normal DDS (пусто — из материала)", _normal);
-            AddAsyncButton(root, "Выбрать normal map…", () => BrowseTextureAsync(_normal));
-            AddField(root, "Specular DDS (пусто — из материала)", _specular);
-            AddAsyncButton(root, "Выбрать specular map…", () => BrowseTextureAsync(_specular));
-            AddField(root, "Specular power DDS (пусто — из материала)", _specularPower);
-            AddAsyncButton(root, "Выбрать карту резкости блика…", () => BrowseTextureAsync(_specularPower));
-            AddField(root, "Повторение вдоль дороги", _uv);
-            root.Children.Add(_textureInfo);
-            AddButton(root, "Применить материал к сегменту", () => ApplyMaterial(false));
-            AddButton(root, "Применить материал ко всей дороге", () => ApplyMaterial(true));
-            AddButton(root, "Перечитать DDS", () => { _viewport?.ReloadRoadTextures(); UpdateTextureInfo(); UpdateSummary(); });
+            var node = new StackPanel { Spacing = 8 };
+            node.Children.Add(Title("УЗЕЛ")); node.Children.Add(_followTerrain); node.Children.Add(_endpoint);
+            AddField(node, "X", _x); node.Children.Add(_heightLabel); node.Children.Add(_y); AddField(node, "Z", _z);
+            AddField(node, "Ручка Bézier X", _tx); AddField(node, "Ручка Bézier Z", _tz); AddField(node, "Ширина, м", _width);
+            AddButton(node, "Применить узел и размещение", ApplyNode);
+            node.Children.Add(Text("Общий узел изменяет оба соседних сегмента."));
+            AddButton(node, "Высоты узлов по Terrain", FitToTerrain);
+            root.Children.Add(new Expander { Header = "Геометрия сегмента", IsExpanded = true, Content = node });
+            var material = new StackPanel { Spacing = 8 };
+            material.Children.Add(Title("МАТЕРИАЛ СЕГМЕНТА")); material.Children.Add(_materials);
+            AddField(material, "Текстура DDS (пусто — из материала)", _diffuse);
+            AddAsyncButton(material, "Выбрать текстуру…", () => BrowseTextureAsync(_diffuse));
+            AddField(material, "Normal DDS (пусто — из материала)", _normal);
+            AddAsyncButton(material, "Выбрать normal map…", () => BrowseTextureAsync(_normal));
+            AddField(material, "Specular DDS (пусто — из материала)", _specular);
+            AddAsyncButton(material, "Выбрать specular map…", () => BrowseTextureAsync(_specular));
+            AddField(material, "Specular power DDS (пусто — из материала)", _specularPower);
+            AddAsyncButton(material, "Выбрать карту резкости блика…", () => BrowseTextureAsync(_specularPower));
+            AddField(material, "Повторение вдоль дороги", _uv);
+            material.Children.Add(_textureInfo);
+            AddButton(material, "Применить материал к сегменту", () => ApplyMaterial(false));
+            AddButton(material, "Применить материал ко всей дороге", () => ApplyMaterial(true));
+            AddButton(material, "Перечитать DDS", () => { _viewport?.ReloadRoadTextures(); UpdateTextureInfo(); UpdateSummary(); });
+            root.Children.Add(new Expander { Header = "Материал сегмента", Content = material });
             AddAsyncButton(root, "Сохранить изменения дорог", SavePendingAsync);
             root.Children.Add(_status);
             root.Children.Add(new Expander { Header = "Диагностика исходных данных", Content = _diagnostics });
