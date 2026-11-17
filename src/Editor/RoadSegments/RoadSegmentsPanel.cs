@@ -68,8 +68,22 @@ public sealed partial class RoadSegmentsPanel : UserControl
         Field(_railFields, "Ширина колеи, м", _gauge);
         Field(_railFields, "Шаг шпал, м", _spacing);
         _profile.Children.Add(_railFields);
-        AddButton(_profile, "Применить профиль дороги", ApplyProfile);
-        AddButton(_profile, "Удалить дорогу", DeleteRoad);
+
+        AddButton(
+            _profile,
+            "Применить профиль дороги",
+            ApplyProfile);
+
+        AddButton(
+            _profile,
+            "Подогнать Terrain к дороге",
+            ConformRoadTerrain);
+
+        AddButton(
+            _profile,
+            "Удалить дорогу",
+            DeleteRoad);
+
         root.Children.Add(new Expander { Header = "Профиль дороги", IsExpanded = true, Content = _profile });
         Field(_point, "X, м", _x); _point.Children.Add(_heightLabel); _point.Children.Add(_y); Field(_point, "Z, м", _z);
         AddButton(_point, "Применить точку", ApplyNode);

@@ -35,21 +35,7 @@ public static class RoadMesh
             horizontal = Vector3.Normalize(horizontal);
             Vector3 right = new(horizontal.Z, 0, -horizontal.X);
             Vector3 position = sample.Position;
-            if (road.FollowTerrain && surface.TryGetHeight(position.X, position.Z, out float centerGround))
-            {
-                float offset = position.Y - centerGround;
-                int probes = Math.Max(2, (int)MathF.Ceiling(outer * 2 / 0.75f));
-                // Lift whole rows to preserve level crossfall, including the sloped edges.
-                // Holes/missing tiles retain fallback height; negative user offsets remain intentional.
-                for (int p = 0; p <= probes; p++)
-                {
-                    float lateral = -outer + outer * 2 * p / probes;
-                    Vector3 probe = sample.Position + right * lateral;
-                    float drop = road.ShoulderWidth > 0 ? edgeDrop * Math.Clamp((MathF.Abs(lateral) - half) / road.ShoulderWidth, 0, 1) : 0;
-                    if (surface.TryGetHeight(probe.X, probe.Z, out float ground))
-                        position.Y = MathF.Max(position.Y, ground + offset + drop);
-                }
-            }
+
             if (i > 0) distance += Vector3.Distance(frames[i - 1].Position, position);
             if (!RoadSpline.Finite(position) || !float.IsFinite(distance) || distance > RoadSpline.MaximumControlLength * 4)
                 throw new InvalidDataException("Road terrain profile exceeds the supported length limit.");

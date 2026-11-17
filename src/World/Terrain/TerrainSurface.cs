@@ -63,11 +63,80 @@ public sealed class TerrainSurface
         return found;
     }
 
-    public Vector3 MoveCharacter(Vector3 from, Vector3 target, float height) =>
-        Collision?.MoveCapsule(from, target, 0.32f, height) ?? target;
+    public Vector3 MoveCharacter(
+        Vector3 from,
+        Vector3 target,
+        float height)
+    {
+        const float radius = 0.32f;
+        const float maximumStep = 0.32f;
 
-    public bool CanOccupy(Vector3 feet, float height) =>
-        Collision?.CanOccupy(feet, 0.32f, height) ?? true;
+        var collision = Collision;
+
+        Vector3 moved = collision?.MoveCapsule(
+            from,
+            target,
+            radius,
+            height) ?? target;
+
+        if (!TryGetHeight(
+                moved.X,
+                moved.Z,
+                out float terrainHeight))
+        {
+            return moved;
+        }
+
+        if (moved.Y >= terrainHeight - 0.002f)
+        {
+            return moved;
+        }
+
+        bool hasPreviousGround = TryGetHeight(
+            from.X,
+            from.Z,
+            out float previousGround);
+
+        Vector3 previous = hasPreviousGround ? from with { Y = MathF.Max(from.Y, previousGround) } : from;
+
+        if (terrainHeight > from.Y + maximumStep)
+        {
+            return previous;
+        }
+
+        Vector3 corrected = moved with
+        {
+            Y = terrainHeight
+        };
+
+        if (collision == null ||
+            collision.CanOccupy(
+                corrected,
+                radius,
+                height))
+        {
+            return corrected;
+        }
+
+        return previous;
+    }
+
+    public bool CanOccupy(Vector3 feet, float height)
+    {
+        if (TryGetHeight(
+                feet.X,
+                feet.Z,
+                out float terrainHeight) &&
+            feet.Y < terrainHeight - 0.002f)
+        {
+            return false;
+        }
+
+        return Collision?.CanOccupy(
+            feet,
+            0.32f,
+            height) ?? true;
+    }
 
     public bool TrySnapToObject(Vector3 feet, float height, float maximumDrop, out Vector3 supported,
         float maximumSurfaceY = float.PositiveInfinity) =>
