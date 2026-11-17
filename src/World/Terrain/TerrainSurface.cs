@@ -97,7 +97,14 @@ public sealed class TerrainSurface
             from.Z,
             out float previousGround);
 
-        Vector3 previous = hasPreviousGround ? from with { Y = MathF.Max(from.Y, previousGround) } : from;
+        Vector3 previous = from;
+
+        if (hasPreviousGround)
+        {
+            previous.Y = MathF.Max(
+                from.Y,
+                previousGround);
+        }
 
         if (terrainHeight > from.Y + maximumStep)
         {

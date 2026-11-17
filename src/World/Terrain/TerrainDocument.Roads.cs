@@ -232,10 +232,9 @@ public sealed partial class TerrainDocument
                         blend = fade * fade * (3f - 2f * fade);
                     }
 
-                    float desiredHeight = MathF.Lerp(
-                        heights[i - 1],
-                        heights[i],
-                        t);
+                    float desiredHeight =
+                        heights[i - 1] +
+                        (heights[i] - heights[i - 1]) * t;
 
                     var key = (gx, gz);
 
@@ -278,10 +277,9 @@ public sealed partial class TerrainDocument
             float originalHeight = Height(gx, gz);
             var target = pair.Value;
 
-            float newHeight = MathF.Lerp(
-                originalHeight,
-                target.Height,
-                target.Weight);
+            float newHeight =
+                originalHeight +
+                (target.Height - originalHeight) * target.Weight;
 
             if (!float.IsFinite(newHeight))
             {
