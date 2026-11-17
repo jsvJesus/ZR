@@ -1,26 +1,21 @@
-#include "Environment/Lighting.hlsli"
+﻿#include "Environment/Lighting.hlsli"
 
 cbuffer RoadConstants : register(b0)
 {
     row_major float4x4 ViewProjection;
+    // Selected road, pavement width, lane count, editor marker mode.
     float4 Parameters;
     float4 CameraPosition;
-    float4 SpecularParameters;
-	float4 WeatherParameters;
+    float4 WeatherParameters;
+    float4 Marker;
 };
-
-Texture2D Diffuse : register(t0);
-Texture2D NormalMap : register(t1);
-Texture2D SpecularMap : register(t2);
-Texture2D SpecularPowerMap : register(t3);
-
-SamplerState RoadSampler : register(s0);
 
 struct VertexInput
 {
     float3 Position : POSITION;
     float3 Normal : NORMAL;
-    float2 Uv : TEXCOORD;
+    float2 Uv : TEXCOORD0;
+    float Surface : TEXCOORD1;
 };
 
 struct PixelInput
@@ -29,220 +24,140 @@ struct PixelInput
     float3 WorldPosition : TEXCOORD1;
     float3 Normal : NORMAL;
     float2 Uv : TEXCOORD0;
+    nointerpolation float Surface : TEXCOORD2;
 };
 
 PixelInput VSMain(VertexInput input)
 {
     PixelInput output;
-
-    output.Position = mul(
-        float4(input.Position, 1),
-        ViewProjection);
-
-    output.WorldPosition = input.Position;
+    float3 world = Parameters.w > 0.5 ? input.Position * Marker.w + Marker.xyz : input.Position;
+    output.Position = mul(float4(world, 1), ViewProjection);
+    output.WorldPosition = world;
     output.Normal = input.Normal;
     output.Uv = input.Uv;
-
+    output.Surface = input.Surface;
     return output;
 }
 
-float4 PSDepth(PixelInput input) : SV_TARGET
+float RoadHash(float2 position)
 {
-    clip(
-        Diffuse.Sample(
-            RoadSampler,
-            input.Uv).a - 0.999);
-
-    return 0;
+    return frac(sin(dot(position, float2(127.1, 311.7))) * 43758.5453);
 }
 
-float RoadWetHash(float2 position)
-{
-    return frac(
-        sin(dot(
-            position,
-            float2(127.1, 311.7))) *
-        43758.5453);
-}
-
-float RoadWetNoise(float2 position)
+float RoadNoise(float2 position)
 {
     float2 cell = floor(position);
     float2 fraction = frac(position);
-
-    fraction = fraction * fraction *
-        (3.0 - 2.0 * fraction);
-
-    float a = RoadWetHash(cell);
-    float b = RoadWetHash(cell + float2(1, 0));
-    float c = RoadWetHash(cell + float2(0, 1));
-    float d = RoadWetHash(cell + float2(1, 1));
-
-    return lerp(
-        lerp(a, b, fraction.x),
-        lerp(c, d, fraction.x),
-        fraction.y);
+    fraction = fraction * fraction * (3.0 - 2.0 * fraction);
+    return lerp(lerp(RoadHash(cell), RoadHash(cell + float2(1, 0)), fraction.x),
+        lerp(RoadHash(cell + float2(0, 1)), RoadHash(cell + float2(1, 1)), fraction.x), fraction.y);
 }
 
-float CalculateRoadWetness(float2 worldPosition)
+float RoadWetness(float2 position)
 {
     float wetness = saturate(WeatherParameters.x);
-
-    if (wetness <= 0.0001)
-    {
-        return 0.0;
-    }
-
-    if (WeatherParameters.y > 0.5)
-    {
-        return wetness;
-    }
-
+    if (WeatherParameters.y > 0.5) return wetness;
     float scale = max(WeatherParameters.z, 1.0);
+    float pattern = RoadNoise(position / scale) * 0.75 +
+        RoadNoise(position / (scale * 0.35) + float2(17.3, 9.8)) * 0.25;
+    return wetness * lerp(1.0, smoothstep(0.28, 0.72, pattern), saturate(WeatherParameters.w));
+}
 
-    float largeNoise = RoadWetNoise(
-        worldPosition / scale);
-
-    float smallNoise = RoadWetNoise(
-        worldPosition / (scale * 0.35) +
-        float2(17.3, 9.8));
-
-    float pattern = saturate(
-        largeNoise * 0.75 +
-        smallNoise * 0.25);
-
-    float wetAreas = smoothstep(
-        0.28,
-        0.72,
-        pattern);
-
-    return wetness * lerp(
-        1.0,
-        wetAreas,
-        saturate(WeatherParameters.w));
+float Stripe(float distance, float halfWidth, float filterWidth)
+{
+    return 1.0 - smoothstep(halfWidth - filterWidth, halfWidth + filterWidth, abs(distance));
 }
 
 float4 PSMain(PixelInput input) : SV_TARGET
 {
-    float4 color = Diffuse.Sample(
-        RoadSampler,
-        input.Uv);
-
-    clip(color.a - 0.02);
-	
-	float roadWetness = CalculateRoadWetness(
-		input.WorldPosition.xz);
-		
-	color.rgb *= lerp(
-		1.0,
-		0.67,
-		roadWetness);
-
-    float3 n = dot(input.Normal, input.Normal) > 0.000001
-        ? normalize(input.Normal)
-        : float3(0, 1, 0);
-
-    float3 dp1 = ddx(input.WorldPosition);
-    float3 dp2 = ddy(input.WorldPosition);
-
-    float2 duv1 = ddx(input.Uv);
-    float2 duv2 = ddy(input.Uv);
-
-    float3 tangent = dp1 * duv2.y
-        - dp2 * duv1.y;
-
-    float determinant = duv1.x * duv2.y
-        - duv1.y * duv2.x;
-
-    if (Parameters.y > 0.5 &&
-        dot(tangent, tangent) > 0.000001 &&
-        abs(determinant) > 0.000001)
+    if (Parameters.w > 0.5)
     {
-        tangent = normalize(
-            tangent * (determinant < 0 ? -1 : 1));
-
-        float3 bitangent = normalize(
-            cross(n, tangent))
-            * (determinant < 0 ? -1 : 1);
-
-        float3 mapNormal = NormalMap.Sample(
-            RoadSampler,
-            input.Uv).xyz * 2 - 1;
-
-        n = normalize(
-            tangent * mapNormal.x +
-            bitangent * mapNormal.y +
-            n * mapNormal.z);
+        float3 markerColor = Parameters.w > 1.5 ? float3(1.0, 0.35, 0.08) : float3(0.15, 0.85, 1.0);
+        return float4(markerColor * (0.65 + 0.35 * abs(normalize(input.Normal).y)), 1);
     }
 
-    float3 lightDirection = normalize(
-        EnvironmentSun.xyz);
+    float3 normal = normalize(input.Normal);
+    float2 uv = input.Uv; // X = cumulative distance, Y = signed lateral metres.
+    float detail = RoadNoise(uv * 18.0);
+    float broad = RoadNoise(input.WorldPosition.xz * 0.35);
+    float detailFade = 1.0 - saturate(max(length(ddx(uv)), length(ddy(uv))) * 12.0);
+    detail = lerp(0.5, detail, detailFade);
+    float3 albedo;
+    float specular = 0.025;
+    float gloss = 0.13;
+    float wetResponse = 1;
 
-    float facingLight = saturate(
-        dot(n, lightDirection));
+    if (input.Surface < 0.5)
+    {
+        albedo = float3(0.115, 0.125, 0.135) * (0.78 + detail * 0.38 + broad * 0.12);
+        float width = max(Parameters.y, 0.2);
+        float halfWidth = width * 0.5;
+        float aa = max(fwidth(uv.y), 0.012);
+        float edgeInset = min(0.24, width * 0.12);
+        float markings = Stripe(abs(uv.y) - (halfWidth - edgeInset), 0.055, aa);
+        float dashDistance = abs(frac(uv.x / 8.0) - 0.25) * 8.0;
+        float dash = 1.0 - smoothstep(1.9, 2.1 + fwidth(uv.x), dashDistance);
+        [unroll]
+        for (int lane = 1; lane < 8; lane++)
+        {
+            if (lane < Parameters.z)
+            {
+                float lateral = -halfWidth + width * lane / max(Parameters.z, 1.0);
+                markings = max(markings, Stripe(uv.y - lateral, 0.055, aa) * dash);
+            }
+        }
+        // Thickness walls retain asphalt, without painted stripes wrapping down them.
+        markings *= smoothstep(0.4, 0.8, normal.y);
+        albedo = lerp(albedo, float3(0.85, 0.84, 0.73), saturate(markings));
+    }
+    else if (input.Surface < 1.5)
+    {
+        albedo = lerp(float3(0.24, 0.22, 0.18), float3(0.43, 0.41, 0.35), detail) * (0.85 + broad * 0.2);
+        wetResponse = 0.65;
+    }
+    else if (input.Surface < 2.5)
+    {
+        float ruts = 1.0 - smoothstep(0.05, 0.28, abs(abs(uv.y) - Parameters.y * 0.23));
+        albedo = lerp(float3(0.26, 0.19, 0.115), float3(0.40, 0.31, 0.19), broad) *
+            (0.85 + detail * 0.25) * (1.0 - ruts * 0.1);
+        wetResponse = 0.6;
+    }
+    else if (input.Surface < 3.5)
+    {
+        float stones = RoadNoise(uv * 10);
+        stones = lerp(0.5, stones, saturate(detailFade * 2));
+        albedo = lerp(float3(0.20, 0.21, 0.22), float3(0.45, 0.43, 0.40), stones);
+        wetResponse = 0.5;
+    }
+    else if (input.Surface < 4.5)
+    {
+        float grain = RoadNoise(float2(uv.x * 50, uv.y * 2));
+        albedo = lerp(float3(0.095, 0.065, 0.038), float3(0.24, 0.17, 0.10), grain);
+        specular = 0.045; gloss = 0.2; wetResponse = 0.65;
+    }
+    else if (input.Surface < 5.5)
+    {
+        albedo = lerp(float3(0.20, 0.13, 0.09), float3(0.34, 0.29, 0.25), broad);
+        specular = 0.25; gloss = 0.5; wetResponse = 0.4;
+    }
+    else
+    {
+        albedo = float3(0.56, 0.59, 0.61) * (0.94 + detail * 0.12);
+        specular = 0.75; gloss = 0.85; wetResponse = 0.3;
+    }
 
-    float visibility = ShadowVisibility(
-        input.WorldPosition);
-
-    color.rgb = ShadeEnvironment(
-        color.rgb,
-        n,
-        input.WorldPosition);
-
-    float3 viewDirection = CameraPosition.xyz
-        - input.WorldPosition;
-
-    viewDirection *= rsqrt(
-        max(dot(viewDirection, viewDirection), 0.000001));
-
-    float3 halfway = lightDirection + viewDirection;
-
-    halfway *= rsqrt(
-        max(dot(halfway, halfway), 0.000001));
-
-    float gloss = SpecularParameters.y;
-
-	if (Parameters.z > 0.5)
-	{
-		gloss *= SpecularPowerMap.Sample(
-			RoadSampler,
-			input.Uv).r;
-	}
-
-	gloss = lerp(
-		saturate(gloss),
-		0.92,
-		roadWetness);
-
-	float highlight = pow(
-		saturate(dot(n, halfway)),
-		lerp(4.0, 256.0, saturate(gloss)));
-
-	float3 specularColor = SpecularMap.Sample(
-		RoadSampler,
-		input.Uv).rgb;
-
-	specularColor = lerp(
-		specularColor,
-		float3(0.85, 0.91, 0.97),
-		roadWetness * 0.8);
-
-	float specularStrength =
-		SpecularParameters.x +
-		roadWetness * 0.55;
-
-	color.rgb +=
-		specularColor *
-		specularStrength *
-		highlight *
-		facingLight *
-		visibility *
-		EnvironmentSun.w;
-
-    color.rgb = lerp(
-        color.rgb,
-        float3(1, 0.65, 0.12),
-        Parameters.x * 0.35);
-
-    return color;
+    float wetness = RoadWetness(input.WorldPosition.xz) * wetResponse;
+    albedo *= lerp(1.0, 0.64, wetness);
+    float3 color = ShadeEnvironment(albedo, normal, input.WorldPosition);
+    float3 view = CameraPosition.xyz - input.WorldPosition;
+    view *= rsqrt(max(dot(view, view), 0.000001));
+    float3 halfway = EnvironmentSun.xyz + view;
+    halfway *= rsqrt(max(dot(halfway, halfway), 0.000001));
+    float highlight = pow(saturate(dot(normal, halfway)), lerp(8.0, 256.0, lerp(gloss, 0.93, wetness)));
+    float fogVisibility = exp(-max(EnvironmentFog.w, 0) * length(CameraPosition.xyz - input.WorldPosition));
+    color += EnvironmentSunColor.rgb * (specular + wetness * 0.55) * highlight *
+        saturate(dot(normal, EnvironmentSun.xyz)) * ShadowVisibility(input.WorldPosition) *
+        EnvironmentSun.w * fogVisibility;
+    color = lerp(color, float3(1, 0.65, 0.12), Parameters.x * 0.22);
+    return float4(color, 1);
 }

@@ -225,7 +225,7 @@ namespace Editor.Viewport
         {
             var terrain = new TerrainRenderer(_device, _context, level, assets);
             RoadRenderer roads;
-            try { roads = new RoadRenderer(_device, _context, assets, level.Roads, terrain); }
+            try { roads = new RoadRenderer(_device, _context, assets, level, terrain); }
             catch { terrain.Dispose(); throw; }
             TreeRenderer trees;
             try { trees = new TreeRenderer(_device, _context, assets, level.Vegetation, terrain); }
@@ -321,16 +321,14 @@ namespace Editor.Viewport
             return _terrain != null && _terrain.PickSurface(origin, direction, out position, includeHoles);
         }
 
-        public void SelectRoadSegment(SourceRoad? road, RoadSegment? segment)
+        public void SelectRoad(RoadDefinition? road, int nodeIndex)
         {
             if (_roads == null) return;
             _roads.SelectedRoad = road;
-            _roads.SelectedSegment = segment;
+            _roads.SelectedNodeIndex = nodeIndex;
         }
 
-        public void ReloadRoadTextures() => _roads?.ReloadTextures();
-
-        public (SourceRoad Road, RoadSegment Segment)? PickRoadSegment(Vector3 origin, Vector3 direction) =>
+        public (RoadDefinition Road, int SegmentIndex)? PickRoad(Vector3 origin, Vector3 direction) =>
             _roads?.Pick(origin, direction);
 
         public void SetCharacter(AssetPaths assets, CharacterAsset asset, CharacterLocomotion locomotion)

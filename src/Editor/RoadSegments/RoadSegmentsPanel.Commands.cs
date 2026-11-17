@@ -1,139 +1,179 @@
 using System.IO;
-using Avalonia.Controls;
-using Avalonia.Platform.Storage;
+using System.Numerics;
 using ZoneReborn.World.Roads;
 using ZoneReborn.World.Terrain;
 
-namespace Editor.RoadSegments
+namespace Editor.RoadSegments;
+
+public sealed partial class RoadSegmentsPanel
 {
-    public sealed partial class RoadSegmentsPanel
+    private void RequireEditable()
     {
-        private void RequireEditable()
-        {
-            if (_level == null || SelectedRoad == null || SelectedSegment == null)
-                throw new InvalidOperationException("Сначала выберите дорогу и сегмент.");
-            if (!_level.Roads.CanSave) throw new InvalidOperationException("Исправьте файл предыдущих правок перед редактированием.");
-            if (IsSaving || _viewport?.IsPlaying == true || _viewport?.IsStarting == true)
-                throw new InvalidOperationException("Редактирование сейчас недоступно.");
-        }
+        if (_level == null || !_level.Roads.CanSave || IsSaving || _viewport?.IsPlaying == true ||
+            _viewport?.IsStarting == true || _viewport?.IsRoadDragging == true)
+            throw new InvalidOperationException("Редактирование дорог сейчас недоступно.");
+    }
 
-        private void ApplyNode()
-        {
-            RequireEditable();
-            var road = SelectedRoad!;
-            int nodeIndex = SelectedSegment!.Index + (_endpoint.SelectedIndex == 1 ? 1 : 0);
-            bool follow = _followTerrain.IsChecked == true;
-            var node = new RoadNode { X = Parse(_x), Y = Parse(_y), Z = Parse(_z),
-                TangentX = Parse(_tx), TangentZ = Parse(_tz), Width = Parse(_width) };
-            if (follow) node.Y += road.OriginalNodes[nodeIndex].Y;
-            RoadEditStorage.ValidateNode(node);
-            road.Nodes[nodeIndex] = node;
-            SelectedSegment.FollowTerrain = follow;
-            MarkChanged(road, true);
-            _status.Text = "Узел применён. Соседние сегменты обновлены.";
-        }
+    private RoadDefinition RequireRoad()
+    {
+        RequireEditable();
+        return SelectedRoad ?? throw new InvalidOperationException("Выберите дорогу.");
+    }
 
-        private void ApplyMaterial(bool wholeRoad)
-        {
-            RequireEditable();
-            var material = _materials.SelectedItem as RoadMaterial;
-            string name = material?.Name ?? SelectedSegment!.Material;
-            float scale = Parse(_uv);
-            if (scale is < 0.01f or > 1000) throw new InvalidDataException("Повторение UV: от 0.01 до 1000.");
-            string diffuse = (_diffuse.Text ?? "").Trim(), normal = (_normal.Text ?? "").Trim();
-            string specular = (_specular.Text ?? "").Trim(), power = (_specularPower.Text ?? "").Trim();
-            ValidateTexture(diffuse); ValidateTexture(normal);
-            ValidateTexture(specular); ValidateTexture(power);
-            var road = SelectedRoad!;
-            foreach (var segment in wholeRoad ? road.Segments : new[] { SelectedSegment! })
-            {
-                segment.Material = name; segment.DiffuseOverride = diffuse;
-                segment.NormalOverride = normal; segment.UvScale = scale;
-                segment.SpecularOverride = specular; segment.SpecularPowerOverride = power;
-            }
-            MarkChanged(road, false);
-            _status.Text = wholeRoad ? "Материал применён ко всей дороге." : "Материал применён к сегменту.";
-        }
+    private void CreateRoad(RoadType type)
+    {
+        RequireEditable();
+        if (_level!.Roads.Roads.Count >= RoadStorage.MaximumRoads)
+            throw new InvalidOperationException("Достигнут лимит дорог уровня.");
+        var road = RoadDefinition.Create(type);
+        road.Name += $" {_level.Roads.Roads.Count + 1}";
+        _level.Roads.Roads.Add(road);
+        _level.Roads.Changed(road);
+        RefreshRoadList(road, -1);
+        _status.Text = "Ctrl + ЛКМ на Terrain — добавить точку. Геометрия появится после второй точки.";
+    }
 
-        private void ValidateTexture(string path)
+    private void ApplyProfile()
+    {
+        var road = RequireRoad();
+        var candidate = RoadStorage.Copy(road);
+        candidate.Name = (_name.Text ?? "").Trim();
+        candidate.Type = (RoadType)_type.SelectedIndex;
+        candidate.Width = Parse(_width); candidate.ShoulderWidth = Parse(_shoulder);
+        candidate.Thickness = Parse(_thickness); candidate.SurfaceOffset = Parse(_surfaceOffset);
+        candidate.RailGauge = Parse(_gauge); candidate.SleeperSpacing = Parse(_spacing);
+        if (!int.TryParse(_lanes.Text, out int lanes)) throw new InvalidDataException("Число полос должно быть целым.");
+        candidate.LaneCount = lanes;
+        candidate.FollowTerrain = _follow.IsChecked == true;
+        if (candidate.FollowTerrain != road.FollowTerrain)
         {
-            if (path.Length == 0) return;
-            if (!Path.GetExtension(path).Equals(".dds", StringComparison.OrdinalIgnoreCase))
-                throw new InvalidDataException("Для текстуры требуется файл DDS.");
-            if (ZoneReborn.World.Roads.RoadMaterials.ResolveTexture(_assets!, path) == null)
-                throw new FileNotFoundException($"Не найдена текстура: {path}");
-        }
-
-        private void FitToTerrain()
-        {
-            RequireEditable();
             var surface = new TerrainSurface(_level!);
-            var road = SelectedRoad!; var segment = SelectedSegment!;
-            var a = road.Nodes[segment.Index].Copy(); var b = road.Nodes[segment.Index + 1].Copy();
-            if (!surface.TryGetHeight(a.X, a.Z, out float ay) || !surface.TryGetHeight(b.X, b.Z, out float by))
-                throw new InvalidOperationException("Узлы вне Terrain. Сначала исправьте X/Z узлов.");
-            if (segment.FollowTerrain)
+            foreach (var node in candidate.Nodes)
             {
-                float SourceOffset(int node) => road.TerrainOffsets.Length == road.Vertices.Length
-                    ? Enumerable.Range(0, 4).Average(c => road.TerrainOffsets[node * SourceRoad.SamplesPerSegment * 4 + c]) : 0;
-                a.Y = road.OriginalNodes[segment.Index].Y - SourceOffset(segment.Index);
-                b.Y = road.OriginalNodes[segment.Index + 1].Y - SourceOffset(segment.Index + 1);
-            }
-            else { a.Y = ay + 0.02f; b.Y = by + 0.02f; }
-            road.Nodes[segment.Index] = a; road.Nodes[segment.Index + 1] = b;
-            MarkChanged(road, true); FillNode();
-            _status.Text = "Высоты узлов сегмента установлены по Terrain.";
-        }
-
-        private void MarkChanged(SourceRoad road, bool geometry)
-        {
-            road.Changed(geometry); _level!.Roads.IsDirty = true;
-            UpdateSummary(); UpdateTextureInfo(); RefreshHighlight();
-        }
-
-        private async Task BrowseTextureAsync(TextBox target)
-        {
-            RequireEditable();
-            var top = TopLevel.GetTopLevel(this);
-            if (top == null) return;
-            var boundLevel = _level;
-            var files = await top.StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
-            {
-                Title = "Выберите DDS дороги", AllowMultiple = false,
-                FileTypeFilter = [new FilePickerFileType("DDS") { Patterns = ["*.dds"] }]
-            });
-            string? path = files.FirstOrDefault()?.TryGetLocalPath();
-            if (path != null && _level == boundLevel)
-            {
-                string relative = Path.GetRelativePath(_assets!.Root, path);
-                target.Text = relative.StartsWith("..", StringComparison.Ordinal) || Path.IsPathRooted(relative)
-                    ? path : relative.Replace('\\', '/');
-                UpdateTextureInfo();
+                bool found = surface.TryGetHeight(node.X, node.Z, out float ground);
+                float y = road.FollowTerrain && found ? ground + node.HeightOffset : node.Y;
+                if (candidate.FollowTerrain && !found)
+                    throw new InvalidOperationException("Для привязки все точки должны находиться над Terrain.");
+                node.Y = y;
+                if (candidate.FollowTerrain) node.HeightOffset = y - ground;
             }
         }
+        RoadStorage.Validate(candidate);
+        road.Name = candidate.Name; road.Type = candidate.Type;
+        road.Width = candidate.Width; road.ShoulderWidth = candidate.ShoulderWidth;
+        road.Thickness = candidate.Thickness; road.SurfaceOffset = candidate.SurfaceOffset;
+        road.LaneCount = candidate.LaneCount; road.RailGauge = candidate.RailGauge;
+        road.SleeperSpacing = candidate.SleeperSpacing; road.FollowTerrain = candidate.FollowTerrain;
+        road.Nodes = candidate.Nodes;
+        Changed(road, NodeIndex, "Профиль применён; геометрия дороги обновлена.");
+    }
 
-        public Task SavePendingAsync()
+    private void ApplyNode()
+    {
+        var road = RequireRoad();
+        if (NodeIndex < 0 || NodeIndex >= road.Nodes.Count) throw new InvalidOperationException("Выберите точку.");
+        var candidate = RoadStorage.Copy(road);
+        var node = candidate.Nodes[NodeIndex];
+        node.X = Parse(_x); node.Z = Parse(_z);
+        if (road.FollowTerrain)
         {
-            if (IsSaving) return _saveTask;
-            if (_level == null || !_level.Roads.IsDirty) return Task.CompletedTask;
-            _saveTask = SaveCoreAsync();
-            return _saveTask;
+            node.HeightOffset = Parse(_y);
+            if (!new TerrainSurface(_level!).TryGetHeight(node.X, node.Z, out float ground))
+                throw new InvalidOperationException("Точка вне Terrain; отключите привязку для свободной высоты.");
+            node.Y = ground + node.HeightOffset;
         }
+        else node.Y = Parse(_y);
+        RoadStorage.Validate(candidate);
+        road.Nodes[NodeIndex] = node;
+        Changed(road, NodeIndex, "Точка обновлена.");
+    }
 
-        private async Task SaveCoreAsync()
+    private void InsertNode()
+    {
+        var road = RequireRoad();
+        if (NodeIndex < 0 || NodeIndex + 1 >= road.Nodes.Count)
+            throw new InvalidOperationException("Выберите точку перед нужным участком. В конец дороги точки добавляются через Ctrl + ЛКМ.");
+        int after = NodeIndex;
+        var surface = new TerrainSurface(_level!);
+        var samples = RoadSpline.Sample(road, surface).Where(sample => sample.SegmentIndex == after).ToArray();
+        Vector3 position = samples.Length > 0 ? samples[samples.Length / 2].Position
+            : Vector3.Lerp(road.Nodes[after].Position, road.Nodes[after + 1].Position, 0.5f);
+        position.Y -= road.SurfaceOffset;
+        float offset = (road.Nodes[after].HeightOffset + road.Nodes[after + 1].HeightOffset) * 0.5f;
+        if (road.FollowTerrain && surface.TryGetHeight(position.X, position.Z, out float ground)) offset = position.Y - ground;
+        var node = new RoadNode { X = position.X, Y = position.Y, Z = position.Z, HeightOffset = offset };
+        var candidate = RoadStorage.Copy(road);
+        candidate.Nodes.Insert(after + 1, node);
+        RoadStorage.Validate(candidate);
+        road.Nodes.Insert(after + 1, node);
+        Changed(road, after + 1, "Добавлена опорная точка.");
+    }
+
+    private void SnapNode()
+    {
+        var road = RequireRoad();
+        if (NodeIndex < 0 || NodeIndex >= road.Nodes.Count) throw new InvalidOperationException("Выберите точку.");
+        var candidate = RoadStorage.Copy(road);
+        var node = candidate.Nodes[NodeIndex];
+        if (!new TerrainSurface(_level!).TryGetHeight(node.X, node.Z, out float ground))
+            throw new InvalidOperationException("Точка вне Terrain.");
+        node.Y = ground; node.HeightOffset = 0;
+        RoadStorage.Validate(candidate);
+        road.Nodes[NodeIndex] = node;
+        Changed(road, NodeIndex, "Точка установлена на Terrain с учётом смещения поверхности дороги.");
+    }
+
+    private void DeleteNode()
+    {
+        var road = RequireRoad();
+        if (NodeIndex < 0 || NodeIndex >= road.Nodes.Count) return;
+        int index = NodeIndex;
+        var candidate = RoadStorage.Copy(road);
+        candidate.Nodes.RemoveAt(index);
+        RoadStorage.Validate(candidate);
+        road.Nodes.RemoveAt(index);
+        Changed(road, Math.Min(index, road.Nodes.Count - 1), "Точка удалена.");
+    }
+
+    private void DeleteRoad()
+    {
+        var road = RequireRoad();
+        _viewport?.SelectRoad(null);
+        _level!.Roads.Roads.Remove(road);
+        _level.Roads.Changed();
+        RefreshRoadList(_level.Roads.Roads.FirstOrDefault(), -1);
+        _status.Text = "Дорога удалена. Сохраните сеть дорог.";
+    }
+
+    private void Changed(RoadDefinition road, int node, string status)
+    {
+        _level!.Roads.Changed(road);
+        RefreshRoadList(road, node);
+        _status.Text = status;
+    }
+
+    public Task SavePendingAsync()
+    {
+        _viewport?.CancelRoadDrag();
+        if (IsSaving) return _saveTask;
+        if (_level == null || !_level.Roads.IsDirty) return Task.CompletedTask;
+        _saveTask = SaveCoreAsync();
+        return _saveTask;
+    }
+
+    private async Task SaveCoreAsync()
+    {
+        var level = _level!;
+        IsSaving = true; BusyChanged?.Invoke(); RefreshHighlight();
+        try
         {
-            var level = _level!;
-            IsSaving = true; IsEnabled = false; BusyChanged?.Invoke();
-            try
+            await RoadStorage.SaveAsync(level.Directory, level.Roads);
+            if (ReferenceEquals(_level, level))
             {
-                await RoadEditStorage.SaveAsync(level.Directory, level.Roads);
-                if (_level == level)
-                {
-                    _status.Text = $"Сохранено: {Path.Combine(level.Directory, RoadEditStorage.FileName)}";
-                    UpdateSummary();
-                }
+                RefreshRoadList(SelectedRoad, NodeIndex);
+                _status.Text = $"Сохранено: {Path.Combine(level.Directory, RoadStorage.FileName)}";
             }
-            finally { IsSaving = false; IsEnabled = true; BusyChanged?.Invoke(); }
         }
+        finally { IsSaving = false; BusyChanged?.Invoke(); RefreshHighlight(); }
     }
 }

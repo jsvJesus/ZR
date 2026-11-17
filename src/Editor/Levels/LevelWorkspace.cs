@@ -29,13 +29,7 @@ public sealed class LevelWorkspace
     {
         var level = await LevelReader.ReadAsync(path, cancellationToken);
         string source = AssetPathResolver.Resolve(Assets.ImportLevels, level.Manifest.Name);
-        var roads = level.Manifest.Terrain.ImportedFromMesh ? new RoadNetwork() : await Task.Run(() =>
-        {
-            var network = SourceRoadReader.Read(source, cancellationToken);
-            RoadSurfaceAttachment.ReadSourceOffsets(level, network, cancellationToken);
-            return network;
-        }, cancellationToken);
-        await RoadEditStorage.LoadAsync(level.Directory, roads, cancellationToken);
+        var roads = await RoadStorage.LoadAsync(level.Directory, cancellationToken);
 
         var vegetation = await ZoneReborn.World.Vegetation.VegetationStorage.LoadAsync(level.Directory, Assets, cancellationToken);
         await ZoneReborn.World.Vegetation.VegetationScatterStorage.LoadAsync(

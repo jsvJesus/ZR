@@ -37,6 +37,7 @@ public sealed partial class MainWindow
         TerrainEditorPanel.RefreshMode();
         CharacterPanel.IsEnabled = !dragging;
         RoadSegmentsPanel.IsEnabled = !locked;
+        RoadSegmentsPanel.RefreshHighlight();
         VegetationPanel.IsEnabled = !locked;
         VegetationPanel.RefreshMode();
         ObjectsPanel.IsEnabled = !baseLocked;
