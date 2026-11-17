@@ -148,23 +148,33 @@ public sealed partial class RoadSegmentsPanel
         if (road.Nodes.Count < 2)
         {
             throw new InvalidOperationException(
-                "Для выравнивания необходимо минимум две опорные точки.");
+                "Для выравнивания необходимо минимум " +
+                "две опорные точки.");
         }
 
         int changed = document.ConformRoad(road);
 
+        if (!road.TerrainConformed)
+        {
+            _level.Roads.Changed(road);
+            road.TerrainConformed = true;
+        }
+
+        RefreshRoadList(road, NodeIndex);
+
         if (changed == 0)
         {
             _status.Text =
-                "Terrain уже соответствует профилю дороги.";
+                "Terrain соответствует профилю дороги. " +
+                "Высотный профиль зафиксирован.";
             return;
         }
 
         _status.Text =
-            $"Terrain подогнан к дороге. " +
-            $"Изменено вершин: {changed:N0}. " +
-            "Для сохранения рельефа нажмите общую кнопку " +
-            "«Сохранить» в верхней панели.";
+            "Дорожный коридор сформирован. " +
+            $"Изменено вершин Terrain: {changed:N0}. " +
+            "Высотный профиль дороги зафиксирован. " +
+            "Сохраните уровень и дороги.";
     }
 
     private void DeleteRoad()

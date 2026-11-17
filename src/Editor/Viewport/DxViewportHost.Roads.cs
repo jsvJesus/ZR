@@ -101,8 +101,19 @@ public sealed partial class DxViewportHost
         {
             var node = road.Nodes[i];
             var position = node.Position;
-            if (road.FollowTerrain && surface.TryGetHeight(node.X, node.Z, out float ground))
-                position.Y = ground + node.HeightOffset;
+            if (road.FollowTerrain)
+            {
+                if (!road.TerrainConformed &&
+                    surface.TryGetHeight(
+                        node.X,
+                        node.Z,
+                        out float ground))
+                {
+                    position.Y = ground;
+                }
+
+                position.Y += node.HeightOffset;
+            }
             position.Y += road.SurfaceOffset;
             if (!frame.TryProject(position, out var pixel)) continue;
             float distance = Vector2.DistanceSquared(new(x, y), pixel);
@@ -185,8 +196,19 @@ public sealed partial class DxViewportHost
         if (nodeIndex >= 0 && nodeIndex < road.Nodes.Count)
         {
             var node = road.Nodes[nodeIndex]; center = node.Position;
-            if (road.FollowTerrain && new TerrainSurface(_level).TryGetHeight(node.X, node.Z, out float ground))
-                center.Y = ground + node.HeightOffset;
+            if (road.FollowTerrain)
+            {
+                if (!road.TerrainConformed &&
+                    new TerrainSurface(_level).TryGetHeight(
+                        node.X,
+                        node.Z,
+                        out float ground))
+                {
+                    center.Y = ground;
+                }
+
+                center.Y += node.HeightOffset;
+            }
             distance = Math.Max(15, road.Width * 3);
         }
         else

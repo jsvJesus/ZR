@@ -45,14 +45,33 @@ public static class RoadSpline
                 // Evaluate relative to a to avoid cancellation between large world coordinates.
                 Vector3 position = a + (t3 - 2 * t2 + t) * ta
                     + (-2 * t3 + 3 * t2) * (b - a) + (t3 - t2) * tb;
+
                 if (road.FollowTerrain)
                 {
-                    float blend = t2 * (3 - 2 * t);
-                    var nodeA = road.Nodes[segment]; var nodeB = road.Nodes[segment + 1];
-                    float ground = nodeA.Y + (nodeB.Y - nodeA.Y) * blend;
-                    if (surface is not null && surface.TryGetHeight(position.X, position.Z, out float height)) ground = height;
-                    position.Y = ground + nodeA.HeightOffset + (nodeB.HeightOffset - nodeA.HeightOffset) * blend;
+                    float blend = t2 * (3f - 2f * t);
+
+                    var nodeA = road.Nodes[segment];
+                    var nodeB = road.Nodes[segment + 1];
+
+                    float ground = nodeA.Y +
+                                   (nodeB.Y - nodeA.Y) * blend;
+
+                    if (!road.TerrainConformed &&
+                        surface is not null &&
+                        surface.TryGetHeight(
+                            position.X,
+                            position.Z,
+                            out float terrainHeight))
+                    {
+                        ground = terrainHeight;
+                    }
+
+                    float heightOffset = nodeA.HeightOffset +
+                                         (nodeB.HeightOffset - nodeA.HeightOffset) * blend;
+
+                    position.Y = ground + heightOffset;
                 }
+
                 position.Y += road.SurfaceOffset;
                 if (!Finite(position)) throw new InvalidDataException("Road sampling produced a non-finite point.");
                 if (samples.Count > 0) distance += Vector3.Distance(samples[^1].Position, position);

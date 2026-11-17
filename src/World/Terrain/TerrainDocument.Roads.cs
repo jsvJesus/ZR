@@ -7,7 +7,7 @@ public sealed partial class TerrainDocument
 {
     private const int MaximumRoadTerrainCells = 2_000_000;
     private const float MaximumRoadTerrainChange = 6f;
-    private const float RoadTerrainClearance = 0.025f;
+    private const float RoadTerrainClearance = 0.16f;
 
     public int ConformRoad(
         RoadDefinition road,
@@ -64,8 +64,18 @@ public sealed partial class TerrainDocument
 
         float halfWidth = road.Width * 0.5f;
         float shoulder = road.ShoulderWidth;
-        float innerRadius = halfWidth + shoulder;
-        float transition = MathF.Max(2f, road.Width * 0.6f);
+
+        float meshPadding = MathF.Max(
+            descriptor.CellSize,
+            descriptor.MeshStep * descriptor.CellSize * 1.5f);
+
+        float innerRadius =
+            halfWidth + shoulder + meshPadding;
+
+        float transition = MathF.Max(
+            2f,
+            road.Width * 0.6f);
+
         float outerRadius = innerRadius + transition;
 
         var heights = new float[samples.Count];
@@ -74,47 +84,8 @@ public sealed partial class TerrainDocument
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            float total = 0f;
-            float weight = 0f;
-            float center = samples[i].Distance;
-            float smoothingDistance = Math.Clamp(
-                road.Width,
-                2f,
-                10f);
-
-            for (int j = i; j >= 0; j--)
-            {
-                float distance = center - samples[j].Distance;
-
-                if (distance > smoothingDistance)
-                {
-                    break;
-                }
-
-                float factor = 1f -
-                    distance / (smoothingDistance + 0.001f);
-
-                total += samples[j].Position.Y * factor;
-                weight += factor;
-            }
-
-            for (int j = i + 1; j < samples.Count; j++)
-            {
-                float distance = samples[j].Distance - center;
-
-                if (distance > smoothingDistance)
-                {
-                    break;
-                }
-
-                float factor = 1f -
-                    distance / (smoothingDistance + 0.001f);
-
-                total += samples[j].Position.Y * factor;
-                weight += factor;
-            }
-
-            heights[i] = total / weight -
+            heights[i] =
+                samples[i].Position.Y -
                 road.SurfaceOffset -
                 RoadTerrainClearance;
         }

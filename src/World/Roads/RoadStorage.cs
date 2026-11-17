@@ -49,13 +49,27 @@ public static class RoadStorage
         finally { if (File.Exists(temporary)) File.Delete(temporary); }
     }
 
-    public static RoadDefinition Copy(RoadDefinition road) => new()
+    public static RoadDefinition Copy(RoadDefinition road)
     {
-        Id = road.Id, Name = road.Name, Type = road.Type, Nodes = road.Nodes.Select(node => node.Copy()).ToList(),
-        Width = road.Width, ShoulderWidth = road.ShoulderWidth, Thickness = road.Thickness,
-        SurfaceOffset = road.SurfaceOffset, LaneCount = road.LaneCount, RailGauge = road.RailGauge,
-        SleeperSpacing = road.SleeperSpacing, FollowTerrain = road.FollowTerrain
-    };
+        return new RoadDefinition
+        {
+            Id = road.Id,
+            Name = road.Name,
+            Type = road.Type,
+            Nodes = road.Nodes
+                .Select(node => node.Copy())
+                .ToList(),
+            Width = road.Width,
+            ShoulderWidth = road.ShoulderWidth,
+            Thickness = road.Thickness,
+            SurfaceOffset = road.SurfaceOffset,
+            LaneCount = road.LaneCount,
+            RailGauge = road.RailGauge,
+            SleeperSpacing = road.SleeperSpacing,
+            FollowTerrain = road.FollowTerrain,
+            TerrainConformed = road.TerrainConformed
+        };
+    }
 
     private static void ValidateNetwork(IReadOnlyList<RoadDefinition> roads)
     {

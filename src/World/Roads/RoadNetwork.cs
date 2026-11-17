@@ -46,9 +46,20 @@ public sealed class RoadDefinition
     public int LaneCount { get; set; } = 2;
     public float RailGauge { get; set; } = 1.52f;
     public float SleeperSpacing { get; set; } = 0.65f;
+
     public bool FollowTerrain { get; set; } = true;
-    [JsonIgnore] public int Revision { get; private set; }
-    public void Changed() => Revision++;
+
+    public bool TerrainConformed { get; set; }
+
+    [JsonIgnore]
+    public int Revision { get; private set; }
+
+    public void Changed()
+    {
+        TerrainConformed = false;
+        Revision++;
+    }
+
     public static string TypeName(RoadType type) => type switch
     {
         RoadType.Automobile => "Автомобильная дорога",

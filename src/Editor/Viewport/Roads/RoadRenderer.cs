@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using System.Numerics;
 using System.Runtime.InteropServices;
 using Editor.Rendering.Shaders;
@@ -221,7 +221,15 @@ internal sealed partial class RoadRenderer : IDisposable
             {
                 if (road.FollowTerrain)
                 {
-                    if (_surface.TryGetHeight(node.X, node.Z, out float height)) position.Y = height;
+                    if (!road.TerrainConformed &&
+                        _surface.TryGetHeight(
+                            node.X,
+                            node.Z,
+                            out float height))
+                    {
+                        position.Y = height;
+                    }
+
                     position.Y += node.HeightOffset;
                 }
             }
