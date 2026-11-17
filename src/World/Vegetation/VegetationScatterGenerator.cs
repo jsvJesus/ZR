@@ -6,6 +6,7 @@ using ZoneReborn.World.Levels.Models;
 using ZoneReborn.World.Scene;
 using ZoneReborn.World.Terrain;
 using ZoneReborn.World.Terrain.Models;
+using ZoneReborn.World.Roads;
 
 namespace ZoneReborn.World.Vegetation;
 
@@ -189,7 +190,22 @@ public static class VegetationScatterGenerator
             }
         }
 
-        var roads = BuildRoadSegments(level, minX, minZ, maxX, maxZ);
+        float maximumRoadClearance = rules
+            .Select(rule =>
+                Footprint(
+                    scene.Assets[rule.Model],
+                    rule.MaximumScale) + rule.RoadClearance)
+            .DefaultIfEmpty(0f)
+            .Max();
+
+        var roads = RoadClearance.Build(
+            level.Roads,
+            minX,
+            minZ,
+            maxX,
+            maxZ,
+            maximumRoadClearance,
+            token);
 
         foreach (var rule in rules)
         {
@@ -286,11 +302,7 @@ public static class VegetationScatterGenerator
                     continue;
                 }
 
-                if (IntersectsRoad(
-                    roads,
-                    x,
-                    z,
-                    footprint + rule.RoadClearance))
+                if (roads.Intersects(x, z, footprint + rule.RoadClearance))
                 {
                     continue;
                 }
@@ -630,82 +642,6 @@ public static class VegetationScatterGenerator
         return objects.Query(bounds).Any();
     }
 
-    private static List<RoadStrip> BuildRoadSegments(
-        LoadedLevel level,
-        float minX,
-        float minZ,
-        float maxX,
-        float maxZ)
-    {
-        var result = new List<RoadStrip>();
-
-        foreach (var road in level.Roads.Roads)
-        {
-            for (int i = 1; i < road.Nodes.Length; i++)
-            {
-                var a = road.Nodes[i - 1];
-                var b = road.Nodes[i];
-
-                float radius = Math.Max(a.Width, b.Width) * 0.5f;
-
-                if (Math.Max(a.X, b.X) + radius < minX ||
-                    Math.Min(a.X, b.X) - radius > maxX ||
-                    Math.Max(a.Z, b.Z) + radius < minZ ||
-                    Math.Min(a.Z, b.Z) - radius > maxZ)
-                {
-                    continue;
-                }
-
-                result.Add(new RoadStrip(
-                    a.X,
-                    a.Z,
-                    b.X,
-                    b.Z,
-                    Math.Max(radius, 1f)));
-            }
-        }
-
-        return result;
-    }
-
-    private static bool IntersectsRoad(
-        IReadOnlyList<RoadStrip> roads,
-        float x,
-        float z,
-        float radius)
-    {
-        foreach (var road in roads)
-        {
-            float dx = road.Bx - road.Ax;
-            float dz = road.Bz - road.Az;
-
-            float length = dx * dx + dz * dz;
-
-            float t = length > 0.00001f
-                ? Math.Clamp(
-                    ((x - road.Ax) * dx +
-                     (z - road.Az) * dz) / length,
-                    0f,
-                    1f)
-                : 0f;
-
-            float cx = road.Ax + dx * t;
-            float cz = road.Az + dz * t;
-
-            float distanceX = x - cx;
-            float distanceZ = z - cz;
-            float minimum = road.Radius + radius;
-
-            if (distanceX * distanceX +
-                distanceZ * distanceZ < minimum * minimum)
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
     private static uint CreateSeed(
         VegetationScatterRule rule,
         int tileX,
@@ -759,13 +695,6 @@ public static class VegetationScatterGenerator
             value >= minimum &&
             value <= maximum;
     }
-
-    private readonly record struct RoadStrip(
-        float Ax,
-        float Az,
-        float Bx,
-        float Bz,
-        float Radius);
 
     private sealed class PlacementGrid
     {

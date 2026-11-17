@@ -10,6 +10,7 @@ using SharpDX.DXGI;
 using ZoneReborn.World.Assets;
 using ZoneReborn.World.Textures.Dds;
 using ZoneReborn.World.Vegetation;
+using ZoneReborn.World.Roads;
 using Buffer = SharpDX.Direct3D11.Buffer;
 using Device = SharpDX.Direct3D11.Device;
 using Vector3 = System.Numerics.Vector3;
@@ -23,6 +24,10 @@ namespace Editor.Viewport.Vegetation
         private readonly DeviceContext _context;
         private readonly VegetationScene _scene;
         private readonly TerrainRenderer _terrain;
+        private readonly RoadNetwork _roadNetwork;
+        private RoadClearance _roadClearance = new();
+        private long _roadNetworkRevision = -1;
+        private Dictionary<RoadDefinition, int> _roadVersions = [];
         private readonly Dictionary<string, ModelResources> _models = new(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, TerrainTexture> _textures = new(StringComparer.OrdinalIgnoreCase);
         private VertexShader _vertex = null!;
@@ -34,9 +39,19 @@ namespace Editor.Viewport.Vegetation
         private DepthStencilState _depth = null!;
         public Guid? Selected { get; set; }
 
-        public TreeRenderer(Device device, DeviceContext context, AssetPaths assets, VegetationScene scene, TerrainRenderer terrain)
+        public TreeRenderer(
+            Device device,
+            DeviceContext context,
+            AssetPaths assets,
+            VegetationScene scene,
+            TerrainRenderer terrain,
+            RoadNetwork roads)
         {
-            _device = device; _context = context; _scene = scene; _terrain = terrain;
+            _device = device;
+            _context = context;
+            _scene = scene;
+            _terrain = terrain;
+            _roadNetwork = roads;
             try
             {
                 var compiler = new ShaderCompiler(assets);
@@ -63,6 +78,7 @@ namespace Editor.Viewport.Vegetation
 
         public void Render(FreeCamera camera, Matrix4x4 viewProjection, bool playing)
         {
+            RefreshRoadClearance();
             var forward = Vector3.Normalize(camera.LookDirection);
             var right = camera.RightDirection;
             var up = camera.UpDirection;
@@ -73,9 +89,38 @@ namespace Editor.Viewport.Vegetation
             _context.Rasterizer.State = _rasterizer;
             _context.OutputMerger.SetDepthStencilState(_depth);
             _context.OutputMerger.SetBlendState(null);
-            foreach (var tree in _scene.Instances.Concat(_scene.Generated.Select(item => item.Tree)))
+            foreach (var entry in _scene.Instances
+                         .Select(tree => (Tree: tree, Generated: false))
+                         .Concat(_scene.Generated.Select(
+                             item => (Tree: item.Tree, Generated: true))))
             {
-                if (!_scene.Assets.TryGetValue(tree.Model, out var asset)) continue;
+                var tree = entry.Tree;
+
+                if (!_scene.Assets.TryGetValue(tree.Model, out var asset))
+                {
+                    continue;
+                }
+
+                if (entry.Generated)
+                {
+                    float radius = MathF.Max(
+                        MathF.Max(
+                            MathF.Abs(asset.Minimum.X),
+                            MathF.Abs(asset.Maximum.X)),
+                        MathF.Max(
+                            MathF.Abs(asset.Minimum.Z),
+                            MathF.Abs(asset.Maximum.Z)));
+
+                    radius = MathF.Max(0.2f, radius * tree.Scale);
+
+                    if (_roadClearance.Intersects(
+                            tree.X,
+                            tree.Z,
+                            radius))
+                    {
+                        continue;
+                    }
+                }
                 var world = World(tree, _terrain);
                 var position = new Vector3(world.M41, world.M42, world.M43);
                 float radius = Math.Max(asset.Minimum.Length(), asset.Maximum.Length()) * tree.Scale;
@@ -117,6 +162,45 @@ namespace Editor.Viewport.Vegetation
             if (tree.FollowTerrain && terrain != null && terrain.SurfaceHeight(tree.X, tree.Z, out float ground))
                 y = ground + tree.HeightOffset;
             return tree.World(y);
+        }
+
+        private void RefreshRoadClearance()
+        {
+            bool current =
+                _roadNetworkRevision == _roadNetwork.Revision &&
+                _roadVersions.Count == _roadNetwork.Roads.Count &&
+                _roadNetwork.Roads.All(road =>
+                    _roadVersions.TryGetValue(
+                        road,
+                        out int revision) &&
+                    revision == road.Revision);
+
+            if (current)
+            {
+                return;
+            }
+
+            try
+            {
+                _roadClearance = RoadClearance.Build(_roadNetwork);
+            }
+            catch (Exception exception) when (
+                exception is InvalidDataException or
+                    ArgumentException or
+                    OverflowException)
+            {
+                _roadClearance = new RoadClearance();
+
+                _scene.Warnings.Add(
+                    "Не удалось обновить дорожные зоны: " +
+                    exception.Message);
+            }
+
+            _roadNetworkRevision = _roadNetwork.Revision;
+
+            _roadVersions = _roadNetwork.Roads.ToDictionary(
+                road => road,
+                road => road.Revision);
         }
 
         private TerrainTexture Texture(string path, bool normal)

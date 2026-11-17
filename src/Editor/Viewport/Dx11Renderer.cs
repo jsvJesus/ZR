@@ -228,7 +228,16 @@ namespace Editor.Viewport
             try { roads = new RoadRenderer(_device, _context, assets, level, terrain); }
             catch { terrain.Dispose(); throw; }
             TreeRenderer trees;
-            try { trees = new TreeRenderer(_device, _context, assets, level.Vegetation, terrain); }
+            try
+            {
+                trees = new TreeRenderer(
+                    _device,
+                    _context,
+                    assets,
+                    level.Vegetation,
+                    terrain,
+                    level.Roads);
+            }
             catch { roads.Dispose(); terrain.Dispose(); throw; }
             SceneRenderer? objects = null;
             try

@@ -16,6 +16,7 @@ public sealed class TerrainSurface
     private readonly Queue<(int X, int Z)> _order = new();
     private SceneCollision? _playCollision;
     private bool _hasVegetationCollision;
+    private bool _hasRoadCollision;
     private SceneCollision? Collision => _playCollision ?? _level.Objects?.Collision;
 
     public TerrainSurface(LoadedLevel level)
@@ -34,12 +35,17 @@ public sealed class TerrainSurface
     public void PreparePlayCollision(AssetPaths assets, CancellationToken cancellationToken = default)
     {
         _playCollision = VegetationCollision.Create(_level, assets, this, cancellationToken);
+        _hasRoadCollision = _level.Roads.Roads.Any(
+            road => road.Nodes.Count >= 2);
         _hasVegetationCollision = _level.Vegetation.Instances.Concat(_level.Vegetation.Generated.Select(item => item.Tree))
             .Any(tree => _level.Vegetation.Assets.TryGetValue(tree.Model, out var asset) &&
                 VegetationCategory.HasBarkCollision(asset.File) && asset.Parts.Any(part => part.Kind == TreePartKind.Branches));
     }
 
-    public bool HasSceneObjects => _level.Objects?.Instances.Count > 0 || _hasVegetationCollision;
+    public bool HasSceneObjects =>
+        _level.Objects?.Instances.Count > 0 ||
+        _hasVegetationCollision ||
+        _hasRoadCollision;
     public bool HasTerrainHoles => _level.TerrainDocument?.Holes.Any == true;
     public bool Contains(float x, float z) => _level.Manifest.Terrain.Contains(x, z);
 
