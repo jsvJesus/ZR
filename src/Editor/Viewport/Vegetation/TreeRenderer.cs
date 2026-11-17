@@ -103,7 +103,7 @@ namespace Editor.Viewport.Vegetation
 
                 if (entry.Generated)
                 {
-                    float radius = MathF.Max(
+                    float roadClearanceRadius = MathF.Max(
                         MathF.Max(
                             MathF.Abs(asset.Minimum.X),
                             MathF.Abs(asset.Maximum.X)),
@@ -111,12 +111,14 @@ namespace Editor.Viewport.Vegetation
                             MathF.Abs(asset.Minimum.Z),
                             MathF.Abs(asset.Maximum.Z)));
 
-                    radius = MathF.Max(0.2f, radius * tree.Scale);
+                    roadClearanceRadius = MathF.Max(
+                        0.2f,
+                        roadClearanceRadius * tree.Scale);
 
                     if (_roadClearance.Intersects(
                             tree.X,
                             tree.Z,
-                            radius))
+                            roadClearanceRadius))
                     {
                         continue;
                     }

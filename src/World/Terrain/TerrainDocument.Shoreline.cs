@@ -390,28 +390,34 @@ public sealed partial class TerrainDocument
         float extentX = water.RadiusX + water.ShoreWidth;
         float extentZ = water.RadiusZ + water.ShoreWidth;
 
+        float minX = water.CenterX - extentX;
+        float maxX = water.CenterX + extentX;
+        float minZ = water.CenterZ - extentZ;
+        float maxZ = water.CenterZ + extentZ;
+
         foreach (var road in roads.Roads)
         {
-            var nodes = road.Nodes;
-
-            for (int i = 1; i < nodes.Length; i++)
+            if (road.Nodes.Count < 2)
             {
-                var a = nodes[i - 1];
-                var b = nodes[i];
+                continue;
+            }
 
-                float radius = Math.Clamp(
-                    Math.Max(a.Width, b.Width) * 0.5f,
-                    2f,
-                    30f) + 1.5f;
+            float radius = Math.Clamp(
+                road.Width * 0.5f + road.ShoulderWidth,
+                0.1f,
+                35f) + 1.5f;
 
-                if (Math.Max(a.X, b.X) + radius <
-                        water.CenterX - extentX ||
-                    Math.Min(a.X, b.X) - radius >
-                        water.CenterX + extentX ||
-                    Math.Max(a.Z, b.Z) + radius <
-                        water.CenterZ - extentZ ||
-                    Math.Min(a.Z, b.Z) - radius >
-                        water.CenterZ + extentZ)
+            var samples = RoadSpline.Sample(road);
+
+            for (int i = 1; i < samples.Count; i++)
+            {
+                var a = samples[i - 1].Position;
+                var b = samples[i].Position;
+
+                if (MathF.Max(a.X, b.X) + radius < minX ||
+                    MathF.Min(a.X, b.X) - radius > maxX ||
+                    MathF.Max(a.Z, b.Z) + radius < minZ ||
+                    MathF.Min(a.Z, b.Z) - radius > maxZ)
                 {
                     continue;
                 }
