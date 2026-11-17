@@ -10,8 +10,11 @@ public static class RoadMesh
     private readonly record struct Frame(Vector3 Position, Vector3 Right, Vector3 Forward, float Distance, int Segment);
     private readonly record struct Profile(float Lateral, float Height);
 
-    public static IReadOnlyList<RoadSectionMesh> Build(RoadDefinition road, TerrainSurface surface,
-        CancellationToken cancellationToken = default)
+    public static IReadOnlyList<RoadSectionMesh> Build(
+        RoadDefinition road,
+        TerrainSurface surface,
+        CancellationToken cancellationToken = default,
+        RoadNetwork? network = null)
     {
         ArgumentNullException.ThrowIfNull(surface);
         ArgumentNullException.ThrowIfNull(road);
@@ -101,8 +104,246 @@ public static class RoadMesh
                 BuildSleeper(Section(b.Segment), frame, road.RailGauge / 2 + 0.3f, MathF.Min(0.24f, road.SleeperSpacing * 0.65f));
             }
         }
+        if (road.Type == RoadType.Railway)
+        {
+            BuildRailwaySupports(
+                road,
+                surface,
+                frames,
+                Section,
+                network,
+                cancellationToken);
+        }
+
         cancellationToken.ThrowIfCancellationRequested();
-        return sections.OrderBy(pair => pair.Key).Select(pair => pair.Value.Finish(pair.Key)).ToArray();
+
+        return sections
+            .OrderBy(pair => pair.Key)
+            .Select(pair => pair.Value.Finish(pair.Key))
+            .ToArray();
+    }
+
+    private static void BuildRailwaySupports(
+        RoadDefinition road,
+        TerrainSurface surface,
+        Frame[] frames,
+        Func<int, Builder> getSection,
+        RoadNetwork? network,
+        CancellationToken cancellationToken)
+    {
+        const float supportSpacing = 12f;
+        const float minimumHeight = 2f;
+        const float maximumHeight = 80f;
+
+        if (frames.Length < 2)
+        {
+            return;
+        }
+
+        var nearbyRoads = new RoadNetwork();
+
+        if (network != null)
+        {
+            foreach (var other in network.Roads)
+            {
+                if (other.Nodes.Count < 2 ||
+                    string.Equals(
+                        other.Id,
+                        road.Id,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                nearbyRoads.Roads.Add(other);
+            }
+        }
+
+        RoadClearance crossings = nearbyRoads.Roads.Count > 0
+            ? RoadClearance.Build(
+                nearbyRoads,
+                cancellationToken)
+            : new RoadClearance();
+
+        int index = 1;
+        float totalLength = frames[^1].Distance;
+
+        for (float position = supportSpacing;
+             position < totalLength - supportSpacing * 0.5f;
+             position += supportSpacing)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            while (index < frames.Length - 1 &&
+                   frames[index].Distance < position)
+            {
+                index++;
+            }
+
+            Frame a = frames[index - 1];
+            Frame b = frames[index];
+
+            float span = b.Distance - a.Distance;
+
+            if (span < 1e-6f)
+            {
+                continue;
+            }
+
+            float t = Math.Clamp(
+                (position - a.Distance) / span,
+                0f,
+                1f);
+
+            Vector3 center = Vector3.Lerp(
+                a.Position,
+                b.Position,
+                t);
+
+            if (crossings.Intersects(
+                center.X,
+                center.Z,
+                3f))
+            {
+                continue;
+            }
+
+            if (!surface.TryGetHeight(
+                    center.X,
+                    center.Z,
+                    out float ground))
+            {
+                continue;
+            }
+
+            float bottomOfDeck =
+                center.Y - road.Thickness * 2f;
+
+            float supportHeight = bottomOfDeck - ground;
+
+            if (supportHeight < minimumHeight ||
+                supportHeight > maximumHeight)
+            {
+                continue;
+            }
+
+            Vector3 forward = new(
+                b.Position.X - a.Position.X,
+                0f,
+                b.Position.Z - a.Position.Z);
+
+            if (forward.LengthSquared() < 1e-10f)
+            {
+                continue;
+            }
+
+            forward = Vector3.Normalize(forward);
+
+            Vector3 right = new(
+                forward.Z,
+                0f,
+                -forward.X);
+
+            AddRailwaySupport(
+                getSection(b.Segment),
+                center,
+                right,
+                forward,
+                ground - 0.3f,
+                bottomOfDeck + 0.05f);
+        }
+    }
+
+    private static void AddRailwaySupport(
+        Builder builder,
+        Vector3 center,
+        Vector3 right,
+        Vector3 forward,
+        float bottomY,
+        float topY)
+    {
+        const float halfWidth = 0.38f;
+        const float halfDepth = 0.42f;
+        const float material = 3f;
+
+        Vector3 x = right * halfWidth;
+        Vector3 z = forward * halfDepth;
+
+        Vector3 topCenter = new(
+            center.X,
+            topY,
+            center.Z);
+
+        Vector3 bottomCenter = new(
+            center.X,
+            bottomY,
+            center.Z);
+
+        Vector3[] top =
+        [
+            topCenter - x - z,
+            topCenter + x - z,
+            topCenter + x + z,
+            topCenter - x + z
+        ];
+
+        Vector3[] bottom =
+        [
+            bottomCenter - x - z,
+            bottomCenter + x - z,
+            bottomCenter + x + z,
+            bottomCenter - x + z
+        ];
+
+        Vector2 uv0 = Vector2.Zero;
+        Vector2 uv1 = Vector2.UnitX;
+        Vector2 uv2 = Vector2.One;
+        Vector2 uv3 = Vector2.UnitY;
+
+        for (int i = 0; i < 4; i++)
+        {
+            int next = (i + 1) % 4;
+
+            Vector3 outward = Vector3.Cross(
+                Vector3.UnitY,
+                top[next] - top[i]);
+
+            builder.Quad(
+                top[i],
+                top[next],
+                bottom[next],
+                bottom[i],
+                uv0,
+                uv1,
+                uv2,
+                uv3,
+                material,
+                outward);
+        }
+
+        builder.Quad(
+            top[0],
+            top[1],
+            top[2],
+            top[3],
+            uv0,
+            uv1,
+            uv2,
+            uv3,
+            material,
+            Vector3.UnitY);
+
+        builder.Quad(
+            bottom[0],
+            bottom[3],
+            bottom[2],
+            bottom[1],
+            uv0,
+            uv1,
+            uv2,
+            uv3,
+            material,
+            -Vector3.UnitY);
     }
 
     private static Vector3 At(Frame frame, Profile profile) => frame.Position + frame.Right * profile.Lateral + Vector3.UnitY * profile.Height;

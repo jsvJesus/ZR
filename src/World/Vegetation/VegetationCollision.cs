@@ -139,7 +139,8 @@ public static class VegetationCollision
             var sections = RoadMesh.Build(
                 road,
                 surface,
-                cancellationToken);
+                cancellationToken,
+                level.Roads);
 
             foreach (var section in sections)
             {

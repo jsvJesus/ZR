@@ -165,7 +165,10 @@ internal sealed partial class RoadRenderer : IDisposable
         if (resources.Sections != null || resources.Failed) return;
         try
         {
-            var meshes = RoadMesh.Build(road, _surface);
+            var meshes = RoadMesh.Build(
+                road,
+                _surface,
+                network: _level.Roads);
             long bytes = meshes.Sum(mesh => (long)mesh.Vertices.Length * VertexStride + (long)mesh.Indices.Length * sizeof(int));
             if (bytes > GeometryCacheBytes) throw new InvalidDataException("Road exceeds the renderer geometry budget.");
             long cached = _roads.Values.Sum(item => item.Bytes);

@@ -258,14 +258,30 @@ public sealed partial class TerrainDocument
                     "Вычислена некорректная высота дороги.");
             }
 
-            if (MathF.Abs(newHeight - originalHeight) >
-                MaximumRoadTerrainChange)
+            float requiredChange = newHeight - originalHeight;
+
+            if (MathF.Abs(requiredChange) > MaximumRoadTerrainChange)
             {
+                if (road.Type == RoadType.Railway &&
+                    requiredChange > 0f)
+                {
+                    // Глубокая низина остаётся под железнодорожным
+                    // пролётом. Terrain здесь не засыпаем.
+                    continue;
+                }
+
+                if (road.Type == RoadType.Railway)
+                {
+                    throw new InvalidOperationException(
+                        "Железнодорожный путь пересекает возвышенность. " +
+                        "Для укладки нужно срезать более 6 метров грунта. " +
+                        "Измените маршрут или предусмотрите тоннель.");
+                }
+
                 throw new InvalidOperationException(
                     "Для размещения дороги требуется изменить " +
-                    "рельеф более чем на 6 метров. " +
-                    "На этом участке нужен мост, насыпь " +
-                    "или корректировка опорных точек.");
+                    "Terrain более чем на 6 метров. " +
+                    "Используйте мост, насыпь или измените маршрут.");
             }
 
             float encodedHeight =

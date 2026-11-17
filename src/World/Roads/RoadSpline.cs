@@ -8,43 +8,93 @@ public static class RoadSpline
     public const int MaximumSamples = 32768;
     public const float MaximumControlLength = 20000;
 
-    public static IReadOnlyList<RoadSample> Sample(RoadDefinition road, TerrainSurface? surface = null,
+    private const float RailwayMaximumGrade = 0.04f;
+
+    public static IReadOnlyList<RoadSample> Sample(
+        RoadDefinition road,
+        TerrainSurface? surface = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(road);
         cancellationToken.ThrowIfCancellationRequested();
+
         ValidateNodes(road);
-        if (road.Nodes.Count < 2) return Array.Empty<RoadSample>();
+
+        if (road.Nodes.Count < 2)
+        {
+            return Array.Empty<RoadSample>();
+        }
+
         int count = road.Nodes.Count;
-        var points = road.Nodes.Select(n => road.FollowTerrain ? new Vector3(n.X, 0, n.Z) : n.Position).ToArray();
+
+        var points = road.Nodes
+            .Select(node => road.FollowTerrain
+                ? new Vector3(node.X, 0f, node.Z)
+                : node.Position)
+            .ToArray();
+
         var tangents = new Vector3[count];
+
         tangents[0] = points[1] - points[0];
         tangents[^1] = points[^1] - points[^2];
+
         for (int i = 1; i < count - 1; i++)
         {
-            Vector3 before = points[i] - points[i - 1], after = points[i + 1] - points[i];
-            float previousLength = before.Length(), nextLength = after.Length();
-            // Shared, length-limited bisectors produce C1 joins without long handles on short bends.
-            tangents[i] = (before / previousLength + after / nextLength) * (MathF.Min(previousLength, nextLength) * 0.5f);
+            Vector3 before = points[i] - points[i - 1];
+            Vector3 after = points[i + 1] - points[i];
+
+            float previousLength = before.Length();
+            float nextLength = after.Length();
+
+            tangents[i] =
+                (before / previousLength + after / nextLength) *
+                (MathF.Min(previousLength, nextLength) * 0.5f);
         }
+
         var samples = new List<RoadSample>();
-        float distance = 0;
+        float distance = 0f;
+
         for (int segment = 0; segment < count - 1; segment++)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            Vector3 a = points[segment], b = points[segment + 1], ta = tangents[segment], tb = tangents[segment + 1];
-            // The Bezier control polygon bounds arc length; .75m steps also resolve short curves.
-            float bound = ta.Length() / 3 + ((b - a) - (ta + tb) / 3).Length() + tb.Length() / 3;
-            int steps = Math.Max(4, (int)MathF.Ceiling(bound / 0.75f));
-            if (samples.Count + steps + (segment == 0 ? 1 : 0) > MaximumSamples)
-                throw new InvalidDataException($"Road exceeds the {MaximumSamples} sample limit.");
-            for (int step = segment == 0 ? 0 : 1; step <= steps; step++)
+
+            Vector3 a = points[segment];
+            Vector3 b = points[segment + 1];
+            Vector3 tangentA = tangents[segment];
+            Vector3 tangentB = tangents[segment + 1];
+
+            float bound =
+                tangentA.Length() / 3f +
+                ((b - a) - (tangentA + tangentB) / 3f).Length() +
+                tangentB.Length() / 3f;
+
+            int steps = Math.Max(
+                4,
+                (int)MathF.Ceiling(bound / 0.75f));
+
+            if (samples.Count + steps +
+                (segment == 0 ? 1 : 0) > MaximumSamples)
             {
-                if ((step & 63) == 0) cancellationToken.ThrowIfCancellationRequested();
-                float t = step / (float)steps, t2 = t * t, t3 = t2 * t;
-                // Evaluate relative to a to avoid cancellation between large world coordinates.
-                Vector3 position = a + (t3 - 2 * t2 + t) * ta
-                    + (-2 * t3 + 3 * t2) * (b - a) + (t3 - t2) * tb;
+                throw new InvalidDataException(
+                    "Превышен лимит точек дорожного сплайна.");
+            }
+
+            for (int step = segment == 0 ? 0; step <= steps; step++)
+            {
+                if ((step & 63) == 0)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                }
+
+                float t = step / (float)steps;
+                float t2 = t * t;
+                float t3 = t2 * t;
+
+                Vector3 position =
+                    a +
+                    (t3 - 2f * t2 + t) * tangentA +
+                    (-2f * t3 + 3f * t2) * (b - a) +
+                    (t3 - t2) * tangentB;
 
                 if (road.FollowTerrain)
                 {
@@ -54,10 +104,11 @@ public static class RoadSpline
                     var nodeB = road.Nodes[segment + 1];
 
                     float ground = nodeA.Y +
-                                   (nodeB.Y - nodeA.Y) * blend;
+                        (nodeB.Y - nodeA.Y) * blend;
 
-                    if (!road.TerrainConformed &&
-                        surface is not null &&
+                    if (road.Type != RoadType.Railway &&
+                        !road.TerrainConformed &&
+                        surface != null &&
                         surface.TryGetHeight(
                             position.X,
                             position.Z,
@@ -66,55 +117,232 @@ public static class RoadSpline
                         ground = terrainHeight;
                     }
 
-                    float heightOffset = nodeA.HeightOffset +
-                                         (nodeB.HeightOffset - nodeA.HeightOffset) * blend;
+                    float offset = nodeA.HeightOffset +
+                        (nodeB.HeightOffset - nodeA.HeightOffset) * blend;
 
-                    position.Y = ground + heightOffset;
+                    position.Y = ground + offset;
                 }
 
                 position.Y += road.SurfaceOffset;
-                if (!Finite(position)) throw new InvalidDataException("Road sampling produced a non-finite point.");
-                if (samples.Count > 0) distance += Vector3.Distance(samples[^1].Position, position);
-                if (!float.IsFinite(distance) || distance > MaximumControlLength * 4)
-                    throw new InvalidDataException("Road surface exceeds the sampled length limit.");
-                samples.Add(new(position, Vector3.UnitZ, distance, segment));
+
+                if (!Finite(position))
+                {
+                    throw new InvalidDataException(
+                        "Некорректная координата дорожного сплайна.");
+                }
+
+                if (samples.Count > 0)
+                {
+                    distance += Vector3.Distance(
+                        samples[^1].Position,
+                        position);
+                }
+
+                if (!float.IsFinite(distance) ||
+                    distance > MaximumControlLength * 4f)
+                {
+                    throw new InvalidDataException(
+                        "Превышена длина дорожного сплайна.");
+                }
+
+                samples.Add(new RoadSample(
+                    position,
+                    Vector3.UnitZ,
+                    distance,
+                    segment));
             }
         }
+
+        if (road.Type == RoadType.Railway)
+        {
+            LimitRailwayGrade(samples, cancellationToken);
+        }
+
         for (int i = 0; i < samples.Count; i++)
         {
-            if ((i & 255) == 0) cancellationToken.ThrowIfCancellationRequested();
-            Vector3 direction = samples[Math.Min(i + 1, samples.Count - 1)].Position - samples[Math.Max(0, i - 1)].Position;
+            if ((i & 255) == 0)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+
+            Vector3 direction =
+                samples[Math.Min(i + 1, samples.Count - 1)].Position -
+                samples[Math.Max(0, i - 1)].Position;
+
             if (direction.LengthSquared() < 1e-10f)
             {
                 int segment = samples[i].SegmentIndex;
                 direction = points[segment + 1] - points[segment];
             }
-            samples[i] = samples[i] with { Forward = Vector3.Normalize(direction) };
+
+            if (direction.LengthSquared() < 1e-10f)
+            {
+                direction = Vector3.UnitZ;
+            }
+
+            samples[i] = samples[i] with
+            {
+                Forward = Vector3.Normalize(direction)
+            };
         }
+
         return samples;
+    }
+
+    private static void LimitRailwayGrade(
+        List<RoadSample> samples,
+        CancellationToken cancellationToken)
+    {
+        var heights = samples
+            .Select(sample => sample.Position.Y)
+            .ToArray();
+
+        for (int i = 1; i < samples.Count; i++)
+        {
+            if ((i & 255) == 0)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+
+            float horizontalDistance = Vector2.Distance(
+                new Vector2(
+                    samples[i - 1].Position.X,
+                    samples[i - 1].Position.Z),
+                new Vector2(
+                    samples[i].Position.X,
+                    samples[i].Position.Z));
+
+            float allowedChange =
+                horizontalDistance * RailwayMaximumGrade;
+
+            heights[i] = MathF.Max(
+                heights[i],
+                heights[i - 1] - allowedChange);
+        }
+
+        for (int i = samples.Count - 2; i >= 0; i--)
+        {
+            if ((i & 255) == 0)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+
+            float horizontalDistance = Vector2.Distance(
+                new Vector2(
+                    samples[i].Position.X,
+                    samples[i].Position.Z),
+                new Vector2(
+                    samples[i + 1].Position.X,
+                    samples[i + 1].Position.Z));
+
+            float allowedChange =
+                horizontalDistance * RailwayMaximumGrade;
+
+            heights[i] = MathF.Max(
+                heights[i],
+                heights[i + 1] - allowedChange);
+        }
+
+        float distance = 0f;
+        Vector3 previous = Vector3.Zero;
+
+        for (int i = 0; i < samples.Count; i++)
+        {
+            Vector3 position = samples[i].Position;
+            position.Y = heights[i];
+
+            if (i > 0)
+            {
+                distance += Vector3.Distance(
+                    previous,
+                    position);
+            }
+
+            if (!Finite(position) ||
+                !float.IsFinite(distance) ||
+                distance > MaximumControlLength * 4f)
+            {
+                throw new InvalidDataException(
+                    "Некорректный высотный профиль железной дороги.");
+            }
+
+            samples[i] = samples[i] with
+            {
+                Position = position,
+                Distance = distance
+            };
+
+            previous = position;
+        }
     }
 
     private static void ValidateNodes(RoadDefinition road)
     {
-        if (road.Nodes is null || road.Nodes.Count > 256 || !float.IsFinite(road.SurfaceOffset) || MathF.Abs(road.SurfaceOffset) > 100)
-            throw new InvalidDataException("Invalid road nodes or surface offset.");
-        float length = 0;
+        if (road.Nodes == null ||
+            road.Nodes.Count > 256 ||
+            !float.IsFinite(road.SurfaceOffset) ||
+            MathF.Abs(road.SurfaceOffset) > 100f)
+        {
+            throw new InvalidDataException(
+                "Некорректные опорные точки дороги.");
+        }
+
+        float length = 0f;
+
         for (int i = 0; i < road.Nodes.Count; i++)
         {
             var node = road.Nodes[i];
-            if (node is null || !Finite(node.Position) || !float.IsFinite(node.HeightOffset)
-                || MathF.Max(MathF.Abs(node.X), MathF.Max(MathF.Abs(node.Y), MathF.Abs(node.Z))) > 1e7f
-                || MathF.Abs(node.HeightOffset) > 1e7f)
-                throw new InvalidDataException("Road coordinates must be finite and within supported world bounds.");
-            if (i == 0) continue;
+
+            if (node == null ||
+                !Finite(node.Position) ||
+                !float.IsFinite(node.HeightOffset) ||
+                MathF.Max(
+                    MathF.Abs(node.X),
+                    MathF.Max(
+                        MathF.Abs(node.Y),
+                        MathF.Abs(node.Z))) > 1e7f ||
+                MathF.Abs(node.HeightOffset) > 1e7f)
+            {
+                throw new InvalidDataException(
+                    "Некорректные координаты опорной точки.");
+            }
+
+            if (i == 0)
+            {
+                continue;
+            }
+
             var previous = road.Nodes[i - 1];
-            float horizontal = Vector2.Distance(new(node.X, node.Z), new(previous.X, previous.Z));
-            if (horizontal < 0.25f) throw new InvalidDataException("Adjacent road points must be at least 0.25m apart in X/Z.");
-            length += road.FollowTerrain ? horizontal + MathF.Abs(node.HeightOffset - previous.HeightOffset)
-                : Vector3.Distance(previous.Position, node.Position);
-            if (length > MaximumControlLength) throw new InvalidDataException("Road control length exceeds 20,000m.");
+
+            float horizontal = Vector2.Distance(
+                new Vector2(node.X, node.Z),
+                new Vector2(previous.X, previous.Z));
+
+            if (horizontal < 0.25f)
+            {
+                throw new InvalidDataException(
+                    "Опорные точки расположены слишком близко.");
+            }
+
+            length += road.FollowTerrain
+                ? horizontal + MathF.Abs(
+                    node.HeightOffset - previous.HeightOffset)
+                : Vector3.Distance(
+                    previous.Position,
+                    node.Position);
+
+            if (length > MaximumControlLength)
+            {
+                throw new InvalidDataException(
+                    "Длина дороги превышает 20 километров.");
+            }
         }
     }
 
-    internal static bool Finite(Vector3 value) => float.IsFinite(value.X) && float.IsFinite(value.Y) && float.IsFinite(value.Z);
+    internal static bool Finite(Vector3 value)
+    {
+        return float.IsFinite(value.X) &&
+               float.IsFinite(value.Y) &&
+               float.IsFinite(value.Z);
+    }
 }
