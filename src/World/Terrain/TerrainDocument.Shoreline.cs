@@ -1,13 +1,10 @@
-using ZoneReborn.World.Roads;
 using ZoneReborn.World.Terrain.Models;
 
 namespace ZoneReborn.World.Terrain;
 
 public sealed partial class TerrainDocument
 {
-    public int GenerateShoreline(
-        string waterId,
-        RoadNetwork? roads = null)
+    public int GenerateShoreline(string waterId)
     {
         var water = WaterBodies.FirstOrDefault(
             item => item.Id == waterId)
@@ -38,10 +35,6 @@ public sealed partial class TerrainDocument
         var field = TerrainShoreDistanceField.Build(
             this,
             water);
-
-        var roadSegments = BuildShoreRoadSegments(
-            water,
-            roads);
 
         var d = Descriptor;
         float pixelSize = 256f / 248f * d.CellSize;
@@ -161,14 +154,6 @@ public sealed partial class TerrainDocument
                             worldZ);
 
                         if (distance > water.ShoreWidth)
-                        {
-                            continue;
-                        }
-
-                        if (IsProtectedShoreRoad(
-                            worldX,
-                            worldZ,
-                            roadSegments))
                         {
                             continue;
                         }

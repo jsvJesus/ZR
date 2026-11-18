@@ -319,9 +319,7 @@ public sealed partial class TerrainEditorPanel
 
         _viewport?.EndTerrainPaint();
 
-        int tiles = document.GenerateShoreline(
-            water.Id,
-            _level.Roads);
+        int tiles = document.GenerateShoreline(water.Id);
 
         RefreshMode();
 
