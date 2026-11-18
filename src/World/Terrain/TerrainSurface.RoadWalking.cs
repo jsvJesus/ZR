@@ -85,7 +85,7 @@ public sealed partial class TerrainSurface
                 position.Y >= surfaceY - 0.1f &&
                 position.Y <= surfaceY + 0.5f)
             {
-                return 0.36f;
+                return 0.48f;
             }
         }
 

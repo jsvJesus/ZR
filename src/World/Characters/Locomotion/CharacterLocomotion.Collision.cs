@@ -23,8 +23,13 @@ public sealed partial class CharacterLocomotion
         if (!_surface.Contains(target.X, target.Z)) return false;
         if (!_surface.TryGetHeight(target.X, target.Z, out float terrain)) terrain = Position.Y;
         float slope = MathF.Tan(LocomotionSettings.MaximumSlopeDegrees * MathF.PI / 180);
+        float stepHeight = StepHeight;
+        bool canStepOntoSurface = terrain > Position.Y && terrain - Position.Y <= stepHeight + 0.001f;
         // Model stairs may be stepped onto; the existing terrain slope limit still applies.
-        if (displacement.LengthSquared() > 1e-10f && terrain - Position.Y > displacement.Length() * slope + 0.001f)
+        if (displacement.LengthSquared() > 1e-10f &&
+            !canStepOntoSurface &&
+            terrain - Position.Y >
+            displacement.Length() * slope + 0.001f)
         {
             if (!_surface.TryGetHeight(Position.X, Position.Z, out float here) ||
                 !_surface.TryGetHeight(Position.X + 0.1f, Position.Z, out float hx) ||
