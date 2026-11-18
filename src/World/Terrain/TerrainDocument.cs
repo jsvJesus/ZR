@@ -52,13 +52,28 @@ public sealed partial class TerrainDocument(string directory, LevelManifest mani
 
     public TerrainTileData Tile(int x, int z)
     {
+        EnsureRoadModifiers();
+        var tile = BaseTile(x, z);
+        return EffectiveTile(tile);
+    }
+
+    private TerrainTileData BaseTile(int x, int z)
+    {
         var tile = Raw(x, z);
         if (_normalDirty.Remove((x, z)))
-            _tiles[(x, z)] = tile = tile with { Normals = TerrainNormals.Build(Descriptor, x, z, Height) };
+            _tiles[(x, z)] = tile = tile with { Normals = TerrainNormals.Build(Descriptor, x, z, BaseHeight) };
         return tile;
     }
 
     public float Height(int x, int z)
+    {
+        EnsureRoadModifiers();
+        x = Math.Clamp(x, 0, Descriptor.SamplesX - 1); z = Math.Clamp(z, 0, Descriptor.SamplesZ - 1);
+        return EffectiveHeight(x, z, BaseHeight(x, z));
+    }
+
+    /// <summary>User-authored terrain, before any derived road corridor is applied.</summary>
+    public float BaseHeight(int x, int z)
     {
         x = Math.Clamp(x, 0, Descriptor.SamplesX - 1); z = Math.Clamp(z, 0, Descriptor.SamplesZ - 1);
         return Descriptor.DecodeHeight(Raw(x / 256, z / 256).Heights[(z % 256) * 256 + x % 256]);
@@ -121,7 +136,7 @@ public sealed partial class TerrainDocument(string directory, LevelManifest mani
             ushort old = Raw(gx / 256, gz / 256).Heights[(gz % 256) * 256 + gx % 256];
             float height = d.DecodeHeight(old), weight = 1 - distance / radius;
             float next = mode == TerrainBrushMode.Smooth
-                ? height + ((Height(gx - 1, gz) + Height(gx + 1, gz) + Height(gx, gz - 1) + Height(gx, gz + 1)) / 4 - height)
+                ? height + ((BaseHeight(gx - 1, gz) + BaseHeight(gx + 1, gz) + BaseHeight(gx, gz - 1) + BaseHeight(gx, gz + 1)) / 4 - height)
                     * Math.Min(1, strength) * weight
                 : mode == TerrainBrushMode.Flatten
                     ? height + (flattenHeight!.Value - height) * Math.Min(1, strength) * weight
@@ -158,6 +173,8 @@ public sealed partial class TerrainDocument(string directory, LevelManifest mani
         if (holesChanged)
         {
             HoleRevision++;
+            InvalidateRoadModifiersForTerrain(change.Holes.Select(value => (value.X, value.Z, (ushort)0)).ToList());
+            HeightRevision++;
         }
 
         return true;
@@ -181,12 +198,18 @@ public sealed partial class TerrainDocument(string directory, LevelManifest mani
         }
         Revision++;
         if (change.Heights.Count > 0) HeightRevision++;
-        if (change.Holes.Count > 0) HoleRevision++;
+        if (change.Holes.Count > 0)
+        {
+            HoleRevision++;
+            InvalidateRoadModifiersForTerrain(change.Holes.Select(value => (value.X, value.Z, (ushort)0)).ToList());
+            HeightRevision++;
+        }
         if (change.Materials.Count > 0) MaterialRevision++;
     }
 
     private void SetHeight(int x, int z, ushort value)
     {
+        InvalidateEffectiveTile(x / 256, z / 256);
         Raw(x / 256, z / 256).Heights[(z % 256) * 256 + x % 256] = value;
         _dirty.Add((x / 256, z / 256));
         _overviewDirty.Add((x / 256, z / 256));
@@ -196,6 +219,12 @@ public sealed partial class TerrainDocument(string directory, LevelManifest mani
     }
 
     public TerrainOverviewData BuildOverview()
+    {
+        EnsureRoadModifiers();
+        return EffectiveOverview(BuildBaseOverview());
+    }
+
+    private TerrainOverviewData BuildBaseOverview()
     {
         _overview ??= TerrainOverviewReader.Read(AssetPathResolver.Resolve(directory, manifest.OverviewFile));
         foreach (var key in _overviewDirty)
@@ -218,7 +247,8 @@ public sealed partial class TerrainDocument(string directory, LevelManifest mani
         if (!IsDirty) return;
         foreach (var key in _dirty)
         {
-            var tile = Tile(key.X, key.Z);
+            // Persist only the author's terrain. Road modifiers are rebuilt from roads.json on open.
+            var tile = BaseTile(key.X, key.Z);
             string file = manifest.Tiles.First(value => value.X == key.X && value.Z == key.Z).File;
             Atomic(file, path => TerrainTileWriter.Write(path, tile));
             int index = manifest.Tiles.FindIndex(value => value.X == key.X && value.Z == key.Z);
@@ -229,7 +259,7 @@ public sealed partial class TerrainDocument(string directory, LevelManifest mani
             if (string.IsNullOrWhiteSpace(Descriptor.HolesFile)) Descriptor.HolesFile = "terrain/holes.bin";
             Atomic(Descriptor.HolesFile, Holes.Write);
         }
-        Atomic(manifest.OverviewFile, path => TerrainOverviewWriter.Write(path, BuildOverview()));
+        Atomic(manifest.OverviewFile, path => TerrainOverviewWriter.Write(path, BuildBaseOverview()));
         string layerTemporary = Path.Combine(directory, $".terrain-layers-{Guid.NewGuid():N}.tmp");
         try
         {

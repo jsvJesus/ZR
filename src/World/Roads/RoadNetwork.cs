@@ -14,11 +14,41 @@ public sealed class RoadNetwork
     public bool IsDirty { get; set; }
     public bool CanSave { get; set; } = true;
     public long Revision { get; private set; }
+    public event Action? Modified;
+    private List<RoadDefinition> _previous = [];
+    private readonly List<List<RoadDefinition>> _undo = [], _redo = [];
+    public bool CanUndo => CanSave && _undo.Count > 0;
+    public bool CanRedo => CanSave && _redo.Count > 0;
+
+    public void ResetHistory()
+    {
+        _undo.Clear(); _redo.Clear();
+        _previous = Roads.Select(RoadStorage.Copy).ToList();
+    }
+
+    public void Undo() => Restore(_undo, _redo);
+    public void Redo() => Restore(_redo, _undo);
+
+    private void Restore(List<List<RoadDefinition>> source, List<List<RoadDefinition>> destination)
+    {
+        if (!CanSave || source.Count == 0) return;
+        destination.Add(Roads.Select(RoadStorage.Copy).ToList());
+        var snapshot = source[^1]; source.RemoveAt(source.Count - 1);
+        Roads.Clear(); Roads.AddRange(snapshot.Select(RoadStorage.Copy));
+        _previous = Roads.Select(RoadStorage.Copy).ToList();
+        Revision++; IsDirty = true;
+        Modified?.Invoke();
+    }
     public void Changed(RoadDefinition? road = null)
     {
+        _undo.Add(_previous);
+        if (_undo.Count > 32) _undo.RemoveAt(0);
+        _redo.Clear();
         road?.Changed();
         Revision++;
         IsDirty = true;
+        _previous = Roads.Select(RoadStorage.Copy).ToList();
+        Modified?.Invoke();
     }
 }
 
@@ -50,6 +80,15 @@ public sealed class RoadDefinition
     public bool FollowTerrain { get; set; } = true;
 
     public bool TerrainConformed { get; set; }
+    public bool TerrainModifierEnabled { get; set; } = true;
+    public bool PreserveSourceElevation { get; set; }
+    public float TerrainCutLimit { get; set; } = 6;
+    public float TerrainFillLimit { get; set; } = 6;
+    public float TerrainTransitionWidth { get; set; } = 4;
+    public float TerrainBaseDepth { get; set; } = 0.02f;
+    public string MaterialId { get; set; } = "";
+    public float TextureRepeatLength { get; set; } = 4;
+    public float MaterialWetness { get; set; } = 1;
 
     [JsonIgnore]
     public int Revision { get; private set; }

@@ -42,6 +42,12 @@ public sealed partial class RoadSegmentsPanel
         candidate.Width = Parse(_width); candidate.ShoulderWidth = Parse(_shoulder);
         candidate.Thickness = Parse(_thickness); candidate.SurfaceOffset = Parse(_surfaceOffset);
         candidate.RailGauge = Parse(_gauge); candidate.SleeperSpacing = Parse(_spacing);
+        candidate.TerrainModifierEnabled = _terrainModifier.IsChecked == true;
+        candidate.PreserveSourceElevation = _preserveElevation.IsChecked == true;
+        candidate.TerrainCutLimit = Parse(_cutLimit); candidate.TerrainFillLimit = Parse(_fillLimit);
+        candidate.TerrainTransitionWidth = Parse(_transition); candidate.TerrainBaseDepth = Parse(_baseDepth);
+        candidate.MaterialId = (_roadMaterial.SelectedItem as RoadMaterialOption)?.Id ?? _retainedMaterialId;
+        candidate.TextureRepeatLength = Parse(_textureRepeat); candidate.MaterialWetness = Parse(_materialWetness);
         if (!int.TryParse(_lanes.Text, out int lanes)) throw new InvalidDataException("Число полос должно быть целым.");
         candidate.LaneCount = lanes;
         candidate.FollowTerrain = _follow.IsChecked == true;
@@ -50,7 +56,7 @@ public sealed partial class RoadSegmentsPanel
             var surface = new TerrainSurface(_level!);
             foreach (var node in candidate.Nodes)
             {
-                bool found = surface.TryGetHeight(node.X, node.Z, out float ground);
+                bool found = surface.TryGetBaseHeight(node.X, node.Z, out float ground);
                 float y = road.FollowTerrain && found ? ground + node.HeightOffset : node.Y;
                 if (candidate.FollowTerrain && !found)
                     throw new InvalidOperationException("Для привязки все точки должны находиться над Terrain.");
@@ -64,6 +70,12 @@ public sealed partial class RoadSegmentsPanel
         road.Thickness = candidate.Thickness; road.SurfaceOffset = candidate.SurfaceOffset;
         road.LaneCount = candidate.LaneCount; road.RailGauge = candidate.RailGauge;
         road.SleeperSpacing = candidate.SleeperSpacing; road.FollowTerrain = candidate.FollowTerrain;
+        road.TerrainModifierEnabled = candidate.TerrainModifierEnabled;
+        road.PreserveSourceElevation = candidate.PreserveSourceElevation;
+        road.TerrainCutLimit = candidate.TerrainCutLimit; road.TerrainFillLimit = candidate.TerrainFillLimit;
+        road.TerrainTransitionWidth = candidate.TerrainTransitionWidth; road.TerrainBaseDepth = candidate.TerrainBaseDepth;
+        road.MaterialId = candidate.MaterialId; road.TextureRepeatLength = candidate.TextureRepeatLength;
+        road.MaterialWetness = candidate.MaterialWetness;
         road.Nodes = candidate.Nodes;
         Changed(road, NodeIndex, "Профиль применён; геометрия дороги обновлена.");
     }
@@ -78,7 +90,7 @@ public sealed partial class RoadSegmentsPanel
         if (road.FollowTerrain)
         {
             node.HeightOffset = Parse(_y);
-            if (!new TerrainSurface(_level!).TryGetHeight(node.X, node.Z, out float ground))
+            if (!new TerrainSurface(_level!).TryGetBaseHeight(node.X, node.Z, out float ground))
                 throw new InvalidOperationException("Точка вне Terrain; отключите привязку для свободной высоты.");
             node.Y = ground + node.HeightOffset;
         }
@@ -100,7 +112,7 @@ public sealed partial class RoadSegmentsPanel
             : Vector3.Lerp(road.Nodes[after].Position, road.Nodes[after + 1].Position, 0.5f);
         position.Y -= road.SurfaceOffset;
         float offset = (road.Nodes[after].HeightOffset + road.Nodes[after + 1].HeightOffset) * 0.5f;
-        if (road.FollowTerrain && surface.TryGetHeight(position.X, position.Z, out float ground)) offset = position.Y - ground;
+        if (road.FollowTerrain && surface.TryGetBaseHeight(position.X, position.Z, out float ground)) offset = position.Y - ground;
         var node = new RoadNode { X = position.X, Y = position.Y, Z = position.Z, HeightOffset = offset };
         var candidate = RoadStorage.Copy(road);
         candidate.Nodes.Insert(after + 1, node);
@@ -115,7 +127,7 @@ public sealed partial class RoadSegmentsPanel
         if (NodeIndex < 0 || NodeIndex >= road.Nodes.Count) throw new InvalidOperationException("Выберите точку.");
         var candidate = RoadStorage.Copy(road);
         var node = candidate.Nodes[NodeIndex];
-        if (!new TerrainSurface(_level!).TryGetHeight(node.X, node.Z, out float ground))
+        if (!new TerrainSurface(_level!).TryGetBaseHeight(node.X, node.Z, out float ground))
             throw new InvalidOperationException("Точка вне Terrain.");
         node.Y = ground; node.HeightOffset = 0;
         RoadStorage.Validate(candidate);
@@ -152,29 +164,22 @@ public sealed partial class RoadSegmentsPanel
                 "две опорные точки.");
         }
 
-        int changed = document.ConformRoad(road);
-
-        if (!road.TerrainConformed)
-        {
-            _level.Roads.Changed(road);
-            road.TerrainConformed = true;
-        }
-
+        document.ConformRoad(road);
+        _level.Roads.Changed(road);
         RefreshRoadList(road, NodeIndex);
+        var warnings = document.RoadModifierWarnings;
+        _status.Text = warnings.Count > 0 ? string.Join("\n", warnings)
+            : "Дорожный коридор включён. Исходные высоты земли сохранены отдельно; профиль реагирует на Terrain.";
+    }
 
-        if (changed == 0)
-        {
-            _status.Text =
-                "Terrain соответствует профилю дороги. " +
-                "Высотный профиль зафиксирован.";
-            return;
-        }
-
-        _status.Text =
-            "Дорожный коридор сформирован. " +
-            $"Изменено вершин Terrain: {changed:N0}. " +
-            "Высотный профиль дороги зафиксирован. " +
-            "Сохраните уровень и дороги.";
+    private void RestoreRoadHistory(bool redo)
+    {
+        RequireEditable();
+        string? id = SelectedRoad?.Id;
+        if (redo) _level!.Roads.Redo(); else _level!.Roads.Undo();
+        var selected = _level.Roads.Roads.FirstOrDefault(road => road.Id == id) ?? _level.Roads.Roads.FirstOrDefault();
+        RefreshRoadList(selected, -1);
+        _status.Text = redo ? "Изменение дороги повторено." : "Изменение дороги отменено.";
     }
 
     private void DeleteRoad()
@@ -192,6 +197,8 @@ public sealed partial class RoadSegmentsPanel
         _level!.Roads.Changed(road);
         RefreshRoadList(road, node);
         _status.Text = status;
+        if (_level.TerrainDocument is { } document && document.RoadModifierWarnings.Count > 0)
+            _status.Text += "\n" + string.Join("\n", document.RoadModifierWarnings);
     }
 
     public Task SavePendingAsync()

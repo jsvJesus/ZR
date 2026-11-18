@@ -25,7 +25,7 @@ public sealed partial class TerrainDocument
                 d.OriginZ + values.Min(v => v.Z) * d.CellSize - padding,
                 d.OriginX + values.Max(v => v.X) * d.CellSize + padding,
                 d.OriginZ + values.Max(v => v.Z) * d.CellSize + padding,
-                (x, z) => samples.TryGetValue((x, z), out ushort value) ? d.DecodeHeight(value) : Height(x, z));
+                (x, z) => samples.TryGetValue((x, z), out ushort value) ? d.DecodeHeight(value) : BaseHeight(x, z));
             // Subscribers validate and prepare their changes here. A rejection leaves heights intact.
             HeightsChanging.Invoke(change);
         }
@@ -40,6 +40,7 @@ public sealed partial class TerrainDocument
             SetHeight(value.X, value.Z, value.Value);
         }
 
+        InvalidateRoadModifiersForTerrain(values);
         HeightsChanged?.Invoke();
     }
 }

@@ -30,6 +30,16 @@ public sealed partial class RoadSegmentsPanel : UserControl
     private readonly TextBox _width = new(), _shoulder = new(), _thickness = new(), _surfaceOffset = new();
     private readonly TextBox _lanes = new(), _gauge = new(), _spacing = new();
     private readonly TextBox _x = new(), _y = new(), _z = new();
+    private readonly CheckBox _terrainModifier = new() { Content = "Дорожный коридор Terrain" };
+    private readonly CheckBox _preserveElevation = new() { Content = "Сохранить проектную высоту (миграция V1)" };
+    private readonly TextBox _cutLimit = new(), _fillLimit = new(), _transition = new(), _baseDepth = new();
+    private readonly TextBox _materialSearch = new() { Watermark = "Поиск покрытия по модели или текстуре" };
+    private readonly ComboBox _roadMaterial = new() { HorizontalAlignment = HorizontalAlignment.Stretch, MaxDropDownHeight = 280 };
+    private readonly TextBox _textureRepeat = new() { Text = "4" }, _materialWetness = new() { Text = "1" };
+    private readonly TextBlock _materialInfo = Text("Каталог покрытий: objects/roads и objects/roads_segments.");
+    private RoadAssetCatalog? _assetCatalog;
+    private AssetPaths? _assets;
+    private string _retainedMaterialId = "";
     private readonly TextBlock _heightLabel = Text("Y, м");
     private readonly TextBlock _summary = Text("Откройте уровень."), _status = Text("");
     private DxViewportHost? _viewport;
@@ -68,6 +78,41 @@ public sealed partial class RoadSegmentsPanel : UserControl
         Field(_railFields, "Ширина колеи, м", _gauge);
         Field(_railFields, "Шаг шпал, м", _spacing);
         _profile.Children.Add(_railFields);
+        _profile.Children.Add(_terrainModifier);
+        _profile.Children.Add(_preserveElevation);
+        Field(_profile, "Допустимая выемка, м", _cutLimit);
+        Field(_profile, "Допустимая насыпь, м", _fillLimit);
+        Field(_profile, "Переход к рельефу, м", _transition);
+        Field(_profile, "Зазор под покрытием, м", _baseDepth);
+        var materials = new StackPanel { Spacing = 6 };
+        var loadMaterials = new Button { Content = "Прочитать покрытия из моделей дорог", HorizontalAlignment = HorizontalAlignment.Stretch };
+        loadMaterials.Click += async (_, _) =>
+        {
+            if (_assets == null) return;
+            loadMaterials.IsEnabled = false;
+            try
+            {
+                _assetCatalog = await RoadAssetCatalog.LoadCachedAsync(_assets);
+                FilterMaterials();
+                _materialInfo.Text = $"Моделей: {_assetCatalog.Entries.Count}; наборов текстур: {_assetCatalog.Materials.Count}.";
+            }
+            catch (Exception exception) { _materialInfo.Text = exception.Message; }
+            finally { loadMaterials.IsEnabled = true; }
+        };
+        materials.Children.Add(loadMaterials); materials.Children.Add(_materialSearch);
+        materials.Children.Add(_roadMaterial); materials.Children.Add(_materialInfo);
+        Field(materials, "Повтор текстуры, м", _textureRepeat);
+        Field(materials, "Намокание покрытия (0–1)", _materialWetness);
+        AddButton(materials, "Процедурное покрытие", () => { _retainedMaterialId = ""; _roadMaterial.SelectedItem = null; });
+        _profile.Children.Add(new Expander { Header = "Покрытие из дорожных моделей", Content = materials });
+        _materialSearch.TextChanged += (_, _) => FilterMaterials();
+        _roadMaterial.SelectionChanged += (_, _) =>
+        {
+            if (!_binding && _roadMaterial.SelectedItem is RoadMaterialOption material)
+            { _retainedMaterialId = material.Id; _materialInfo.Text = material.Diffuse; }
+        };
+        AddButton(root, "Отменить изменение дороги", () => RestoreRoadHistory(false));
+        AddButton(root, "Повторить изменение дороги", () => RestoreRoadHistory(true));
 
         AddButton(
             _profile,
@@ -108,6 +153,7 @@ public sealed partial class RoadSegmentsPanel : UserControl
 
     public void Bind(LoadedLevel level, AssetPaths assets)
     {
+        _assets = assets;
         _level = level;
         RefreshRoadList(level.Roads.Roads.FirstOrDefault(), -1);
         _status.Text = level.Roads.Warnings.Count == 0
@@ -161,6 +207,14 @@ public sealed partial class RoadSegmentsPanel : UserControl
             _thickness.Text = Format(road?.Thickness ?? 0.2f); _surfaceOffset.Text = Format(road?.SurfaceOffset ?? 0.06f);
             _lanes.Text = (road?.LaneCount ?? 2).ToString(CultureInfo.InvariantCulture);
             _gauge.Text = Format(road?.RailGauge ?? 1.52f); _spacing.Text = Format(road?.SleeperSpacing ?? 0.65f);
+            _terrainModifier.IsChecked = road?.TerrainModifierEnabled ?? true;
+            _preserveElevation.IsChecked = road?.PreserveSourceElevation ?? false;
+            _cutLimit.Text = Format(road?.TerrainCutLimit ?? 6); _fillLimit.Text = Format(road?.TerrainFillLimit ?? 6);
+            _transition.Text = Format(road?.TerrainTransitionWidth ?? 4); _baseDepth.Text = Format(road?.TerrainBaseDepth ?? 0.02f);
+            _retainedMaterialId = road?.MaterialId ?? "";
+            _textureRepeat.Text = Format(road?.TextureRepeatLength ?? 4);
+            _materialWetness.Text = Format(road?.MaterialWetness ?? 1);
+            FilterMaterials();
         }
         finally { _binding = false; }
         FillNode(); RefreshHighlight();
@@ -173,6 +227,23 @@ public sealed partial class RoadSegmentsPanel : UserControl
         _heightLabel.Text = road?.FollowTerrain == true ? "Смещение точки над Terrain, м" : "Y, м";
         _x.Text = node == null ? "" : Format(node.X); _z.Text = node == null ? "" : Format(node.Z);
         _y.Text = node == null ? "" : Format(road!.FollowTerrain ? node.HeightOffset : node.Y);
+    }
+
+    private void FilterMaterials()
+    {
+        bool binding = _binding;
+        _binding = true;
+        try
+        {
+            var selected = _assetCatalog?.Materials.FirstOrDefault(item => item.Id == _retainedMaterialId);
+            var materials = _assetCatalog?.SearchMaterials(_materialSearch.Text)
+                .Where(item => !item.AlphaBlend && !item.RequiresSpecializedShader && !string.IsNullOrEmpty(item.Diffuse))
+                .Take(200).ToList() ?? [];
+            if (selected != null && !materials.Contains(selected)) materials.Insert(0, selected);
+            _roadMaterial.ItemsSource = materials;
+            _roadMaterial.SelectedItem = selected;
+        }
+        finally { _binding = binding; }
     }
 
     private static TextBlock Text(string text) => new() { Text = text, FontSize = 12, TextWrapping = TextWrapping.Wrap };

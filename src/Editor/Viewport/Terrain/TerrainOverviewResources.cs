@@ -38,7 +38,7 @@ internal sealed class TerrainOverviewResources : IDisposable
         _device = device;
         _level = level;
         var terrain = level.Manifest.Terrain;
-        var overview = level.TerrainDocument?.IsDirty == true ? level.TerrainDocument.BuildOverview()
+        var overview = level.TerrainDocument != null ? level.TerrainDocument.BuildOverview()
             : TerrainOverviewReader.Read(AssetPathResolver.Resolve(level.Directory, level.Manifest.OverviewFile));
         _width = overview.Width;
         _height = overview.Height;

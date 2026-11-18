@@ -73,9 +73,11 @@ public sealed partial class DxViewportHost
         {
             position.X = MathF.Round(position.X * 2) * 0.5f;
             position.Z = MathF.Round(position.Z * 2) * 0.5f;
-            if (!surface.TryGetHeight(position.X, position.Z, out position.Y))
+            if (!surface.TryGetBaseHeight(position.X, position.Z, out position.Y))
                 throw new InvalidOperationException("Точка сетки вне Terrain.");
         }
+        if (road.FollowTerrain && surface.TryGetBaseHeight(position.X, position.Z, out float baseHeight))
+            position.Y = baseHeight;
         var candidate = RoadStorage.Copy(road);
         candidate.Nodes.Add(new() { X = position.X, Y = position.Y, Z = position.Z });
         RoadStorage.Validate(candidate);
@@ -103,8 +105,7 @@ public sealed partial class DxViewportHost
             var position = node.Position;
             if (road.FollowTerrain)
             {
-                if (!road.TerrainConformed &&
-                    surface.TryGetHeight(
+                if (!road.PreserveSourceElevation && surface.TryGetBaseHeight(
                         node.X,
                         node.Z,
                         out float ground))
@@ -144,7 +145,7 @@ public sealed partial class DxViewportHost
             node.X = position.X; node.Z = position.Z;
             if (drag.Road.FollowTerrain)
             {
-                if (!drag.Surface.TryGetHeight(node.X, node.Z, out float ground)) return true;
+                if (!drag.Surface.TryGetBaseHeight(node.X, node.Z, out float ground)) return true;
                 node.Y = ground + node.HeightOffset;
             }
             var candidate = RoadStorage.Copy(drag.Road);
@@ -152,6 +153,7 @@ public sealed partial class DxViewportHost
             RoadStorage.Validate(candidate);
             drag.Road.Nodes[drag.Index] = node;
             drag.Road.Changed();
+            _level?.TerrainDocument?.InvalidateRoadModifiers(drag.Road);
             drag.Changed = node.X != drag.Start.X || node.Y != drag.Start.Y || node.Z != drag.Start.Z;
             RoadsChanged?.Invoke();
         }
@@ -166,7 +168,12 @@ public sealed partial class DxViewportHost
     {
         if (_roadDrag is not { } drag) return;
         _roadDrag = null;
-        if (!commit) { drag.Road.Nodes[drag.Index] = drag.Start; drag.Road.Changed(); }
+        if (!commit)
+        {
+            drag.Road.Nodes[drag.Index] = drag.Start;
+            drag.Road.Changed();
+            _level?.TerrainDocument?.InvalidateRoadModifiers(drag.Road);
+        }
         else if (drag.Changed) drag.Network.Changed(drag.Road);
         ReleaseCapture();
         _pressedKeys.Clear();
@@ -198,8 +205,7 @@ public sealed partial class DxViewportHost
             var node = road.Nodes[nodeIndex]; center = node.Position;
             if (road.FollowTerrain)
             {
-                if (!road.TerrainConformed &&
-                    new TerrainSurface(_level).TryGetHeight(
+                if (!road.PreserveSourceElevation && new TerrainSurface(_level).TryGetBaseHeight(
                         node.X,
                         node.Z,
                         out float ground))

@@ -106,10 +106,8 @@ public static class RoadSpline
                     float ground = nodeA.Y +
                         (nodeB.Y - nodeA.Y) * blend;
 
-                    if (road.Type != RoadType.Railway &&
-                        !road.TerrainConformed &&
-                        surface != null &&
-                        surface.TryGetHeight(
+                    if (!road.PreserveSourceElevation && surface != null &&
+                        surface.TryGetBaseHeight(
                             position.X,
                             position.Z,
                             out float terrainHeight))
@@ -153,9 +151,9 @@ public static class RoadSpline
             }
         }
 
-        if (road.Type == RoadType.Railway)
+        if (road.Type == RoadType.Railway && road.FollowTerrain)
         {
-            LimitRailwayGrade(samples, cancellationToken);
+            LimitRailwayGrade(samples, road.PreserveSourceElevation, cancellationToken);
         }
 
         for (int i = 0; i < samples.Count; i++)
@@ -191,11 +189,13 @@ public static class RoadSpline
 
     private static void LimitRailwayGrade(
         List<RoadSample> samples,
+        bool preserveLegacy,
         CancellationToken cancellationToken)
     {
         var heights = samples
             .Select(sample => sample.Position.Y)
             .ToArray();
+        var lower = (float[])heights.Clone();
 
         for (int i = 1; i < samples.Count; i++)
         {
@@ -218,6 +218,7 @@ public static class RoadSpline
             heights[i] = MathF.Max(
                 heights[i],
                 heights[i - 1] - allowedChange);
+            lower[i] = MathF.Min(lower[i], lower[i - 1] + allowedChange);
         }
 
         for (int i = samples.Count - 2; i >= 0; i--)
@@ -241,6 +242,7 @@ public static class RoadSpline
             heights[i] = MathF.Max(
                 heights[i],
                 heights[i + 1] - allowedChange);
+            lower[i] = MathF.Min(lower[i], lower[i + 1] + allowedChange);
         }
 
         float distance = 0f;
@@ -249,7 +251,9 @@ public static class RoadSpline
         for (int i = 0; i < samples.Count; i++)
         {
             Vector3 position = samples[i].Position;
-            position.Y = heights[i];
+            // A symmetric grade-limited envelope allows both cut and fill. The previous upper-only
+            // envelope raised entire routes to hilltops and silently created enormous fills.
+            position.Y = preserveLegacy ? heights[i] : lower[i] + (heights[i] - lower[i]) * 0.5f;
 
             if (i > 0)
             {
@@ -274,6 +278,15 @@ public static class RoadSpline
 
             previous = position;
         }
+    }
+
+    /// <summary>Shared cross-section offset for road geometry and its derived Terrain corridor.</summary>
+    public static float CrossSectionHeight(RoadDefinition road, float lateral)
+    {
+        if (road.ShoulderWidth <= 0) return 0;
+        float blend = Math.Clamp((MathF.Abs(lateral) - road.Width * 0.5f) / road.ShoulderWidth, 0, 1);
+        float drop = road.Type == RoadType.Automobile ? MathF.Min(0.04f, road.Thickness * 0.25f) : road.Thickness;
+        return -drop * blend;
     }
 
     private static void ValidateNodes(RoadDefinition road)

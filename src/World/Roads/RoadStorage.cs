@@ -20,10 +20,20 @@ public static class RoadStorage
             if (new FileInfo(path).Length > 32 * 1024 * 1024)
                 throw new InvalidDataException("Слишком большой файл сети дорог.");
             var document = await LevelJson.ReadAsync<Document>(path, token);
-            if (document.Format != "ZoneReborn.RoadNetwork" || document.Version != 1 || document.Roads == null)
+            if (document.Format != "ZoneReborn.RoadNetwork" || document.Version is < 1 or > 2 || document.Roads == null)
                 throw new InvalidDataException("Неподдерживаемый формат сети дорог.");
             ValidateNetwork(document.Roads);
+            foreach (var road in document.Roads)
+            {
+                if (document.Version == 1 && (road.TerrainConformed || road.Type == RoadType.Railway))
+                {
+                    road.PreserveSourceElevation = true;
+                    road.TerrainModifierEnabled = false;
+                }
+                road.TerrainConformed = false;
+            }
             network.Roads.AddRange(document.Roads);
+            network.ResetHistory();
         }
         catch (Exception exception) when (exception is IOException or InvalidDataException or JsonException or ArgumentException)
         {
@@ -67,7 +77,16 @@ public static class RoadStorage
             RailGauge = road.RailGauge,
             SleeperSpacing = road.SleeperSpacing,
             FollowTerrain = road.FollowTerrain,
-            TerrainConformed = road.TerrainConformed
+            TerrainConformed = false,
+            TerrainModifierEnabled = road.TerrainModifierEnabled,
+            PreserveSourceElevation = road.PreserveSourceElevation,
+            TerrainCutLimit = road.TerrainCutLimit,
+            TerrainFillLimit = road.TerrainFillLimit,
+            TerrainTransitionWidth = road.TerrainTransitionWidth,
+            TerrainBaseDepth = road.TerrainBaseDepth,
+            MaterialId = road.MaterialId,
+            TextureRepeatLength = road.TextureRepeatLength,
+            MaterialWetness = road.MaterialWetness
         };
     }
 
@@ -96,6 +115,14 @@ public static class RoadStorage
         Range(road.SurfaceOffset, -100, 100, "Смещение поверхности");
         Range(road.RailGauge, 0.5f, 3, "Ширина колеи");
         Range(road.SleeperSpacing, 0.3f, 3, "Шаг шпал");
+        Range(road.TerrainCutLimit, 0, 20, "Предел выемки");
+        Range(road.TerrainFillLimit, 0, 20, "Предел насыпи");
+        Range(road.TerrainTransitionWidth, 0.5f, 50, "Переход к Terrain");
+        Range(road.TerrainBaseDepth, 0.02f, 2, "Глубина основания");
+        Range(road.TextureRepeatLength, 0.1f, 100, "Повтор текстуры");
+        Range(road.MaterialWetness, 0, 1, "Намокание материала");
+        if (road.MaterialId == null || road.MaterialId.Length > 256)
+            throw new InvalidDataException("Некорректный ID материала дороги.");
         if (road.LaneCount is < 1 or > 8) throw new InvalidDataException("Число полос: от 1 до 8.");
         if (road.Type == RoadType.Railway && road.Width < road.RailGauge + 0.6f)
             throw new InvalidDataException("Основание железной дороги должно быть шире колеи минимум на 0,6 м.");
@@ -125,7 +152,7 @@ public static class RoadStorage
     public sealed class Document
     {
         public string Format { get; init; } = "ZoneReborn.RoadNetwork";
-        public int Version { get; init; } = 1;
+        public int Version { get; init; } = 2;
         public List<RoadDefinition> Roads { get; init; } = [];
     }
 }

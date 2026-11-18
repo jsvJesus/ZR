@@ -140,7 +140,8 @@ public static class VegetationCollision
                 road,
                 surface,
                 cancellationToken,
-                level.Roads);
+                level.Roads,
+                collisionProfile: true);
 
             foreach (var section in sections)
             {

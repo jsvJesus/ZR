@@ -1,4 +1,4 @@
-﻿#include "Environment/Lighting.hlsli"
+#include "Environment/Lighting.hlsli"
 
 cbuffer RoadConstants : register(b0)
 {
@@ -8,7 +8,14 @@ cbuffer RoadConstants : register(b0)
     float4 CameraPosition;
     float4 WeatherParameters;
     float4 Marker;
+    // Available diffuse/normal/specular maps, then repeat length in metres.
+    float4 MaterialParameters;
 };
+
+Texture2D RoadDiffuse : register(t0);
+Texture2D RoadNormal : register(t1);
+Texture2D RoadSpecular : register(t2);
+SamplerState RoadSampler : register(s0);
 
 struct VertexInput
 {
@@ -86,6 +93,10 @@ float4 PSMain(PixelInput input) : SV_TARGET
     float specular = 0.025;
     float gloss = 0.13;
     float wetResponse = 1;
+    float markings = 0;
+    float2 materialUv = uv / max(MaterialParameters.w, 0.1);
+    float2 materialDx = ddx(materialUv), materialDy = ddy(materialUv);
+    float3 worldDx = ddx(input.WorldPosition), worldDy = ddy(input.WorldPosition);
 
     if (input.Surface < 0.5)
     {
@@ -94,7 +105,7 @@ float4 PSMain(PixelInput input) : SV_TARGET
         float halfWidth = width * 0.5;
         float aa = max(fwidth(uv.y), 0.012);
         float edgeInset = min(0.24, width * 0.12);
-        float markings = Stripe(abs(uv.y) - (halfWidth - edgeInset), 0.055, aa);
+        markings = Stripe(abs(uv.y) - (halfWidth - edgeInset), 0.055, aa);
         float dashDistance = abs(frac(uv.x / 8.0) - 0.25) * 8.0;
         float dash = 1.0 - smoothstep(1.9, 2.1 + fwidth(uv.x), dashDistance);
         [unroll]
@@ -108,7 +119,6 @@ float4 PSMain(PixelInput input) : SV_TARGET
         }
         // Thickness walls retain asphalt, without painted stripes wrapping down them.
         markings *= smoothstep(0.4, 0.8, normal.y);
-        albedo = lerp(albedo, float3(0.85, 0.84, 0.73), saturate(markings));
     }
     else if (input.Surface < 1.5)
     {
@@ -146,7 +156,37 @@ float4 PSMain(PixelInput input) : SV_TARGET
         specular = 0.75; gloss = 0.85; wetResponse = 0.3;
     }
 
-    float wetness = RoadWetness(input.WorldPosition.xz) * wetResponse;
+    bool surfaceTop = (input.Surface < 0.5 || (input.Surface > 1.5 && input.Surface < 2.5)) &&
+        normal.y > 0.4 && abs(uv.y) <= Parameters.y * 0.5 + 0.001;
+    if (surfaceTop)
+    {
+        wetResponse *= max(CameraPosition.w, 0.0);
+        if (MaterialParameters.x > 0.5)
+        {
+            // Source alpha belongs to authored decals/atlases; the physical road remains opaque.
+            albedo = RoadDiffuse.SampleGrad(RoadSampler, materialUv, materialDx, materialDy).rgb;
+            if (MaterialParameters.z > 0.5)
+                specular = lerp(0.02, 0.55, RoadSpecular.SampleGrad(RoadSampler, materialUv, materialDx, materialDy).r);
+            float determinant = materialDx.x * materialDy.y - materialDx.y * materialDy.x;
+            if (MaterialParameters.y > 0.5 && abs(determinant) > 0.0000001)
+            {
+                float3 tangent = (worldDx * materialDy.y - worldDy * materialDx.y) / determinant;
+                float3 sourceBitangent = (worldDy * materialDx.x - worldDx * materialDy.x) / determinant;
+                tangent -= normal * dot(normal, tangent);
+                if (dot(tangent, tangent) > 0.000001)
+                {
+                    tangent = normalize(tangent);
+                    float3 bitangent = normalize(cross(normal, tangent));
+                    bitangent *= dot(bitangent, sourceBitangent) < 0 ? -1 : 1;
+                    float3 mapped = RoadNormal.SampleGrad(RoadSampler, materialUv, materialDx, materialDy).xyz * 2 - 1;
+                    float3 transformed = tangent * mapped.x + bitangent * mapped.y + normal * mapped.z;
+                    if (dot(transformed, transformed) > 0.000001) normal = normalize(transformed);
+                }
+            }
+        }
+    }
+    albedo = lerp(albedo, float3(0.85, 0.84, 0.73), saturate(markings));
+    float wetness = saturate(RoadWetness(input.WorldPosition.xz) * wetResponse);
     albedo *= lerp(1.0, 0.64, wetness);
     float3 color = ShadeEnvironment(albedo, normal, input.WorldPosition);
     float3 view = CameraPosition.xyz - input.WorldPosition;

@@ -1,4 +1,4 @@
-﻿using System.IO;
+using System.IO;
 using System.Numerics;
 using System.Runtime.InteropServices;
 using Editor.Rendering.Shaders;
@@ -47,7 +47,7 @@ internal sealed partial class RoadRenderer : IDisposable
 
     public RoadRenderer(Device device, DeviceContext context, AssetPaths assets, LoadedLevel level, TerrainRenderer terrain)
     {
-        _device = device; _context = context; _level = level;
+        _device = device; _context = context; _level = level; _assets = assets;
         // The terrain query is deliberately shared with the world mesh/collision builder;
         // render-tile LOD and upload timing must never alter road geometry.
         _surface = new TerrainSurface(level);
@@ -109,6 +109,7 @@ internal sealed partial class RoadRenderer : IDisposable
                 EnsureGeometry(road, resources);
                 if (resources.Sections == null) continue;
                 var constants = MakeConstants(road, camera, viewProjection, !playing && road == SelectedRoad);
+                constants.MaterialParameters = BindMaterial(road);
                 _context.UpdateSubresource(ref constants, _constants);
                 foreach (var section in resources.Sections)
                 {
@@ -128,6 +129,7 @@ internal sealed partial class RoadRenderer : IDisposable
         }
         finally
         {
+            UnbindMaterial();
             _context.InputAssembler.SetVertexBuffers(0, new VertexBufferBinding(null, 0, 0));
             _context.InputAssembler.SetIndexBuffer(null, Format.R32_UInt, 0);
             _context.InputAssembler.InputLayout = null;
@@ -146,10 +148,10 @@ internal sealed partial class RoadRenderer : IDisposable
         {
             _roads[road].ReleaseGeometry(); _roads.Remove(road);
         }
-        long heights = _level.TerrainDocument?.HeightRevision ?? 0;
         long holes = _level.TerrainDocument?.HoleRevision ?? 0;
         foreach (var road in members)
         {
+            long heights = _level.TerrainDocument?.RoadTerrainRevision(road) ?? 0;
             if (!_roads.TryGetValue(road, out var resources)) _roads.Add(road, resources = new());
             if (resources.Revision == road.Revision && resources.HeightRevision == heights && resources.HoleRevision == holes) continue;
             resources.ReleaseGeometry(); resources.Failed = false; resources.Warning = null;
@@ -200,7 +202,7 @@ internal sealed partial class RoadRenderer : IDisposable
     {
         ViewProjection = viewProjection,
         Parameters = new Vector4(selected ? 1 : 0, road.Width, road.LaneCount, 0),
-        CameraPosition = new Vector4(camera, 0),
+        CameraPosition = new Vector4(camera, float.IsFinite(road.MaterialWetness) ? Math.Clamp(road.MaterialWetness, 0, 1) : 1),
         WeatherParameters = new Vector4(_roadWetness, _uniformRoadWetness ? 1 : 0, 12, 0.9f)
     };
 
@@ -224,8 +226,8 @@ internal sealed partial class RoadRenderer : IDisposable
             {
                 if (road.FollowTerrain)
                 {
-                    if (!road.TerrainConformed &&
-                        _surface.TryGetHeight(
+                    if (!road.PreserveSourceElevation &&
+                        _surface.TryGetBaseHeight(
                             node.X,
                             node.Z,
                             out float height))
@@ -352,6 +354,7 @@ internal sealed partial class RoadRenderer : IDisposable
         _disposed = true;
         foreach (var resources in _roads.Values) resources.ReleaseGeometry();
         _roads.Clear();
+        DisposeMaterials();
         _markerIndices?.Dispose(); _markerVertices?.Dispose();
         _blend?.Dispose(); _markerDepth?.Dispose(); _depth?.Dispose(); _rasterizer?.Dispose();
         _constants?.Dispose(); _layout?.Dispose(); _pixel?.Dispose(); _vertex?.Dispose();
@@ -365,6 +368,7 @@ internal sealed partial class RoadRenderer : IDisposable
         public Vector4 CameraPosition;
         public Vector4 WeatherParameters;
         public Vector4 Marker;
+        public Vector4 MaterialParameters;
     }
 
     private sealed class RoadResources

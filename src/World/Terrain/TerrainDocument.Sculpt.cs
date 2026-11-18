@@ -96,7 +96,7 @@ public sealed partial class TerrainDocument
                     (gz - startZ) * width +
                     (gx - startX);
 
-                current[index] = Height(gx, gz);
+                current[index] = BaseHeight(gx, gz);
             }
         }
 

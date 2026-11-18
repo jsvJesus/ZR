@@ -114,7 +114,8 @@ public sealed partial class SceneData
                 center.Z < change.MinimumZ || center.Z > change.MaximumZ) continue;
 
             var projected = ProjectToTerrain(instance, change.SampleHeight);
-            if (projected.World != instance.World) _pendingTerrainObjects.Add(projected);
+            // Keep all affected anchors: the derived road corridor is evaluated after BaseTerrain commits.
+            _pendingTerrainObjects.Add(projected);
         }
 
         if (_pendingTerrainObjects.Count > 0)
@@ -127,9 +128,11 @@ public sealed partial class SceneData
     private void CommitTerrainChange()
     {
         if (_pendingTerrainObjects.Count == 0) return;
-        foreach (var projected in _pendingTerrainObjects)
+        foreach (var pending in _pendingTerrainObjects)
         {
-            var previous = _current[projected.Id];
+            var previous = _current[pending.Id];
+            var projected = ProjectToTerrain(previous);
+            if (projected.World == previous.World) continue;
             Unindex(previous);
             _current[projected.Id] = projected;
             _instances[_instanceSlots[projected.Id]] = projected;

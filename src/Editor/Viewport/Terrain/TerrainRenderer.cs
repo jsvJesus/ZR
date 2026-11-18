@@ -21,6 +21,7 @@ namespace Editor.Viewport.Terrain;
 internal sealed partial class TerrainRenderer : IDisposable
 {
     private const int Capacity = 64;
+    private readonly Dictionary<(int X, int Z), long> _heightVersions = [];
     private readonly Device _device;
     private readonly DeviceContext _context;
     private readonly LoadedLevel _level;
@@ -126,8 +127,13 @@ internal sealed partial class TerrainRenderer : IDisposable
         }
         if (_level.TerrainDocument is { } document && document.HeightRevision != _heightRevision)
         {
-            foreach (var tile in _tiles.Values) tile.Dispose();
-            _tiles.Clear(); _failed.Clear(); _overview.Dispose();
+            foreach (var key in _tiles.Keys.ToArray())
+            {
+                long version = document.TerrainTileRevision(key.X, key.Z);
+                if (_heightVersions.GetValueOrDefault(key, -1) == version) continue;
+                _tiles[key].Dispose(); _tiles.Remove(key); _heightVersions.Remove(key);
+            }
+            _failed.Clear(); _overview.Dispose();
             _overview = new TerrainOverviewResources(_device, _level, _assets);
             _heightRevision = document.HeightRevision;
         }
@@ -163,6 +169,7 @@ internal sealed partial class TerrainRenderer : IDisposable
                 _tiles.Add(key, new TerrainTileResources(_device, descriptor, tile,
                     Read(tile.X + 1, tile.Z), Read(tile.X, tile.Z + 1), Read(tile.X + 1, tile.Z + 1),
                     _level.Layers.Count, _overview.SampleHeight));
+                _heightVersions[key] = _level.TerrainDocument?.TerrainTileRevision(key.Item1, key.Item2) ?? 0;
             }
             catch (Exception exception) when (exception is IOException or InvalidDataException or UnauthorizedAccessException or ArgumentException)
             {

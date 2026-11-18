@@ -6,7 +6,7 @@ public sealed partial class CharacterLocomotion
 {
     private const float StandingHeight = 1.75f;
     private const float CrouchingHeight = 1.1f;
-    private const float StepHeight = 0.3f;
+    private float StepHeight => _surface.CharacterStepHeight(Position);
     private float _supportSurfaceY = float.NaN;
     private float CollisionHeight => _crouched ? CrouchingHeight : StandingHeight;
 

@@ -8,7 +8,7 @@ using ZoneReborn.World.Vegetation;
 
 namespace ZoneReborn.World.Terrain;
 
-public sealed class TerrainSurface
+public sealed partial class TerrainSurface
 {
     private readonly LoadedLevel _level;
     private readonly Dictionary<(int X, int Z), TerrainTileReference> _references;
@@ -31,6 +31,12 @@ public sealed class TerrainSurface
         TryGetHeight(x, z, _level.Manifest.Terrain.MeshStep, out height, sample);
 
     public bool TryGetSourceHeight(float x, float z, out float height) => TryGetHeight(x, z, 1, out height);
+
+    /// <summary>Road source profile: never samples its own effective terrain deformation.</summary>
+    public bool TryGetBaseHeight(float x, float z, out float height) =>
+        _level.TerrainDocument is { } document
+            ? TryGetHeight(x, z, _level.Manifest.Terrain.MeshStep, out height, document.BaseHeight)
+            : TryGetHeight(x, z, _level.Manifest.Terrain.MeshStep, out height);
 
     public void PreparePlayCollision(AssetPaths assets, CancellationToken cancellationToken = default)
     {

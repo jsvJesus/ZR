@@ -46,6 +46,7 @@ public sealed class LevelWorkspace
             : await Task.Run(() => SourceSceneReader.Read(source, Assets, cancellationToken), cancellationToken);
         await SceneEditStorage.LoadAsync(level.Directory, objects, cancellationToken);
         level = level with { Roads = roads, Vegetation = vegetation, Objects = objects };
+        level.TerrainDocument?.AttachRoadNetwork(roads, new ZoneReborn.World.Terrain.TerrainSurface(level));
         objects.AttachTerrain(level);
         return level;
     }

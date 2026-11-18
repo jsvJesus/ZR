@@ -14,7 +14,8 @@ public static class RoadMesh
         RoadDefinition road,
         TerrainSurface surface,
         CancellationToken cancellationToken = default,
-        RoadNetwork? network = null)
+        RoadNetwork? network = null,
+        bool collisionProfile = false)
     {
         ArgumentNullException.ThrowIfNull(surface);
         ArgumentNullException.ThrowIfNull(road);
@@ -66,6 +67,7 @@ public static class RoadMesh
         {
             if ((i & 63) == 0) cancellationToken.ThrowIfCancellationRequested();
             Frame a = frames[i - 1], b = frames[i];
+            if (!surface.RoadSectionSupported(road, b.Segment)) continue;
             var builder = Section(b.Segment);
             for (int p = 0; p < top.Length - 1; p++)
             {
@@ -80,7 +82,7 @@ public static class RoadMesh
             if (i == frames.Length - 1) CapDeck(builder, b, top, baseHeight, surfaceId, b.Forward);
             if (road.Type == RoadType.Railway)
                 for (int rail = -1; rail <= 1; rail += 2)
-                    BuildRail(builder, a, b, rail * (road.RailGauge / 2 + 0.038f), i == 1, i == frames.Length - 1);
+                    BuildRail(builder, a, b, rail * (road.RailGauge / 2 + 0.038f), i == 1, i == frames.Length - 1, collisionProfile);
         }
         if (road.Type == RoadType.Railway)
         {
@@ -92,6 +94,7 @@ public static class RoadMesh
                 float at = (n + 0.5f) * road.SleeperSpacing;
                 while (interval < frames.Length - 1 && frames[interval].Distance < at) interval++;
                 Frame a = frames[interval - 1], b = frames[interval];
+                if (!surface.RoadSectionSupported(road, b.Segment)) continue;
                 float span = b.Distance - a.Distance;
                 float t = span > 1e-6f ? Math.Clamp((at - a.Distance) / span, 0, 1) : 0;
                 Vector3 right = Vector3.Lerp(a.Right, b.Right, t);
@@ -182,6 +185,7 @@ public static class RoadMesh
 
             Frame a = frames[index - 1];
             Frame b = frames[index];
+            if (!surface.RoadSectionSupported(road, b.Segment)) continue;
 
             float span = b.Distance - a.Distance;
 
@@ -371,17 +375,43 @@ public static class RoadMesh
         new(-0.018f, 0.20f), new(-0.075f, 0.185f)
     ];
 
-    private static void BuildRail(Builder builder, Frame a, Frame b, float lateral, bool start, bool end)
+    private static readonly Profile[] RailCollisionProfile =
+    [
+        new(-0.075f, 0.16f), new(0.075f, 0.16f), new(0.075f, 0.185f),
+        new(0.027f, 0.335f), new(-0.027f, 0.335f), new(-0.075f, 0.185f)
+    ];
+
+    private static void BuildRail(Builder builder, Frame a, Frame b, float lateral, bool start, bool end, bool collision)
     {
-        for (int i = 0; i < RailProfile.Length; i++)
+        var profile = collision ? RailCollisionProfile : RailProfile;
+        for (int i = 0; i < profile.Length; i++)
         {
-            var p = RailProfile[i]; var q = RailProfile[(i + 1) % RailProfile.Length];
+            var p = profile[i]; var q = profile[(i + 1) % profile.Length];
             Vector3 outward = (a.Right + b.Right) * (q.Height - p.Height) - Vector3.UnitY * (q.Lateral - p.Lateral) * 2;
-            Ribbon(builder, a, b, p with { Lateral = p.Lateral + lateral }, q with { Lateral = q.Lateral + lateral }, i is 6 or 7 or 8 ? 6 : 5, outward);
+            Ribbon(builder, a, b, p with { Lateral = p.Lateral + lateral }, q with { Lateral = q.Lateral + lateral }, collision ? 6 : i is 6 or 7 or 8 ? 6 : 5, outward);
+        }
+        if (collision)
+        {
+            if (start) CapCollisionRail(builder, a, lateral, -a.Forward);
+            if (end) CapCollisionRail(builder, b, lateral, b.Forward);
+            return;
         }
         // The concave profile is capped in horizontal bands, avoiding fans across the web recesses.
         if (start) CapRail(builder, a, lateral, -a.Forward);
         if (end) CapRail(builder, b, lateral, b.Forward);
+    }
+
+    private static void CapCollisionRail(Builder builder, Frame frame, float lateral, Vector3 outward)
+    {
+        var origin = new Profile(lateral, 0.24f);
+        for (int i = 0; i < RailCollisionProfile.Length; i++)
+        {
+            var p = RailCollisionProfile[i] with { Lateral = RailCollisionProfile[i].Lateral + lateral };
+            var q = RailCollisionProfile[(i + 1) % RailCollisionProfile.Length] with
+            { Lateral = RailCollisionProfile[(i + 1) % RailCollisionProfile.Length].Lateral + lateral };
+            builder.Quad(At(frame, origin), At(frame, p), At(frame, q), At(frame, origin),
+                Uv(frame, origin), Uv(frame, p), Uv(frame, q), Uv(frame, origin), 6, outward);
+        }
     }
 
     private static void CapRail(Builder builder, Frame frame, float lateral, Vector3 outward)
