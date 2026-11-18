@@ -81,6 +81,7 @@ internal sealed class RoadOverlayRenderer : IDisposable
 
     public void Render(
         RoadNetwork network,
+        RoadCatalog? catalog,
         TerrainSurface surface,
         Guid? selectedRoad,
         int selectedPoint,
@@ -96,13 +97,35 @@ internal sealed class RoadOverlayRenderer : IDisposable
                 ? new Vector4(1f, 0.72f, 0.12f, 1f)
                 : new Vector4(0.15f, 0.8f, 1f, 1f);
 
-            for (int index = 1; index < road.Points.Count; index++)
+            if (catalog != null &&
+                catalog.TryGet(road.Model, out RoadModelInfo model))
             {
-                DrawSegment(
-                    surface,
-                    road.Points[index - 1],
-                    road.Points[index],
-                    color);
+                RoadCurve curve = RoadCurve.Create(
+                    road.Points,
+                    model.Width);
+
+                for (int index = 1; index < curve.Samples.Count; index++)
+                {
+                    Vector2 a = curve.Samples[index - 1].Position;
+                    Vector2 b = curve.Samples[index].Position;
+
+                    DrawSegment(
+                        surface,
+                        new RoadPoint(a.X, a.Y),
+                        new RoadPoint(b.X, b.Y),
+                        color);
+                }
+            }
+            else
+            {
+                for (int index = 1; index < road.Points.Count; index++)
+                {
+                    DrawSegment(
+                        surface,
+                        road.Points[index - 1],
+                        road.Points[index],
+                        color);
+                }
             }
 
             for (int index = 0; index < road.Points.Count; index++)

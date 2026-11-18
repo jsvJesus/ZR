@@ -36,6 +36,9 @@ public sealed partial class Dx11Renderer
         _roadPointSelection = selectedPoint;
     }
 
+    private readonly HashSet<string> _generatedRoadFiles =
+        new(StringComparer.OrdinalIgnoreCase);
+
     private void SetRoadSurface(LoadedLevel? level)
     {
         _roadModelRenderer?.Dispose();
@@ -54,6 +57,7 @@ public sealed partial class Dx11Renderer
 
         _roadBuiltRevision = -1;
         _roadBuiltHeightRevision = -1;
+        _generatedRoadFiles.Clear();
 
         _roadCatalog = null;
 
@@ -85,6 +89,7 @@ public sealed partial class Dx11Renderer
         if (_roadLevel == null ||
             _roadSurface == null ||
             _roadCatalog == null ||
+            _roadScene == null ||
             _roadModelRenderer == null)
         {
             return;
@@ -104,22 +109,35 @@ public sealed partial class Dx11Renderer
 
         try
         {
-            var instances = RoadBuilder.Build(
+            RoadBuildResult result = RoadBuilder.Build(
                 network,
                 _roadCatalog,
-                _roadSurface);
+                _roadSurface,
+                _roadScene.Models);
 
-            _roadModelRenderer.SetTransientInstances(instances);
+            foreach (string file in _generatedRoadFiles)
+            {
+                _roadModelRenderer.InvalidateModel(file);
+            }
+
+            _generatedRoadFiles.Clear();
+
+            foreach (SceneModel model in result.Models)
+            {
+                _roadScene.Models.Store(model);
+                _generatedRoadFiles.Add(model.File);
+            }
+
+            _roadModelRenderer.SetTransientInstances(
+                result.Instances);
         }
         catch (Exception exception) when (
             exception is InvalidOperationException or
-            InvalidDataException or
-            ArgumentException or
-            OverflowException)
+                InvalidDataException or
+                ArgumentException or
+                OverflowException)
         {
-            _roadModelRenderer.SetTransientInstances([]);
-
-            _roadScene?.Warnings.Enqueue(
+            _roadScene.Warnings.Enqueue(
                 $"Построение дороги: {exception.Message}");
         }
 
@@ -165,6 +183,7 @@ public sealed partial class Dx11Renderer
 
         _roadOverlay.Render(
             _roadNetwork,
+            _roadCatalog,
             _roadSurface,
             _roadSelection,
             _roadPointSelection,

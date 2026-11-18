@@ -122,6 +122,17 @@ internal sealed partial class SceneRenderer : IDisposable
         _transientInstances = instances;
     }
 
+    public void InvalidateModel(string file)
+    {
+        if (_models.Remove(file, out var model))
+        {
+            _modelBytes -= model.Bytes;
+            model.Dispose();
+        }
+
+        _failedModels.Remove(file);
+    }
+
     public void Render(FreeCamera camera, Matrix4x4 viewProjection, float farPlane)
     {
         if (_disposed) return;
