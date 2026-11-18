@@ -15,6 +15,8 @@ public sealed partial class TerrainDocument
     private RoadNetwork? _roadNetwork;
     private TerrainSurface? _roadSource;
     private bool _roadModifiersPending;
+    private bool _roadTerrainBoundsPending;
+    private Vector4 _pendingRoadTerrainBounds;
     private readonly HashSet<RoadDefinition> _roadProfilesInvalid = [];
     private Dictionary<RoadDefinition, RoadModifierProfile> _roadProfiles = [];
     private Dictionary<(int X, int Z), List<RoadModifierSegment>> _roadBuckets = [];
@@ -88,6 +90,8 @@ public sealed partial class TerrainDocument
     private void ReleaseRoadSculptRevisions()
     {
         _sculptRoadRevisions = null;
+
+        FlushPendingRoadTerrainChanges();
     }
 
     public long RoadTerrainRevision(RoadDefinition road)
@@ -149,17 +153,12 @@ public sealed partial class TerrainDocument
     private void InvalidateRoadModifiersForTerrain(
         List<(int X, int Z, ushort Value)> values)
     {
-        if (_roadNetwork == null ||
-            values.Count == 0)
+        if (_roadNetwork == null || values.Count == 0)
         {
             return;
         }
 
         var descriptor = Descriptor;
-
-        float padding =
-            Math.Max(1, descriptor.MeshStep) *
-            descriptor.CellSize;
 
         int minX = int.MaxValue;
         int minZ = int.MaxValue;
@@ -174,16 +173,58 @@ public sealed partial class TerrainDocument
             maxZ = Math.Max(maxZ, value.Z);
         }
 
+        float padding =
+            Math.Max(1, descriptor.MeshStep) *
+            descriptor.CellSize;
+
         var bounds = new Vector4(
             descriptor.OriginX +
-            minX * descriptor.CellSize - padding,
+                minX * descriptor.CellSize - padding,
             descriptor.OriginZ +
-            minZ * descriptor.CellSize - padding,
+                minZ * descriptor.CellSize - padding,
             descriptor.OriginX +
-            maxX * descriptor.CellSize + padding,
+                maxX * descriptor.CellSize + padding,
             descriptor.OriginZ +
-            maxZ * descriptor.CellSize + padding
+                maxZ * descriptor.CellSize + padding
         );
+
+        if (_sculptStroke != null)
+        {
+            if (_roadTerrainBoundsPending)
+            {
+                _pendingRoadTerrainBounds = new Vector4(
+                    MathF.Min(
+                        _pendingRoadTerrainBounds.X,
+                        bounds.X),
+                    MathF.Min(
+                        _pendingRoadTerrainBounds.Y,
+                        bounds.Y),
+                    MathF.Max(
+                        _pendingRoadTerrainBounds.Z,
+                        bounds.Z),
+                    MathF.Max(
+                        _pendingRoadTerrainBounds.W,
+                        bounds.W)
+                );
+            }
+            else
+            {
+                _pendingRoadTerrainBounds = bounds;
+                _roadTerrainBoundsPending = true;
+            }
+
+            return;
+        }
+
+        MarkRoadProfilesAffected(bounds);
+    }
+
+    private void MarkRoadProfilesAffected(Vector4 bounds)
+    {
+        if (_roadNetwork == null)
+        {
+            return;
+        }
 
         bool affected = false;
 
@@ -198,11 +239,28 @@ public sealed partial class TerrainDocument
             affected = true;
         }
 
-        if (affected)
+        if (!affected)
         {
-            _roadModifiersPending = true;
-            _effectiveOverview = null;
+            return;
         }
+
+        _roadModifiersPending = true;
+        _effectiveOverview = null;
+    }
+
+    private void FlushPendingRoadTerrainChanges()
+    {
+        if (!_roadTerrainBoundsPending)
+        {
+            return;
+        }
+
+        Vector4 bounds = _pendingRoadTerrainBounds;
+
+        _roadTerrainBoundsPending = false;
+        _pendingRoadTerrainBounds = default;
+
+        MarkRoadProfilesAffected(bounds);
     }
 
     private void EnsureRoadModifiers(CancellationToken cancellationToken = default)

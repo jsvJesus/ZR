@@ -159,10 +159,19 @@ internal sealed partial class TerrainRenderer : IDisposable
             var replacement = new TerrainOverviewResources(
                 _device,
                 _level,
-                _assets);
+                _assets
+            );
 
-            _overview.Dispose();
+            var previous = _overview;
+
             _overview = replacement;
+
+            foreach (var tile in _tiles.Values)
+            {
+                tile.SetOverviewHeight(_overview.SampleHeight);
+            }
+
+            previous.Dispose();
 
             _overviewRefreshPending = false;
         }

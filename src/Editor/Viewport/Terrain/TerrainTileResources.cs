@@ -11,7 +11,7 @@ internal sealed class TerrainTileResources : IDisposable
     private readonly TerrainDescriptor _descriptor;
     private readonly int _tileX;
     private readonly int _tileZ;
-    private readonly Func<int, int, float> _overviewHeight;
+    private Func<int, int, float> _overviewHeight;
     private TerrainVertex[] _sourceVertices = [];
     public Buffer Vertices { get; private set; } = null!;
     public Buffer Indices { get; private set; } = null!;
@@ -51,6 +51,18 @@ internal sealed class TerrainTileResources : IDisposable
             Dispose();
             throw;
         }
+    }
+
+    public void SetOverviewHeight(
+        Func<int, int, float> overviewHeight)
+    {
+        ArgumentNullException.ThrowIfNull(overviewHeight);
+
+        _overviewHeight = overviewHeight;
+
+        // Force the LOD transition geometry to use
+        // the current overview on the next render.
+        SkirtEdges = -1;
     }
 
     public void UpdateLodEdges(DeviceContext context, int edges)
