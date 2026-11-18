@@ -454,6 +454,11 @@ namespace Editor.Viewport
 
             _terrain?.Render(camera, viewProjection);
 
+            RenderRoadModels(
+                camera,
+                viewProjection,
+                farPlane);
+
             _objects?.Render(
                 camera,
                 viewProjection,
@@ -517,6 +522,11 @@ namespace Editor.Viewport
             }
 
             _objects?.RenderTransparent(camera, viewProjection);
+
+            RenderRoadTransparency(
+                camera,
+                viewProjection);
+
             RenderEnvironmentWeather(camera, viewProjection);
 
             if (playing && _showPlayCrosshair)
@@ -608,6 +618,7 @@ namespace Editor.Viewport
             _terrain?.Dispose();
             _terrainBrushOverlay?.Dispose();
             _trees?.Dispose();
+            DisposeRoadModels();
             _objects?.Dispose();
             _collisionOverlay?.Dispose();
             _roadOverlay?.Dispose();

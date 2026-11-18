@@ -114,6 +114,14 @@ internal sealed partial class SceneRenderer : IDisposable
         catch { Dispose(); throw; }
     }
 
+    private IReadOnlyList<SceneInstance>? _transientInstances;
+
+    public void SetTransientInstances(
+        IReadOnlyList<SceneInstance> instances)
+    {
+        _transientInstances = instances;
+    }
+
     public void Render(FreeCamera camera, Matrix4x4 viewProjection, float farPlane)
     {
         if (_disposed) return;
@@ -125,8 +133,16 @@ internal sealed partial class SceneRenderer : IDisposable
         var extent = new Vector3(distance);
         var planes = FrustumPlanes(viewProjection);
         var groups = new Dictionary<(string Model, bool Mirrored), DrawGroup>();
-        IEnumerable<SceneInstance> candidates = _objectPreview ? _scene.Instances
-            : _scene.Query(new(camera.Position - extent, camera.Position + extent));
+
+        IEnumerable<SceneInstance> candidates =
+            _transientInstances is { } transient
+                ? transient
+                : _objectPreview
+                    ? _scene.Instances
+                    : _scene.Query(new(
+                        camera.Position - extent,
+                        camera.Position + extent));
+
         foreach (var instance in candidates)
         {
             // Authored level borders remain in the scene's physical queries, but have no visible surface.

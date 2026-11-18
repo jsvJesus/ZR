@@ -2,12 +2,21 @@ using System.Numerics;
 
 namespace ZoneReborn.World.Roads;
 
+public enum RoadCategory
+{
+    Automobile,
+    Railway,
+    Dirt
+}
+
 public readonly record struct RoadPoint(float X, float Z);
 
 public sealed class RoadPath
 {
     public Guid Id { get; init; } = Guid.NewGuid();
     public string Name { get; init; } = "";
+    public RoadCategory Category { get; set; } = RoadCategory.Automobile;
+    public string Model { get; set; } = "";
     public List<RoadPoint> Points { get; init; } = [];
 
     public override string ToString() => Name;
@@ -57,6 +66,56 @@ public sealed class RoadNetwork
         NotifyChanged();
 
         return road;
+    }
+
+    public void ConfigureRoad(
+        Guid roadId,
+        RoadCategory category,
+        string model)
+    {
+        if (!Enum.IsDefined(category))
+        {
+            throw new ArgumentOutOfRangeException(nameof(category));
+        }
+
+        if (!string.IsNullOrEmpty(model))
+        {
+            bool validPath =
+                model.StartsWith(
+                    "objects/roads_segments/",
+                    StringComparison.OrdinalIgnoreCase) ||
+                model.StartsWith(
+                    "objects/props/railroads/",
+                    StringComparison.OrdinalIgnoreCase);
+
+            if (!validPath ||
+                !model.EndsWith(
+                    ".model",
+                    StringComparison.OrdinalIgnoreCase) ||
+                model.Contains("..", StringComparison.Ordinal) ||
+                model.Contains('\\'))
+            {
+                throw new InvalidDataException(
+                    "Некорректный путь дорожной модели.");
+            }
+        }
+
+        var road = Find(roadId)
+            ?? throw new InvalidOperationException("Дорога не найдена.");
+
+        if (road.Category == category &&
+            string.Equals(
+                road.Model,
+                model,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        road.Category = category;
+        road.Model = model;
+
+        NotifyChanged();
     }
 
     public int AddPoint(Guid roadId, RoadPoint point)
