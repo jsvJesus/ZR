@@ -314,8 +314,27 @@ public static class RoadSurfaceBuilder
                 0f,
                 forward.Y);
 
-            float u = distance / 4f;
-            float v = (lateral - left) / (right - left);
+            const float shoulderTileSize = 1.0f;
+
+            float u;
+            float v;
+
+            if (shoulder)
+            {
+                // Одинаковый масштаб текстуры по обеим осям.
+                // Один повтор соответствует 1 метру поверхности.
+                u = distance / shoulderTileSize;
+                v = lateral / shoulderTileSize;
+            }
+            else
+            {
+                // Основное полотно: квадратный масштаб текстуры.
+                // Сохраняем полный поперечный рисунок дороги.
+                float textureSize = MathF.Max(road.Width, 0.5f);
+
+                u = distance / textureSize;
+                v = (lateral - left) / (right - left);
+            }
 
             float clearance = blockers.Count == 0
                 ? float.PositiveInfinity
