@@ -35,6 +35,7 @@ internal sealed partial class TerrainRenderer : IDisposable
     private TerrainTexture? _paintOverview;
     private long _paintRevision = -1;
     private long _heightRevision, _holeRevision;
+    private bool _overviewRefreshPending;
     private VertexShader _vertexShader = null!;
     private PixelShader _pixelShader = null!;
     private InputLayout _layout = null!;
@@ -125,18 +126,47 @@ internal sealed partial class TerrainRenderer : IDisposable
                 paintDocument.PaintOverviewWidth, paintDocument.PaintOverviewHeight, pixels);
             _paintOverview?.Dispose(); _paintOverview = replacement; _paintRevision = paintDocument.MaterialRevision;
         }
-        if (_level.TerrainDocument is { } document && document.HeightRevision != _heightRevision)
+        if (_level.TerrainDocument is { } document &&
+            document.HeightRevision != _heightRevision)
         {
             foreach (var key in _tiles.Keys.ToArray())
             {
-                long version = document.TerrainTileRevision(key.X, key.Z);
-                if (_heightVersions.GetValueOrDefault(key, -1) == version) continue;
-                _tiles[key].Dispose(); _tiles.Remove(key); _heightVersions.Remove(key);
+                long version = document.TerrainTileRevision(
+                    key.X,
+                    key.Z);
+
+                if (_heightVersions.GetValueOrDefault(
+                        key,
+                        -1) == version)
+                {
+                    continue;
+                }
+
+                _tiles[key].Dispose();
+                _tiles.Remove(key);
+                _heightVersions.Remove(key);
             }
-            _failed.Clear(); _overview.Dispose();
-            _overview = new TerrainOverviewResources(_device, _level, _assets);
+
+            _failed.Clear();
+
+            _overviewRefreshPending = true;
             _heightRevision = document.HeightRevision;
         }
+
+        if (_overviewRefreshPending &&
+            _level.TerrainDocument?.IsSculptStrokeActive != true)
+        {
+            var replacement = new TerrainOverviewResources(
+                _device,
+                _level,
+                _assets);
+
+            _overview.Dispose();
+            _overview = replacement;
+
+            _overviewRefreshPending = false;
+        }
+
         if (_level.TerrainDocument is { } holeDocument && holeDocument.HoleRevision != _holeRevision)
         {
             _holes?.Dispose(); _holes = null;

@@ -3,6 +3,7 @@ namespace ZoneReborn.World.Terrain;
 public sealed partial class TerrainDocument
 {
     private Change? _sculptStroke;
+    public bool IsSculptStrokeActive => _sculptStroke != null;
 
     private readonly HashSet<(int X, int Z)>
         _sculptHeightsTouched = [];
@@ -13,6 +14,8 @@ public sealed partial class TerrainDocument
     public void BeginSculptStroke()
     {
         EndSculptStroke();
+
+        CaptureRoadSculptRevisions();
 
         _sculptStroke = new Change();
 
@@ -30,7 +33,10 @@ public sealed partial class TerrainDocument
         var change = _sculptStroke;
         _sculptStroke = null;
 
-        if (change.Heights.Count > 0 || change.Holes.Count > 0)
+        ReleaseRoadSculptRevisions();
+
+        if (change.Heights.Count > 0 ||
+            change.Holes.Count > 0)
         {
             if (_undo.Count >= 64)
             {

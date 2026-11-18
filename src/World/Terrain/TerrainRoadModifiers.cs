@@ -11,6 +11,7 @@ public sealed partial class TerrainDocument
     private const int MaximumModifierSegments = 262144;
     private const int MaximumModifierLinks = 1_000_000;
     private const int MaximumModifierTiles = 16384;
+    private Dictionary<RoadDefinition, long>? _sculptRoadRevisions;
     private RoadNetwork? _roadNetwork;
     private TerrainSurface? _roadSource;
     private bool _roadModifiersPending;
@@ -64,13 +65,61 @@ public sealed partial class TerrainDocument
         return _terrainTileVersions.GetValueOrDefault((x, z));
     }
 
-    /// <summary>Changes anywhere in this road's source/support corridor invalidate its mesh.</summary>
+    private void CaptureRoadSculptRevisions()
+    {
+        if (_roadNetwork == null)
+        {
+            _sculptRoadRevisions = null;
+            return;
+        }
+
+        EnsureRoadModifiers();
+
+        var revisions = new Dictionary<RoadDefinition, long>();
+
+        foreach (var road in _roadNetwork.Roads)
+        {
+            revisions[road] = RoadTerrainRevision(road);
+        }
+
+        _sculptRoadRevisions = revisions;
+    }
+
+    private void ReleaseRoadSculptRevisions()
+    {
+        _sculptRoadRevisions = null;
+    }
+
     public long RoadTerrainRevision(RoadDefinition road)
     {
+        if (_sculptStroke != null &&
+            _sculptRoadRevisions != null &&
+            _sculptRoadRevisions.TryGetValue(
+                road,
+                out long frozenRevision))
+        {
+            return frozenRevision;
+        }
+
         EnsureRoadModifiers();
-        if (!_roadProfiles.TryGetValue(road, out var profile) || profile.Tiles.Count == 0) return HeightRevision;
+
+        if (!_roadProfiles.TryGetValue(
+                road,
+                out var profile) ||
+            profile.Tiles.Count == 0)
+        {
+            return HeightRevision;
+        }
+
         long revision = 0;
-        foreach (var tile in profile.Tiles) revision = Math.Max(revision, _terrainTileVersions.GetValueOrDefault(tile));
+
+        foreach (var tile in profile.Tiles)
+        {
+            revision = Math.Max(
+                revision,
+                _terrainTileVersions.GetValueOrDefault(tile));
+        }
+
         return revision;
     }
 
@@ -115,7 +164,14 @@ public sealed partial class TerrainDocument
 
     private void EnsureRoadModifiers(CancellationToken cancellationToken = default)
     {
-        if (!_roadModifiersPending || _roadNetwork == null || _roadSource == null) return;
+        if (_sculptStroke != null ||
+            !_roadModifiersPending ||
+            _roadNetwork == null ||
+            _roadSource == null)
+        {
+            return;
+        }
+
         cancellationToken.ThrowIfCancellationRequested();
         var current = _roadNetwork.Roads.ToHashSet();
         var replacements = new Dictionary<RoadDefinition, RoadModifierProfile>();
