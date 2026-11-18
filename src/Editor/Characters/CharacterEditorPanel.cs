@@ -13,7 +13,7 @@ public sealed class CharacterEditorPanel : UserControl
 {
     public StackPanel BrowserContent { get; } = new() { Spacing = 8 };
     private readonly ComboBox _category = new() { HorizontalAlignment = HorizontalAlignment.Stretch };
-    private readonly TextBox _search = new() { Watermark = "Название вещи или номер…" };
+    private readonly TextBox _search = new() { PlaceholderText = "Название вещи или номер…" };
     private readonly ListBox _catalogList = new() { MaxHeight = 210, MinHeight = 90 };
     private readonly ListBox _equippedList = new() { MaxHeight = 180, MinHeight = 70 };
     private readonly TextBlock _summary = Text("Откройте уровень для просмотра персонажа.");

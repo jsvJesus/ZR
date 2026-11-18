@@ -19,7 +19,7 @@ namespace Editor.Objects
 
         private readonly TextBox _search = new()
         {
-            Watermark = "Модель, prefab или ID…"
+            PlaceholderText = "Модель, prefab или ID…"
         };
 
         private readonly ListBox _instances = new()

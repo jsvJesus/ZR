@@ -49,13 +49,13 @@ public sealed partial class ObjectsPanel
     private readonly TextBox _collisionPercent = new()
     {
         Text = "12",
-        Watermark = "5–100"
+        PlaceholderText = "5–100"
     };
 
     private readonly TextBox _collisionError = new()
     {
         Text = "15",
-        Watermark = "1–100"
+        PlaceholderText = "1–100"
     };
 
     private readonly CheckBox _collisionBorders = new()

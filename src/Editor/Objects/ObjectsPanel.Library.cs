@@ -13,7 +13,7 @@ public sealed partial class ObjectsPanel
 
     private readonly TextBox _assetSearch = new()
     {
-        Watermark = "Поиск моделей в текущей папке…"
+        PlaceholderText = "Поиск моделей в текущей папке…"
     };
 
     private readonly ListBox _assetFolders = new()
@@ -59,7 +59,6 @@ public sealed partial class ObjectsPanel
 
     private bool _catalogueBinding;
     private bool _folderBinding;
-    private bool _placementBinding;
     private bool _libraryClosed;
 
     private bool CanBrowseLibrary =>

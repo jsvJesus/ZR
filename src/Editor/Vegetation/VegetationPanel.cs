@@ -14,7 +14,7 @@ namespace Editor.Vegetation
     public sealed partial class VegetationPanel : UserControl
     {
         public StackPanel BrowserContent { get; } = new() { Spacing = 8 };
-        private readonly TextBox _search = new() { Watermark = "Поиск модели в категории…" };
+        private readonly TextBox _search = new() { PlaceholderText = "Поиск модели в категории…" };
         private readonly ComboBox _categories = new() { HorizontalAlignment = HorizontalAlignment.Stretch };
         private readonly TextBlock _catalogCount = Text("");
         private readonly ListBox _catalog = new() { MaxHeight = 300 };

@@ -14,7 +14,7 @@ public sealed partial class VegetationPanel
 
     private readonly TextBox _batchSearch = new()
     {
-        Watermark = "Поиск модели SpeedTree..."
+        PlaceholderText = "Поиск модели SpeedTree..."
     };
 
     private readonly StackPanel _batchModelList = new()
