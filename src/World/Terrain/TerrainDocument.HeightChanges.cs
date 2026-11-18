@@ -69,8 +69,6 @@ public sealed partial class TerrainDocument
 
         foreach (var tile in affectedTiles)
         {
-            InvalidateEffectiveTile(tile.X, tile.Z);
-
             int minX = Math.Max(0, tile.X - 1);
             int maxX = Math.Min(
                 Descriptor.TilesX - 1,
@@ -83,11 +81,21 @@ public sealed partial class TerrainDocument
                 tile.Z + 1
             );
 
+            var revisedTiles = new HashSet<(int X, int Z)>();
+
             for (int tz = minZ; tz <= maxZ; tz++)
             {
                 for (int tx = minX; tx <= maxX; tx++)
                 {
-                    _normalDirty.Add((tx, tz));
+                    var key = (tx, tz);
+
+                    _normalDirty.Add(key);
+
+                    if (revisedTiles.Add(key))
+                    {
+                        _terrainTileRevisions[key] =
+                            _terrainTileRevisions.GetValueOrDefault(key) + 1;
+                    }
                 }
             }
         }
@@ -117,5 +125,12 @@ public sealed partial class TerrainDocument
                 value.Value);
         }
         HeightsChanged?.Invoke();
+    }
+
+    private readonly Dictionary<(int X, int Z), long> _terrainTileRevisions = [];
+
+    public long TerrainTileRevision(int x, int z)
+    {
+        return _terrainTileRevisions.GetValueOrDefault((x, z));
     }
 }
