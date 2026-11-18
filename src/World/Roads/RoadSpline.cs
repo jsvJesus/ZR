@@ -8,6 +8,7 @@ public static class RoadSpline
     public const int MaximumSamples = 32768;
     public const float MaximumControlLength = 20000;
 
+    private const float AutomobileMaximumGrade = 0.12f;
     private const float RailwayMaximumGrade = 0.04f;
 
     public static IReadOnlyList<RoadSample> Sample(
@@ -151,9 +152,28 @@ public static class RoadSpline
             }
         }
 
-        if (road.Type == RoadType.Railway && road.FollowTerrain)
+        if (road.FollowTerrain)
         {
-            LimitRailwayGrade(samples, road.PreserveSourceElevation, cancellationToken);
+            switch (road.Type)
+            {
+                case RoadType.Automobile:
+                    LimitRoadGrade(
+                        samples,
+                        AutomobileMaximumGrade,
+                        road.PreserveSourceElevation,
+                        cancellationToken
+                    );
+                    break;
+
+                case RoadType.Railway:
+                    LimitRoadGrade(
+                        samples,
+                        RailwayMaximumGrade,
+                        road.PreserveSourceElevation,
+                        cancellationToken
+                    );
+                    break;
+            }
         }
 
         for (int i = 0; i < samples.Count; i++)
@@ -187,87 +207,127 @@ public static class RoadSpline
         return samples;
     }
 
-    private static void LimitRailwayGrade(
+    private static void LimitRoadGrade(
         List<RoadSample> samples,
+        float maximumGrade,
         bool preserveLegacy,
         CancellationToken cancellationToken)
     {
-        var heights = samples
-            .Select(sample => sample.Position.Y)
-            .ToArray();
-        var lower = (float[])heights.Clone();
-
-        for (int i = 1; i < samples.Count; i++)
+        if (samples.Count < 2)
         {
-            if ((i & 255) == 0)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-            }
-
-            float horizontalDistance = Vector2.Distance(
-                new Vector2(
-                    samples[i - 1].Position.X,
-                    samples[i - 1].Position.Z),
-                new Vector2(
-                    samples[i].Position.X,
-                    samples[i].Position.Z));
-
-            float allowedChange =
-                horizontalDistance * RailwayMaximumGrade;
-
-            heights[i] = MathF.Max(
-                heights[i],
-                heights[i - 1] - allowedChange);
-            lower[i] = MathF.Min(lower[i], lower[i - 1] + allowedChange);
+            return;
         }
 
-        for (int i = samples.Count - 2; i >= 0; i--)
+        int count = samples.Count;
+
+        var original = new float[count];
+        var upper = new float[count];
+        var lower = new float[count];
+        var horizontalDistances = new float[count - 1];
+
+        for (int i = 0; i < count; i++)
+        {
+            float height = samples[i].Position.Y;
+
+            original[i] = height;
+            upper[i] = height;
+            lower[i] = height;
+
+            if (i == 0)
+            {
+                continue;
+            }
+
+            Vector3 previous = samples[i - 1].Position;
+            Vector3 current = samples[i].Position;
+
+            horizontalDistances[i - 1] = Vector2.Distance(
+                new Vector2(previous.X, previous.Z),
+                new Vector2(current.X, current.Z)
+            );
+        }
+
+        for (int i = 1; i < count; i++)
         {
             if ((i & 255) == 0)
             {
                 cancellationToken.ThrowIfCancellationRequested();
             }
 
-            float horizontalDistance = Vector2.Distance(
-                new Vector2(
-                    samples[i].Position.X,
-                    samples[i].Position.Z),
-                new Vector2(
-                    samples[i + 1].Position.X,
-                    samples[i + 1].Position.Z));
+            float allowed =
+                horizontalDistances[i - 1] * maximumGrade;
 
-            float allowedChange =
-                horizontalDistance * RailwayMaximumGrade;
+            upper[i] = MathF.Max(
+                upper[i],
+                upper[i - 1] - allowed
+            );
 
-            heights[i] = MathF.Max(
-                heights[i],
-                heights[i + 1] - allowedChange);
-            lower[i] = MathF.Min(lower[i], lower[i + 1] + allowedChange);
+            lower[i] = MathF.Min(
+                lower[i],
+                lower[i - 1] + allowed
+            );
+        }
+
+        for (int i = count - 2; i >= 0; i--)
+        {
+            if ((i & 255) == 0)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+
+            float allowed =
+                horizontalDistances[i] * maximumGrade;
+
+            upper[i] = MathF.Max(
+                upper[i],
+                upper[i + 1] - allowed
+            );
+
+            lower[i] = MathF.Min(
+                lower[i],
+                lower[i + 1] + allowed
+            );
         }
 
         float distance = 0f;
-        Vector3 previous = Vector3.Zero;
+        Vector3 previousPosition = Vector3.Zero;
 
-        for (int i = 0; i < samples.Count; i++)
+        for (int i = 0; i < count; i++)
         {
+            if ((i & 255) == 0)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+
+            float targetHeight = preserveLegacy
+                ? upper[i]
+                : (lower[i] + upper[i]) * 0.5f;
+
             Vector3 position = samples[i].Position;
-            // A symmetric grade-limited envelope allows both cut and fill. The previous upper-only
-            // envelope raised entire routes to hilltops and silently created enormous fills.
-            position.Y = preserveLegacy ? heights[i] : lower[i] + (heights[i] - lower[i]) * 0.5f;
+
+            position.Y = targetHeight;
+
+            if (!Finite(position))
+            {
+                throw new InvalidDataException(
+                    "Некорректный высотный профиль дороги."
+                );
+            }
 
             if (i > 0)
             {
                 distance += Vector3.Distance(
-                    previous,
-                    position);
+                    previousPosition,
+                    position
+                );
             }
 
-            if (!Finite(position) ||
-                !float.IsFinite(distance) ||
+            if (!float.IsFinite(distance) ||
                 distance > MaximumControlLength * 4f)
             {
                 throw new InvalidDataException(
-                    "Некорректный высотный профиль железной дороги.");
+                    "Превышена допустимая длина дороги."
+                );
             }
 
             samples[i] = samples[i] with
@@ -276,7 +336,7 @@ public static class RoadSpline
                 Distance = distance
             };
 
-            previous = position;
+            previousPosition = position;
         }
     }
 

@@ -458,8 +458,34 @@ public sealed partial class TerrainDocument
                 if (priority < 0 || priority == 0 && (distance > bestDistance || distance == bestDistance &&
                     StringComparer.Ordinal.Compare(segment.Road.Id, best.Road.Id) >= 0)) continue;
             }
-            float desired = segment.A.Y + (segment.B.Y - segment.A.Y) * t
-                + RoadSpline.CrossSectionHeight(segment.Road, MathF.Min(distance, segment.Edge)) - segment.Road.TerrainBaseDepth;
+
+            float roadHeight =
+                segment.A.Y +
+                (segment.B.Y - segment.A.Y) * t;
+
+            float crossSectionHeight =
+                RoadSpline.CrossSectionHeight(
+                    segment.Road,
+                    MathF.Min(distance, segment.Edge)
+                );
+
+            float desired =
+                roadHeight +
+                crossSectionHeight -
+                segment.Road.TerrainBaseDepth;
+
+            float minimumClearance = MathF.Max(
+                0.02f,
+                segment.Road.TerrainBaseDepth
+            );
+
+            desired = MathF.Min(
+                desired,
+                roadHeight +
+                crossSectionHeight -
+                minimumClearance
+            );
+
             float deltaHeight = (desired - baseHeight) * weight;
             if (deltaHeight > segment.Road.TerrainFillLimit || -deltaHeight > segment.Road.TerrainCutLimit) continue;
             best = segment; bestDistance = distance; bestT = t; bestWeight = weight;
