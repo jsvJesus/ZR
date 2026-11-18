@@ -41,7 +41,7 @@ public static class RoadStorage
 
         var ids = new HashSet<Guid>();
 
-        foreach (var road in document.Roads)
+        foreach (RoadPath road in document.Roads)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
@@ -49,14 +49,21 @@ public static class RoadStorage
                 road.Id == Guid.Empty ||
                 !ids.Add(road.Id) ||
                 string.IsNullOrWhiteSpace(road.Name) ||
+                !Enum.IsDefined(road.Category) ||
                 road.Points == null ||
-                road.Points.Count > RoadNetwork.MaximumPointsPerRoad)
+                road.Structures == null ||
+                road.Points.Count > RoadNetwork.MaximumPointsPerRoad ||
+                road.Structures.Count > RoadNetwork.MaximumPointsPerRoad ||
+                !float.IsFinite(road.Width) ||
+                road.Width is < 0.5f or > 40f ||
+                !float.IsFinite(road.ShoulderWidth) ||
+                road.ShoulderWidth is < 0f or > 8f)
             {
                 throw new InvalidDataException(
                     "Некорректный дорожный маршрут.");
             }
 
-            foreach (var point in road.Points)
+            foreach (RoadPoint point in road.Points)
             {
                 if (!float.IsFinite(point.X) ||
                     !float.IsFinite(point.Z) ||
@@ -66,6 +73,39 @@ public static class RoadStorage
                     throw new InvalidDataException(
                         "Некорректные координаты дорожной точки.");
                 }
+            }
+
+            foreach (RoadStructure structure in road.Structures)
+            {
+                if (structure == null ||
+                    structure.Id == Guid.Empty ||
+                    !Enum.IsDefined(structure.Kind) ||
+                    structure.StartIndex < 0 ||
+                    structure.EndIndex != structure.StartIndex + 1 ||
+                    structure.EndIndex >= road.Points.Count)
+                {
+                    throw new InvalidDataException(
+                        "Некорректные точки моста или туннеля.");
+                }
+
+                string prefix = structure.Kind == RoadStructureKind.Bridge
+                    ? "objects/props/bridges/"
+                    : "objects/props/tunnels/";
+
+                if (!ValidAsset(structure.Model, prefix, ".model"))
+                {
+                    throw new InvalidDataException(
+                        "Некорректная модель моста или туннеля.");
+                }
+            }
+
+            if ((!string.IsNullOrEmpty(road.Material) &&
+                 !ValidAsset(road.Material, "textures/roads/", ".dds")) ||
+                (!string.IsNullOrEmpty(road.ShoulderMaterial) &&
+                 !ValidAsset(road.ShoulderMaterial, "textures/roads/", ".dds")))
+            {
+                throw new InvalidDataException(
+                    "Некорректный материал дороги.");
             }
         }
 
@@ -92,7 +132,22 @@ public static class RoadStorage
             {
                 Id = road.Id,
                 Name = road.Name,
-                Points = [.. road.Points]
+                Category = road.Category,
+                Model = road.Model,
+                Material = road.Material,
+                ShoulderMaterial = road.ShoulderMaterial,
+                Width = road.Width,
+                ShoulderWidth = road.ShoulderWidth,
+                Points = [.. road.Points],
+                Structures = road.Structures.Select(structure =>
+                    new RoadStructure
+                    {
+                        Id = structure.Id,
+                        Kind = structure.Kind,
+                        StartIndex = structure.StartIndex,
+                        EndIndex = structure.EndIndex,
+                        Model = structure.Model
+                    }).ToList()
             }).ToArray()
         };
 
@@ -118,6 +173,19 @@ public static class RoadStorage
                 File.Delete(temporary);
             }
         }
+    }
+
+    private static bool ValidAsset(
+        string file,
+        string prefix,
+        string extension)
+    {
+        return !string.IsNullOrWhiteSpace(file) &&
+               file.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) &&
+               file.EndsWith(extension, StringComparison.OrdinalIgnoreCase) &&
+               !file.Contains("..", StringComparison.Ordinal) &&
+               !file.Contains('\\') &&
+               !file.Contains(':');
     }
 
     public sealed class RoadDocument

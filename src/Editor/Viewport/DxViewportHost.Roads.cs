@@ -33,6 +33,7 @@ public sealed partial class DxViewportHost
         _roadNetwork = network;
         _selectedRoadId = null;
         _selectedRoadPoint = -1;
+
         RoadEditingEnabled = false;
         RoadTool = RoadToolMode.Select;
     }
@@ -51,7 +52,7 @@ public sealed partial class DxViewportHost
 
     public void SelectRoadPoint(int index)
     {
-        var road = _selectedRoadId is { } roadId
+        RoadPath? road = _selectedRoadId is { } roadId
             ? _roadNetwork?.Find(roadId)
             : null;
 
@@ -84,14 +85,17 @@ public sealed partial class DxViewportHost
             return;
         }
 
-        var road = _roadNetwork.Find(roadId);
+        RoadPath? road = _roadNetwork.Find(roadId);
 
         if (road == null)
         {
             return;
         }
 
-        if (RoadTool == RoadToolMode.Add)
+        bool shiftHeld =
+            (GetKeyState(KeyShift) & 0x8000) != 0;
+
+        if (shiftHeld)
         {
             _selectedRoadPoint = _roadNetwork.AddPoint(
                 roadId,
@@ -118,7 +122,7 @@ public sealed partial class DxViewportHost
 
         for (int index = 0; index < road.Points.Count; index++)
         {
-            var point = road.Points[index];
+            RoadPoint point = road.Points[index];
 
             if (surface == null ||
                 !surface.TryGetHeight(
@@ -133,7 +137,8 @@ public sealed partial class DxViewportHost
                 hit,
                 new Vector3(point.X, height, point.Z));
 
-            if (distance < radius && distance < nearestDistance)
+            if (distance < radius &&
+                distance < nearestDistance)
             {
                 nearest = index;
                 nearestDistance = distance;

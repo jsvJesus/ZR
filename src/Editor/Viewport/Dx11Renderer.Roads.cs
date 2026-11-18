@@ -20,11 +20,15 @@ public sealed partial class Dx11Renderer
 
     private LoadedLevel? _roadLevel;
     private RoadCatalog? _roadCatalog;
+    private RoadMaterialCatalog? _roadMaterials;
     private SceneData? _roadScene;
     private SceneRenderer? _roadModelRenderer;
 
     private long _roadBuiltRevision = -1;
     private long _roadBuiltHeightRevision = -1;
+
+    private readonly HashSet<string> _generatedRoadFiles =
+        new(StringComparer.OrdinalIgnoreCase);
 
     public void SetRoads(
         RoadNetwork? network,
@@ -36,14 +40,9 @@ public sealed partial class Dx11Renderer
         _roadPointSelection = selectedPoint;
     }
 
-    private readonly HashSet<string> _generatedRoadFiles =
-        new(StringComparer.OrdinalIgnoreCase);
-
     private void SetRoadSurface(LoadedLevel? level)
     {
-        _roadModelRenderer?.Dispose();
-        _roadModelRenderer = null;
-        _roadScene = null;
+        DisposeRoadModels();
 
         _roadLevel = level;
 
@@ -57,18 +56,21 @@ public sealed partial class Dx11Renderer
 
         _roadBuiltRevision = -1;
         _roadBuiltHeightRevision = -1;
+
         _generatedRoadFiles.Clear();
 
         _roadCatalog = null;
+        _roadMaterials = null;
 
         if (level == null)
         {
             return;
         }
 
-        var assets = AssetPaths.FromApplication();
+        AssetPaths assets = AssetPaths.FromApplication();
 
         _roadCatalog = RoadCatalog.Scan(assets);
+        _roadMaterials = RoadMaterialCatalog.Scan(assets);
 
         _roadScene = new SceneData(
             assets,
@@ -89,6 +91,7 @@ public sealed partial class Dx11Renderer
         if (_roadLevel == null ||
             _roadSurface == null ||
             _roadCatalog == null ||
+            _roadMaterials == null ||
             _roadScene == null ||
             _roadModelRenderer == null)
         {
@@ -109,11 +112,30 @@ public sealed partial class Dx11Renderer
 
         try
         {
-            RoadBuildResult result = RoadBuilder.Build(
+            RoadBuildResult railways = RoadBuilder.Build(
                 network,
                 _roadCatalog,
                 _roadSurface,
                 _roadScene.Models);
+
+            RoadBuildResult surfaces = RoadSurfaceBuilder.Build(
+                network,
+                _roadMaterials,
+                _roadSurface);
+
+            RoadBuildResult structures = RoadStructureBuilder.Build(
+                network,
+                _roadScene.Models,
+                _roadSurface);
+
+            var models = railways.Models
+                .Concat(surfaces.Models)
+                .ToArray();
+
+            var instances = surfaces.Instances
+                .Concat(railways.Instances)
+                .Concat(structures.Instances)
+                .ToArray();
 
             foreach (string file in _generatedRoadFiles)
             {
@@ -122,27 +144,26 @@ public sealed partial class Dx11Renderer
 
             _generatedRoadFiles.Clear();
 
-            foreach (SceneModel model in result.Models)
+            foreach (SceneModel model in models)
             {
                 _roadScene.Models.Store(model);
                 _generatedRoadFiles.Add(model.File);
             }
 
-            _roadModelRenderer.SetTransientInstances(
-                result.Instances);
+            _roadModelRenderer.SetTransientInstances(instances);
+
+            _roadBuiltRevision = revision;
+            _roadBuiltHeightRevision = heightRevision;
         }
         catch (Exception exception) when (
             exception is InvalidOperationException or
-                InvalidDataException or
-                ArgumentException or
-                OverflowException)
+            InvalidDataException or
+            ArgumentException or
+            OverflowException)
         {
             _roadScene.Warnings.Enqueue(
-                $"Построение дороги: {exception.Message}");
+                $"Построение дорог: {exception.Message}");
         }
-
-        _roadBuiltRevision = revision;
-        _roadBuiltHeightRevision = heightRevision;
     }
 
     private void RenderRoadModels(
@@ -195,5 +216,6 @@ public sealed partial class Dx11Renderer
         _roadModelRenderer?.Dispose();
         _roadModelRenderer = null;
         _roadScene = null;
+        _generatedRoadFiles.Clear();
     }
 }

@@ -25,10 +25,11 @@ public static class RoadBuilder
 
         foreach (var road in network.Roads)
         {
-            if (road.Points.Count < 2 ||
+            if (road.Category != RoadCategory.Railway ||
+                road.Points.Count < 2 ||
                 string.IsNullOrWhiteSpace(road.Model) ||
                 !catalog.TryGet(road.Model, out var info) ||
-                info.Category != road.Category)
+                info.Category != RoadCategory.Railway)
             {
                 continue;
             }

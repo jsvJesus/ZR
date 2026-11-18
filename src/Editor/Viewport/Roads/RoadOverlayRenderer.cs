@@ -97,35 +97,29 @@ internal sealed class RoadOverlayRenderer : IDisposable
                 ? new Vector4(1f, 0.72f, 0.12f, 1f)
                 : new Vector4(0.15f, 0.8f, 1f, 1f);
 
-            if (catalog != null &&
+            float curveWidth = road.Width;
+
+            if (road.Category == RoadCategory.Railway &&
+                catalog != null &&
                 catalog.TryGet(road.Model, out RoadModelInfo model))
             {
-                RoadCurve curve = RoadCurve.Create(
-                    road.Points,
-                    model.Width);
-
-                for (int index = 1; index < curve.Samples.Count; index++)
-                {
-                    Vector2 a = curve.Samples[index - 1].Position;
-                    Vector2 b = curve.Samples[index].Position;
-
-                    DrawSegment(
-                        surface,
-                        new RoadPoint(a.X, a.Y),
-                        new RoadPoint(b.X, b.Y),
-                        color);
-                }
+                curveWidth = model.Width;
             }
-            else
+
+            RoadCurve curve = RoadCurve.Create(
+                road.Points,
+                curveWidth);
+
+            for (int index = 1; index < curve.Samples.Count; index++)
             {
-                for (int index = 1; index < road.Points.Count; index++)
-                {
-                    DrawSegment(
-                        surface,
-                        road.Points[index - 1],
-                        road.Points[index],
-                        color);
-                }
+                Vector2 a = curve.Samples[index - 1].Position;
+                Vector2 b = curve.Samples[index].Position;
+
+                DrawSegment(
+                    surface,
+                    new RoadPoint(a.X, a.Y),
+                    new RoadPoint(b.X, b.Y),
+                    color);
             }
 
             for (int index = 0; index < road.Points.Count; index++)
