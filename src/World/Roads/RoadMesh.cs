@@ -422,8 +422,12 @@ public static class RoadMesh
 
     private static readonly Profile[] RailCollisionProfile =
     [
-        new(-0.075f, 0.16f), new(0.075f, 0.16f), new(0.075f, 0.185f),
-        new(0.027f, 0.335f), new(-0.027f, 0.335f), new(-0.075f, 0.185f)
+        new(-0.35f, 0.16f),
+        new(-0.25f, 0.16f),
+        new(-0.027f, 0.335f),
+        new(0.027f, 0.335f),
+        new(0.25f, 0.16f),
+        new(0.35f, 0.16f)
     ];
 
     private static void BuildRail(Builder builder, Frame a, Frame b, float lateral, bool start, bool end, bool collision)
