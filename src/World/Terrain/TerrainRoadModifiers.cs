@@ -108,7 +108,7 @@ public sealed partial class TerrainDocument
                 out var profile) ||
             profile.Tiles.Count == 0)
         {
-            return HeightRevision;
+            return 0;
         }
 
         long revision = 0;
@@ -146,20 +146,63 @@ public sealed partial class TerrainDocument
         _effectiveOverview = null;
     }
 
-    private void InvalidateRoadModifiersForTerrain(List<(int X, int Z, ushort Value)> values)
+    private void InvalidateRoadModifiersForTerrain(
+        List<(int X, int Z, ushort Value)> values)
     {
-        if (_roadNetwork == null || values.Count == 0) return;
-        var d = Descriptor;
-        float padding = Math.Max(1, d.MeshStep) * d.CellSize;
+        if (_roadNetwork == null ||
+            values.Count == 0)
+        {
+            return;
+        }
+
+        var descriptor = Descriptor;
+
+        float padding =
+            Math.Max(1, descriptor.MeshStep) *
+            descriptor.CellSize;
+
+        int minX = int.MaxValue;
+        int minZ = int.MaxValue;
+        int maxX = int.MinValue;
+        int maxZ = int.MinValue;
+
+        foreach (var value in values)
+        {
+            minX = Math.Min(minX, value.X);
+            minZ = Math.Min(minZ, value.Z);
+            maxX = Math.Max(maxX, value.X);
+            maxZ = Math.Max(maxZ, value.Z);
+        }
+
         var bounds = new Vector4(
-            d.OriginX + values.Min(v => v.X) * d.CellSize - padding,
-            d.OriginZ + values.Min(v => v.Z) * d.CellSize - padding,
-            d.OriginX + values.Max(v => v.X) * d.CellSize + padding,
-            d.OriginZ + values.Max(v => v.Z) * d.CellSize + padding);
+            descriptor.OriginX +
+            minX * descriptor.CellSize - padding,
+            descriptor.OriginZ +
+            minZ * descriptor.CellSize - padding,
+            descriptor.OriginX +
+            maxX * descriptor.CellSize + padding,
+            descriptor.OriginZ +
+            maxZ * descriptor.CellSize + padding
+        );
+
+        bool affected = false;
+
         foreach (var pair in _roadProfiles)
-            if (Overlaps(pair.Value.Bounds, bounds)) _roadProfilesInvalid.Add(pair.Key);
-        // A road rejected for excessive cut/fill must be reconsidered after terrain sculpting as well.
-        _roadModifiersPending = true;
+        {
+            if (!Overlaps(pair.Value.Bounds, bounds))
+            {
+                continue;
+            }
+
+            _roadProfilesInvalid.Add(pair.Key);
+            affected = true;
+        }
+
+        if (affected)
+        {
+            _roadModifiersPending = true;
+            _effectiveOverview = null;
+        }
     }
 
     private void EnsureRoadModifiers(CancellationToken cancellationToken = default)
@@ -369,23 +412,143 @@ public sealed partial class TerrainDocument
         return d.DecodeHeight(EncodeEffective(baseHeight + (target - baseHeight) * bestWeight));
     }
 
+    private bool HasRoadInfluence(int tileX, int tileZ)
+    {
+        if (_roadBuckets.Count == 0)
+        {
+            return false;
+        }
+
+        var descriptor = Descriptor;
+
+        float tileSize = 256f * descriptor.CellSize;
+        float padding = Math.Max(
+            descriptor.CellSize,
+            descriptor.MeshStep * descriptor.CellSize
+        );
+
+        float minX =
+            descriptor.OriginX + tileX * tileSize - padding;
+
+        float minZ =
+            descriptor.OriginZ + tileZ * tileSize - padding;
+
+        float maxX = minX + tileSize + padding * 2f;
+        float maxZ = minZ + tileSize + padding * 2f;
+
+        var bounds = new Vector4(
+            minX,
+            minZ,
+            maxX,
+            maxZ
+        );
+
+        var first = Bucket(minX, minZ);
+        var last = Bucket(maxX, maxZ);
+
+        for (int z = first.Z; z <= last.Z; z++)
+        {
+            for (int x = first.X; x <= last.X; x++)
+            {
+                if (!_roadBuckets.TryGetValue(
+                        (x, z),
+                        out var segments))
+                {
+                    continue;
+                }
+
+                foreach (var segment in segments)
+                {
+                    if (Overlaps(segment.Bounds, bounds))
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        return false;
+    }
+
     private TerrainTileData EffectiveTile(TerrainTileData source)
     {
         var key = (source.X, source.Z);
-        if (!_roadAffectedTiles.Contains(key)) return source;
-        if (_effectiveTiles.TryGetValue(key, out var cached))
-            return cached with { Masks = source.Masks, ActiveLayers = source.ActiveLayers };
-        var heights = new ushort[source.Heights.Length];
-        for (int z = 0; z < 256; z++)
-        for (int x = 0; x < 256; x++)
+
+        if (!_roadAffectedTiles.Contains(key))
         {
-            int gx = Math.Min(source.X * 256 + x, Descriptor.SamplesX - 1);
-            int gz = Math.Min(source.Z * 256 + z, Descriptor.SamplesZ - 1);
-            heights[z * 256 + x] = EncodeEffective(EffectiveHeight(gx, gz, BaseHeight(gx, gz)));
+            return source;
         }
-        var result = source with { Heights = heights, Normals = TerrainNormals.Build(Descriptor, source.X, source.Z, Height) };
-        if (_effectiveTiles.Count >= 64) _effectiveTiles.Remove(_effectiveTiles.Keys.First());
+
+        if (!HasRoadInfluence(source.X, source.Z))
+        {
+            _effectiveTiles.Remove(key);
+            return source;
+        }
+
+        if (_effectiveTiles.TryGetValue(
+                key,
+                out var cached))
+        {
+            return cached with
+            {
+                Masks = source.Masks,
+                ActiveLayers = source.ActiveLayers
+            };
+        }
+
+        var descriptor = Descriptor;
+
+        var heights = new ushort[source.Heights.Length];
+
+        for (int z = 0; z < 256; z++)
+        {
+            for (int x = 0; x < 256; x++)
+            {
+                int index = z * 256 + x;
+
+                int globalX = Math.Min(
+                    source.X * 256 + x,
+                    descriptor.SamplesX - 1
+                );
+
+                int globalZ = Math.Min(
+                    source.Z * 256 + z,
+                    descriptor.SamplesZ - 1
+                );
+
+                float baseHeight =
+                    descriptor.DecodeHeight(source.Heights[index]);
+
+                float effectiveHeight = EffectiveHeight(
+                    globalX,
+                    globalZ,
+                    baseHeight
+                );
+
+                heights[index] = EncodeEffective(effectiveHeight);
+            }
+        }
+
+        var result = source with
+        {
+            Heights = heights,
+            Normals = TerrainNormals.Build(
+                descriptor,
+                source.X,
+                source.Z,
+                Height
+            )
+        };
+
+        if (_effectiveTiles.Count >= 64)
+        {
+            _effectiveTiles.Remove(
+                _effectiveTiles.Keys.First()
+            );
+        }
+
         _effectiveTiles[key] = result;
+
         return result;
     }
 
