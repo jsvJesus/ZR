@@ -76,6 +76,8 @@ public sealed class RoadDefinition
     public int LaneCount { get; set; } = 2;
     public float RailGauge { get; set; } = 1.52f;
     public float SleeperSpacing { get; set; } = 0.65f;
+    public int TrackCount { get; set; } = 1;
+    public float TrackSpacing { get; set; } = 4.2f;
 
     public bool FollowTerrain { get; set; } = true;
 

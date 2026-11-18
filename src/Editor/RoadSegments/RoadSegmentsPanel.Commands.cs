@@ -42,6 +42,20 @@ public sealed partial class RoadSegmentsPanel
         candidate.Width = Parse(_width); candidate.ShoulderWidth = Parse(_shoulder);
         candidate.Thickness = Parse(_thickness); candidate.SurfaceOffset = Parse(_surfaceOffset);
         candidate.RailGauge = Parse(_gauge); candidate.SleeperSpacing = Parse(_spacing);
+        candidate.TrackCount = _trackCount.SelectedIndex == 1 ? 2 : 1;
+        candidate.TrackSpacing = Parse(_trackSpacing);
+        if (candidate.Type == RoadType.Railway)
+        {
+            float minimumWidth =
+                candidate.RailGauge + 0.6f +
+                (candidate.TrackCount == 2
+                    ? candidate.TrackSpacing
+                    : 0f);
+
+            candidate.Width = MathF.Max(
+                candidate.Width,
+                minimumWidth);
+        }
         candidate.TerrainModifierEnabled = _terrainModifier.IsChecked == true;
         candidate.PreserveSourceElevation = _preserveElevation.IsChecked == true;
         candidate.TerrainCutLimit = Parse(_cutLimit); candidate.TerrainFillLimit = Parse(_fillLimit);
@@ -70,6 +84,8 @@ public sealed partial class RoadSegmentsPanel
         road.Thickness = candidate.Thickness; road.SurfaceOffset = candidate.SurfaceOffset;
         road.LaneCount = candidate.LaneCount; road.RailGauge = candidate.RailGauge;
         road.SleeperSpacing = candidate.SleeperSpacing; road.FollowTerrain = candidate.FollowTerrain;
+        road.TrackCount = candidate.TrackCount;
+        road.TrackSpacing = candidate.TrackSpacing;
         road.TerrainModifierEnabled = candidate.TerrainModifierEnabled;
         road.PreserveSourceElevation = candidate.PreserveSourceElevation;
         road.TerrainCutLimit = candidate.TerrainCutLimit; road.TerrainFillLimit = candidate.TerrainFillLimit;

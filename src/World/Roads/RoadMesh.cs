@@ -80,9 +80,33 @@ public static class RoadMesh
             Ribbon(builder, a, b, rightBase, leftBase, surfaceId, -Vector3.UnitY);
             if (i == 1) CapDeck(builder, a, top, baseHeight, surfaceId, -a.Forward);
             if (i == frames.Length - 1) CapDeck(builder, b, top, baseHeight, surfaceId, b.Forward);
+
             if (road.Type == RoadType.Railway)
-                for (int rail = -1; rail <= 1; rail += 2)
-                    BuildRail(builder, a, b, rail * (road.RailGauge / 2 + 0.038f), i == 1, i == frames.Length - 1, collisionProfile);
+            {
+                for (int track = 0; track < road.TrackCount; track++)
+                {
+                    float trackOffset = road.TrackCount == 1
+                        ? 0f
+                        : (track == 0 ? -0.5f : 0.5f) *
+                          road.TrackSpacing;
+
+                    for (int rail = -1; rail <= 1; rail += 2)
+                    {
+                        float lateral =
+                            trackOffset +
+                            rail * (road.RailGauge * 0.5f + 0.038f);
+
+                        BuildRail(
+                            builder,
+                            a,
+                            b,
+                            lateral,
+                            i == 1,
+                            i == frames.Length - 1,
+                            collisionProfile);
+                    }
+                }
+            }
         }
         if (road.Type == RoadType.Railway)
         {
@@ -104,7 +128,28 @@ public static class RoadMesh
                 if (forward.LengthSquared() < 1e-8f) forward = b.Forward;
                 else forward = Vector3.Normalize(forward);
                 var frame = new Frame(Vector3.Lerp(a.Position, b.Position, t), right, forward, at, b.Segment);
-                BuildSleeper(Section(b.Segment), frame, road.RailGauge / 2 + 0.3f, MathF.Min(0.24f, road.SleeperSpacing * 0.65f));
+
+                for (int track = 0; track < road.TrackCount; track++)
+                {
+                    float trackOffset = road.TrackCount == 1
+                        ? 0f
+                        : (track == 0 ? -0.5f : 0.5f) *
+                          road.TrackSpacing;
+
+                    Frame trackFrame = frame with
+                    {
+                        Position =
+                        frame.Position + frame.Right * trackOffset
+                    };
+
+                    BuildSleeper(
+                        Section(b.Segment),
+                        trackFrame,
+                        road.RailGauge * 0.5f + 0.3f,
+                        MathF.Min(
+                            0.24f,
+                            road.SleeperSpacing * 0.65f));
+                }
             }
         }
         if (road.Type == RoadType.Railway)
@@ -446,7 +491,10 @@ public static class RoadMesh
         if (!Enum.IsDefined(road.Type) || !Range(road.Width, 0.2f, 50) || !Range(road.ShoulderWidth, 0, 10)
             || !Range(road.Thickness, 0.02f, 2) || !Range(road.RailGauge, 0.5f, 3)
             || !Range(road.SleeperSpacing, 0.3f, 3) || road.LaneCount is < 1 or > 8
-            || road.Type == RoadType.Railway && road.Width < road.RailGauge + 0.6f)
+            || road.TrackCount is < 1 or > 2
+            || !Range(road.TrackSpacing, 2.5f, 15f)
+            || road.Type == RoadType.Railway && road.Width < road.RailGauge + 0.6f + (road.TrackCount == 2 ? road.TrackSpacing : 0f)
+
             throw new InvalidDataException("Road profile dimensions are outside supported limits.");
     }
 

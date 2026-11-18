@@ -29,6 +29,21 @@ public sealed partial class RoadSegmentsPanel : UserControl
     private readonly CheckBox _follow = new() { Content = "Следовать Terrain", IsChecked = true };
     private readonly TextBox _width = new(), _shoulder = new(), _thickness = new(), _surfaceOffset = new();
     private readonly TextBox _lanes = new(), _gauge = new(), _spacing = new();
+    private readonly ComboBox _trackCount = new()
+    {
+        ItemsSource = new[]
+        {
+            "Один железнодорожный путь",
+            "Два железнодорожных пути"
+        },
+        SelectedIndex = 0,
+        HorizontalAlignment = HorizontalAlignment.Stretch
+    };
+
+    private readonly TextBox _trackSpacing = new()
+    {
+        Text = "4.2"
+    };
     private readonly TextBox _x = new(), _y = new(), _z = new();
     private readonly CheckBox _terrainModifier = new() { Content = "Дорожный коридор Terrain" };
     private readonly CheckBox _preserveElevation = new() { Content = "Сохранить проектную высоту (миграция V1)" };
@@ -77,6 +92,15 @@ public sealed partial class RoadSegmentsPanel : UserControl
         Field(_profile, "Число автомобильных полос", _lanes);
         Field(_railFields, "Ширина колеи, м", _gauge);
         Field(_railFields, "Шаг шпал, м", _spacing);
+        Field(
+            _railFields,
+            "Количество железнодорожных путей",
+            _trackCount);
+
+        Field(
+            _railFields,
+            "Расстояние между осями путей, м",
+            _trackSpacing);
         _profile.Children.Add(_railFields);
         _profile.Children.Add(_terrainModifier);
         _profile.Children.Add(_preserveElevation);
@@ -207,6 +231,8 @@ public sealed partial class RoadSegmentsPanel : UserControl
             _thickness.Text = Format(road?.Thickness ?? 0.2f); _surfaceOffset.Text = Format(road?.SurfaceOffset ?? 0.06f);
             _lanes.Text = (road?.LaneCount ?? 2).ToString(CultureInfo.InvariantCulture);
             _gauge.Text = Format(road?.RailGauge ?? 1.52f); _spacing.Text = Format(road?.SleeperSpacing ?? 0.65f);
+            _trackCount.SelectedIndex = road?.TrackCount == 2 ? 1 : 0;
+            _trackSpacing.Text = Format(road?.TrackSpacing ?? 4.2f);
             _terrainModifier.IsChecked = road?.TerrainModifierEnabled ?? true;
             _preserveElevation.IsChecked = road?.PreserveSourceElevation ?? false;
             _cutLimit.Text = Format(road?.TerrainCutLimit ?? 6); _fillLimit.Text = Format(road?.TerrainFillLimit ?? 6);

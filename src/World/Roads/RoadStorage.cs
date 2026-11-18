@@ -76,6 +76,8 @@ public static class RoadStorage
             LaneCount = road.LaneCount,
             RailGauge = road.RailGauge,
             SleeperSpacing = road.SleeperSpacing,
+            TrackCount = road.TrackCount,
+            TrackSpacing = road.TrackSpacing,
             FollowTerrain = road.FollowTerrain,
             TerrainConformed = false,
             TerrainModifierEnabled = road.TerrainModifierEnabled,
@@ -114,18 +116,51 @@ public static class RoadStorage
         Range(road.Thickness, 0.02f, 2, "Толщина основания");
         Range(road.SurfaceOffset, -100, 100, "Смещение поверхности");
         Range(road.RailGauge, 0.5f, 3, "Ширина колеи");
+
         Range(road.SleeperSpacing, 0.3f, 3, "Шаг шпал");
+        if (road.TrackCount is < 1 or > 2)
+        {
+            throw new InvalidDataException(
+                "Количество железнодорожных путей должно быть 1 или 2.");
+        }
+
+        Range(
+            road.TrackSpacing,
+            2.5f,
+            15f,
+            "Расстояние между железнодорожными путями");
+
         Range(road.TerrainCutLimit, 0, 20, "Предел выемки");
         Range(road.TerrainFillLimit, 0, 20, "Предел насыпи");
         Range(road.TerrainTransitionWidth, 0.5f, 50, "Переход к Terrain");
         Range(road.TerrainBaseDepth, 0.02f, 2, "Глубина основания");
         Range(road.TextureRepeatLength, 0.1f, 100, "Повтор текстуры");
         Range(road.MaterialWetness, 0, 1, "Намокание материала");
+
         if (road.MaterialId == null || road.MaterialId.Length > 256)
             throw new InvalidDataException("Некорректный ID материала дороги.");
+
         if (road.LaneCount is < 1 or > 8) throw new InvalidDataException("Число полос: от 1 до 8.");
-        if (road.Type == RoadType.Railway && road.Width < road.RailGauge + 0.6f)
-            throw new InvalidDataException("Основание железной дороги должно быть шире колеи минимум на 0,6 м.");
+
+        if (road.Type == RoadType.Railway)
+        {
+            float minimumWidth =
+                road.RailGauge + 0.6f;
+
+            if (road.TrackCount == 2)
+            {
+                minimumWidth += road.TrackSpacing;
+            }
+
+            if (road.Width < minimumWidth)
+            {
+                throw new InvalidDataException(
+                    $"Для {road.TrackCount} железнодорожных путей " +
+                    $"ширина основания должна быть не менее " +
+                    $"{minimumWidth:F2} м.");
+            }
+        }
+
         double length = 0;
         for (int i = 0; i < road.Nodes.Count; i++)
         {

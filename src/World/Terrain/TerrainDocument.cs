@@ -209,7 +209,6 @@ public sealed partial class TerrainDocument(string directory, LevelManifest mani
 
     private void SetHeight(int x, int z, ushort value)
     {
-        InvalidateEffectiveTile(x / 256, z / 256);
         Raw(x / 256, z / 256).Heights[(z % 256) * 256 + x % 256] = value;
         _dirty.Add((x / 256, z / 256));
         _overviewDirty.Add((x / 256, z / 256));
