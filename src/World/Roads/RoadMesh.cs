@@ -487,15 +487,30 @@ public static class RoadMesh
 
     private static void ValidateDimensions(RoadDefinition road)
     {
-        static bool Range(float value, float min, float max) => float.IsFinite(value) && value >= min && value <= max;
-        if (!Enum.IsDefined(road.Type) || !Range(road.Width, 0.2f, 50) || !Range(road.ShoulderWidth, 0, 10)
-            || !Range(road.Thickness, 0.02f, 2) || !Range(road.RailGauge, 0.5f, 3)
-            || !Range(road.SleeperSpacing, 0.3f, 3) || road.LaneCount is < 1 or > 8
-            || road.TrackCount is < 1 or > 2
-            || !Range(road.TrackSpacing, 2.5f, 15f)
-            || road.Type == RoadType.Railway && road.Width < road.RailGauge + 0.6f + (road.TrackCount == 2 ? road.TrackSpacing : 0f)
+        static bool Range(float value, float min, float max)
+        {
+            return float.IsFinite(value) &&
+                   value >= min &&
+                   value <= max;
+        }
 
-            throw new InvalidDataException("Road profile dimensions are outside supported limits.");
+        if (!Enum.IsDefined(road.Type) ||
+            !Range(road.Width, 0.2f, 50f) ||
+            !Range(road.ShoulderWidth, 0f, 10f) ||
+            !Range(road.Thickness, 0.02f, 2f) ||
+            !Range(road.RailGauge, 0.5f, 3f) ||
+            !Range(road.SleeperSpacing, 0.3f, 3f) ||
+            road.LaneCount is < 1 or > 8 ||
+            road.TrackCount is < 1 or > 2 ||
+            !Range(road.TrackSpacing, 2.5f, 15f) ||
+            (road.Type == RoadType.Railway &&
+             road.Width <
+             road.RailGauge + 0.6f +
+             (road.TrackCount == 2 ? road.TrackSpacing : 0f)))
+        {
+            throw new InvalidDataException(
+                "Road profile dimensions are outside supported limits.");
+        }
     }
 
     private sealed class Budget { public int Vertices; }

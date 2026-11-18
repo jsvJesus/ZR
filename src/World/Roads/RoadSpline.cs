@@ -79,7 +79,7 @@ public static class RoadSpline
                     "Превышен лимит точек дорожного сплайна.");
             }
 
-            for (int step = segment == 0 ? 0; step <= steps; step++)
+            for (int step = segment == 0 ? 0 : 1; step <= steps; step++)
             {
                 if ((step & 63) == 0)
                 {
