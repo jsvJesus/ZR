@@ -20,7 +20,7 @@ public sealed partial class MainWindow
         !_isClosing && !_levelOpening && !_levelSaving && !_savingChangesOnClose &&
         _importCancellation == null && !Viewport.IsObjectDragging &&
         !CharacterPanel.IsBusy &&
-        !RoadSegmentsPanel.IsSaving && !VegetationPanel.IsSaving &&
+        !VegetationPanel.IsSaving &&
         !ObjectsPanel.IsBusy && !TerrainEditorPanel.IsBusy;
 
     private void InitializeWorkspaceLayout()
@@ -28,7 +28,6 @@ public sealed partial class MainWindow
         AddBrowser(TerrainEditorPanel, TerrainEditorPanel.BrowserContent);
         AddBrowser(ObjectsPanel, ObjectsPanel.BrowserContent);
         AddBrowser(VegetationPanel, VegetationPanel.BrowserContent);
-        AddBrowser(RoadSegmentsPanel, RoadSegmentsPanel.BrowserContent);
         AddBrowser(CharacterPanel, CharacterPanel.BrowserContent);
         EnvironmentBrowser.Bind(IsEnabledProperty, new ReflectionBinding(nameof(IsEnabled)) { Source = EnvironmentPanel });
 
@@ -36,7 +35,6 @@ public sealed partial class MainWindow
         AddWorkspace("materials", "Материалы", "M2,2 L14,2 L14,14 L2,14 Z M2,8 L14,8 M8,2 L8,14", TerrainMaterials_Click);
         AddWorkspace("objects", "Объекты", "M8,1 L15,5 L15,13 L8,17 L1,13 L1,5 Z M1,5 L8,9 L15,5 M8,9 L8,17", ObjectsInScene_Click);
         AddWorkspace("vegetation", "Растения", "M8,1 L2,9 L5,9 L1,13 L15,13 L11,9 L14,9 Z M8,13 L8,17", Vegetation_Click);
-        AddWorkspace("roads", "Дороги", "M5,1 L1,17 M11,1 L15,17 M8,1 L8,5 M8,8 L8,11 M8,14 L8,17", RoadSegments_Click);
         AddWorkspace("environment", "Окружение", "M5,5 L11,5 L11,11 L5,11 Z M8,0 L8,2 M8,14 L8,16 M0,8 L2,8 M14,8 L16,8 M2,2 L3,3 M13,13 L14,14 M2,14 L3,13 M13,3 L14,2", Lighting_Click);
         AddWorkspace("character", "Персонаж", "M5,1 L11,1 L11,7 L5,7 Z M2,17 L2,13 L5,10 L11,10 L14,13 L14,17", CharacterEditor_Click);
 

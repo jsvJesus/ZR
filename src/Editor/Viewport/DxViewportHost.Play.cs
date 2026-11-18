@@ -34,7 +34,6 @@ public sealed partial class DxViewportHost
         }
 
         CancelTreeDrag();
-        CancelRoadDrag();
         CancelObjectPlacement();
 
         var renderer = _renderer ??

@@ -52,9 +52,7 @@ public sealed partial class TerrainDocument(string directory, LevelManifest mani
 
     public TerrainTileData Tile(int x, int z)
     {
-        EnsureRoadModifiers();
-        var tile = BaseTile(x, z);
-        return EffectiveTile(tile);
+        return BaseTile(x, z);
     }
 
     private TerrainTileData BaseTile(int x, int z)
@@ -67,9 +65,10 @@ public sealed partial class TerrainDocument(string directory, LevelManifest mani
 
     public float Height(int x, int z)
     {
-        EnsureRoadModifiers();
-        x = Math.Clamp(x, 0, Descriptor.SamplesX - 1); z = Math.Clamp(z, 0, Descriptor.SamplesZ - 1);
-        return EffectiveHeight(x, z, BaseHeight(x, z));
+        x = Math.Clamp(x, 0, Descriptor.SamplesX - 1);
+        z = Math.Clamp(z, 0, Descriptor.SamplesZ - 1);
+
+        return BaseHeight(x, z);
     }
 
     /// <summary>User-authored terrain, before any derived road corridor is applied.</summary>
@@ -173,7 +172,6 @@ public sealed partial class TerrainDocument(string directory, LevelManifest mani
         if (holesChanged)
         {
             HoleRevision++;
-            InvalidateRoadModifiersForTerrain(change.Holes.Select(value => (value.X, value.Z, (ushort)0)).ToList());
             HeightRevision++;
         }
 
@@ -201,7 +199,6 @@ public sealed partial class TerrainDocument(string directory, LevelManifest mani
         if (change.Holes.Count > 0)
         {
             HoleRevision++;
-            InvalidateRoadModifiersForTerrain(change.Holes.Select(value => (value.X, value.Z, (ushort)0)).ToList());
             HeightRevision++;
         }
         if (change.Materials.Count > 0) MaterialRevision++;
@@ -232,8 +229,7 @@ public sealed partial class TerrainDocument(string directory, LevelManifest mani
 
     public TerrainOverviewData BuildOverview()
     {
-        EnsureRoadModifiers();
-        return EffectiveOverview(BuildBaseOverview());
+        return BuildBaseOverview();
     }
 
     private TerrainOverviewData BuildBaseOverview()

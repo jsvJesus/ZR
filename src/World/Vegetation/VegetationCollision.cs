@@ -1,7 +1,6 @@
 using System.Numerics;
 using ZoneReborn.World.Assets;
 using ZoneReborn.World.Levels.Models;
-using ZoneReborn.World.Roads;
 using ZoneReborn.World.Scene;
 using ZoneReborn.World.Terrain;
 
@@ -9,7 +8,6 @@ namespace ZoneReborn.World.Vegetation;
 
 public static class VegetationCollision
 {
-    private const int MaximumRoadCollisionTriangles = 2_000_000;
 
     public static SceneCollision Create(
         LoadedLevel level,
@@ -26,10 +24,6 @@ public static class VegetationCollision
         var meshes = new Dictionary<string, ScenePhysicsMesh?>(
             StringComparer.OrdinalIgnoreCase);
 
-        var clearance = RoadClearance.Build(
-            level.Roads,
-            cancellationToken);
-
         foreach (var entry in level.Vegetation.Instances
             .Select(tree => (Tree: tree, Generated: false))
             .Concat(level.Vegetation.Generated.Select(
@@ -44,29 +38,6 @@ public static class VegetationCollision
                     out var asset))
             {
                 continue;
-            }
-
-            if (entry.Generated)
-            {
-                float footprint = MathF.Max(
-                    MathF.Max(
-                        MathF.Abs(asset.Minimum.X),
-                        MathF.Abs(asset.Maximum.X)),
-                    MathF.Max(
-                        MathF.Abs(asset.Minimum.Z),
-                        MathF.Abs(asset.Maximum.Z)));
-
-                footprint = MathF.Max(
-                    0.2f,
-                    footprint * tree.Scale);
-
-                if (clearance.Intersects(
-                    tree.X,
-                    tree.Z,
-                    footprint))
-                {
-                    continue;
-                }
             }
 
             if (!VegetationCategory.HasBarkCollision(asset.File))
@@ -121,82 +92,6 @@ public static class VegetationCollision
                     asset.Minimum,
                     asset.Maximum)
             });
-        }
-
-        int collisionTriangles = 0;
-
-        foreach (var road in level.Roads.Roads)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            if (road.Nodes.Count < 2)
-            {
-                continue;
-            }
-
-            RoadStorage.Validate(road);
-
-            var sections = RoadMesh.Build(
-                road,
-                surface,
-                cancellationToken,
-                level.Roads,
-                collisionProfile: true);
-
-            foreach (var section in sections)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-
-                if (section.Vertices.Length == 0 ||
-                    section.Indices.Length == 0)
-                {
-                    continue;
-                }
-
-                int triangleCount = section.Indices.Length / 3;
-
-                if (triangleCount >
-                    MaximumRoadCollisionTriangles - collisionTriangles)
-                {
-                    throw new InvalidDataException(
-                        "Превышен лимит коллизии дорог уровня. " +
-                        "Разделите слишком длинные дороги " +
-                        "или уменьшите сложность геометрии.");
-                }
-
-                collisionTriangles += triangleCount;
-
-                string model = "roads/generated/" +
-                    road.Id + "/" + section.SegmentIndex;
-
-                var vertices = new Vector3[
-                    section.Vertices.Length];
-
-                for (int i = 0; i < vertices.Length; i++)
-                {
-                    vertices[i] = section.Vertices[i].Position;
-                }
-
-                var collision = new ScenePhysicsMesh(
-                    model,
-                    vertices,
-                    section.Indices,
-                    section.Bounds);
-
-                physics.Store(model, collision);
-
-                instances.Add(new SceneInstance(
-                    model,
-                    Matrix4x4.Identity,
-                    Matrix4x4.Identity,
-                    section.Bounds,
-                    true)
-                {
-                    Id = model,
-                    LocalBounds = section.Bounds,
-                    VisualLocalBounds = section.Bounds
-                });
-            }
         }
 
         return new SceneData(

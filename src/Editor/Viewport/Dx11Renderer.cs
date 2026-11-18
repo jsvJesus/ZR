@@ -8,10 +8,8 @@ using SharpDX.DXGI;
 using SharpDX.Mathematics.Interop;
 using Editor.Viewport.Terrain;
 using Editor.Viewport.Characters;
-using Editor.Viewport.Roads;
 using Editor.Viewport.Vegetation;
 using Editor.Viewport.Scene;
-using ZoneReborn.World.Roads;
 using ZoneReborn.World.Characters;
 using ZoneReborn.World.Characters.Locomotion;
 using ZoneReborn.World.Assets;
@@ -32,7 +30,6 @@ namespace Editor.Viewport
         private DepthStencilView? _depthTarget;
         private TerrainRenderer? _terrain;
         private CharacterRenderer? _character;
-        private RoadRenderer? _roads;
         private TreeRenderer? _trees;
         private SceneRenderer? _objects;
         private SceneSelectionRenderer? _objectSelection;
@@ -224,9 +221,6 @@ namespace Editor.Viewport
         public void SetLevel(LoadedLevel level, AssetPaths assets)
         {
             var terrain = new TerrainRenderer(_device, _context, level, assets);
-            RoadRenderer roads;
-            try { roads = new RoadRenderer(_device, _context, assets, level, terrain); }
-            catch { terrain.Dispose(); throw; }
             TreeRenderer trees;
             try
             {
@@ -235,23 +229,25 @@ namespace Editor.Viewport
                     _context,
                     assets,
                     level.Vegetation,
-                    terrain,
-                    level.Roads);
+                    terrain);
             }
-            catch { roads.Dispose(); terrain.Dispose(); throw; }
+            catch
+            {
+                terrain.Dispose();
+                throw;
+            }
+
             SceneRenderer? objects = null;
             try
             {
                 if (level.Objects != null) objects = new SceneRenderer(_device, _context, assets, level.Objects);
             }
-            catch { trees.Dispose(); roads.Dispose(); terrain.Dispose(); throw; }
+            catch { trees.Dispose(); terrain.Dispose(); throw; }
             _context.ClearState();
             _terrain?.Dispose();
-            _roads?.Dispose();
             _trees?.Dispose();
             _objects?.Dispose();
             _terrain = terrain;
-            _roads = roads;
             _trees = trees;
             _objects = objects;
             _objectPreview = false;
@@ -264,7 +260,6 @@ namespace Editor.Viewport
             var objects = new SceneRenderer(_device, _context, assets, scene, objectPreview: true);
             _context.ClearState();
             _terrain?.Dispose(); _terrain = null;
-            _roads?.Dispose(); _roads = null;
             _trees?.Dispose(); _trees = null;
             _objects?.Dispose(); _objects = objects;
             _scene = scene; _objectPreview = true; _selectedObject = null;
@@ -329,16 +324,6 @@ namespace Editor.Viewport
             position = default;
             return _terrain != null && _terrain.PickSurface(origin, direction, out position, includeHoles);
         }
-
-        public void SelectRoad(RoadDefinition? road, int nodeIndex)
-        {
-            if (_roads == null) return;
-            _roads.SelectedRoad = road;
-            _roads.SelectedNodeIndex = nodeIndex;
-        }
-
-        public (RoadDefinition Road, int SegmentIndex)? PickRoad(Vector3 origin, Vector3 direction) =>
-            _roads?.Pick(origin, direction);
 
         public void SetCharacter(AssetPaths assets, CharacterAsset asset, CharacterLocomotion locomotion)
         {
@@ -461,12 +446,6 @@ namespace Editor.Viewport
                 playing);
 
             _terrain?.Render(camera, viewProjection);
-
-            _roads?.Render(
-                camera.Position,
-                viewProjection,
-                _terrain?.FarPlane ?? 10000,
-                playing);
 
             _objects?.Render(
                 camera,
@@ -615,7 +594,6 @@ namespace Editor.Viewport
 
             _terrain?.Dispose();
             _terrainBrushOverlay?.Dispose();
-            _roads?.Dispose();
             _trees?.Dispose();
             _objects?.Dispose();
             _collisionOverlay?.Dispose();

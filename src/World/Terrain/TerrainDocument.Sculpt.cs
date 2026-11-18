@@ -15,8 +15,6 @@ public sealed partial class TerrainDocument
     {
         EndSculptStroke();
 
-        CaptureRoadSculptRevisions();
-
         _sculptStroke = new Change();
 
         _sculptHeightsTouched.Clear();
@@ -32,8 +30,6 @@ public sealed partial class TerrainDocument
 
         var change = _sculptStroke;
         _sculptStroke = null;
-
-        ReleaseRoadSculptRevisions();
 
         if (change.Heights.Count > 0 ||
             change.Holes.Count > 0)

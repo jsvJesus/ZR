@@ -15,9 +15,6 @@ namespace Editor
             TerrainEditorPanel.Attach(Viewport, _workspace.Assets);
             TerrainEditorPanel.BusyChanged += UpdatePlayControls;
             TerrainEditorPanel.UpdateTerrainRequested += UpdateTerrainFromFbx;
-            RoadSegmentsPanel.Attach(Viewport);
-            Viewport.RoadPicked += RoadSegmentsPanel.Select;
-            RoadSegmentsPanel.BusyChanged += UpdatePlayControls;
             VegetationPanel.Attach(Viewport, _workspace.Assets);
             VegetationPanel.BusyChanged += UpdatePlayControls;
             ObjectsPanel.Attach(Viewport, _workspace.Assets);
@@ -102,7 +99,7 @@ namespace Editor
             TerrainEditorPanel.CancelMaterialImport();
 
             if (_changesSavedForClose ||
-                (!RoadSegmentsPanel.HasPendingChanges &&
+                (
                  !VegetationPanel.HasPendingChanges &&
                  !ObjectsPanel.HasPendingChanges &&
                  !TerrainEditorPanel.HasPendingChanges &&
@@ -118,7 +115,6 @@ namespace Editor
             try
             {
                 await TerrainEditorPanel.SavePendingAsync();
-                await RoadSegmentsPanel.SavePendingAsync();
                 await VegetationPanel.SavePendingAsync();
                 await ObjectsPanel.SavePendingAsync();
                 await EnvironmentPanel.SavePendingAsync();

@@ -6,7 +6,6 @@ using ZoneReborn.World.Levels.Models;
 using ZoneReborn.World.Scene;
 using ZoneReborn.World.Terrain;
 using ZoneReborn.World.Terrain.Models;
-using ZoneReborn.World.Roads;
 
 namespace ZoneReborn.World.Vegetation;
 
@@ -190,23 +189,6 @@ public static class VegetationScatterGenerator
             }
         }
 
-        float maximumRoadClearance = rules
-            .Select(rule =>
-                Footprint(
-                    scene.Assets[rule.Model],
-                    rule.MaximumScale) + rule.RoadClearance)
-            .DefaultIfEmpty(0f)
-            .Max();
-
-        var roads = RoadClearance.Build(
-            level.Roads,
-            minX,
-            minZ,
-            maxX,
-            maxZ,
-            maximumRoadClearance,
-            token);
-
         foreach (var rule in rules)
         {
             token.ThrowIfCancellationRequested();
@@ -298,11 +280,6 @@ public static class VegetationScatterGenerator
                 float spacing = footprint + rule.MinimumSpacing;
 
                 if (occupied.Intersects(x, z, spacing))
-                {
-                    continue;
-                }
-
-                if (roads.Intersects(x, z, footprint + rule.RoadClearance))
                 {
                     continue;
                 }

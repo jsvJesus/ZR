@@ -12,7 +12,7 @@ public sealed partial class MainWindow
     private async void OpenLevel_Click(object? sender, RoutedEventArgs e)
     {
         if (_isClosing || _importCancellation != null || _levelOpening || _levelSaving || _savingChangesOnClose
-            || RoadSegmentsPanel.IsSaving || VegetationPanel.IsSaving || ObjectsPanel.IsBusy || TerrainEditorPanel.IsBusy || Viewport.IsObjectDragging || Viewport.IsPlaying || Viewport.IsStarting) return;
+            || VegetationPanel.IsSaving || ObjectsPanel.IsBusy || TerrainEditorPanel.IsBusy || Viewport.IsObjectDragging || Viewport.IsPlaying || Viewport.IsStarting) return;
         try
         {
             var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
@@ -39,7 +39,6 @@ public sealed partial class MainWindow
         try
         {
             await TerrainEditorPanel.SavePendingAsync();
-            await RoadSegmentsPanel.SavePendingAsync();
             await VegetationPanel.SavePendingAsync();
             await ObjectsPanel.SavePendingAsync();
             await EnvironmentPanel.SavePendingAsync();
@@ -48,7 +47,6 @@ public sealed partial class MainWindow
             if (_isClosing) return;
             Viewport.SetLevel(level, _workspace.Assets);
             _level = level;
-            RoadSegmentsPanel.Bind(level, _workspace.Assets);
             VegetationPanel.Bind(level);
             ObjectsPanel.Bind(level);
             TerrainEditorPanel.Bind(level);
@@ -57,9 +55,7 @@ public sealed partial class MainWindow
             var camera = level.Manifest.Camera;
             Viewport.SetCamera(new(camera.X, camera.Y, camera.Z, camera.Yaw, camera.Pitch, camera.Speed));
             LevelNameText.Text = $"Уровень: {level.Manifest.Name}";
-            StatusText.Text = $"Открыт {level.Manifest.Name} · дорог: {level.Roads.Roads.Count}"
-                + $" · моделей: {level.Objects?.Instances.Count ?? 0}"
-                + (level.Roads.Warnings.Count > 0 ? $" · замечаний по дорогам: {level.Roads.Warnings.Count}" : "")
+            StatusText.Text = $"Открыт {level.Manifest.Name} · моделей: {level.Objects?.Instances.Count ?? 0}" 
                 + (level.Objects?.Warnings.IsEmpty == false ? $" · замечаний по моделям: {level.Objects.Warnings.Count}" : "");
         }
         finally

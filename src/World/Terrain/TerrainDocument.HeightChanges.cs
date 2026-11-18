@@ -116,8 +116,6 @@ public sealed partial class TerrainDocument
                 value.Z,
                 value.Value);
         }
-
-        InvalidateRoadModifiersForTerrain(values);
         HeightsChanged?.Invoke();
     }
 }

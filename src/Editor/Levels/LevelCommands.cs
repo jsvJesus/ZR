@@ -18,7 +18,7 @@ public sealed partial class MainWindow
 
     private void SetLevelCommandsBusy(bool busy)
     {
-        bool saving = _levelSaving || _savingChangesOnClose || RoadSegmentsPanel.IsSaving || VegetationPanel.IsSaving || ObjectsPanel.IsBusy || TerrainEditorPanel.IsBusy;
+        bool saving = _levelSaving || _savingChangesOnClose || VegetationPanel.IsSaving || ObjectsPanel.IsBusy || TerrainEditorPanel.IsBusy;
         bool baseLocked = busy || _levelOpening || saving || Viewport.IsPlaying || Viewport.IsStarting || CharacterPanel.IsBusy;
         bool dragging = Viewport.IsObjectDragging;
         bool locked = baseLocked || dragging;
@@ -36,8 +36,6 @@ public sealed partial class MainWindow
         EnvironmentPanel.IsEnabled = !busy && !_levelOpening && !saving;
         TerrainEditorPanel.RefreshMode();
         CharacterPanel.IsEnabled = !dragging;
-        RoadSegmentsPanel.IsEnabled = !locked;
-        RoadSegmentsPanel.RefreshHighlight();
         VegetationPanel.IsEnabled = !locked;
         VegetationPanel.RefreshMode();
         ObjectsPanel.IsEnabled = !baseLocked;

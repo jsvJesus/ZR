@@ -12,7 +12,6 @@ namespace Editor
             string name,
             string description,
             bool showTerrainMaterials = false,
-            bool showRoadSegments = false,
             bool showVegetation = false,
             bool showObjects = false,
             bool showCharacterEditor = false,
@@ -41,8 +40,6 @@ namespace Editor
 
             EnvironmentPanel.IsVisible = showEnvironment;
 
-            RoadSegmentsPanel.IsVisible = showRoadSegments;
-            RoadSegmentsPanel.RefreshHighlight();
 
             VegetationPanel.IsVisible = showVegetation;
             VegetationPanel.RefreshMode();
@@ -63,7 +60,6 @@ namespace Editor
             _activeWorkspace = showObjects ? "objects"
                 : showCharacterEditor ? "character"
                 : showVegetation ? "vegetation"
-                : showRoadSegments ? "roads"
                 : showEnvironment ? "environment"
                 : showTerrainMaterials ? "materials" : "terrain";
             UpdateWorkspaceNavigation();
@@ -83,7 +79,6 @@ namespace Editor
                 _savingChangesOnClose ||
                 _importCancellation != null ||
                 Viewport.IsObjectDragging ||
-                RoadSegmentsPanel.IsSaving ||
                 VegetationPanel.IsSaving ||
                 ObjectsPanel.IsBusy ||
                 TerrainEditorPanel.IsBusy)
@@ -110,18 +105,6 @@ namespace Editor
                 "Рельеф",
                 "Поднятие, опускание, сглаживание поверхности и редактирование отверстий.",
                 showTerrainEditing: true
-            );
-        }
-
-        private void RoadSegments_Click(
-            object? sender,
-            RoutedEventArgs e)
-        {
-            SetMode(
-                "Ландшафт",
-                "Дороги",
-                "Автомобильные дороги, железнодорожные пути и тропинки по опорным точкам.",
-                showRoadSegments: true
             );
         }
 

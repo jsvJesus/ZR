@@ -181,7 +181,6 @@ namespace Editor.Viewport
         {
             CancelObjectDrag();
             CancelTreeDrag();
-            CancelRoadDrag();
             CancelObjectPlacement();
             StopPlay();
             _timer.Stop();
@@ -241,7 +240,7 @@ namespace Editor.Viewport
                     IsPressed(KeySpace),
                     IsPressed(KeyShift),
                     deltaTime);
-                if (!IsPlaying && !IsStarting && !IsObjectDragging && !IsTreeDragging && !IsRoadDragging) _camera.Move(
+                if (!IsPlaying && !IsStarting && !IsObjectDragging && !IsTreeDragging ) _camera.Move(
                     IsPressed(KeyW),
                     IsPressed(KeyS),
                     IsPressed(KeyA),
@@ -304,7 +303,6 @@ namespace Editor.Viewport
         {
             CancelObjectDrag();
             CancelTreeDrag();
-            CancelRoadDrag();
             _camera.Restore(pose);
             _pressedKeys.Clear();
 
@@ -315,8 +313,6 @@ namespace Editor.Viewport
         {
             CancelObjectDrag();
             CancelTreeDrag();
-            CancelRoadDrag();
-            SelectRoad(null);
             SelectTree(null);
             SetTreePlacement(null);
             CancelObjectPlacement();
@@ -381,17 +377,10 @@ namespace Editor.Viewport
                         return nint.Zero;
                     }
 
-                    PickRoadSegment(ReadX(lParam), ReadY(lParam));
                     return nint.Zero;
 
                 case WmLeftUp:
                     if (_terrainPainting) { PaintTerrain(ReadX(lParam), ReadY(lParam)); EndTerrainPaint(); return nint.Zero; }
-                    if (IsRoadDragging)
-                    {
-                        MoveRoadDrag(ReadX(lParam), ReadY(lParam));
-                        EndRoadDrag(true);
-                        return nint.Zero;
-                    }
                     if (IsTreeDragging)
                     {
                         MoveTreeDrag(ReadX(lParam), ReadY(lParam));
@@ -408,7 +397,6 @@ namespace Editor.Viewport
 
                 case WmRightDown:
                     EndTerrainPaint();
-                    if (IsRoadDragging) { CancelRoadDrag(); return nint.Zero; }
                     if (IsTreeDragging) { CancelTreeDrag(); return nint.Zero; }
                     if (IsObjectDragging)
                     {
@@ -448,13 +436,11 @@ namespace Editor.Viewport
                     EndTerrainPaint();
                     CancelObjectDrag();
                     CancelTreeDrag();
-                    CancelRoadDrag();
                     _rotating = false;
                     break;
 
                 case WmMouseMove:
                     if (_terrainPainting) { PaintTerrain(ReadX(lParam), ReadY(lParam)); return nint.Zero; }
-                    if (MoveRoadDrag(ReadX(lParam), ReadY(lParam))) return nint.Zero;
                     if (MoveTreeDrag(ReadX(lParam), ReadY(lParam))) return nint.Zero;
                     if (MoveObjectDrag(ReadX(lParam), ReadY(lParam))) return nint.Zero;
                     HandleMouseMove(lParam);
@@ -476,7 +462,7 @@ namespace Editor.Viewport
                     break;
 
                 case WmMouseWheel:
-                    if (IsObjectDragging || IsTreeDragging || IsRoadDragging) return nint.Zero;
+                    if (IsObjectDragging || IsTreeDragging) return nint.Zero;
                     int wheelDelta = unchecked(
                         (short)((wParam.ToInt64() >> 16) & 0xFFFF));
 
@@ -500,7 +486,7 @@ namespace Editor.Viewport
                         return nint.Zero;
                     }
 
-                    if (HandleRoadKey((int)wParam, lParam) || HandleTreeKey((int)wParam, lParam) || HandleObjectKey((int)wParam, lParam))
+                    if (HandleTreeKey((int)wParam, lParam) || HandleObjectKey((int)wParam, lParam))
                     {
                         return nint.Zero;
                     }
@@ -584,7 +570,6 @@ namespace Editor.Viewport
                     EndTerrainPaint();
                     CancelObjectDrag();
                     CancelTreeDrag();
-                    CancelRoadDrag();
                     ReleasePlayMouse(false);
                     _pressedKeys.Clear();
                     ReleasePlayerInput();

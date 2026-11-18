@@ -3,7 +3,6 @@ using ZoneReborn.World.Assets;
 using ZoneReborn.World.Levels.Import;
 using ZoneReborn.World.Levels.Models;
 using ZoneReborn.World.Levels.Storage;
-using ZoneReborn.World.Roads;
 using ZoneReborn.World.Scene;
 
 namespace Editor.Levels;
@@ -29,7 +28,6 @@ public sealed class LevelWorkspace
     {
         var level = await LevelReader.ReadAsync(path, cancellationToken);
         string source = AssetPathResolver.Resolve(Assets.ImportLevels, level.Manifest.Name);
-        var roads = await RoadStorage.LoadAsync(level.Directory, cancellationToken);
 
         var vegetation = await ZoneReborn.World.Vegetation.VegetationStorage.LoadAsync(level.Directory, Assets, cancellationToken);
         await ZoneReborn.World.Vegetation.VegetationScatterStorage.LoadAsync(
@@ -45,8 +43,7 @@ public sealed class LevelWorkspace
             ? new SceneData(Assets, [], sourceName: level.Manifest.Name)
             : await Task.Run(() => SourceSceneReader.Read(source, Assets, cancellationToken), cancellationToken);
         await SceneEditStorage.LoadAsync(level.Directory, objects, cancellationToken);
-        level = level with { Roads = roads, Vegetation = vegetation, Objects = objects };
-        level.TerrainDocument?.AttachRoadNetwork(roads, new ZoneReborn.World.Terrain.TerrainSurface(level));
+        level = level with { Vegetation = vegetation, Objects = objects };
         objects.AttachTerrain(level);
         return level;
     }
