@@ -352,9 +352,15 @@ public sealed class RoadNetwork
             return;
         }
 
-        if (!file.StartsWith(
+        bool validFolder =
+            file.StartsWith(
                 "textures/roads/",
                 StringComparison.OrdinalIgnoreCase) ||
+            file.StartsWith(
+                "materials/new_terrain/Cali_Dirt_03_",
+                StringComparison.OrdinalIgnoreCase);
+
+        if (!validFolder ||
             !file.EndsWith(".dds", StringComparison.OrdinalIgnoreCase) ||
             file.Contains("..", StringComparison.Ordinal) ||
             file.Contains('\\') ||

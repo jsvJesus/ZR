@@ -402,27 +402,26 @@ public sealed class RoadsPanel : UserControl
         }
 
         string surface = options.Any(item =>
-                item.File.Equals(
-                    road.Material,
-                    StringComparison.OrdinalIgnoreCase))
+            item.File.Equals(
+                road.Material,
+                StringComparison.OrdinalIgnoreCase))
             ? road.Material
             : options[0].File;
 
-        RoadMaterialInfo[] shoulders =
-            _materials.GetShoulderMaterials();
+        string shoulder = "";
 
-        string shoulder = road.Category == RoadCategory.Automobile &&
-                          shoulders.Length > 0
-            ? shoulders.FirstOrDefault(item =>
-                item.File.Equals(
-                    road.ShoulderMaterial,
-                    StringComparison.OrdinalIgnoreCase))?.File
-              ?? shoulders.FirstOrDefault(item =>
-                  item.File.EndsWith(
-                      "/Dirt_Road_04_D.dds",
-                      StringComparison.OrdinalIgnoreCase))?.File
-              ?? shoulders[0].File
-            : "";
+        if (road.Category == RoadCategory.Automobile)
+        {
+            RoadMaterialInfo[] shoulders =
+                _materials.GetShoulderMaterials();
+
+            shoulder = shoulders.FirstOrDefault(item =>
+                           item.File.Equals(
+                               road.ShoulderMaterial,
+                               StringComparison.OrdinalIgnoreCase))?.File
+                       ?? shoulders.FirstOrDefault()?.File
+                       ?? "";
+        }
 
         _level.Roads.ConfigureMaterials(
             road.Id,

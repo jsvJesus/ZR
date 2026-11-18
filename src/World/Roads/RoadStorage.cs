@@ -100,9 +100,19 @@ public static class RoadStorage
             }
 
             if ((!string.IsNullOrEmpty(road.Material) &&
-                 !ValidAsset(road.Material, "textures/roads/", ".dds")) ||
+                 !ValidAsset(
+                     road.Material,
+                     "textures/roads/",
+                     ".dds")) ||
                 (!string.IsNullOrEmpty(road.ShoulderMaterial) &&
-                 !ValidAsset(road.ShoulderMaterial, "textures/roads/", ".dds")))
+                 !ValidAsset(
+                     road.ShoulderMaterial,
+                     "textures/roads/",
+                     ".dds") &&
+                 !ValidAsset(
+                     road.ShoulderMaterial,
+                     "materials/new_terrain/Cali_Dirt_03_",
+                     ".dds")))
             {
                 throw new InvalidDataException(
                     "Некорректный материал дороги.");

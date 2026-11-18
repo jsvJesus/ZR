@@ -17,6 +17,10 @@ public sealed record RoadMaterialInfo(
 
 public sealed class RoadMaterialCatalog
 {
+    private const string RoadFolder = "textures/roads/";
+    private const string ShoulderFolder = "materials/new_terrain/";
+    private const string ShoulderPrefix = "Cali_Dirt_03_";
+
     private readonly Dictionary<string, RoadMaterialInfo> _materials =
         new(StringComparer.OrdinalIgnoreCase);
 
@@ -31,6 +35,10 @@ public sealed class RoadMaterialCatalog
     public RoadMaterialInfo[] GetMaterials(RoadCategory category)
     {
         return _materials.Values
+            .Where(material =>
+                material.File.StartsWith(
+                    RoadFolder,
+                    StringComparison.OrdinalIgnoreCase))
             .Where(material => category == RoadCategory.Dirt
                 ? material.IsDirt
                 : !material.IsDirt)
@@ -41,7 +49,10 @@ public sealed class RoadMaterialCatalog
     public RoadMaterialInfo[] GetShoulderMaterials()
     {
         return _materials.Values
-            .Where(material => material.IsDirt)
+            .Where(material =>
+                material.File.StartsWith(
+                    ShoulderFolder + ShoulderPrefix,
+                    StringComparison.OrdinalIgnoreCase))
             .OrderBy(material => material.File)
             .ToArray();
     }
@@ -50,14 +61,24 @@ public sealed class RoadMaterialCatalog
     {
         var catalog = new RoadMaterialCatalog();
 
+        catalog.ScanFolder(assets, RoadFolder, false);
+        catalog.ScanFolder(assets, ShoulderFolder, true);
+
+        return catalog;
+    }
+
+    private void ScanFolder(
+        AssetPaths assets,
+        string relative,
+        bool shoulderOnly)
+    {
         string directory = Path.Combine(
             assets.Root,
-            "textures",
-            "roads");
+            relative.Replace('/', Path.DirectorySeparatorChar));
 
         if (!Directory.Exists(directory))
         {
-            return catalog;
+            return;
         }
 
         var files = Directory.EnumerateFiles(
@@ -68,7 +89,7 @@ public sealed class RoadMaterialCatalog
                 ".dds",
                 StringComparison.OrdinalIgnoreCase))
             .ToDictionary(
-                path => Path.GetFileName(path),
+                Path.GetFileName,
                 path => path,
                 StringComparer.OrdinalIgnoreCase);
 
@@ -76,45 +97,52 @@ public sealed class RoadMaterialCatalog
         {
             string name = Path.GetFileNameWithoutExtension(pair.Key);
 
-            if (!Regex.IsMatch(
-                    name,
-                    @"_D(?:_DMG)?$",
-                    RegexOptions.IgnoreCase |
-                    RegexOptions.CultureInvariant))
+            if (shoulderOnly &&
+                !name.StartsWith(
+                    ShoulderPrefix,
+                    StringComparison.OrdinalIgnoreCase))
             {
                 continue;
             }
 
-            string normalName = Regex.Replace(
+            Match match = Regex.Match(
                 name,
-                @"_D(?=_DMG$|$)",
-                "_N",
+                @"^(.*)_(D(?:_DMG)?|Diffuse|Albedo)$",
                 RegexOptions.IgnoreCase |
-                RegexOptions.CultureInvariant) + ".dds";
+                RegexOptions.CultureInvariant);
 
-            string normal = files.TryGetValue(
-                normalName,
-                out string? normalPath)
-                    ? normalPath
-                    : "";
+            if (!match.Success)
+            {
+                continue;
+            }
 
-            bool dirt =
+            string baseName = match.Groups[1].Value;
+
+            string[] normalCandidates =
+            [
+                baseName + "_N.dds",
+                baseName + "_N_DMG.dds",
+                baseName + "_Normal.dds"
+            ];
+
+            string normal = normalCandidates
+                .Where(files.ContainsKey)
+                .Select(candidate => files[candidate])
+                .FirstOrDefault() ?? "";
+
+            bool dirt = shoulderOnly ||
                 name.Contains("dirt", StringComparison.OrdinalIgnoreCase) ||
                 name.Contains("mud", StringComparison.OrdinalIgnoreCase) ||
                 name.Contains("gravel", StringComparison.OrdinalIgnoreCase) ||
                 name.Contains("tanks_road", StringComparison.OrdinalIgnoreCase);
 
-            string relative = "textures/roads/" + pair.Key;
+            string file = relative + pair.Key;
 
-            catalog._materials.Add(
-                relative,
-                new RoadMaterialInfo(
-                    relative,
-                    pair.Value,
-                    normal,
-                    dirt));
+            _materials[file] = new RoadMaterialInfo(
+                file,
+                pair.Value,
+                normal,
+                dirt);
         }
-
-        return catalog;
     }
 }
