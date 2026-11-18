@@ -25,6 +25,7 @@ public sealed partial class MainWindow
             await VegetationPanel.SavePendingAsync();
             await ObjectsPanel.SavePendingAsync();
             await EnvironmentPanel.SavePendingAsync();
+            await RoadsPanel.SavePendingAsync();
 
             var camera = Viewport.CameraPose;
             await LevelWorkspace.SaveCameraAsync(_level, new(camera.X, camera.Y, camera.Z, camera.Yaw, camera.Pitch, camera.Speed));

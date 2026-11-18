@@ -42,6 +42,7 @@ public sealed partial class MainWindow
             await VegetationPanel.SavePendingAsync();
             await ObjectsPanel.SavePendingAsync();
             await EnvironmentPanel.SavePendingAsync();
+            await RoadsPanel.SavePendingAsync();
 
             var level = await _workspace.OpenAsync(path);
             if (_isClosing) return;
@@ -51,11 +52,13 @@ public sealed partial class MainWindow
             ObjectsPanel.Bind(level);
             TerrainEditorPanel.Bind(level);
             EnvironmentPanel.Bind(level);
+            RoadsPanel.Bind(level);
+            RoadsPanel.SetActive(RoadsPanel.IsVisible);
 
             var camera = level.Manifest.Camera;
             Viewport.SetCamera(new(camera.X, camera.Y, camera.Z, camera.Yaw, camera.Pitch, camera.Speed));
             LevelNameText.Text = $"Уровень: {level.Manifest.Name}";
-            StatusText.Text = $"Открыт {level.Manifest.Name} · моделей: {level.Objects?.Instances.Count ?? 0}" 
+            StatusText.Text = $"Открыт {level.Manifest.Name} · моделей: {level.Objects?.Instances.Count ?? 0}"
                 + (level.Objects?.Warnings.IsEmpty == false ? $" · замечаний по моделям: {level.Objects.Warnings.Count}" : "");
         }
         finally

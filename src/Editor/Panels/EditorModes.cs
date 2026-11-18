@@ -23,6 +23,8 @@ namespace Editor
                 return false;
             }
 
+            RoadsPanel.SetActive(false);
+
             if (!showObjects || !ObjectsPanel.IsVisible)
             {
                 ObjectsPanel.CancelLibraryLoad();

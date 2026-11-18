@@ -240,7 +240,12 @@ namespace Editor.Viewport
                     IsPressed(KeySpace),
                     IsPressed(KeyShift),
                     deltaTime);
-                if (!IsPlaying && !IsStarting && !IsObjectDragging && !IsTreeDragging ) _camera.Move(
+                if (!IsPlaying &&
+                    !IsStarting &&
+                    !IsObjectDragging &&
+                    !IsTreeDragging &&
+                    !IsRoadDragging)
+                    _camera.Move(
                     IsPressed(KeyW),
                     IsPressed(KeyS),
                     IsPressed(KeyA),
@@ -267,6 +272,13 @@ namespace Editor.Viewport
                             _treeDrag?.Axis ?? _hoveredTreeAxis);
 
                         UpdateTerrainBrushPreview();
+
+                        _renderer.SetRoads(
+                            RoadEditingEnabled && !IsPlaying && !IsStarting
+                                ? _roadNetwork
+                                : null,
+                            _selectedRoadId,
+                            _selectedRoadPoint);
 
                         _renderer.Render(
                             IsPlaying ? ActivePlayCamera : _camera,
@@ -320,6 +332,7 @@ namespace Editor.Viewport
             _renderer?.SetLevel(level, assets);
             _objectPreview = null;
             _level = level;
+            SetRoadNetwork(level.Roads);
             _assets = assets;
             SelectObject(null);
             ObjectPicked?.Invoke(null);
@@ -338,6 +351,16 @@ namespace Editor.Viewport
             {
                 case WmLeftDown:
                     SetFocus(window);
+
+                    if (RoadEditingEnabled)
+                    {
+                        HandleRoadPointerDown(
+                            window,
+                            ReadX(lParam),
+                            ReadY(lParam));
+
+                        return nint.Zero;
+                    }
 
                     if (ObjectEditingEnabled)
                     {
@@ -380,22 +403,33 @@ namespace Editor.Viewport
                     return nint.Zero;
 
                 case WmLeftUp:
+                    if (IsRoadDragging)
+                    {
+                        MoveRoadDrag(ReadX(lParam), ReadY(lParam));
+                        EndRoadDrag();
+                        return nint.Zero;
+                    }
+
                     if (_terrainPainting) { PaintTerrain(ReadX(lParam), ReadY(lParam)); EndTerrainPaint(); return nint.Zero; }
+
                     if (IsTreeDragging)
                     {
                         MoveTreeDrag(ReadX(lParam), ReadY(lParam));
                         EndTreeDrag(true);
                         return nint.Zero;
                     }
+
                     if (IsObjectDragging)
                     {
                         MoveObjectDrag(ReadX(lParam), ReadY(lParam));
                         EndObjectDrag(true);
                         return nint.Zero;
                     }
+
                     break;
 
                 case WmRightDown:
+                    EndRoadDrag();
                     EndTerrainPaint();
                     if (IsTreeDragging) { CancelTreeDrag(); return nint.Zero; }
                     if (IsObjectDragging)
@@ -433,6 +467,7 @@ namespace Editor.Viewport
                     return nint.Zero;
 
                 case WmCaptureChanged:
+                    EndRoadDrag();
                     EndTerrainPaint();
                     CancelObjectDrag();
                     CancelTreeDrag();
@@ -440,6 +475,10 @@ namespace Editor.Viewport
                     break;
 
                 case WmMouseMove:
+                    if (MoveRoadDrag(ReadX(lParam), ReadY(lParam)))
+                    {
+                        return nint.Zero;
+                    }
                     if (_terrainPainting) { PaintTerrain(ReadX(lParam), ReadY(lParam)); return nint.Zero; }
                     if (MoveTreeDrag(ReadX(lParam), ReadY(lParam))) return nint.Zero;
                     if (MoveObjectDrag(ReadX(lParam), ReadY(lParam))) return nint.Zero;

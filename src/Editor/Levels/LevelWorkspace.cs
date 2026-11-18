@@ -3,6 +3,7 @@ using ZoneReborn.World.Assets;
 using ZoneReborn.World.Levels.Import;
 using ZoneReborn.World.Levels.Models;
 using ZoneReborn.World.Levels.Storage;
+using ZoneReborn.World.Roads;
 using ZoneReborn.World.Scene;
 
 namespace Editor.Levels;
@@ -14,45 +15,96 @@ public sealed class LevelWorkspace
     public IReadOnlyList<string> FindSources() =>
         Directory.Exists(Assets.ImportLevels)
             ? Directory.EnumerateDirectories(Assets.ImportLevels)
-                .Select(Path.GetFileName).OfType<string>()
-                .Where(name => !name.StartsWith('.')).Order(StringComparer.OrdinalIgnoreCase).ToArray()
+                .Select(Path.GetFileName)
+                .OfType<string>()
+                .Where(name => !name.StartsWith('.'))
+                .Order(StringComparer.OrdinalIgnoreCase)
+                .ToArray()
             : [];
 
     public bool IsImported(string name) =>
-        File.Exists(Path.Combine(AssetPathResolver.Resolve(Assets.Levels, name), "level.json"));
+        File.Exists(Path.Combine(
+            AssetPathResolver.Resolve(Assets.Levels, name),
+            "level.json"));
 
-    public Task<string> ImportAsync(string name, IProgress<LevelImportProgress> progress, CancellationToken cancellationToken, float cellSize = 1) =>
-        new LevelImporter(Assets).ImportAsync(name, progress, cancellationToken, cellSize);
+    public Task<string> ImportAsync(
+        string name,
+        IProgress<LevelImportProgress> progress,
+        CancellationToken cancellationToken,
+        float cellSize = 1) =>
+        new LevelImporter(Assets).ImportAsync(
+            name,
+            progress,
+            cancellationToken,
+            cellSize);
 
-    public async Task<LoadedLevel> OpenAsync(string path, CancellationToken cancellationToken = default)
+    public async Task<LoadedLevel> OpenAsync(
+        string path,
+        CancellationToken cancellationToken = default)
     {
         var level = await LevelReader.ReadAsync(path, cancellationToken);
-        string source = AssetPathResolver.Resolve(Assets.ImportLevels, level.Manifest.Name);
 
-        var vegetation = await ZoneReborn.World.Vegetation.VegetationStorage.LoadAsync(level.Directory, Assets, cancellationToken);
+        string source = AssetPathResolver.Resolve(
+            Assets.ImportLevels,
+            level.Manifest.Name);
+
+        var vegetation = await ZoneReborn.World.Vegetation.VegetationStorage.LoadAsync(
+            level.Directory,
+            Assets,
+            cancellationToken);
+
         await ZoneReborn.World.Vegetation.VegetationScatterStorage.LoadAsync(
             level.Directory,
             Assets,
             vegetation,
             cancellationToken);
+
         ZoneReborn.World.Vegetation.VegetationScatterStorage.NormalizeTileAssociations(
             vegetation,
             level.Manifest.Terrain);
 
         var objects = level.Manifest.Terrain.ImportedFromMesh
             ? new SceneData(Assets, [], sourceName: level.Manifest.Name)
-            : await Task.Run(() => SourceSceneReader.Read(source, Assets, cancellationToken), cancellationToken);
-        await SceneEditStorage.LoadAsync(level.Directory, objects, cancellationToken);
-        level = level with { Vegetation = vegetation, Objects = objects };
+            : await Task.Run(
+                () => SourceSceneReader.Read(
+                    source,
+                    Assets,
+                    cancellationToken),
+                cancellationToken);
+
+        await SceneEditStorage.LoadAsync(
+            level.Directory,
+            objects,
+            cancellationToken);
+
+        var roads = await RoadStorage.LoadAsync(
+            level.Directory,
+            level.Manifest.Name,
+            cancellationToken);
+
+        level = level with
+        {
+            Vegetation = vegetation,
+            Objects = objects,
+            Roads = roads
+        };
+
         objects.AttachTerrain(level);
         return level;
     }
 
-    public static async Task SaveCameraAsync(LoadedLevel level, LevelCamera camera)
+    public static async Task SaveCameraAsync(
+        LoadedLevel level,
+        LevelCamera camera)
     {
         string path = Path.Combine(level.Directory, "level.json");
-        string temporary = Path.Combine(level.Directory, $".camera-{Guid.NewGuid():N}.tmp");
+
+        string temporary = Path.Combine(
+            level.Directory,
+            $".camera-{Guid.NewGuid():N}.tmp");
+
         level.Manifest.Camera = camera;
+
         try
         {
             await LevelJson.WriteAsync(temporary, level.Manifest);
@@ -60,8 +112,10 @@ public sealed class LevelWorkspace
         }
         finally
         {
-            if (File.Exists(temporary)) File.Delete(temporary);
+            if (File.Exists(temporary))
+            {
+                File.Delete(temporary);
+            }
         }
     }
 }
-

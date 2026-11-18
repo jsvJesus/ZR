@@ -253,16 +253,23 @@ namespace Editor.Viewport
             _objectPreview = false;
             _scene = level.Objects;
             _selectedObject = null;
+            SetRoadSurface(level);
         }
 
         public void SetObjectPreview(AssetPaths assets, SceneData scene)
         {
             var objects = new SceneRenderer(_device, _context, assets, scene, objectPreview: true);
             _context.ClearState();
-            _terrain?.Dispose(); _terrain = null;
-            _trees?.Dispose(); _trees = null;
-            _objects?.Dispose(); _objects = objects;
-            _scene = scene; _objectPreview = true; _selectedObject = null;
+            _terrain?.Dispose();
+            _terrain = null;
+            _trees?.Dispose();
+            _trees = null;
+            _objects?.Dispose();
+            _objects = objects;
+            _scene = scene;
+            _objectPreview = true;
+            SetRoadSurface(null);
+            _selectedObject = null;
         }
 
         public void ClearObjectPreview()
@@ -531,6 +538,12 @@ namespace Editor.Viewport
                     _objectGizmo?.Render(frame, _objectGizmoMode, _objectGizmoAxis, viewProjection);
             }
             if (!playing) RenderTreeEditing(camera, viewProjection);
+
+            if (!playing)
+            {
+                RenderRoadOverlay(viewProjection);
+            }
+
             _swapChain.Present(1, PresentFlags.None);
         }
 
@@ -597,6 +610,7 @@ namespace Editor.Viewport
             _trees?.Dispose();
             _objects?.Dispose();
             _collisionOverlay?.Dispose();
+            _roadOverlay?.Dispose();
             _objectSelection?.Dispose();
             _objectGizmo?.Dispose();
             _character?.Dispose();
