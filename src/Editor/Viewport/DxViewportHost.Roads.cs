@@ -92,10 +92,9 @@ public sealed partial class DxViewportHost
             return;
         }
 
-        bool shiftHeld =
-            (GetKeyState(KeyShift) & 0x8000) != 0;
+        bool controlHeld = (GetKeyState(KeyControl) & 0x8000) != 0;
 
-        if (shiftHeld)
+        if (controlHeld)
         {
             _selectedRoadPoint = _roadNetwork.AddPoint(
                 roadId,

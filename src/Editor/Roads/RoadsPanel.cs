@@ -195,8 +195,7 @@ public sealed class RoadsPanel : UserControl
 
         root.Children.Add(new TextBlock
         {
-            Text = "Shift + ЛКМ — добавить точку\n" +
-                   "ЛКМ — выбрать или переместить точку",
+            Text = "Ctrl + ЛКМ — добавить точку\n" + "ЛКМ — выбрать или переместить точку",
             TextWrapping = TextWrapping.Wrap
         });
 
