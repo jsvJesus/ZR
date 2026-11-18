@@ -55,42 +55,82 @@ internal sealed class TerrainTileResources : IDisposable
 
     public void UpdateLodEdges(DeviceContext context, int edges)
     {
-        if (SkirtEdges == edges) return;
-        int side = TerrainMeshBuilder.Side(_descriptor), mainCount = side * side;
-        var vertices = (TerrainVertex[])_sourceVertices.Clone();
-        for (int z = 0; z < side; z++)
-        for (int x = 0; x < side; x++)
+        if (SkirtEdges == edges)
         {
-            bool boundary = (z == 0 && (edges & 1) != 0) || (z == side - 1 && (edges & 2) != 0)
-                || (x == 0 && (edges & 4) != 0) || (x == side - 1 && (edges & 8) != 0);
-            if (!boundary) continue;
-            int index = z * side + x;
-            var vertex = vertices[index]; var position = vertex.Position;
-            position.Y = _overviewHeight(_tileX * 256 + x * _descriptor.MeshStep,
-                _tileZ * 256 + z * _descriptor.MeshStep);
-            vertices[index] = vertex with { Position = position };
+            return;
         }
-        // Once the top borders agree, skirts extend down from the common border instead of
-        // protruding to the old fine-grid height and occluding projected road edges.
+
+        int side = TerrainMeshBuilder.Side(_descriptor);
+        int mainCount = side * side;
+
+        var vertices = (TerrainVertex[])_sourceVertices.Clone();
+
         for (int edge = 0; edge < 4; edge++)
         {
-            if ((edges & (1 << edge)) == 0) continue;
+            if ((edges & (1 << edge)) == 0)
+            {
+                continue;
+            }
+
             for (int index = 0; index < side; index++)
             {
                 int topIndex = edge switch
                 {
-                    0 => index, 1 => (side - 1) * side + index,
-                    2 => index * side, _ => index * side + side - 1
+                    0 => index,
+                    1 => (side - 1) * side + index,
+                    2 => index * side,
+                    _ => index * side + side - 1
                 };
-                int skirtIndex = mainCount + edge * side * 2 + index * 2;
-                var position = vertices[topIndex].Position;
-                vertices[skirtIndex] = vertices[skirtIndex] with { Position = position };
-                position.Y -= 2 * _descriptor.CellSize;
-                vertices[skirtIndex + 1] = vertices[skirtIndex + 1] with { Position = position };
+
+                int skirtIndex =
+                    mainCount +
+                    edge * side * 2 +
+                    index * 2;
+
+                TerrainVertex top = vertices[topIndex];
+
+                int globalX =
+                    _tileX * 256 +
+                    (int)MathF.Round(top.TileUv.X * 256f);
+
+                int globalZ =
+                    _tileZ * 256 +
+                    (int)MathF.Round(top.TileUv.Y * 256f);
+
+                float overviewHeight = _overviewHeight(globalX, globalZ);
+
+                float clearance = MathF.Max(
+                    2f * _descriptor.CellSize,
+                    0.01f
+                );
+
+                float lowerHeight = MathF.Min(
+                    top.Position.Y,
+                    overviewHeight
+                ) - clearance;
+
+                vertices[skirtIndex] = top;
+
+                var lowerPosition = top.Position;
+                lowerPosition.Y = lowerHeight;
+
+                vertices[skirtIndex + 1] = top with
+                {
+                    Position = lowerPosition
+                };
             }
         }
+
         context.UpdateSubresource(vertices, Vertices);
-        Surface = new TerrainSurfaceGrid(vertices.Take(mainCount).Select(v => v.Position).ToArray(), side);
+
+        Surface = new TerrainSurfaceGrid(
+            vertices
+                .Take(mainCount)
+                .Select(vertex => vertex.Position)
+                .ToArray(),
+            side
+        );
+
         SkirtEdges = edges;
     }
 

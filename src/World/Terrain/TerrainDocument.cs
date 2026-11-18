@@ -209,12 +209,25 @@ public sealed partial class TerrainDocument(string directory, LevelManifest mani
 
     private void SetHeight(int x, int z, ushort value)
     {
-        Raw(x / 256, z / 256).Heights[(z % 256) * 256 + x % 256] = value;
-        _dirty.Add((x / 256, z / 256));
-        _overviewDirty.Add((x / 256, z / 256));
-        for (int tz = Math.Max(0, z / 256 - 1); tz <= Math.Min(Descriptor.TilesZ - 1, z / 256 + 1); tz++)
-        for (int tx = Math.Max(0, x / 256 - 1); tx <= Math.Min(Descriptor.TilesX - 1, x / 256 + 1); tx++)
-        { _normalDirty.Add((tx, tz)); _dirty.Add((tx, tz)); }
+        int tileX = x / 256;
+        int tileZ = z / 256;
+
+        TerrainTileData tile = Raw(tileX, tileZ);
+
+        int localX = x % 256;
+        int localZ = z % 256;
+
+        int index = localZ * 256 + localX;
+
+        if (tile.Heights[index] == value)
+        {
+            return;
+        }
+
+        tile.Heights[index] = value;
+
+        _dirty.Add((tileX, tileZ));
+        _overviewDirty.Add((tileX, tileZ));
     }
 
     public TerrainOverviewData BuildOverview()

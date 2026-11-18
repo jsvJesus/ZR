@@ -70,6 +70,26 @@ public sealed partial class TerrainDocument
         foreach (var tile in affectedTiles)
         {
             InvalidateEffectiveTile(tile.X, tile.Z);
+
+            int minX = Math.Max(0, tile.X - 1);
+            int maxX = Math.Min(
+                Descriptor.TilesX - 1,
+                tile.X + 1
+            );
+
+            int minZ = Math.Max(0, tile.Z - 1);
+            int maxZ = Math.Min(
+                Descriptor.TilesZ - 1,
+                tile.Z + 1
+            );
+
+            for (int tz = minZ; tz <= maxZ; tz++)
+            {
+                for (int tx = minX; tx <= maxX; tx++)
+                {
+                    _normalDirty.Add((tx, tz));
+                }
+            }
         }
 
         foreach (var value in values)
