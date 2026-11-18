@@ -26,6 +26,8 @@ public sealed partial class MainWindow
         ImportAllLevelsMenu.IsEnabled = !locked;
         OpenLevelMenu.IsEnabled = !locked;
         SaveLevelMenu.IsEnabled = !locked;
+        OpenToolbarButton.IsEnabled = !locked;
+        SaveToolbarButton.IsEnabled = !locked;
         PlayButton.IsEnabled = _level != null && !busy && !_levelOpening && !saving && !dragging && !CharacterPanel.IsActive;
         CharacterEditorMenu.IsEnabled = !busy && !_levelOpening && !saving && !dragging;
         LevelEditorMenu.IsEnabled = CanSwitchWorkspace;

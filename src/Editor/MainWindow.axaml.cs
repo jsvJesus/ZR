@@ -10,6 +10,25 @@ namespace Editor
         public MainWindow()
         {
             InitializeComponent();
+
+            CameraSettingsPanel.IsVisible =
+                CameraSettingsToggle.IsChecked == true;
+
+            NavigationHelpPanel.IsVisible =
+                NavigationHelpToggle.IsChecked == true;
+
+            CameraSettingsToggle.IsCheckedChanged += (_, _) =>
+            {
+                CameraSettingsPanel.IsVisible =
+                    CameraSettingsToggle.IsChecked == true;
+            };
+
+            NavigationHelpToggle.IsCheckedChanged += (_, _) =>
+            {
+                NavigationHelpPanel.IsVisible =
+                    NavigationHelpToggle.IsChecked == true;
+            };
+
             InitializeWorkspaceLayout();
             EnvironmentPanel.Attach(Viewport, _workspace.Assets);
             TerrainEditorPanel.Attach(Viewport, _workspace.Assets);
