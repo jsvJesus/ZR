@@ -365,18 +365,44 @@ public sealed class RoadsPanel : UserControl
     {
         if (_model.SelectedItem is not RoadModelInfo model)
         {
-            _modelInfo.Text = "Модель не выбрана.";
+            RoadCategory category = SelectedCategory();
+
+            int count = _catalog?.GetModels(category).Length ?? 0;
+
+            if (count > 0)
+            {
+                _modelInfo.Text =
+                    $"Доступных моделей: {count}\n" +
+                    "Выберите модель дорожного полотна.";
+
+                return;
+            }
+
+            string errors = _catalog == null
+                ? "Каталог ещё не загружен."
+                : string.Join(
+                    "\n",
+                    _catalog.Warnings.Take(5));
+
+            _modelInfo.Text =
+                "Для выбранного типа не найдены модели.\n" +
+                "Проверьте файлы в bin/packs/objects.\n" +
+                errors;
+
             return;
         }
 
-        float width = model.Axis == RoadModelAxis.X
-            ? model.Bounds.Maximum.Z - model.Bounds.Minimum.Z
-            : model.Bounds.Maximum.X - model.Bounds.Minimum.X;
+        string foundation = model.HasDeepFoundation
+            ? "\nВнимание: модель имеет глубокое основание. " +
+              "Его нижняя часть может находиться под Terrain."
+            : "";
 
         _modelInfo.Text =
             $"Длина сегмента: {model.Length:F2} м\n" +
-            $"Ширина: {width:F2} м\n" +
-            model.File;
+            $"Ширина: {model.Width:F2} м\n" +
+            $"Высота: {model.Height:F2} м\n" +
+            model.File +
+            foundation;
     }
 
     private void CreateRoad()
@@ -447,12 +473,16 @@ public sealed class RoadsPanel : UserControl
 
     private void Refresh()
     {
+        Guid? assignRoadId = null;
+        RoadCategory assignCategory = default;
+        string? assignModel = null;
+
         _updating = true;
 
         try
         {
             var roads = _level?.Roads.Roads.ToArray()
-                ?? [];
+                        ?? [];
 
             _routes.ItemsSource = roads;
 
@@ -481,12 +511,35 @@ public sealed class RoadsPanel : UserControl
                 RefreshModelList(
                     road.Category,
                     road.Model,
-                    false);
+                    true);
+
+                if (_model.SelectedItem is RoadModelInfo selected &&
+                    !string.Equals(
+                        road.Model,
+                        selected.File,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    assignRoadId = road.Id;
+                    assignCategory = road.Category;
+                    assignModel = selected.File;
+                }
             }
         }
         finally
         {
             _updating = false;
+        }
+
+        if (assignRoadId.HasValue &&
+            assignModel != null &&
+            _level != null)
+        {
+            _level.Roads.ConfigureRoad(
+                assignRoadId.Value,
+                assignCategory,
+                assignModel);
+
+            return;
         }
 
         RefreshStatus();

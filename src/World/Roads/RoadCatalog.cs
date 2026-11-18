@@ -1,3 +1,4 @@
+using System.Numerics;
 using System.Text.RegularExpressions;
 using ZoneReborn.World.Assets;
 using ZoneReborn.World.Scene;
@@ -19,6 +20,15 @@ public sealed record RoadModelInfo(
     public float Length => Axis == RoadModelAxis.X
         ? Bounds.Maximum.X - Bounds.Minimum.X
         : Bounds.Maximum.Z - Bounds.Minimum.Z;
+
+    public float Width => Axis == RoadModelAxis.X
+        ? Bounds.Maximum.Z - Bounds.Minimum.Z
+        : Bounds.Maximum.X - Bounds.Minimum.X;
+
+    public float Height => Bounds.Maximum.Y - Bounds.Minimum.Y;
+
+    public bool HasDeepFoundation =>
+        Category == RoadCategory.Railway && Height > 2f;
 
     public override string ToString()
     {
@@ -77,50 +87,54 @@ public sealed class RoadCatalog
 
         foreach (string path in Directory.EnumerateFiles(
                      folder,
-                     "*.model",
-                     SearchOption.TopDirectoryOnly))
+                     "*",
+                     SearchOption.AllDirectories))
         {
-            string name = Path.GetFileNameWithoutExtension(path);
-
-            if (!TryCategory(relative, name, out RoadCategory category))
+            if (!Path.GetExtension(path).Equals(
+                    ".model",
+                    StringComparison.OrdinalIgnoreCase))
             {
                 continue;
             }
 
-            string file = relative + "/" + Path.GetFileName(path);
+            string file = Path.GetRelativePath(
+                    assets.Root,
+                    path)
+                .Replace('\\', '/');
+
+            string name = Path.GetFileNameWithoutExtension(path);
+
+            if (!TryCategory(file, name, out RoadCategory category))
+            {
+                continue;
+            }
 
             try
             {
-                SceneBounds bounds = SourceModelReader.ReadBounds(
+                SceneBounds bounds = ReadModelBounds(
                     assets,
                     file);
 
-                float extentX = bounds.Maximum.X - bounds.Minimum.X;
-                float extentZ = bounds.Maximum.Z - bounds.Minimum.Z;
+                RoadModelAxis axis = RoadModelAxis.X;
 
-                RoadModelAxis axis = category == RoadCategory.Railway
-                    ? extentX >= extentZ
-                        ? RoadModelAxis.X
-                        : RoadModelAxis.Z
-                    : RoadModelAxis.X;
+                var info = new RoadModelInfo(
+                    file,
+                    category,
+                    bounds,
+                    axis);
 
-                float length = axis == RoadModelAxis.X
-                    ? extentX
-                    : extentZ;
-
-                if (!float.IsFinite(length) || length <= 0.05f)
+                if (!float.IsFinite(info.Length) ||
+                    !float.IsFinite(info.Width) ||
+                    !float.IsFinite(info.Height) ||
+                    info.Length <= 0.05f ||
+                    info.Width <= 0.05f)
                 {
-                    Warnings.Add($"Некорректная длина модели: {file}");
+                    Warnings.Add(
+                        $"Некорректные размеры модели: {file}");
                     continue;
                 }
 
-                _models.Add(
-                    file,
-                    new RoadModelInfo(
-                        file,
-                        category,
-                        bounds,
-                        axis));
+                _models[file] = info;
             }
             catch (Exception exception) when (
                 exception is IOException or
@@ -131,18 +145,88 @@ public sealed class RoadCatalog
                 ArgumentException or
                 System.Xml.XmlException)
             {
-                Warnings.Add($"{file}: {exception.Message}");
+                Warnings.Add(
+                    $"Модель {file}: {exception.Message}");
             }
         }
     }
 
+    private static SceneBounds ReadModelBounds(
+        AssetPaths assets,
+        string file)
+    {
+        try
+        {
+            return SourceModelReader.ReadBounds(
+                assets,
+                file);
+        }
+        catch (Exception exception) when (
+            exception is IOException or
+            UnauthorizedAccessException or
+            InvalidDataException or
+            FormatException or
+            OverflowException or
+            ArgumentException or
+            System.Xml.XmlException)
+        {
+            string path = AssetPathResolver.Resolve(
+                assets.Root,
+                file);
+
+            var section = BigWorldSection.Read(
+                path,
+                CancellationToken.None);
+
+            var box = section.Child("visibilityBox")
+                ?? throw new InvalidDataException(
+                    $"Не найдены границы модели: {file}",
+                    exception);
+
+            float[] minimum = box.Child("min")?.Floats()
+                ?? throw new InvalidDataException(
+                    "Не найдена минимальная граница модели.");
+
+            float[] maximum = box.Child("max")?.Floats()
+                ?? throw new InvalidDataException(
+                    "Не найдена максимальная граница модели.");
+
+            if (minimum.Length != 3 ||
+                maximum.Length != 3)
+            {
+                throw new InvalidDataException(
+                    "Некорректные границы модели.");
+            }
+
+            var min = new Vector3(
+                minimum[0],
+                minimum[1],
+                minimum[2]);
+
+            var max = new Vector3(
+                maximum[0],
+                maximum[1],
+                maximum[2]);
+
+            if (min.X > max.X ||
+                min.Y > max.Y ||
+                min.Z > max.Z)
+            {
+                throw new InvalidDataException(
+                    "Некорректный порядок границ модели.");
+            }
+
+            return new SceneBounds(min, max);
+        }
+    }
+
     private static bool TryCategory(
-        string folder,
+        string file,
         string name,
         out RoadCategory category)
     {
-        if (folder.Equals(
-                "objects/props/railroads",
+        if (file.StartsWith(
+                "objects/props/railroads/",
                 StringComparison.OrdinalIgnoreCase))
         {
             category = RoadCategory.Railway;
@@ -150,13 +234,23 @@ public sealed class RoadCatalog
             return Regex.IsMatch(
                 name,
                 @"^railroad_straight_.*_lod1$",
-                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+                RegexOptions.IgnoreCase |
+                RegexOptions.CultureInvariant);
+        }
+
+        if (!file.StartsWith(
+                "objects/roads_segments/",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            category = default;
+            return false;
         }
 
         if (Regex.IsMatch(
                 name,
-                @"^(asphalt\d+[ab]?|black\d+|concrete\d+)$",
-                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+                @"^(asphalt\d+[ab]?|black\d+(?:_x2)?|concrete\d+|road_very_dirty)$",
+                RegexOptions.IgnoreCase |
+                RegexOptions.CultureInvariant))
         {
             category = RoadCategory.Automobile;
             return true;
@@ -165,7 +259,8 @@ public sealed class RoadCatalog
         if (Regex.IsMatch(
                 name,
                 @"^(dirt\d+|sand\d+)$",
-                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+                RegexOptions.IgnoreCase |
+                RegexOptions.CultureInvariant))
         {
             category = RoadCategory.Dirt;
             return true;
@@ -174,7 +269,8 @@ public sealed class RoadCatalog
         if (Regex.IsMatch(
                 name,
                 @"^railscave\d+$",
-                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+                RegexOptions.IgnoreCase |
+                RegexOptions.CultureInvariant))
         {
             category = RoadCategory.Railway;
             return true;
