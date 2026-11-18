@@ -244,12 +244,6 @@ namespace Editor.Viewport
                     camera,
                     lightViewProjection);
 
-                _roads?.Render(
-                    camera.Position,
-                    lightViewProjection,
-                    farPlane,
-                    playing);
-
                 _objects?.RenderShadowCasters(
                     center,
                     distance * 3f,

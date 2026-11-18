@@ -361,64 +361,6 @@ public sealed partial class TerrainDocument
         return changedTiles;
     }
 
-    private static List<ShoreRoadSegment> BuildShoreRoadSegments(
-        TerrainWaterBody water,
-        RoadNetwork? roads)
-    {
-        var result = new List<ShoreRoadSegment>();
-
-        if (roads == null)
-        {
-            return result;
-        }
-
-        float extentX = water.RadiusX + water.ShoreWidth;
-        float extentZ = water.RadiusZ + water.ShoreWidth;
-
-        float minX = water.CenterX - extentX;
-        float maxX = water.CenterX + extentX;
-        float minZ = water.CenterZ - extentZ;
-        float maxZ = water.CenterZ + extentZ;
-
-        foreach (var road in roads.Roads)
-        {
-            if (road.Nodes.Count < 2)
-            {
-                continue;
-            }
-
-            float radius = Math.Clamp(
-                road.Width * 0.5f + road.ShoulderWidth,
-                0.1f,
-                35f) + 1.5f;
-
-            var samples = RoadSpline.Sample(road);
-
-            for (int i = 1; i < samples.Count; i++)
-            {
-                var a = samples[i - 1].Position;
-                var b = samples[i].Position;
-
-                if (MathF.Max(a.X, b.X) + radius < minX ||
-                    MathF.Min(a.X, b.X) - radius > maxX ||
-                    MathF.Max(a.Z, b.Z) + radius < minZ ||
-                    MathF.Min(a.Z, b.Z) - radius > maxZ)
-                {
-                    continue;
-                }
-
-                result.Add(new ShoreRoadSegment(
-                    a.X,
-                    a.Z,
-                    b.X,
-                    b.Z,
-                    radius));
-            }
-        }
-
-        return result;
-    }
-
     private static bool IsProtectedShoreRoad(
         float x,
         float z,

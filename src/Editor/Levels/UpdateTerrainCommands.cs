@@ -11,7 +11,7 @@ public sealed partial class MainWindow
     private async void UpdateTerrainFromFbx()
     {
         if (_level?.Manifest.Terrain.ImportedFromMesh != true || _isClosing || _importCancellation != null
-            || _levelOpening || _levelSaving || _savingChangesOnClose || RoadSegmentsPanel.IsSaving
+            || _levelOpening || _levelSaving || _savingChangesOnClose
             || VegetationPanel.IsSaving || ObjectsPanel.IsBusy || TerrainEditorPanel.IsBusy
             || Viewport.IsObjectDragging || Viewport.IsPlaying || Viewport.IsStarting || CharacterPanel.IsBusy) return;
         using var cancellation = new CancellationTokenSource();
@@ -37,7 +37,6 @@ public sealed partial class MainWindow
             cancellation.Token.ThrowIfCancellationRequested();
             StatusText.Text = "Сохранение текущих правок перед расширением Terrain…";
             await TerrainEditorPanel.SavePendingAsync();
-            await RoadSegmentsPanel.SavePendingAsync();
             await VegetationPanel.SavePendingAsync();
             await ObjectsPanel.SavePendingAsync();
             await EnvironmentPanel.SavePendingAsync();
