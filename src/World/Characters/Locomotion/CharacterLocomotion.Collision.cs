@@ -21,7 +21,16 @@ public sealed partial class CharacterLocomotion
     {
         var target = Position + new Vector3(displacement.X, 0, displacement.Y);
         if (!_surface.Contains(target.X, target.Z)) return false;
-        if (!_surface.TryGetHeight(target.X, target.Z, out float terrain)) terrain = Position.Y;
+
+        if (!_surface.TryGetCharacterTerrainHeight(
+                target.X,
+                target.Z,
+                Position.Y,
+                out float terrain))
+        {
+            terrain = Position.Y;
+        }
+
         float slope = MathF.Tan(LocomotionSettings.MaximumSlopeDegrees * MathF.PI / 180);
         float stepHeight = StepHeight;
         bool canStepOntoSurface = terrain > Position.Y && terrain - Position.Y <= stepHeight + 0.001f;
@@ -31,16 +40,45 @@ public sealed partial class CharacterLocomotion
             terrain - Position.Y >
             displacement.Length() * slope + 0.001f)
         {
-            if (!_surface.TryGetHeight(Position.X, Position.Z, out float here) ||
-                !_surface.TryGetHeight(Position.X + 0.1f, Position.Z, out float hx) ||
-                !_surface.TryGetHeight(Position.X, Position.Z + 0.1f, out float hz)) return false;
+            if (!_surface.TryGetCharacterTerrainHeight(
+                    Position.X,
+                    Position.Z,
+                    Position.Y,
+                    out float here) ||
+                !_surface.TryGetCharacterTerrainHeight(
+                    Position.X + 0.1f,
+                    Position.Z,
+                    Position.Y,
+                    out float hx) ||
+                !_surface.TryGetCharacterTerrainHeight(
+                    Position.X,
+                    Position.Z + 0.1f,
+                    Position.Y,
+                    out float hz))
+            {
+                return false;
+            }
+
             var gradient = new Vector2(hx - here, hz - here);
             if (gradient.LengthSquared() < 1e-6f) return false;
             gradient = Vector2.Normalize(gradient);
             displacement -= gradient * Math.Max(0, Vector2.Dot(displacement, gradient));
             target = Position + new Vector3(displacement.X, 0, displacement.Y);
-            if (!_surface.TryGetHeight(target.X, target.Z, out terrain) ||
-                terrain - Position.Y > displacement.Length() * slope + 0.001f) return false;
+
+            if (!_surface.TryGetCharacterTerrainHeight(
+                    target.X,
+                    target.Z,
+                    Position.Y,
+                    out terrain))
+            {
+                terrain = Position.Y;
+            }
+
+            if (terrain - Position.Y >
+                displacement.Length() * slope + 0.001f)
+            {
+                return false;
+            }
         }
 
         var moved = _surface.MoveCharacter(Position, target, CollisionHeight);
@@ -102,7 +140,15 @@ public sealed partial class CharacterLocomotion
     {
         supported = candidate;
         surfaceY = candidate.Y;
-        bool hasTerrain = _surface.TryGetHeight(candidate.X, candidate.Z, out float terrain);
+
+        bool hasTerrain =
+            _surface.TryGetCharacterTerrainHeight(
+                candidate.X,
+                candidate.Z,
+                candidate.Y,
+                out float terrain
+            );
+
         bool found = _surface.TrySnapToObject(candidate, CollisionHeight, maximumDrop, out var objectSupport,
                 out float objectSurfaceY, maximumSurfaceY) &&
             (!hasTerrain || objectSupport.Y >= terrain - 0.001f) &&

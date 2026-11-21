@@ -53,16 +53,72 @@ public sealed partial class TerrainSurface
 
     // Editing and road attachment keep using the terrain-only queries above.
     // Gameplay selects the floor beneath the feet, rather than a roof above the player.
-    public bool TryGetGround(float x, float z, float maximumY, out float height)
+    public bool TryGetGround(
+        float x,
+        float z,
+        float maximumY,
+        out float height)
     {
-        bool found = TryGetHeight(x, z, out height);
+        bool found = TryGetHeight(
+            x,
+            z,
+            out height
+        ) && height <= maximumY + 0.002f;
+
         if (Collision is { } collision &&
-            collision.TryGround(x, z, maximumY, found ? height : -1e7f, out float modelHeight, 0.32f))
+            collision.TryGround(
+                x,
+                z,
+                maximumY,
+                found ? height : -1e7f,
+                out float modelHeight,
+                0.32f))
         {
-            height = found ? Math.Max(height, modelHeight) : modelHeight;
+            height = found
+                ? Math.Max(height, modelHeight)
+                : modelHeight;
+
             found = true;
         }
+
         return found;
+    }
+
+    public bool TryGetCharacterTerrainHeight(
+        float x,
+        float z,
+        float feetY,
+        out float terrainHeight)
+    {
+        if (!TryGetHeight(x, z, out terrainHeight))
+        {
+            return false;
+        }
+
+        if (!float.IsFinite(feetY) ||
+            terrainHeight <= feetY + 0.002f)
+        {
+            return true;
+        }
+
+        const float radius = 0.32f;
+        const float maximumRise = 0.32f;
+        const float maximumDrop = 0.45f;
+
+        if (Collision is { } collision &&
+            collision.TryGround(
+                x,
+                z,
+                feetY + maximumRise,
+                feetY - maximumDrop,
+                out float modelHeight,
+                radius) &&
+            modelHeight < terrainHeight - 0.002f)
+        {
+            return false;
+        }
+
+        return true;
     }
 
     public Vector3 MoveCharacter(
@@ -79,11 +135,13 @@ public sealed partial class TerrainSurface
             from,
             target,
             radius,
-            height) ?? target;
+            height
+        ) ?? target;
 
-        if (!TryGetHeight(
+        if (!TryGetCharacterTerrainHeight(
                 moved.X,
                 moved.Z,
+                moved.Y,
                 out float terrainHeight))
         {
             return moved;
@@ -94,10 +152,13 @@ public sealed partial class TerrainSurface
             return moved;
         }
 
-        bool hasPreviousGround = TryGetHeight(
-            from.X,
-            from.Z,
-            out float previousGround);
+        bool hasPreviousGround =
+            TryGetCharacterTerrainHeight(
+                from.X,
+                from.Z,
+                from.Y,
+                out float previousGround
+            );
 
         Vector3 previous = from;
 
@@ -105,7 +166,8 @@ public sealed partial class TerrainSurface
         {
             previous.Y = MathF.Max(
                 from.Y,
-                previousGround);
+                previousGround
+            );
         }
 
         if (terrainHeight > from.Y + maximumStep)
@@ -132,9 +194,10 @@ public sealed partial class TerrainSurface
 
     public bool CanOccupy(Vector3 feet, float height)
     {
-        if (TryGetHeight(
+        if (TryGetCharacterTerrainHeight(
                 feet.X,
                 feet.Z,
+                feet.Y,
                 out float terrainHeight) &&
             feet.Y < terrainHeight - 0.002f)
         {
@@ -144,7 +207,8 @@ public sealed partial class TerrainSurface
         return Collision?.CanOccupy(
             feet,
             0.32f,
-            height) ?? true;
+            height
+        ) ?? true;
     }
 
     public bool TrySnapToObject(Vector3 feet, float height, float maximumDrop, out Vector3 supported,
