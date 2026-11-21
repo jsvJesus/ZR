@@ -281,10 +281,17 @@ namespace ZoneReborn.World.Characters
                 forward * _smoothedDistance +
                 right * _smoothedShoulder;
 
-            if (_firstPersonBlend >= 0.999f && firstPersonEye.HasValue)
+            if (_firstPersonBlend >= 0.999f &&
+                firstPersonEye.HasValue)
             {
-                CameraPosition = targetPivot;
-                _clearRayDistance = 0;
+                CameraPosition = ConstrainFirstPersonCamera(
+                    surface,
+                    playerAnchor,
+                    targetPivot,
+                    cameraHeight
+                );
+
+                _clearRayDistance = 0f;
                 _initialized = true;
                 return;
             }
@@ -336,6 +343,49 @@ namespace ZoneReborn.World.Characters
                 pivot + direction * _clearRayDistance;
 
             _initialized = true;
+        }
+
+        private static Vector3 ConstrainFirstPersonCamera(
+            TerrainSurface surface,
+            Vector3 playerAnchor,
+            Vector3 desiredPosition,
+            float cameraHeight)
+        {
+            const float MinimumDistance = 0.0001f;
+
+            Vector3 safeOrigin = playerAnchor + new Vector3(
+                0f,
+                Math.Clamp(cameraHeight, 0.75f, 1.25f),
+                0f
+            );
+
+            Vector3 offset = desiredPosition - safeOrigin;
+            float distance = offset.Length();
+
+            if (!float.IsFinite(distance) ||
+                distance < MinimumDistance)
+            {
+                return safeOrigin;
+            }
+
+            Vector3 direction = offset / distance;
+
+            float availableDistance = surface.CameraDistance(
+                safeOrigin,
+                direction,
+                distance
+            );
+
+            if (availableDistance >= distance)
+            {
+                return desiredPosition;
+            }
+
+            return safeOrigin + direction * Math.Clamp(
+                availableDistance,
+                0f,
+                distance
+            );
         }
 
         private static float FindAvailableDistance(
