@@ -224,9 +224,33 @@ public sealed class ModelImporter(AssetPaths assets)
             catch (Exception error)
                 when (error is not OutOfMemoryException)
             {
-                errors.Add(
-                    $"{relative}: {error.Message}"
+                string message =
+                    $"{relative}: {error.Message}";
+
+                errors.Add(message);
+
+                string logPath = Path.Combine(
+                    assets.Root,
+                    "import",
+                    "model-import-errors.log"
                 );
+
+                try
+                {
+                    File.AppendAllText(
+                        logPath,
+                        $"[{DateTime.Now:O}]\n" +
+                        $"Source: {source}\n" +
+                        $"Target: {target}\n" +
+                        $"Error: {error}\n\n"
+                    );
+                }
+                catch (IOException)
+                {
+                }
+                catch (UnauthorizedAccessException)
+                {
+                }
             }
             finally
             {
@@ -430,15 +454,6 @@ public sealed class ModelImporter(AssetPaths assets)
         string model,
         ModelTextureImporter textures)
     {
-        foreach (var slot in source.GetAllMaterialTextures())
-        {
-            textures.Import(
-                scene,
-                model,
-                slot.FilePath
-            );
-        }
-
         TextureSlot? diffuse =
             Slot(TextureType.BaseColor) ??
             Slot(TextureType.Diffuse);
