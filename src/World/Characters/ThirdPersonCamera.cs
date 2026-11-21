@@ -427,6 +427,18 @@ namespace ZoneReborn.World.Characters
                 return 0f;
             }
 
+            // When the camera pivot is underground, the
+            // heightfield above it is not an obstacle.
+            // Physical tunnel geometry still blocks the camera.
+            if (surface.TryGetHeight(
+                    origin.X,
+                    origin.Z,
+                    out float originTerrainHeight) &&
+                origin.Y < originTerrainHeight + TerrainClearance)
+            {
+                return maximum;
+            }
+
             int steps = Math.Max(
                 1,
                 (int)MathF.Ceiling(
@@ -437,6 +449,7 @@ namespace ZoneReborn.World.Characters
             for (int i = 1; i <= steps; i++)
             {
                 float distance = maximum * i / steps;
+
                 Vector3 point = origin + direction * distance;
 
                 if (!surface.TryGetHeight(
