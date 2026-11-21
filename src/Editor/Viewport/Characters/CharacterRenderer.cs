@@ -21,6 +21,8 @@ internal sealed partial class CharacterRenderer : IDisposable
 {
     private const float HideDistance = 0.85f;
     private const float ShowDistance = 1.65f;
+    private const float ViewSwitchThreshold = 0.5f;
+    private const float ViewTransitionEpsilon = 0.001f;
 
     private readonly DeviceContext _context;
     private readonly CharacterPose _pose;
@@ -240,8 +242,28 @@ internal sealed partial class CharacterRenderer : IDisposable
         Vector3 cameraPosition,
         float firstPersonBlend = 0)
     {
-        float visibility = CalculateVisibility(cameraPosition) * (1 - Math.Clamp(firstPersonBlend, 0, 1));
-        RenderMeshes(relativeViewProjection, cameraPosition, visibility, firstPerson: false);
+        float blend = Math.Clamp(firstPersonBlend, 0f, 1f);
+
+        // FPS meshes are rendered by RenderFirstPerson.
+        // Never crossfade full-body clothing between views.
+        if (blend >= ViewSwitchThreshold)
+        {
+            return;
+        }
+
+        // Distance fading is reserved for normal TPS.
+        // During an intentional camera transition, keep
+        // character materials fully opaque.
+        float visibility = blend > ViewTransitionEpsilon
+            ? 1f
+            : CalculateVisibility(cameraPosition);
+
+        RenderMeshes(
+            relativeViewProjection,
+            cameraPosition,
+            visibility,
+            firstPerson: false
+        );
     }
 
     private void RenderMeshes(

@@ -9,12 +9,18 @@ internal sealed partial class CharacterRenderer
         Vector3 cameraPosition,
         float firstPersonBlend)
     {
-        // Render the same evaluated pose and complete authored meshes as TPS.
-        // Weapon tracking and hand IK have already run in CharacterPose.
+        // Switch the visible mesh set without opacity fading.
+        // Camera movement and skeleton animation remain smooth.
+        if (!float.IsFinite(firstPersonBlend) ||
+            firstPersonBlend < ViewSwitchThreshold)
+        {
+            return;
+        }
+
         RenderMeshes(
             relativeViewProjection,
             cameraPosition,
-            Math.Clamp(firstPersonBlend, 0, 1),
+            1f,
             firstPerson: true
         );
     }
