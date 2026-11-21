@@ -104,6 +104,17 @@ public static class ImportedModelStorage
                 Scalar(reader)
             );
 
+            if (!material.DoubleSided &&
+                !material.Transparent &&
+                material.AlphaTest &&
+                SceneCutoutMaterials.HasCutoutAlpha(material.Diffuse))
+            {
+                material = material with
+                {
+                    DoubleSided = true
+                };
+            }
+
             int vertexCount = Count(
                 reader.ReadInt32(),
                 MaximumVertices - totalVertices,
