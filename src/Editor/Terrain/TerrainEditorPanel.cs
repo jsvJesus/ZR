@@ -60,10 +60,10 @@ public sealed partial class TerrainEditorPanel : UserControl
 
     private readonly Slider _radius = new()
     {
-        Minimum = 0.5,
+        Minimum = 0.2,
         Maximum = 100,
         Value = 5,
-        TickFrequency = 0.5
+        TickFrequency = 0.05
     };
 
     private readonly Slider _strength = new()
@@ -339,7 +339,8 @@ public sealed partial class TerrainEditorPanel : UserControl
             _viewport.TerrainBrushEnabled = brushEnabled;
             _viewport.TerrainBrushContinuous = brushEnabled;
             _viewport.TerrainBrushFill =
-                !_materialsSection && _mode.SelectedIndex == 4;
+                !_materialsSection &&
+                _mode.SelectedIndex is 3 or 4;
 
             UpdateBrushSpacing();
         }
@@ -389,7 +390,7 @@ public sealed partial class TerrainEditorPanel : UserControl
             _strength.Value = maximum;
         }
 
-        _radiusValue.Text = $"{_radius.Value:0.0} м";
+        _radiusValue.Text = $"{_radius.Value:0.00} м";
 
         _strengthValue.Text = normalized
             ? $"{_strength.Value:0.00}"
@@ -422,10 +423,22 @@ public sealed partial class TerrainEditorPanel : UserControl
         _viewport.TerrainBrushRadius = radius;
         _viewport.TerrainBrushIsMaterial = IsTexturePainting;
 
-        _viewport.TerrainBrushSpacing = Math.Max(
-            cellSize * 0.25f,
-            radius * 0.2f
-        );
+        bool preciseHoles =
+            !_materialsSection &&
+            _mode.SelectedIndex is 3 or 4;
+
+        _viewport.TerrainBrushSpacing = preciseHoles
+            ? Math.Max(
+                0.05f,
+                Math.Min(
+                    cellSize * 0.125f,
+                    radius * 0.35f
+                )
+            )
+            : Math.Max(
+                cellSize * 0.25f,
+                radius * 0.2f
+            );
     }
 
     private void Apply(Vector3 point)

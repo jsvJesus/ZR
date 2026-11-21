@@ -1,4 +1,5 @@
 #include "Environment/Lighting.hlsli"
+#include "Terrain/TerrainHoleMask.hlsli"
 
 cbuffer TerrainOverviewBuffer : register(b0)
 {
@@ -11,7 +12,6 @@ cbuffer TerrainOverviewBuffer : register(b0)
 
 Texture2D Diffuse : register(t0);
 Texture2D DetailNormal : register(t1);
-Texture2D TerrainHoles : register(t5);
 Texture2D PaintedOverview : register(t6);
 
 SamplerState MaterialSampler : register(s0);
@@ -46,14 +46,13 @@ PixelInput VSMain(VertexInput input)
 
 float4 PSMain(PixelInput input) : SV_TARGET
 {
-    if (WorldExtent.w > 0.5)
+     if (WorldExtent.w > 0.5 &&
+        IsTerrainHole(
+            input.World.xz,
+            TerrainOrigin.xy,
+            WorldExtent.z))
     {
-        clip(
-            0.5 -
-            TerrainHoles.Load(
-                int3(
-                    int2((input.World.xz - TerrainOrigin.xy) / WorldExtent.z),
-                    0)).r);
+        discard;
     }
 
     float2 levelUv = (input.World.xz - TerrainOrigin.xy)

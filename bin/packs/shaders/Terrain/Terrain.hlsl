@@ -1,4 +1,5 @@
 #include "Environment/Lighting.hlsli"
+#include "Terrain/TerrainHoleMask.hlsli"
 
 cbuffer TerrainBuffer : register(b0)
 {
@@ -28,7 +29,6 @@ Texture2D Normal0 : register(t1);
 Texture2D SurfaceNormal : register(t2);
 Texture2D LayerMask : register(t3);
 Texture2D WeightSum : register(t4);
-Texture2D TerrainHoles : register(t5);
 
 Texture2D Roughness0 : register(t21);
 Texture2D Height0 : register(t8);
@@ -397,14 +397,13 @@ float3 PuddleSkyReflection(
 
 float4 PSMain(PixelInput input) : SV_TARGET
 {
-    if (WorldExtent.w > 0.5)
+    if (WorldExtent.w > 0.5 &&
+        IsTerrainHole(
+            input.World.xz,
+            TerrainOrigin.xy,
+            WorldExtent.z))
     {
-        clip(
-            0.5 -
-            TerrainHoles.Load(
-                int3(
-                    int2((input.World.xz - TerrainOrigin.xy) / WorldExtent.z),
-                    0)).r);
+        discard;
     }
 
     float2 tileUv = (

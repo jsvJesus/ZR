@@ -78,9 +78,19 @@ public sealed partial class TerrainDocument(string directory, LevelManifest mani
         return Descriptor.DecodeHeight(Raw(x / 256, z / 256).Heights[(z % 256) * 256 + x % 256]);
     }
 
-    public bool HasSurface(float x, float z) => Descriptor.Contains(x, z)
-        && !Holes.Contains(Math.Min((int)((x - Descriptor.OriginX) / Descriptor.CellSize), Holes.Width - 1),
-            Math.Min((int)((z - Descriptor.OriginZ) / Descriptor.CellSize), Holes.Height - 1));
+    public bool HasSurface(float x, float z)
+    {
+        var d = Descriptor;
+
+        return d.Contains(x, z) &&
+               !Holes.ContainsWorld(
+                   x,
+                   z,
+                   d.OriginX,
+                   d.OriginZ,
+                   d.CellSize
+               );
+    }
 
     public bool Apply(float x, float z, float radius, float strength, TerrainBrushMode mode, float? flattenHeight = null)
     {
@@ -106,45 +116,140 @@ public sealed partial class TerrainDocument(string directory, LevelManifest mani
         int z0 = Math.Clamp((int)MathF.Floor((z - d.OriginZ - radius) / d.CellSize), 0, d.SamplesZ - 1);
         int z1 = Math.Clamp((int)MathF.Ceiling((z - d.OriginZ + radius) / d.CellSize), 0, d.SamplesZ - 1);
         var pending = new List<(int X, int Z, ushort Value)>();
+
+        bool editHoles = mode is
+            TerrainBrushMode.CutHole or
+            TerrainBrushMode.FillHole;
+
+        float radiusSquared = radius * radius;
+
         for (int gz = z0; gz <= z1; gz++)
-        for (int gx = x0; gx <= x1; gx++)
         {
-            bool cut = mode is TerrainBrushMode.CutHole or TerrainBrushMode.FillHole;
-            float px = d.OriginX + (gx + (cut ? 0.5f : 0)) * d.CellSize;
-            float pz = d.OriginZ + (gz + (cut ? 0.5f : 0)) * d.CellSize;
-            float distance = MathF.Sqrt((px - x) * (px - x) + (pz - z) * (pz - z));
-            if (distance > radius) continue;
-            if (cut)
+            for (int gx = x0; gx <= x1; gx++)
             {
-                if (gx >= Holes.Width || gz >= Holes.Height) continue;
-                bool previous = Holes.Contains(gx, gz);
-
-                if (Holes.Set(gx, gz, mode == TerrainBrushMode.CutHole))
+                if (editHoles)
                 {
-                    holesChanged = true;
-
-                    if (_sculptStroke == null ||
-                        _sculptHolesTouched.Add((gx, gz)))
+                    if (gx >= Holes.Width ||
+                        gz >= Holes.Height)
                     {
-                        change.Holes.Add((gx, gz, previous));
+                        continue;
                     }
+
+                    ushort previous = Holes.Mask(gx, gz);
+                    ushort next = previous;
+
+                    for (int sz = 0; sz < TerrainHoles.Detail; sz++)
+                    {
+                        for (int sx = 0; sx < TerrainHoles.Detail; sx++)
+                        {
+                            float sampleX = d.OriginX +
+                                (gx + (sx + 0.5f) /
+                                TerrainHoles.Detail) * d.CellSize;
+
+                            float sampleZ = d.OriginZ +
+                                (gz + (sz + 0.5f) /
+                                TerrainHoles.Detail) * d.CellSize;
+
+                            float dx = sampleX - x;
+                            float dz = sampleZ - z;
+
+                            if (dx * dx + dz * dz > radiusSquared)
+                            {
+                                continue;
+                            }
+
+                            int bitIndex =
+                                sz * TerrainHoles.Detail + sx;
+
+                            ushort bit = (ushort)(1 << bitIndex);
+
+                            if (mode == TerrainBrushMode.CutHole)
+                            {
+                                next |= bit;
+                            }
+                            else
+                            {
+                                next &= (ushort)~bit;
+                            }
+                        }
+                    }
+
+                    if (Holes.SetMask(gx, gz, next))
+                    {
+                        holesChanged = true;
+
+                        if (_sculptStroke == null ||
+                            _sculptHolesTouched.Add((gx, gz)))
+                        {
+                            change.Holes.Add((
+                                gx,
+                                gz,
+                                previous
+                            ));
+                        }
+                    }
+
+                    continue;
                 }
 
-                continue;
-            }
-            ushort old = Raw(gx / 256, gz / 256).Heights[(gz % 256) * 256 + gx % 256];
-            float height = d.DecodeHeight(old), weight = 1 - distance / radius;
-            float next = mode == TerrainBrushMode.Smooth
-                ? height + ((BaseHeight(gx - 1, gz) + BaseHeight(gx + 1, gz) + BaseHeight(gx, gz - 1) + BaseHeight(gx, gz + 1)) / 4 - height)
-                    * Math.Min(1, strength) * weight
-                : mode == TerrainBrushMode.Flatten
-                    ? height + (flattenHeight!.Value - height) * Math.Min(1, strength) * weight
-                    : height + strength * weight * (mode == TerrainBrushMode.Lower ? -1 : 1);
-            ushort encoded = (ushort)Math.Clamp((int)MathF.Round((next - d.HeightOffset) / d.HeightScale * 65535), 0, 65535);
-            if (encoded == old) continue;
+                float px = d.OriginX + gx * d.CellSize;
+                float pz = d.OriginZ + gz * d.CellSize;
 
-            pending.Add((gx, gz, encoded));
+                float dxHeight = px - x;
+                float dzHeight = pz - z;
+
+                float distance = MathF.Sqrt(
+                    dxHeight * dxHeight +
+                    dzHeight * dzHeight
+                );
+
+                if (distance > radius)
+                {
+                    continue;
+                }
+
+                ushort old = Raw(
+                    gx / 256,
+                    gz / 256
+                ).Heights[(gz % 256) * 256 + gx % 256];
+
+                float height = d.DecodeHeight(old);
+                float weight = 1 - distance / radius;
+
+                float nextHeight = mode == TerrainBrushMode.Smooth
+                    ? height + (
+                        (
+                            BaseHeight(gx - 1, gz) +
+                            BaseHeight(gx + 1, gz) +
+                            BaseHeight(gx, gz - 1) +
+                            BaseHeight(gx, gz + 1)
+                        ) / 4 - height
+                    ) * Math.Min(1, strength) * weight
+                    : mode == TerrainBrushMode.Flatten
+                        ? height +
+                          (flattenHeight!.Value - height) *
+                          Math.Min(1, strength) * weight
+                        : height + strength * weight *
+                          (mode == TerrainBrushMode.Lower ? -1 : 1);
+
+                ushort encoded = (ushort)Math.Clamp(
+                    (int)MathF.Round(
+                        (nextHeight - d.HeightOffset) /
+                        d.HeightScale * 65535
+                    ),
+                    0,
+                    65535
+                );
+
+                if (encoded == old)
+                {
+                    continue;
+                }
+
+                pending.Add((gx, gz, encoded));
+            }
         }
+
         WriteHeightChanges(pending, change);
 
         if (pending.Count == 0 && !holesChanged)
@@ -185,7 +290,12 @@ public sealed partial class TerrainDocument(string directory, LevelManifest mani
         WriteHeightChanges(change.Heights, null);
         _undo.RemoveAt(_undo.Count - 1);
         if (change.SourceMaterialLayout is { } sourceLayout) Descriptor.HasSourceMaterialLayout = sourceLayout;
-        foreach (var value in change.Holes) Holes.Set(value.X, value.Z, value.Value);
+
+        foreach (var value in change.Holes)
+        {
+            Holes.SetMask(value.X, value.Z, value.Value);
+        }
+
         foreach (var value in change.Materials)
         {
             var tile = Raw(value.Key.X, value.Key.Z);
@@ -297,7 +407,7 @@ public sealed partial class TerrainDocument(string directory, LevelManifest mani
     {
         public bool? SourceMaterialLayout { get; init; }
         public List<(int X, int Z, ushort Value)> Heights { get; } = [];
-        public List<(int X, int Z, bool Value)> Holes { get; } = [];
+        public List<(int X, int Z, ushort Value)> Holes { get; } = [];
         public Dictionary<(int X, int Z), TerrainTileData> Materials { get; } = [];
     }
 }
