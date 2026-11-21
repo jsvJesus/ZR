@@ -34,17 +34,28 @@ internal static class SceneCutoutMaterials
 
             void Check(byte alpha)
             {
-                cutout |= alpha < AlphaCutoff;
-                opaque |= alpha >= OpaqueCutoff;
+                if (alpha < AlphaCutoff)
+                {
+                    cutout = true;
+                }
+
+                if (alpha >= OpaqueCutoff)
+                {
+                    opaque = true;
+                }
             }
 
             if (image.Format == DdsPixelFormat.Rgba8)
             {
                 for (int y = 0; y < mip.Height; y++)
                 {
+                    int rowOffset = y * mip.RowPitch;
+
                     for (int x = 0; x < mip.Width; x++)
                     {
-                        Check(mip.Data[y * mip.RowPitch + x * 4 + 3]);
+                        int offset = rowOffset + x * 4 + 3;
+
+                        Check(mip.Data[offset]);
 
                         if (cutout && opaque)
                         {
@@ -56,35 +67,53 @@ internal static class SceneCutoutMaterials
                 return false;
             }
 
-            int blockSize = image.Format == DdsPixelFormat.Bc1 ? 8 : 16;
+            int blockSize = image.Format == DdsPixelFormat.Bc1
+                ? 8
+                : 16;
+
             int blocksX = (mip.Width + 3) / 4;
             int blocksY = (mip.Height + 3) / 4;
 
+            // Allocate once outside the loops.
+            // This prevents stack exhaustion on large DDS textures.
+            byte[] palette = new byte[8];
+
             for (int by = 0; by < blocksY; by++)
             {
+                int rowOffset = by * mip.RowPitch;
+
                 for (int bx = 0; bx < blocksX; bx++)
                 {
-                    int offset = by * mip.RowPitch + bx * blockSize;
-                    ReadOnlySpan<byte> block = mip.Data.AsSpan(offset, blockSize);
+                    int offset = rowOffset + bx * blockSize;
+
+                    ReadOnlySpan<byte> block = mip.Data.AsSpan(
+                        offset,
+                        blockSize
+                    );
 
                     uint colorIndices = 0;
                     bool bc1Transparent = false;
                     ulong alphaBits = 0;
-                    Span<byte> palette = stackalloc byte[8];
 
                     if (image.Format == DdsPixelFormat.Bc1)
                     {
-                        ushort color0 = BinaryPrimitives.ReadUInt16LittleEndian(block);
-                        ushort color1 = BinaryPrimitives.ReadUInt16LittleEndian(block[2..]);
+                        ushort color0 =
+                            BinaryPrimitives.ReadUInt16LittleEndian(block);
+
+                        ushort color1 =
+                            BinaryPrimitives.ReadUInt16LittleEndian(block[2..]);
 
                         bc1Transparent = color0 <= color1;
-                        colorIndices = BinaryPrimitives.ReadUInt32LittleEndian(block[4..]);
+
+                        colorIndices =
+                            BinaryPrimitives.ReadUInt32LittleEndian(block[4..]);
                     }
                     else if (image.Format == DdsPixelFormat.Bc2)
                     {
-                        alphaBits = BinaryPrimitives.ReadUInt64LittleEndian(block);
+                        alphaBits =
+                            BinaryPrimitives.ReadUInt64LittleEndian(block);
                     }
-                    else
+                    else if (image.Format == DdsPixelFormat.Bc3)
                     {
                         byte a0 = block[0];
                         byte a1 = block[1];
@@ -116,8 +145,13 @@ internal static class SceneCutoutMaterials
 
                         for (int i = 0; i < 6; i++)
                         {
-                            alphaBits |= (ulong)block[i + 2] << (i * 8);
+                            alphaBits |=
+                                (ulong)block[i + 2] << (i * 8);
                         }
+                    }
+                    else
+                    {
+                        return false;
                     }
 
                     for (int py = 0; py < 4; py++)
@@ -144,6 +178,7 @@ internal static class SceneCutoutMaterials
                             switch (image.Format)
                             {
                                 case DdsPixelFormat.Bc1:
+                                {
                                     int index = (int)(
                                         (colorIndices >> (pixel * 2)) & 3
                                     );
@@ -151,21 +186,32 @@ internal static class SceneCutoutMaterials
                                     alpha = bc1Transparent && index == 3
                                         ? (byte)0
                                         : (byte)255;
+
                                     break;
+                                }
 
                                 case DdsPixelFormat.Bc2:
+                                {
                                     alpha = (byte)(
                                         ((alphaBits >> (pixel * 4)) & 15) * 17
                                     );
-                                    break;
 
-                                default:
+                                    break;
+                                }
+
+                                case DdsPixelFormat.Bc3:
+                                {
                                     int alphaIndex = (int)(
                                         (alphaBits >> (pixel * 3)) & 7
                                     );
 
                                     alpha = palette[alphaIndex];
+
                                     break;
+                                }
+
+                                default:
+                                    return false;
                             }
 
                             Check(alpha);
