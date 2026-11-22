@@ -70,29 +70,31 @@ namespace Editor.Viewport
             float pixelX = 2f / _width;
             float pixelY = 2f / _height;
 
-            float inner = 3f - 2f * _playAimBlend;
-            float outer = 9f - 4f * _playAimBlend;
-
             var color = new RawColor4(
+                0.94f,
+                0.96f,
                 0.92f,
-                0.95f,
-                0.88f,
                 1f
             );
 
             var vertices = new GridVertex[]
             {
-                new(new Vector3(-outer * pixelX, 0f, 0.01f), color),
-                new(new Vector3(-inner * pixelX, 0f, 0.01f), color),
-
-                new(new Vector3(inner * pixelX, 0f, 0.01f), color),
-                new(new Vector3(outer * pixelX, 0f, 0.01f), color),
-
-                new(new Vector3(0f, -outer * pixelY, 0.01f), color),
-                new(new Vector3(0f, -inner * pixelY, 0.01f), color),
-
-                new(new Vector3(0f, inner * pixelY, 0.01f), color),
-                new(new Vector3(0f, outer * pixelY, 0.01f), color)
+                new(
+                    new Vector3(-pixelX, 0f, 0.01f),
+                    color
+                ),
+                new(
+                    new Vector3(pixelX, 0f, 0.01f),
+                    color
+                ),
+                new(
+                    new Vector3(0f, -pixelY, 0.01f),
+                    color
+                ),
+                new(
+                    new Vector3(0f, pixelY, 0.01f),
+                    color
+                )
             };
 
             if (_crosshairBuffer == null)

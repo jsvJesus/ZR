@@ -8,14 +8,14 @@ namespace ZoneReborn.World.Characters
     {
         private const float MouseSensitivity = 0.003f;
 
-        private const float DefaultDistance = 3.05f;
+        private const float DefaultDistance = 3.90f;
         private const float AimDistance = 2.10f;
         private const float FirstPersonDistance = 0.04f;
 
-        private const float DefaultShoulderOffset = 0.55f;
+        private const float DefaultShoulderOffset = 0.22f;
         private const float AimShoulderOffset = 0.62f;
 
-        private const float ThirdPersonPivotLift = 0.22f;
+        private const float ThirdPersonPivotLift = 0.76f;
         private const float FirstPersonEyeLift = 0.43f;
 
         private const float FollowSpeed = 14f;
