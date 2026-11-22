@@ -16,6 +16,14 @@ namespace Editor.Environment
         Fog
     }
 
+    public enum ColorGradingPreset
+    {
+        Neutral,
+        Atmospheric,
+        Cold,
+        Warm
+    }
+
     public sealed class EnvironmentSettings
     {
         private static readonly JsonSerializerOptions JsonOptions = new()
@@ -30,6 +38,19 @@ namespace Editor.Environment
         public float SunAzimuth { get; set; } = 115.2f;
         public float SunIntensity { get; set; } = 1f;
         public float AmbientIntensity { get; set; } = 0.75f;
+
+        public bool ToneMappingEnabled { get; set; } = true;
+        public float Exposure { get; set; } = 1f;
+
+        public float BloomIntensity { get; set; } = 0.2f;
+        public float BloomThreshold { get; set; } = 1f;
+
+        public float ColorGradingStrength { get; set; } = 0.4f;
+
+        public ColorGradingPreset ColorGradingPreset { get; set; } =
+            global::Editor.Environment.ColorGradingPreset.Atmospheric;
+
+        public float SkyDitherStrength { get; set; } = 1f;
 
         public bool ShadowsEnabled { get; set; } = true;
         public float ShadowDistance { get; set; } = 35f;

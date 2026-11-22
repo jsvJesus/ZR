@@ -194,6 +194,61 @@ namespace Editor.Environment
                         () => _settings.AmbientIntensity,
                         value => _settings.AmbientIntensity = value);
 
+                    AddHeading("HDR И ПОСТОБРАБОТКА");
+
+                    AddToggle(
+                        "Tone Mapping (ACES)",
+                        () => _settings.ToneMappingEnabled,
+                        value => _settings.ToneMappingEnabled = value);
+
+                    AddSlider(
+                        "Exposure",
+                        0.1,
+                        4,
+                        () => _settings.Exposure,
+                        value => _settings.Exposure = value,
+                        value => $"{value:0.00}");
+
+                    AddHeading("BLOOM");
+
+                    AddSlider(
+                        "Bloom Intensity",
+                        0,
+                        2,
+                        () => _settings.BloomIntensity,
+                        value => _settings.BloomIntensity = value,
+                        value => $"{value:0.00}");
+
+                    AddSlider(
+                        "Bloom Threshold",
+                        0.1,
+                        4,
+                        () => _settings.BloomThreshold,
+                        value => _settings.BloomThreshold = value,
+                        value => $"{value:0.00}");
+
+                    AddHeading("COLOR GRADING");
+
+                    AddGradingPresetSelector();
+
+                    AddSlider(
+                        "Color Grading",
+                        0,
+                        1,
+                        () => _settings.ColorGradingStrength,
+                        value => _settings.ColorGradingStrength = value,
+                        value => $"{value:0.00}");
+
+                    AddHeading("SKY DEBANDING");
+
+                    AddSlider(
+                        "Sky Dithering",
+                        0,
+                        2,
+                        () => _settings.SkyDitherStrength,
+                        value => _settings.SkyDitherStrength = value,
+                        value => $"{value:0.00}");
+
                     AddInfo(
                         "Параметры освещения применяются ко всей сцене.");
                     break;
@@ -389,6 +444,34 @@ namespace Editor.Environment
             };
 
             _content.Children.Add(checkbox);
+        }
+
+        private void AddGradingPresetSelector()
+        {
+            _content.Children.Add(new TextBlock
+            {
+                Text = "Цветовая палитра (LUT)",
+                FontSize = 12
+            });
+
+            var selector = new ComboBox
+            {
+                ItemsSource = Enum.GetValues<ColorGradingPreset>(),
+                SelectedItem = _settings.ColorGradingPreset,
+                HorizontalAlignment =
+                    Avalonia.Layout.HorizontalAlignment.Stretch
+            };
+
+            selector.SelectionChanged += (_, _) =>
+            {
+                if (selector.SelectedItem is ColorGradingPreset preset)
+                {
+                    _settings.ColorGradingPreset = preset;
+                    Changed();
+                }
+            };
+
+            _content.Children.Add(selector);
         }
 
         private void AddWeatherSelector()

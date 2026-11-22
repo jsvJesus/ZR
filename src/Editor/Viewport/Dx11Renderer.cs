@@ -343,10 +343,8 @@ namespace Editor.Viewport
                 return;
             }
 
-            // Release all pipeline bindings before ResizeBuffers.
             _context.ClearState();
-
-            // Destroy every view and texture dependent on viewport size.
+            _postProcessManager?.ReleaseSizeDependentResources();
             DisposeRenderTargetResources();
 
             _swapChain.ResizeBuffers(

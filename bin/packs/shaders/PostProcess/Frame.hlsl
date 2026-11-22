@@ -7,6 +7,11 @@ cbuffer FrameConstants : register(b0)
     float4 Parameters;
     float4 Camera;
     float4 Sun;
+	float4 GradeSettings;
+	// x = Bloom Intensity
+	// y = LUT Strength
+	// z = Sky Dither Strength
+	// w = Bloom Enabled
 };
 
 cbuffer EnvironmentShadow : register(b2)
@@ -22,6 +27,10 @@ Texture2D<float4> HdrTexture : register(t0);
 
 Texture2D<float> ContactDepth : register(t1);
 Texture2D<float4> ContactNormal : register(t2);
+Texture2D<float4> BloomTexture : register(t3);
+Texture2D<float4> ColorLutTexture : register(t4);
+
+SamplerState PostLinearSampler : register(s0);
 
 Texture2DArray<float> SunShadowTexture : register(t7);
 SamplerComparisonState SunShadowSampler : register(s7);
@@ -422,6 +431,78 @@ float3 ApplyToneMapping(float3 color)
         numerator / denominator);
 }
 
+float3 ApplyColorLut(float3 color)
+{
+    if (GradeSettings.y <= 0.0001f)
+    {
+        return color;
+    }
+
+    const float size = 32.0f;
+    const float atlasWidth = 1024.0f;
+
+    float3 coordinate =
+        saturate(color) * (size - 1.0f);
+
+    float blue0 = floor(coordinate.b);
+    float blue1 = min(blue0 + 1.0f, size - 1.0f);
+
+    float2 uv0 = float2(
+        (blue0 * size + coordinate.r + 0.5f) /
+            atlasWidth,
+        (coordinate.g + 0.5f) / size);
+
+    float2 uv1 = float2(
+        (blue1 * size + coordinate.r + 0.5f) /
+            atlasWidth,
+        (coordinate.g + 0.5f) / size);
+
+    float3 sample0 = ColorLutTexture.SampleLevel(
+        PostLinearSampler,
+        uv0,
+        0.0f).rgb;
+
+    float3 sample1 = ColorLutTexture.SampleLevel(
+        PostLinearSampler,
+        uv1,
+        0.0f).rgb;
+
+    float3 graded = lerp(
+        sample0,
+        sample1,
+        frac(coordinate.b));
+
+    return lerp(
+        color,
+        graded,
+        saturate(GradeSettings.y));
+}
+
+float3 LinearToSrgb(float3 color)
+{
+    color = saturate(color);
+
+    float3 lower = color * 12.92f;
+
+    float3 upper =
+        1.055f * pow(color, 1.0f / 2.4f)
+        - 0.055f;
+
+    return lerp(
+        lower,
+        upper,
+        step(0.0031308f, color));
+}
+
+float InterleavedGradientNoise(float2 pixel)
+{
+    return frac(
+        52.9829189f *
+        frac(
+            0.06711056f * pixel.x +
+            0.00583715f * pixel.y));
+}
+
 float4 PSPresent(PixelInput input) : SV_Target
 {
     int2 size = int2(Parameters.xy);
@@ -431,34 +512,67 @@ float4 PSPresent(PixelInput input) : SV_Target
         int2(0, 0),
         size - 1);
 
+    float2 uv = PixelUv(pixel);
+
     float3 hdr = HdrTexture.Load(
         int3(pixel, 0)).rgb;
 
-    if (Sun.w > 0.5f)
+    float depth = ContactDepth.Load(
+        int3(pixel, 0));
+
+    // Keep the existing contact shadow pass.
+    if (Sun.w > 0.5f &&
+        depth < 0.999999f)
     {
-        float depth = ContactDepth.Load(
-            int3(pixel, 0));
+        float3 normal =
+            ContactNormal.Load(
+                int3(pixel, 0)).xyz *
+                2.0f - 1.0f;
 
-        if (depth < 0.999999f)
-        {
-            float3 normal =
-                ContactNormal.Load(
-                    int3(pixel, 0)).xyz *
-                    2.0f - 1.0f;
+        float shadow = ScreenContactShadow(
+            uv,
+            depth,
+            normalize(normal));
 
-            float shadow = ScreenContactShadow(
-                PixelUv(pixel),
-                depth,
-                normalize(normal));
+        float attenuation = saturate(
+            shadow * Camera.w);
 
-            float attenuation = saturate(
-                shadow * Camera.w);
-
-            hdr *= 1.0f - attenuation;
-        }
+        hdr *= 1.0f - attenuation;
     }
 
+    // HDR bloom is combined before tone mapping.
+    if (GradeSettings.w > 0.5f)
+    {
+        float3 bloom = BloomTexture.SampleLevel(
+            PostLinearSampler,
+            uv,
+            0.0f).rgb;
+
+        hdr += bloom * GradeSettings.x;
+    }
+
+    // Exposure + ACES tone mapping.
     float3 color = ApplyToneMapping(hdr);
 
-    return float4(color, 1.0f);
+    // Color grading in display-referred linear RGB.
+    color = ApplyColorLut(color);
+
+    // Convert linear output into sRGB for the UNorm swap chain.
+    color = LinearToSrgb(color);
+
+    // Stable spatial dithering for sky pixels.
+    if (depth >= 0.999999f &&
+        GradeSettings.z > 0.0001f)
+    {
+        float noise =
+            InterleavedGradientNoise(
+                float2(pixel)) - 0.5f;
+
+        color +=
+            noise * GradeSettings.z / 255.0f;
+    }
+
+    return float4(
+        saturate(color),
+        1.0f);
 }

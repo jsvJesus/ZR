@@ -223,6 +223,14 @@ namespace Editor.Viewport
                     ? 0.3f
                     : 0f;
 
+            _postProcessManager.ToneMappingEnabled = _environmentSettings.ToneMappingEnabled;
+            _postProcessManager.Exposure = _environmentSettings.Exposure;
+            _postProcessManager.BloomIntensity = _environmentSettings.BloomIntensity;
+            _postProcessManager.BloomThreshold = _environmentSettings.BloomThreshold;
+            _postProcessManager.ColorGradingStrength = _environmentSettings.ColorGradingStrength;
+            _postProcessManager.GradingPreset = _environmentSettings.ColorGradingPreset;
+            _postProcessManager.SkyDitherStrength = _environmentSettings.SkyDitherStrength;
+
             _postProcessManager.Render(
                 _context,
                 _width,

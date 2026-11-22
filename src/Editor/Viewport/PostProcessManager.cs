@@ -1,13 +1,13 @@
 using System;
 using System.Numerics;
 using System.Runtime.InteropServices;
+using Editor.Environment;
 using Editor.Rendering.Shaders;
 using SharpDX;
 using SharpDX.Direct3D;
 using SharpDX.Direct3D11;
 using Buffer = SharpDX.Direct3D11.Buffer;
 using Device = SharpDX.Direct3D11.Device;
-
 using Vector3 = System.Numerics.Vector3;
 using Vector4 = System.Numerics.Vector4;
 
@@ -20,13 +20,25 @@ namespace Editor.Viewport
         private PixelShader _presentPixel = null!;
         private Buffer _frameBuffer = null!;
 
+        private SamplerState? _colorSampler;
+        private HdrBloom? _bloom;
+        private ColorLutAtlas? _lut;
+
         private Matrix4x4 _previousViewProjection;
         private bool _hasPreviousFrame;
         private bool _disposed;
 
-        public bool ToneMappingEnabled { get; set; }
-
+        public bool ToneMappingEnabled { get; set; } = true;
         public float Exposure { get; set; } = 1f;
+
+        public float BloomIntensity { get; set; } = 0.2f;
+        public float BloomThreshold { get; set; } = 1f;
+
+        public float ColorGradingStrength { get; set; } = 0.4f;
+        public ColorGradingPreset GradingPreset { get; set; } =
+            ColorGradingPreset.Atmospheric;
+
+        public float SkyDitherStrength { get; set; } = 1f;
 
         public PostProcessManager(
             Device device,
@@ -69,6 +81,22 @@ namespace Editor.Viewport
                     CpuAccessFlags.None,
                     ResourceOptionFlags.None,
                     0);
+
+                _colorSampler = new SamplerState(
+                    device,
+                    new SamplerStateDescription
+                    {
+                        Filter = Filter.MinMagMipLinear,
+                        AddressU = TextureAddressMode.Clamp,
+                        AddressV = TextureAddressMode.Clamp,
+                        AddressW = TextureAddressMode.Clamp,
+                        ComparisonFunction = Comparison.Never,
+                        MinimumLod = 0,
+                        MaximumLod = float.MaxValue
+                    });
+
+                _bloom = new HdrBloom(device, compiler);
+                _lut = new ColorLutAtlas(device);
             }
             catch
             {
@@ -81,6 +109,12 @@ namespace Editor.Viewport
         {
             _hasPreviousFrame = false;
             _previousViewProjection = Matrix4x4.Identity;
+        }
+
+        public void ReleaseSizeDependentResources()
+        {
+            _bloom?.ReleaseTargets();
+            ResetHistory();
         }
 
         public void Render(
@@ -132,6 +166,20 @@ namespace Editor.Viewport
                 sunShadowResource != null &&
                 sunShadowSampler != null;
 
+            _lut?.SetPreset(GradingPreset);
+
+            ShaderResourceView? bloomResource = null;
+
+            if (BloomIntensity > 0.0001f && _bloom != null)
+            {
+                bloomResource = _bloom.Render(
+                    context,
+                    width,
+                    height,
+                    hdrScene,
+                    BloomThreshold);
+            }
+
             var constants = new FrameConstants
             {
                 InverseViewProjection = inverseViewProjection,
@@ -147,7 +195,12 @@ namespace Editor.Viewport
                     Math.Clamp(contactStrength, 0f, 1f)),
                 Sun = new Vector4(
                     sunDirection,
-                    contactAvailable ? 1f : 0f)
+                    contactAvailable ? 1f : 0f),
+                GradeSettings = new Vector4(
+                    Math.Clamp(BloomIntensity, 0f, 5f),
+                    Math.Clamp(ColorGradingStrength, 0f, 1f),
+                    Math.Clamp(SkyDitherStrength, 0f, 2f),
+                    bloomResource != null ? 1f : 0f)
             };
 
             context.ClearState();
@@ -176,7 +229,7 @@ namespace Editor.Viewport
                     0,
                     _frameBuffer);
 
-                // Reconstruct surface attributes from depth.
+                // Stage 1: surface reconstruction.
                 context.OutputMerger.SetRenderTargets(
                     null,
                     normal,
@@ -196,7 +249,7 @@ namespace Editor.Viewport
                     0,
                     null);
 
-                // HDR presentation and short screen-space shadows.
+                // Stage 2: HDR composition and presentation.
                 context.OutputMerger.SetRenderTargets(
                     null,
                     backBuffer);
@@ -212,6 +265,18 @@ namespace Editor.Viewport
                 context.PixelShader.SetShaderResource(
                     2,
                     normalResource);
+
+                context.PixelShader.SetShaderResource(
+                    3,
+                    bloomResource);
+
+                context.PixelShader.SetShaderResource(
+                    4,
+                    _lut?.View);
+
+                context.PixelShader.SetSampler(
+                    0,
+                    _colorSampler);
 
                 if (contactAvailable)
                 {
@@ -251,6 +316,15 @@ namespace Editor.Viewport
 
             _disposed = true;
 
+            _lut?.Dispose();
+            _lut = null;
+
+            _bloom?.Dispose();
+            _bloom = null;
+
+            _colorSampler?.Dispose();
+            _colorSampler = null;
+
             _frameBuffer?.Dispose();
             _presentPixel?.Dispose();
             _surfacePixel?.Dispose();
@@ -266,6 +340,7 @@ namespace Editor.Viewport
             public Vector4 Parameters;
             public Vector4 Camera;
             public Vector4 Sun;
+            public Vector4 GradeSettings;
         }
     }
 }
