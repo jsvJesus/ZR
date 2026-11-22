@@ -203,11 +203,29 @@ public sealed class CharacterWeaponController
                 RightHandRotation = Vector3.Lerp(previous.RightHandRotation, target.RightHandRotation, blend)
             };
         else Profile = target;
-        // hand_control.__check_for_weapon transfers Track -> Right in the air.
-        // Let the jump clip move the carrying arm instead of pinning it to GUNR.
-        float carry = airborne || target.ToAttachWeapon == "Right" ? 1 : 0;
-        RightCarryWeight += (carry - RightCarryWeight) * blend;
-        if (MathF.Abs(carry - RightCarryWeight) < 0.001f) RightCarryWeight = carry;
+
+        bool peacefulRightCarry =
+            Relaxed &&
+            !aiming &&
+            !_profileMoving &&
+            !_profileCrouch &&
+            !_profileSprint &&
+            State == CharacterWeaponState.Held;
+
+        bool carryByRightHand =
+            airborne ||
+            target.ToAttachWeapon == "Right" ||
+            peacefulRightCarry;
+
+        float carry = carryByRightHand ? 1f : 0f;
+
+        RightCarryWeight +=
+            (carry - RightCarryWeight) * blend;
+
+        if (MathF.Abs(carry - RightCarryWeight) < 0.001f)
+        {
+            RightCarryWeight = carry;
+        }
     }
 
     private void StartPhase()
