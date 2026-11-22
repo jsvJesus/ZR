@@ -60,7 +60,7 @@ internal sealed partial class SceneRenderer
         float reach = Math.Clamp(
             radius,
             1f,
-            512f);
+            1024f);
 
         var extent = new Vector3(reach);
 

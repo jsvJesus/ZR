@@ -69,11 +69,37 @@ namespace Editor.Viewport.Vegetation
             catch { Dispose(); throw; }
         }
 
-        public void Render(FreeCamera camera, Matrix4x4 viewProjection, bool playing)
+        public void Render(
+            FreeCamera camera,
+            Matrix4x4 viewProjection,
+            bool playing,
+            bool shadowPass = false,
+            Vector3? shadowForward = null)
         {
-            var forward = Vector3.Normalize(camera.LookDirection);
-            var right = camera.RightDirection;
-            var up = camera.UpDirection;
+            var forward = shadowForward.HasValue
+                ? Vector3.Normalize(shadowForward.Value)
+                : Vector3.Normalize(camera.LookDirection);
+
+            Vector3 right;
+            Vector3 up;
+
+            if (shadowForward.HasValue)
+            {
+                Vector3 reference = MathF.Abs(forward.Y) > 0.99f
+                    ? Vector3.UnitZ
+                    : Vector3.UnitY;
+
+                right = Vector3.Normalize(
+                    Vector3.Cross(reference, forward));
+
+                up = Vector3.Cross(forward, right);
+            }
+            else
+            {
+                right = camera.RightDirection;
+                up = camera.UpDirection;
+            }
+
             _context.InputAssembler.InputLayout = _layout;
             _context.VertexShader.Set(_vertex); _context.VertexShader.SetConstantBuffer(0, _constants);
             _context.PixelShader.Set(_pixel); _context.PixelShader.SetConstantBuffer(0, _constants);
@@ -81,6 +107,7 @@ namespace Editor.Viewport.Vegetation
             _context.Rasterizer.State = _rasterizer;
             _context.OutputMerger.SetDepthStencilState(_depth);
             _context.OutputMerger.SetBlendState(null);
+
             foreach (var entry in _scene.Instances
                          .Select(tree => (Tree: tree, Generated: false))
                          .Concat(_scene.Generated.Select(
@@ -97,7 +124,46 @@ namespace Editor.Viewport.Vegetation
                 var position = new Vector3(world.M41, world.M42, world.M43);
                 float radius = Math.Max(asset.Minimum.Length(), asset.Maximum.Length()) * tree.Scale;
                 float distance = Vector3.Distance(position, camera.Position);
-                if (distance > 1800 + radius || Vector3.Dot(position - camera.Position, forward) < -radius) continue;
+
+                if (shadowPass)
+                {
+                    Vector4 clip = Vector4.Transform(
+                        new Vector4(position, 1f),
+                        viewProjection);
+
+                    float extentX = radius * new Vector3(
+                        viewProjection.M11,
+                        viewProjection.M21,
+                        viewProjection.M31).Length();
+
+                    float extentY = radius * new Vector3(
+                        viewProjection.M12,
+                        viewProjection.M22,
+                        viewProjection.M32).Length();
+
+                    float extentZ = radius * new Vector3(
+                        viewProjection.M13,
+                        viewProjection.M23,
+                        viewProjection.M33).Length();
+
+                    if (clip.X < -clip.W - extentX ||
+                        clip.X > clip.W + extentX ||
+                        clip.Y < -clip.W - extentY ||
+                        clip.Y > clip.W + extentY ||
+                        clip.Z < -extentZ ||
+                        clip.Z > clip.W + extentZ)
+                    {
+                        continue;
+                    }
+                }
+                else if (distance > 1800f + radius ||
+                         Vector3.Dot(
+                             position - camera.Position,
+                             forward) < -radius)
+                {
+                    continue;
+                }
+
                 if (!_models.TryGetValue(tree.Model, out var model))
                 {
                     model = new ModelResources(_device, asset);

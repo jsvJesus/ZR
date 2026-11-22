@@ -542,7 +542,10 @@ namespace Editor.Viewport
                 RenderRoadOverlay(viewProjection);
             }
 
-            RenderPostProcessing(viewProjection);
+            RenderPostProcessing(
+                viewProjection,
+                camera.Position,
+                sunDirection);
             _swapChain.Present(1, PresentFlags.None);
         }
 

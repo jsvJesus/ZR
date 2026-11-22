@@ -13,14 +13,23 @@ namespace Editor.Viewport
 {
     public sealed partial class Dx11Renderer
     {
+        private const int ShadowCascadeCount = 4;
         private const int ShadowResolution = 2048;
         private const int SkyShadowResolution = 1024;
+        private const float CascadeSplitLambda = 0.65f;
 
         private Texture2D? _shadowTexture;
-        private DepthStencilView? _shadowDepthView;
+        private readonly DepthStencilView?[] _shadowDepthViews =
+            new DepthStencilView?[ShadowCascadeCount];
+
+        private readonly Matrix4x4[] _shadowMatrices =
+            new Matrix4x4[ShadowCascadeCount];
+
         private ShaderResourceView? _shadowShaderView;
         private SamplerState? _shadowSampler;
         private Buffer? _shadowConstantBuffer;
+
+        private Vector4 _shadowSplits;
 
         private Texture2D? _skyShadowTexture;
         private DepthStencilView? _skyShadowDepthView;
@@ -30,38 +39,99 @@ namespace Editor.Viewport
 
         private void InitializeShadowResources()
         {
-            CreateShadowMap(
-                ShadowResolution,
-                out _shadowTexture,
-                out _shadowDepthView,
-                out _shadowShaderView);
+            try
+            {
+                CreateCascadedShadowMap();
 
-            CreateShadowMap(
-                SkyShadowResolution,
-                out _skyShadowTexture,
-                out _skyShadowDepthView,
-                out _skyShadowShaderView);
+                CreateShadowMap(
+                    SkyShadowResolution,
+                    out _skyShadowTexture,
+                    out _skyShadowDepthView,
+                    out _skyShadowShaderView);
 
-            _shadowSampler = CreateComparisonSampler();
-            _skyShadowSampler = CreateComparisonSampler();
+                _shadowSampler = CreateComparisonSampler();
+                _skyShadowSampler = CreateComparisonSampler();
 
-            _shadowConstantBuffer = new Buffer(
+                _shadowConstantBuffer = new Buffer(
+                    _device,
+                    Utilities.SizeOf<ShadowConstants>(),
+                    ResourceUsage.Default,
+                    BindFlags.ConstantBuffer,
+                    CpuAccessFlags.None,
+                    ResourceOptionFlags.None,
+                    0);
+
+                _skyShadowConstantBuffer = new Buffer(
+                    _device,
+                    Utilities.SizeOf<SkyShadowConstants>(),
+                    ResourceUsage.Default,
+                    BindFlags.ConstantBuffer,
+                    CpuAccessFlags.None,
+                    ResourceOptionFlags.None,
+                    0);
+            }
+            catch
+            {
+                DisposeShadowResources();
+                throw;
+            }
+        }
+
+        private void CreateCascadedShadowMap()
+        {
+            _shadowTexture = new Texture2D(
                 _device,
-                Utilities.SizeOf<ShadowConstants>(),
-                ResourceUsage.Default,
-                BindFlags.ConstantBuffer,
-                CpuAccessFlags.None,
-                ResourceOptionFlags.None,
-                0);
+                new Texture2DDescription
+                {
+                    Width = ShadowResolution,
+                    Height = ShadowResolution,
+                    MipLevels = 1,
+                    ArraySize = ShadowCascadeCount,
+                    Format = Format.R32_Typeless,
+                    SampleDescription = new SampleDescription(1, 0),
+                    Usage = ResourceUsage.Default,
+                    BindFlags =
+                        BindFlags.DepthStencil |
+                        BindFlags.ShaderResource,
+                    CpuAccessFlags = CpuAccessFlags.None,
+                    OptionFlags = ResourceOptionFlags.None
+                });
 
-            _skyShadowConstantBuffer = new Buffer(
+            for (int index = 0; index < ShadowCascadeCount; index++)
+            {
+                _shadowDepthViews[index] = new DepthStencilView(
+                    _device,
+                    _shadowTexture,
+                    new DepthStencilViewDescription
+                    {
+                        Format = Format.D32_Float,
+                        Dimension = DepthStencilViewDimension.Texture2DArray,
+                        Texture2DArray =
+                            new DepthStencilViewDescription.Texture2DArrayResource
+                            {
+                                MipSlice = 0,
+                                FirstArraySlice = index,
+                                ArraySize = 1
+                            }
+                    });
+            }
+
+            _shadowShaderView = new ShaderResourceView(
                 _device,
-                Utilities.SizeOf<SkyShadowConstants>(),
-                ResourceUsage.Default,
-                BindFlags.ConstantBuffer,
-                CpuAccessFlags.None,
-                ResourceOptionFlags.None,
-                0);
+                _shadowTexture,
+                new ShaderResourceViewDescription
+                {
+                    Format = Format.R32_Float,
+                    Dimension = ShaderResourceViewDimension.Texture2DArray,
+                    Texture2DArray =
+                        new ShaderResourceViewDescription.Texture2DArrayResource
+                        {
+                            MostDetailedMip = 0,
+                            MipLevels = 1,
+                            FirstArraySlice = 0,
+                            ArraySize = ShadowCascadeCount
+                        }
+                });
         }
 
         private void CreateShadowMap(
@@ -83,37 +153,55 @@ namespace Editor.Viewport
                     Usage = ResourceUsage.Default,
                     BindFlags =
                         BindFlags.DepthStencil |
-                        BindFlags.ShaderResource
+                        BindFlags.ShaderResource,
+                    CpuAccessFlags = CpuAccessFlags.None,
+                    OptionFlags = ResourceOptionFlags.None
                 });
 
-            depthView = new DepthStencilView(
-                _device,
-                texture,
-                new DepthStencilViewDescription
-                {
-                    Format = Format.D32_Float,
-                    Dimension = DepthStencilViewDimension.Texture2D,
-                    Texture2D =
-                        new DepthStencilViewDescription.Texture2DResource
-                        {
-                            MipSlice = 0
-                        }
-                });
+            try
+            {
+                depthView = new DepthStencilView(
+                    _device,
+                    texture,
+                    new DepthStencilViewDescription
+                    {
+                        Format = Format.D32_Float,
+                        Dimension = DepthStencilViewDimension.Texture2D,
+                        Texture2D =
+                            new DepthStencilViewDescription.Texture2DResource
+                            {
+                                MipSlice = 0
+                            }
+                    });
 
-            shaderView = new ShaderResourceView(
-                _device,
-                texture,
-                new ShaderResourceViewDescription
+                try
                 {
-                    Format = Format.R32_Float,
-                    Dimension = ShaderResourceViewDimension.Texture2D,
-                    Texture2D =
-                        new ShaderResourceViewDescription.Texture2DResource
+                    shaderView = new ShaderResourceView(
+                        _device,
+                        texture,
+                        new ShaderResourceViewDescription
                         {
-                            MostDetailedMip = 0,
-                            MipLevels = 1
-                        }
-                });
+                            Format = Format.R32_Float,
+                            Dimension = ShaderResourceViewDimension.Texture2D,
+                            Texture2D =
+                                new ShaderResourceViewDescription.Texture2DResource
+                                {
+                                    MostDetailedMip = 0,
+                                    MipLevels = 1
+                                }
+                        });
+                }
+                catch
+                {
+                    depthView.Dispose();
+                    throw;
+                }
+            }
+            catch
+            {
+                texture.Dispose();
+                throw;
+            }
         }
 
         private SamplerState CreateComparisonSampler()
@@ -128,10 +216,7 @@ namespace Editor.Viewport
                     AddressW = TextureAddressMode.Border,
                     BorderColor =
                         new SharpDX.Mathematics.Interop.RawColor4(
-                            1f,
-                            1f,
-                            1f,
-                            1f),
+                            1f, 1f, 1f, 1f),
                     ComparisonFunction = Comparison.LessEqual,
                     MinimumLod = 0,
                     MaximumLod = float.MaxValue
@@ -144,8 +229,7 @@ namespace Editor.Viewport
             float farPlane,
             bool playing)
         {
-            if (_shadowDepthView == null ||
-                _shadowShaderView == null ||
+            if (_shadowShaderView == null ||
                 _shadowConstantBuffer == null ||
                 _skyShadowDepthView == null ||
                 _skyShadowShaderView == null ||
@@ -154,28 +238,28 @@ namespace Editor.Viewport
                 return;
             }
 
+            // Prevent DSV/SRV conflicts with the previous frame.
             _context.PixelShader.SetShaderResource(7, null);
             _context.PixelShader.SetShaderResource(23, null);
 
-            var settings = _environmentSettings;
-
             SetShadowConstants(
-                Matrix4x4.Identity,
                 false,
-                settings.ShadowStrength);
+                _environmentSettings.ShadowStrength,
+                camera.LookDirection);
 
             SetSkyShadowConstants(
                 Matrix4x4.Identity,
                 false);
 
-            if (!settings.ShadowsEnabled || _objectPreview)
+            if (!_environmentSettings.ShadowsEnabled ||
+                _objectPreview)
             {
                 return;
             }
 
             if (sunDirection.Y > 0.04f)
             {
-                RenderSunShadowMap(
+                RenderSunCascades(
                     camera,
                     sunDirection,
                     farPlane,
@@ -183,131 +267,273 @@ namespace Editor.Viewport
             }
 
             RenderSkyShadowMap(camera);
+
+            if (sunDirection.Y > 0.04f)
+            {
+                _context.PixelShader.SetShaderResource(
+                    7,
+                    _shadowShaderView);
+
+                _context.PixelShader.SetSampler(
+                    7,
+                    _shadowSampler);
+            }
         }
 
-        private void RenderSunShadowMap(
+        private void RenderSunCascades(
             FreeCamera camera,
             Vector3 sunDirection,
             float farPlane,
             bool playing)
         {
-            float distance = Math.Clamp(
+            float nearPlane = playing
+                ? 0.15f - 0.14f *
+                    Math.Clamp(_playFirstPersonBlend, 0f, 1f)
+                : 0.5f;
+
+            float maximumDistance = Math.Clamp(
                 _environmentSettings.ShadowDistance,
                 25f,
-                200f);
+                400f);
 
-            Vector3 center = camera.Position +
-                camera.LookDirection * distance * 0.25f;
+            float shadowDistance = Math.Min(
+                farPlane,
+                maximumDistance);
 
-            float lightOffset = MathF.Max(
-                distance * 4f,
-                150f);
-
-            Vector3 lightPosition =
-                center + sunDirection * lightOffset;
-
-            Matrix4x4 lightView = CreateShadowView(
-                lightPosition,
-                -sunDirection);
-
-            float nearPlane = 0.1f;
-            float farShadowPlane =
-                lightOffset * 2f + distance * 3f;
-
-            Matrix4x4 lightProjection =
-                CreateShadowProjection(
-                    distance,
-                    nearPlane,
-                    farShadowPlane);
-
-            Matrix4x4 lightViewProjection =
-                lightView * lightProjection;
-
-            _context.OutputMerger.SetRenderTargets(
-                _shadowDepthView);
-
-            _context.ClearDepthStencilView(
-                _shadowDepthView!,
-                DepthStencilClearFlags.Depth,
-                1f,
-                0);
-
-            _context.Rasterizer.SetViewport(
-                0,
-                0,
-                ShadowResolution,
-                ShadowResolution);
-
-            try
+            if (shadowDistance <= nearPlane + 0.01f)
             {
-                _terrain?.Render(
-                    camera,
-                    lightViewProjection);
-
-                _objects?.RenderShadowCasters(
-                    center,
-                    distance * 3f,
-                    lightViewProjection);
-
-                _trees?.Render(
-                    camera,
-                    lightViewProjection,
-                    playing);
-
-                if (_character != null)
-                {
-                    Matrix4x4 relativeShadowProjection =
-                        Matrix4x4.CreateTranslation(
-                            camera.Position) *
-                        lightViewProjection;
-
-                    _character.Render(
-                        relativeShadowProjection,
-                        camera.Position);
-                }
+                return;
             }
-            finally
+
+            float fieldOfView = playing
+                ? _playFieldOfView
+                : 1.05f;
+
+            float aspectRatio = (float)_width / _height;
+            float tangent = MathF.Tan(fieldOfView * 0.5f);
+
+            Vector3 forward = Vector3.Normalize(
+                camera.LookDirection);
+
+            Vector3 lightForward = -sunDirection;
+
+            Vector3 reference = MathF.Abs(lightForward.Y) > 0.99f
+                ? Vector3.UnitZ
+                : Vector3.UnitY;
+
+            Vector3 lightRight = Vector3.Normalize(
+                Vector3.Cross(reference, lightForward));
+
+            Vector3 lightUp = Vector3.Cross(
+                lightForward,
+                lightRight);
+
+            float previousSplit = nearPlane;
+
+            for (int index = 0; index < ShadowCascadeCount; index++)
             {
-                RestoreRenderTarget();
+                float fraction =
+                    (index + 1f) / ShadowCascadeCount;
+
+                float logarithmic =
+                    nearPlane *
+                    MathF.Pow(shadowDistance / nearPlane, fraction);
+
+                float uniform =
+                    nearPlane +
+                    (shadowDistance - nearPlane) * fraction;
+
+                float split = uniform + (logarithmic - uniform) * CascadeSplitLambda;
+
+                if (index == ShadowCascadeCount - 1)
+                {
+                    split = shadowDistance;
+                }
+
+                float middle = (previousSplit + split) * 0.5f;
+
+                Vector3 center =
+                    camera.Position + forward * middle;
+
+                float horizontal = split * tangent * aspectRatio;
+                float vertical = split * tangent;
+
+                float radius = MathF.Sqrt(
+                    (split - middle) * (split - middle) +
+                    horizontal * horizontal +
+                    vertical * vertical);
+
+                radius = MathF.Ceiling((radius * 1.05f + 2f) * 8f)
+                    / 8f;
+
+                // Snap projection center to shadow texel boundaries.
+                float texelSize =
+                    (radius * 2f) / ShadowResolution;
+
+                float centerX = Vector3.Dot(
+                    center,
+                    lightRight);
+
+                float centerY = Vector3.Dot(
+                    center,
+                    lightUp);
+
+                float snappedX =
+                    MathF.Round(centerX / texelSize) * texelSize;
+
+                float snappedY =
+                    MathF.Round(centerY / texelSize) * texelSize;
+
+                center +=
+                    lightRight * (snappedX - centerX) +
+                    lightUp * (snappedY - centerY);
+
+                float casterExtension = Math.Clamp(
+                    split * 0.5f + 32f,
+                    40f,
+                    240f);
+
+                float lightOffset =
+                    radius + casterExtension + 8f;
+
+                Vector3 lightPosition =
+                    center + sunDirection * lightOffset;
+
+                Matrix4x4 lightView = CreateShadowView(
+                    lightPosition,
+                    lightForward);
+
+                Matrix4x4 lightProjection =
+                    CreateShadowProjection(
+                        radius,
+                        0.1f,
+                        lightOffset + radius +
+                        casterExtension + 16f);
+
+                Matrix4x4 lightViewProjection =
+                    lightView * lightProjection;
+
+                _shadowMatrices[index] = lightViewProjection;
+
+                switch (index)
+                {
+                    case 0:
+                        _shadowSplits.X = split;
+                        break;
+                    case 1:
+                        _shadowSplits.Y = split;
+                        break;
+                    case 2:
+                        _shadowSplits.Z = split;
+                        break;
+                    case 3:
+                        _shadowSplits.W = split;
+                        break;
+                }
+
+                var depthView = _shadowDepthViews[index];
+
+                if (depthView == null)
+                {
+                    previousSplit = split;
+                    continue;
+                }
+
+                _context.OutputMerger.SetRenderTargets(depthView);
+
+                _context.ClearDepthStencilView(
+                    depthView,
+                    DepthStencilClearFlags.Depth,
+                    1f,
+                    0);
+
+                _context.Rasterizer.SetViewport(
+                    0,
+                    0,
+                    ShadowResolution,
+                    ShadowResolution);
+
+                try
+                {
+                    _terrain?.Render(
+                        camera,
+                        lightViewProjection);
+
+                    Vector3 casterCenter =
+                        center +
+                        sunDirection * casterExtension * 0.35f;
+
+                    _objects?.RenderShadowCasters(
+                        casterCenter,
+                        radius + casterExtension,
+                        lightViewProjection);
+
+                    _trees?.Render(
+                        camera,
+                        lightViewProjection,
+                        playing,
+                        shadowPass: true,
+                        shadowForward: lightForward);
+
+                    if (_character != null)
+                    {
+                        Matrix4x4 relativeProjection =
+                            Matrix4x4.CreateTranslation(
+                                camera.Position) *
+                            lightViewProjection;
+
+                        _character.RenderShadow(
+                            relativeProjection,
+                            camera.Position);
+                    }
+                }
+                finally
+                {
+                    RestoreRenderTarget();
+                }
+
+                previousSplit = split;
             }
 
             SetShadowConstants(
-                lightViewProjection,
                 true,
-                _environmentSettings.ShadowStrength);
-
-            _context.PixelShader.SetShaderResource(
-                7,
-                _shadowShaderView);
-
-            _context.PixelShader.SetSampler(
-                7,
-                _shadowSampler);
+                _environmentSettings.ShadowStrength,
+                forward);
         }
 
         private void RenderSkyShadowMap(FreeCamera camera)
         {
+            if (_skyShadowDepthView == null)
+            {
+                return;
+            }
+
             float distance = Math.Clamp(
                 MathF.Max(
                     _environmentSettings.ShadowDistance * 1.5f,
                     72f),
                 72f,
-                200f);
+                400f);
+
+            float skyTexelSize =
+                distance * 2f / SkyShadowResolution;
 
             Vector3 center = camera.Position;
 
-            Vector3 lightPosition = center +
-                Vector3.UnitY * 512f;
+            center.X = MathF.Round(
+                center.X / skyTexelSize) * skyTexelSize;
+
+            center.Z = MathF.Round(
+                center.Z / skyTexelSize) * skyTexelSize;
 
             Matrix4x4 lightView = CreateShadowView(
-                lightPosition,
+                center + Vector3.UnitY * 512f,
                 -Vector3.UnitY);
 
-            Matrix4x4 lightProjection =
-                CreateShadowProjection(
-                    distance,
-                    0.1f,
-                    1024f);
+            Matrix4x4 lightProjection = CreateShadowProjection(
+                distance,
+                0.1f,
+                1024f);
 
             Matrix4x4 lightViewProjection =
                 lightView * lightProjection;
@@ -316,7 +542,7 @@ namespace Editor.Viewport
                 _skyShadowDepthView);
 
             _context.ClearDepthStencilView(
-                _skyShadowDepthView!,
+                _skyShadowDepthView,
                 DepthStencilClearFlags.Depth,
                 1f,
                 0);
@@ -429,18 +655,25 @@ namespace Editor.Viewport
         }
 
         private void SetShadowConstants(
-            Matrix4x4 matrix,
             bool enabled,
-            float strength)
+            float strength,
+            Vector3 cameraForward)
         {
             var constants = new ShadowConstants
             {
-                ViewProjection = matrix,
+                Matrix0 = _shadowMatrices[0],
+                Matrix1 = _shadowMatrices[1],
+                Matrix2 = _shadowMatrices[2],
+                Matrix3 = _shadowMatrices[3],
                 Parameters = new Vector4(
                     enabled ? 1f : 0f,
                     Math.Clamp(strength, 0f, 1f),
                     ShadowResolution,
-                    0.0001f)
+                    0.00015f),
+                Splits = _shadowSplits,
+                CameraForward = new Vector4(
+                    Vector3.Normalize(cameraForward),
+                    0f)
             };
 
             _context.UpdateSubresource(
@@ -462,7 +695,7 @@ namespace Editor.Viewport
                 Parameters = new Vector4(
                     enabled ? 1f : 0f,
                     SkyShadowResolution,
-                    0.0001f,
+                    0.0002f,
                     0f)
             };
 
@@ -484,23 +717,49 @@ namespace Editor.Viewport
             }
 
             _skyShadowConstantBuffer?.Dispose();
+            _skyShadowConstantBuffer = null;
+
             _skyShadowSampler?.Dispose();
+            _skyShadowSampler = null;
+
             _skyShadowShaderView?.Dispose();
+            _skyShadowShaderView = null;
+
             _skyShadowDepthView?.Dispose();
+            _skyShadowDepthView = null;
+
             _skyShadowTexture?.Dispose();
+            _skyShadowTexture = null;
 
             _shadowConstantBuffer?.Dispose();
+            _shadowConstantBuffer = null;
+
             _shadowSampler?.Dispose();
+            _shadowSampler = null;
+
             _shadowShaderView?.Dispose();
-            _shadowDepthView?.Dispose();
+            _shadowShaderView = null;
+
+            for (int index = 0; index < ShadowCascadeCount; index++)
+            {
+                _shadowDepthViews[index]?.Dispose();
+                _shadowDepthViews[index] = null;
+            }
+
             _shadowTexture?.Dispose();
+            _shadowTexture = null;
         }
 
         [StructLayout(LayoutKind.Sequential)]
         private struct ShadowConstants
         {
-            public Matrix4x4 ViewProjection;
+            public Matrix4x4 Matrix0;
+            public Matrix4x4 Matrix1;
+            public Matrix4x4 Matrix2;
+            public Matrix4x4 Matrix3;
             public Vector4 Parameters;
+            public Vector4 Splits;
+            public Vector4 CameraForward;
         }
 
         [StructLayout(LayoutKind.Sequential)]

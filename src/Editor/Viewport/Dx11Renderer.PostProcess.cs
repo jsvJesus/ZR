@@ -200,30 +200,47 @@ namespace Editor.Viewport
         }
 
         private void RenderPostProcessing(
-            Matrix4x4 viewProjection)
+            Matrix4x4 viewProjection,
+            Vector3 cameraPosition,
+            Vector3 sunDirection)
         {
             if (_postProcessManager == null ||
                 _backBufferTarget == null ||
                 _hdrSceneResource == null ||
                 _depthShaderResource == null ||
                 _normalTarget == null ||
+                _normalResource == null ||
                 _roughnessTarget == null ||
                 _motionTarget == null)
             {
                 return;
             }
 
+            float contactStrength =
+                _environmentSettings.ShadowsEnabled &&
+                !_objectPreview &&
+                sunDirection.Y > 0.04f
+                    ? 0.3f
+                    : 0f;
+
             _postProcessManager.Render(
                 _context,
                 _width,
                 _height,
                 viewProjection,
+                cameraPosition,
+                sunDirection,
+                contactStrength,
                 _hdrSceneResource,
                 _depthShaderResource,
                 _normalTarget,
+                _normalResource,
                 _roughnessTarget,
                 _motionTarget,
-                _backBufferTarget);
+                _backBufferTarget,
+                _shadowConstantBuffer,
+                _shadowShaderView,
+                _shadowSampler);
         }
 
         private void ResetPostProcessHistory()

@@ -8,6 +8,9 @@ using SharpDX.Direct3D11;
 using Buffer = SharpDX.Direct3D11.Buffer;
 using Device = SharpDX.Direct3D11.Device;
 
+using Vector3 = System.Numerics.Vector3;
+using Vector4 = System.Numerics.Vector4;
+
 namespace Editor.Viewport
 {
     internal sealed class PostProcessManager : IDisposable
@@ -85,12 +88,19 @@ namespace Editor.Viewport
             int width,
             int height,
             Matrix4x4 viewProjection,
+            Vector3 cameraPosition,
+            Vector3 sunDirection,
+            float contactStrength,
             ShaderResourceView hdrScene,
             ShaderResourceView depth,
             RenderTargetView normal,
+            ShaderResourceView normalResource,
             RenderTargetView roughness,
             RenderTargetView motion,
-            RenderTargetView backBuffer)
+            RenderTargetView backBuffer,
+            Buffer? sunShadowConstants,
+            ShaderResourceView? sunShadowResource,
+            SamplerState? sunShadowSampler)
         {
             if (_disposed)
             {
@@ -116,15 +126,28 @@ namespace Editor.Viewport
                     ? _previousViewProjection
                     : viewProjection;
 
+            bool contactAvailable =
+                contactStrength > 0f &&
+                sunShadowConstants != null &&
+                sunShadowResource != null &&
+                sunShadowSampler != null;
+
             var constants = new FrameConstants
             {
                 InverseViewProjection = inverseViewProjection,
                 PreviousViewProjection = previousViewProjection,
+                CurrentViewProjection = viewProjection,
                 Parameters = new Vector4(
                     width,
                     height,
                     Math.Clamp(Exposure, 0.01f, 16f),
-                    ToneMappingEnabled ? 1f : 0f)
+                    ToneMappingEnabled ? 1f : 0f),
+                Camera = new Vector4(
+                    cameraPosition,
+                    Math.Clamp(contactStrength, 0f, 1f)),
+                Sun = new Vector4(
+                    sunDirection,
+                    contactAvailable ? 1f : 0f)
             };
 
             context.ClearState();
@@ -153,8 +176,7 @@ namespace Editor.Viewport
                     0,
                     _frameBuffer);
 
-                // Pass 1: depth -> normal, roughness, velocity.
-                // Depth is no longer bound as DSV.
+                // Reconstruct surface attributes from depth.
                 context.OutputMerger.SetRenderTargets(
                     null,
                     normal,
@@ -174,7 +196,7 @@ namespace Editor.Viewport
                     0,
                     null);
 
-                // Pass 2: HDR scene -> SDR swap chain.
+                // HDR presentation and short screen-space shadows.
                 context.OutputMerger.SetRenderTargets(
                     null,
                     backBuffer);
@@ -182,6 +204,29 @@ namespace Editor.Viewport
                 context.PixelShader.SetShaderResource(
                     0,
                     hdrScene);
+
+                context.PixelShader.SetShaderResource(
+                    1,
+                    depth);
+
+                context.PixelShader.SetShaderResource(
+                    2,
+                    normalResource);
+
+                if (contactAvailable)
+                {
+                    context.PixelShader.SetConstantBuffer(
+                        2,
+                        sunShadowConstants);
+
+                    context.PixelShader.SetShaderResource(
+                        7,
+                        sunShadowResource);
+
+                    context.PixelShader.SetSampler(
+                        7,
+                        sunShadowSampler);
+                }
 
                 context.PixelShader.Set(
                     _presentPixel);
@@ -193,8 +238,6 @@ namespace Editor.Viewport
             }
             finally
             {
-                // Remove SRV/RTV bindings before the next frame
-                // and before ResizeBuffers.
                 context.ClearState();
             }
         }
@@ -219,7 +262,10 @@ namespace Editor.Viewport
         {
             public Matrix4x4 InverseViewProjection;
             public Matrix4x4 PreviousViewProjection;
+            public Matrix4x4 CurrentViewProjection;
             public Vector4 Parameters;
+            public Vector4 Camera;
+            public Vector4 Sun;
         }
     }
 }
