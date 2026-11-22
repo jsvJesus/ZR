@@ -8,14 +8,14 @@ namespace ZoneReborn.World.Characters
     {
         private const float MouseSensitivity = 0.003f;
 
-        private const float DefaultDistance = 2.5f;
-        private const float AimDistance = 1.8f;
+        private const float DefaultDistance = 3.05f;
+        private const float AimDistance = 2.10f;
         private const float FirstPersonDistance = 0.04f;
 
-        private const float DefaultShoulderOffset = 0.38f;
-        private const float AimShoulderOffset = 0.52f;
+        private const float DefaultShoulderOffset = 0.55f;
+        private const float AimShoulderOffset = 0.62f;
 
-        private const float ThirdPersonPivotLift = 0.4f;
+        private const float ThirdPersonPivotLift = 0.22f;
         private const float FirstPersonEyeLift = 0.43f;
 
         private const float FollowSpeed = 14f;
@@ -41,7 +41,7 @@ namespace ZoneReborn.World.Characters
 
         public float Yaw { get; private set; }
 
-        public float Pitch { get; private set; } = -0.16f;
+        public float Pitch { get; private set; } = -0.08f;
         public float Roll => _torsoRoll * LocomotionSettings.FirstPersonRollMultiplier * _firstPersonBlend;
 
         public float Distance => DefaultDistance;
