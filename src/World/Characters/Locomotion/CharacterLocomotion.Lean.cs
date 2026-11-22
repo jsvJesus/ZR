@@ -9,18 +9,30 @@ public sealed partial class CharacterLocomotion
 
     private void UpdateTorsoRoll(float deltaTime, float input)
     {
-        bool allowed = Grounded && !IsLanding && !IsPostureTransition &&
-            State is not (AnimState.Sprint or AnimState.JumpWaiting) && !Weapon.Relaxed;
+        bool allowed =
+            Grounded &&
+            !IsLanding &&
+            !IsPostureTransition &&
+            State is not (AnimState.Sprint or AnimState.JumpWaiting);
+
         float target = allowed && float.IsFinite(input)
-            ? Math.Clamp(input, -1, 1) * LocomotionSettings.MaximumTorsoRoll
-            : 0;
-        float angle = TorsoRoll + (target - TorsoRoll) * (1 - MathF.Exp(-LeanResponse * deltaTime));
+            ? Math.Clamp(input, -1f, 1f) *
+              LocomotionSettings.MaximumTorsoRoll
+            : 0f;
+
+        float response = 1f - MathF.Exp(
+            -LeanResponse * deltaTime
+        );
+
+        float angle = TorsoRoll +
+                      (target - TorsoRoll) * response;
+
         if (MathF.Abs(angle) < 0.0001f)
         {
-            angle = 0;
+            angle = 0f;
         }
 
-        if (angle != 0 && _surface.HasSceneObjects)
+        if (angle != 0f && _surface.HasSceneObjects)
         {
             angle = ConstrainTorsoRoll(angle);
         }

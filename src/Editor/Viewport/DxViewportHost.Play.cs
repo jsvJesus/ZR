@@ -359,11 +359,12 @@ public sealed partial class DxViewportHost
             movement,
             IsPressed(KeyAlt),
             IsPressed(KeyShift),
-            IsPressed(KeyControl),
+            false,
             _jumpRequested,
             _toggleCrouchRequested,
             _aimHeld,
-            (IsPressed(KeyQ) ? 1 : 0) - (IsPressed(KeyE) ? 1 : 0)
+            (IsPressed(KeyQ) ? 1 : 0) -
+            (IsPressed(KeyE) ? 1 : 0)
         );
 
         // Character rotation and locomotion remain unchanged.

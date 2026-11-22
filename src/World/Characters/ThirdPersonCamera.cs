@@ -200,6 +200,25 @@ namespace ZoneReborn.World.Characters
                 targetPivot = Vector3.Lerp(targetPivot, fpsPivot, _firstPersonBlend);
             }
 
+            float tpsLeanWeight = 1f - _firstPersonBlend;
+
+            if (tpsLeanWeight > 0f &&
+                MathF.Abs(_torsoRoll) > 0.0001f)
+            {
+                Vector3 cameraRight = new(
+                    MathF.Cos(Yaw),
+                    0f,
+                    -MathF.Sin(Yaw)
+                );
+
+                float leanOffset =
+                    -MathF.Sin(_torsoRoll) *
+                    0.5f *
+                    tpsLeanWeight;
+
+                targetPivot += cameraRight * leanOffset;
+            }
+
             if (firstUpdate)
             {
                 _smoothedPivot = targetPivot;

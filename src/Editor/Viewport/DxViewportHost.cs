@@ -577,8 +577,15 @@ namespace Editor.Viewport
                         if (IsPlaying && !IsCharacterEditing && !IsPlayInspecting && firstPress
                             && (lParam.ToInt64() & (1L << 30)) == 0)
                         {
-                            if ((int)wParam == KeySpace) _jumpRequested = true;
-                            if ((int)wParam == KeyV) _toggleCrouchRequested = true;
+                            if ((int)wParam == KeySpace)
+                            {
+                                _jumpRequested = true;
+                            }
+
+                            if ((int)wParam == KeyControl)
+                            {
+                                _toggleCrouchRequested = true;
+                            }
                         }
                         return nint.Zero;
                     }
@@ -659,7 +666,6 @@ namespace Editor.Viewport
                    key == KeySpace ||
                    key == KeyControl ||
                    key == KeyAlt ||
-                   key == KeyV ||
                    key == KeyShift;
         }
 
