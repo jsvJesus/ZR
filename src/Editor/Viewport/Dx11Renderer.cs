@@ -532,7 +532,9 @@ namespace Editor.Viewport
 
             RenderEnvironmentWeather(camera, viewProjection);
 
-            if (playing && _showPlayCrosshair)
+            if (playing &&
+                _showPlayCrosshair &&
+                _playFirstPersonBlend < 0.8f)
             {
                 RenderPlayCrosshair();
             }
