@@ -91,6 +91,15 @@ public sealed class CharacterAnimator
         _blendTime += deltaTime;
     }
 
+    public void BlendStance(CharacterAction idle)
+    {
+        // Change the base under a turn without restarting its root motion,
+        // elapsed time, foot phase, or authored completion.
+        Pose.CaptureBlend(Current, Frame, BlendWeight, _baseTime);
+        _blendDuration = MathF.Max(0.001f, MathF.Max(Current.BlendOut, idle.BlendIn));
+        _blendTime = 0;
+    }
+
     // Skin once per display frame, not once per physics substep.
     public void EvaluatePose(bool skin = true) => Pose.Apply(Current, Frame, BlendWeight, FeetYaw, TorsoYaw, _baseTime, skin);
 

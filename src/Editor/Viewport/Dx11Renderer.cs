@@ -326,10 +326,11 @@ namespace Editor.Viewport
         public void SelectTree(Guid? id) { if (_trees != null) _trees.Selected = id; }
         public Matrix4x4 TreeWorld(ZoneReborn.World.Vegetation.TreeInstance tree) => TreeRenderer.World(tree, _terrain);
 
-        public bool PickTerrain(Vector3 origin, Vector3 direction, out Vector3 position, bool includeHoles = false)
+        public bool PickTerrain(Vector3 origin, Vector3 direction, out Vector3 position, bool includeHoles = false,
+            float maximumDistance = float.PositiveInfinity)
         {
             position = default;
-            return _terrain != null && _terrain.PickSurface(origin, direction, out position, includeHoles);
+            return _terrain != null && _terrain.PickSurface(origin, direction, out position, includeHoles, maximumDistance);
         }
 
         public void SetCharacter(AssetPaths assets, CharacterAsset asset, CharacterLocomotion locomotion)

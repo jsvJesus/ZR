@@ -13,10 +13,7 @@ public sealed class CharacterWeaponController
     private float _time;
     private float _transitionTime;
     private bool _requestedHeld;
-    private bool _profileCrouch;
-    private bool _profileMoving;
-    private bool _profileSprint;
-    private bool _profileRunning;
+    private float _leftHandWeight = 1f;
     public CharacterWeaponDefinition? Definition { get; }
     public CharacterWeaponState State { get; private set; }
     public CharacterWeaponProfile? Profile { get; private set; }
@@ -26,7 +23,9 @@ public sealed class CharacterWeaponController
     public bool Armed => State is CharacterWeaponState.Held or CharacterWeaponState.EquippingIn or CharacterWeaponState.EquippingOut;
     public bool Relaxed { get; private set; } = true;
     public float RightCarryWeight { get; private set; }
-    public float LeftGripWeight => TrackingWeight * (1 - RightCarryWeight);
+    public float LeftGripWeight => TrackingWeight * (1 - RightCarryWeight) * _leftHandWeight;
+    public string TrackerState { get; private set; } = "idle";
+    public string TrackerStatus { get; private set; } = "bored";
     public CharacterAction? Overlay { get; private set; }
     public float Frame => Overlay is { } action ? action.Clip.FirstFrame
         + Math.Min(_time, action.Clip.Duration) * action.Clip.FrameRate * action.Clip.Direction : 0;
@@ -48,7 +47,8 @@ public sealed class CharacterWeaponController
     {
         Definition = definition;
         _library = library;
-        Profile = definition?.ResolveProfile(false, false, false);
+        Profile = definition?.ResolveProfile("bored", "idle");
+        RightCarryWeight = Profile?.ToAttachWeapon == "Right" ? 1f : 0f;
     }
 
     public void Request(bool held) => _requestedHeld = Definition != null && held;
@@ -82,7 +82,9 @@ public sealed class CharacterWeaponController
             return;
         }
 
-        bool weaponReady = State == CharacterWeaponState.Held;
+        // Activity can arrive during a jump or an equip sequence. Remember it
+        // without replacing the action that is still playing.
+        bool weaponReady = InHands || _requestedHeld;
 
         if (weaponReady && (aiming || firing))
         {
@@ -168,27 +170,21 @@ public sealed class CharacterWeaponController
 
     public void UpdatePose(float dt, CharacterAction action, bool airborne, bool aiming)
     {
-        if (Definition == null) return;
         // AvatarTrackers.modelMatchNotifier uses the matched action, not requested
         // input/speed. Jump and posture clips retain the preceding movement key.
         string[] parts = action.Name.Split('_');
-        if (parts.Length == 4 && (parts[2] is "stay" or "crouch")
+        if (!action.Stop && parts.Length == 4 && (parts[2] is "stay" or "crouch")
             && (parts[0] is "idle" or "walk" or "run" or "sprint" or "turn"))
         {
-            _profileCrouch = parts[2] == "crouch";
-            _profileMoving = parts[0] is "walk" or "run" or "sprint";
-            _profileSprint = parts[0] == "sprint";
-            _profileRunning = parts[0] is "run" or "sprint";
+            TrackerState = parts[2] == "crouch"
+                ? parts[0] == "idle" ? "crouch_idle" : parts[0] == "run" ? "crouch_run" : "crouch_walk"
+                : parts[0] == "turn" ? "idle" : parts[0];
         }
 
-        var target = Definition.ResolveProfile(
-            _profileCrouch,
-            _profileMoving,
-            _profileSprint,
-            inCombat: !Relaxed,
-            running: _profileRunning,
-            aiming: aiming
-        );
+        TrackerStatus = aiming ? "aim" : Relaxed ? "bored" : "incombat";
+        if (Definition == null) return;
+        string state = TrackerState == "sprint" && TrackerStatus != "bored" ? "run" : TrackerState;
+        var target = Definition.ResolveProfile(TrackerStatus, state);
 
         float blend = 1 - MathF.Exp(-12 * dt);
         if (Profile is { } previous)
@@ -200,7 +196,9 @@ public sealed class CharacterWeaponController
                 LeftHandPosition = Vector3.Lerp(previous.LeftHandPosition, target.LeftHandPosition, blend),
                 LeftHandRotation = Vector3.Lerp(previous.LeftHandRotation, target.LeftHandRotation, blend),
                 RightHandPosition = Vector3.Lerp(previous.RightHandPosition, target.RightHandPosition, blend),
-                RightHandRotation = Vector3.Lerp(previous.RightHandRotation, target.RightHandRotation, blend)
+                RightHandRotation = Vector3.Lerp(previous.RightHandRotation, target.RightHandRotation, blend),
+                GunPitchLimits = Vector2.Lerp(previous.GunPitchLimits, target.GunPitchLimits, blend),
+                GunYawLimits = Vector2.Lerp(previous.GunYawLimits, target.GunYawLimits, blend)
             };
         else Profile = target;
 
@@ -209,6 +207,9 @@ public sealed class CharacterWeaponController
             : 0f;
 
         RightCarryWeight += (carry - RightCarryWeight) * blend;
+        float leftWeight = target.LeftHandFree ? 0f : 1f;
+        _leftHandWeight += (leftWeight - _leftHandWeight) * blend;
+        if (MathF.Abs(leftWeight - _leftHandWeight) < 0.001f) _leftHandWeight = leftWeight;
 
         if (MathF.Abs(carry - RightCarryWeight) < 0.001f)
         {

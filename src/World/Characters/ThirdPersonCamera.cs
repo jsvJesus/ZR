@@ -8,14 +8,7 @@ namespace ZoneReborn.World.Characters
     {
         private const float MouseSensitivity = 0.003f;
 
-        private const float DefaultDistance = 3.30f;
-        private const float AimDistance = 2.10f;
         private const float FirstPersonDistance = 0.04f;
-
-        private const float DefaultShoulderOffset = 0.34f;
-        private const float AimShoulderOffset = 0.62f;
-
-        private const float ThirdPersonPivotLift = 0.60f;
         private const float FirstPersonEyeLift = 0.43f;
 
         private const float FollowSpeed = 14f;
@@ -30,8 +23,8 @@ namespace ZoneReborn.World.Characters
         private const float TerrainProbeStep = 0.1f;
 
         private Vector3 _smoothedPivot;
-        private float _smoothedDistance = DefaultDistance;
-        private float _smoothedShoulder = DefaultShoulderOffset;
+        private float _smoothedDistance;
+        private float _smoothedShoulder;
         private float _clearRayDistance;
         private float _aimBlend;
         private float _firstPersonBlend;
@@ -41,10 +34,10 @@ namespace ZoneReborn.World.Characters
 
         public float Yaw { get; private set; }
 
-        public float Pitch { get; private set; } = -0.16f;
+        public float Pitch { get; private set; }
         public float Roll => _torsoRoll * LocomotionSettings.FirstPersonRollMultiplier * _firstPersonBlend;
 
-        public float Distance => DefaultDistance;
+        public float Distance => _smoothedDistance;
 
         public bool IsFirstPerson { get; private set; }
 
@@ -57,15 +50,12 @@ namespace ZoneReborn.World.Characters
             get
             {
                 const float thirdPersonFov = 0.78f;
-                const float thirdPersonAimFov = 0.74f;
 
                 const float firstPersonFov = 0.70f;
                 const float firstPersonAimFov = 0.67f;
                 const float firstPersonSprintFov = 0.78f;
 
-                float thirdPerson = thirdPersonFov +
-                                    (thirdPersonAimFov - thirdPersonFov) *
-                                    _aimBlend;
+                float thirdPerson = thirdPersonFov;
 
                 float firstPerson = firstPersonFov +
                                     (firstPersonAimFov - firstPersonFov) *
@@ -83,6 +73,10 @@ namespace ZoneReborn.World.Characters
         }
 
         public Vector3 CameraPosition { get; private set; }
+        public Vector3 LookDirection => new(
+            MathF.Sin(Yaw) * MathF.Cos(Pitch),
+            MathF.Sin(Pitch),
+            MathF.Cos(Yaw) * MathF.Cos(Pitch));
 
         public ThirdPersonCamera(float yaw)
         {
@@ -106,8 +100,8 @@ namespace ZoneReborn.World.Characters
 
             Pitch = Math.Clamp(
                 Pitch + motion.Y * MouseSensitivity,
-                -1.15f,
-                0.65f
+                -(IsFirstPerson ? LocomotionSettings.FirstPersonDownPitch : LocomotionSettings.CameraDownPitch),
+                LocomotionSettings.CameraUpPitch
             );
         }
 
@@ -139,6 +133,7 @@ namespace ZoneReborn.World.Characters
             TerrainSurface surface,
             float cameraHeight,
             bool aiming,
+            CharacterCameraProfile thirdPersonProfile,
             Vector3? firstPersonEye = null,
             Vector3? firstPersonAimEye = null,
             bool sprinting = false)
@@ -184,21 +179,16 @@ namespace ZoneReborn.World.Characters
                 );
             }
 
-            float pivotLift = ThirdPersonPivotLift +
-                (FirstPersonEyeLift - ThirdPersonPivotLift) *
-                _firstPersonBlend;
-
-            Vector3 targetPivot = playerAnchor + new Vector3(
-                0f,
-                MathF.Max(0.3f, cameraHeight) + pivotLift,
-                0f
-            );
-
-            if (firstPersonEye is { } eye)
-            {
-                var fpsPivot = Vector3.Lerp(eye, firstPersonAimEye ?? eye, _aimBlend);
-                targetPivot = Vector3.Lerp(targetPivot, fpsPivot, _firstPersonBlend);
-            }
+            // Original tracker_global pivots are absolute heights above the
+            // avatar origin, not an extra lift above CameraHeight. Horizontal
+            // offsets use view yaw; pitch selects the authored profile endpoints.
+            var settings = thirdPersonProfile.Evaluate(Pitch);
+            Vector3 localPivot = new(0, settings.Pivot.Y, settings.Pivot.Z);
+            Vector3 targetPivot = playerAnchor + Vector3.Transform(localPivot, Matrix4x4.CreateRotationY(Yaw));
+            Vector3 fallbackEye = playerAnchor + Vector3.UnitY * (MathF.Max(0.3f, cameraHeight) + FirstPersonEyeLift);
+            var fpsPivot = firstPersonEye is { } eye
+                ? Vector3.Lerp(eye, firstPersonAimEye ?? eye, _aimBlend) : fallbackEye;
+            targetPivot = Vector3.Lerp(targetPivot, fpsPivot, _firstPersonBlend);
 
             float tpsLeanWeight = 1f - _firstPersonBlend;
 
@@ -240,14 +230,8 @@ namespace ZoneReborn.World.Characters
                 _firstPersonBlend
             );
 
-            float thirdPersonDistance =
-                DefaultDistance +
-                (AimDistance - DefaultDistance) * _aimBlend;
-
-            float thirdPersonShoulder =
-                DefaultShoulderOffset +
-                (AimShoulderOffset - DefaultShoulderOffset) *
-                _aimBlend;
+            float thirdPersonDistance = settings.Distance;
+            float thirdPersonShoulder = settings.Pivot.X;
 
             float targetDistance =
                 thirdPersonDistance +
@@ -280,16 +264,7 @@ namespace ZoneReborn.World.Characters
                 );
             }
 
-            float sinYaw = MathF.Sin(Yaw);
-            float cosYaw = MathF.Cos(Yaw);
-            float sinPitch = MathF.Sin(Pitch);
-            float cosPitch = MathF.Cos(Pitch);
-
-            Vector3 forward = new Vector3(
-                sinYaw * cosPitch,
-                sinPitch,
-                cosYaw * cosPitch
-            );
+            Vector3 forward = LookDirection;
 
             var orientation = Matrix4x4.CreateRotationZ(Roll) *
                 Matrix4x4.CreateRotationX(-Pitch) * Matrix4x4.CreateRotationY(Yaw);
@@ -361,49 +336,6 @@ namespace ZoneReborn.World.Characters
                 pivot + direction * _clearRayDistance;
 
             _initialized = true;
-        }
-
-        private static Vector3 ConstrainFirstPersonCamera(
-            TerrainSurface surface,
-            Vector3 playerAnchor,
-            Vector3 desiredPosition,
-            float cameraHeight)
-        {
-            const float MinimumDistance = 0.0001f;
-
-            Vector3 safeOrigin = playerAnchor + new Vector3(
-                0f,
-                Math.Clamp(cameraHeight, 0.75f, 1.25f),
-                0f
-            );
-
-            Vector3 offset = desiredPosition - safeOrigin;
-            float distance = offset.Length();
-
-            if (!float.IsFinite(distance) ||
-                distance < MinimumDistance)
-            {
-                return safeOrigin;
-            }
-
-            Vector3 direction = offset / distance;
-
-            float availableDistance = surface.CameraDistance(
-                safeOrigin,
-                direction,
-                distance
-            );
-
-            if (availableDistance >= distance)
-            {
-                return desiredPosition;
-            }
-
-            return safeOrigin + direction * Math.Clamp(
-                availableDistance,
-                0f,
-                distance
-            );
         }
 
         private static float FindAvailableDistance(

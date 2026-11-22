@@ -143,7 +143,8 @@ public sealed partial class CharacterLocomotion
                 input.Move,
                 input.Walk,
                 false,
-                input.Sprint
+                input.Sprint,
+                inCombat: !Weapon.Relaxed
             );
 
             var target =

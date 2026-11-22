@@ -9,11 +9,13 @@ public sealed class LocomotionLibrary
     public IReadOnlyDictionary<string, CharacterAction> Actions { get; }
     public CharacterAction[] MovementActions { get; }
     public CharacterAction[] StopActions { get; }
+    public CharacterCameraProfiles CameraProfiles { get; }
     public CharacterAction Idle => Actions["idle_0_stay_unarmed"];
 
-    private LocomotionLibrary(Dictionary<string, CharacterAction> actions)
+    private LocomotionLibrary(Dictionary<string, CharacterAction> actions, CharacterCameraProfiles cameraProfiles)
     {
         Actions = actions;
+        CameraProfiles = cameraProfiles;
 
         MovementActions = actions.Values
             .Where(action =>
@@ -32,7 +34,11 @@ public sealed class LocomotionLibrary
 
     public static LocomotionLibrary Read(AssetPaths assets, PackedSection model, CancellationToken cancellationToken)
     {
-        var animationSections = model.All("animation").ToDictionary(a => a.String("name"), StringComparer.Ordinal);
+        // The original model contains two unnamed editor clips. The supported
+        // locomotion actions do not reference them; they cannot be indexed by name.
+        var animationSections = model.All("animation")
+            .Where(animation => !string.IsNullOrEmpty(animation.String("name")))
+            .ToDictionary(a => a.String("name"), StringComparer.Ordinal);
         var clips = new Dictionary<string, CharacterClip>(StringComparer.Ordinal);
         var animations = new Dictionary<string, SourceAnimation>(StringComparer.OrdinalIgnoreCase);
         var actions = new Dictionary<string, CharacterAction>(StringComparer.Ordinal);
@@ -129,7 +135,7 @@ public sealed class LocomotionLibrary
             }
         }
 
-        return new(actions);
+        return new(actions, CharacterCameraProfiles.Read(assets, cancellationToken));
     }
 
     private static ActionMatch? ReadMatch(PackedSection? section) => section == null ? null : new(

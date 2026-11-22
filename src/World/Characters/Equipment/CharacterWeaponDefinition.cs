@@ -15,6 +15,11 @@ public sealed record CharacterWeaponProfile(
     Vector3 RightHandPosition,
     Vector3 RightHandRotation)
 {
+    // BigWorld pitch is positive down; limits are relative to HP_GUNR_LIMIT.
+    public Vector2 GunPitchLimits { get; init; } = new(-MathF.PI / 2, MathF.PI / 2);
+    public Vector2 GunYawLimits { get; init; } = new(-MathF.PI, MathF.PI);
+    public bool LeftHandFree { get; init; }
+
     internal static CharacterWeaponProfile Default { get; } = new(
         Vector3.Zero, Vector3.Zero, 0, "Track", "", "",
         Vector3.Zero, Vector3.Zero, Vector3.Zero, Vector3.Zero);
@@ -79,6 +84,11 @@ public sealed class CharacterWeaponDefinition
                 ? "incombat"
                 : "bored";
 
+        return ResolveProfile(status, state);
+    }
+
+    public CharacterWeaponProfile ResolveProfile(string status, string state)
+    {
         if (!_profiles.TryGetValue(status, out var profiles) &&
             !_profiles.TryGetValue("incombat", out profiles) &&
             !_profiles.TryGetValue("bored", out profiles))
@@ -91,20 +101,20 @@ public sealed class CharacterWeaponDefinition
             return profile;
         }
 
-        if (crouch &&
-            moving &&
+        if (state.StartsWith("crouch_", StringComparison.Ordinal) &&
+            state != "crouch_idle" &&
             profiles.TryGetValue("crouch_walk", out profile))
         {
             return profile;
         }
 
-        if (crouch &&
+        if (state.StartsWith("crouch_", StringComparison.Ordinal) &&
             profiles.TryGetValue("crouch_idle", out profile))
         {
             return profile;
         }
 
-        if (sprint &&
+        if (state == "sprint" &&
             profiles.TryGetValue("run", out profile))
         {
             return profile;
@@ -146,7 +156,12 @@ public sealed class CharacterWeaponDefinition
                         Number(values, "GUNRWROLL", 0, context), Text(values, "to_attach_weapon", "Track", context),
                         left, right,
                         Vector(values, "hand_L_weapon_add_pos", context), Vector(values, "hand_L_weapon_add_rotate", context),
-                        Vector(values, "hand_R_weapon_add_pos", context), Vector(values, "hand_R_weapon_add_rotate", context)));
+                        Vector(values, "hand_R_weapon_add_pos", context), Vector(values, "hand_R_weapon_add_rotate", context))
+                    {
+                        GunPitchLimits = Limits(values, "gun_pitch", context),
+                        GunYawLimits = Limits(values, "gun_yaw_limits", context),
+                        LeftHandFree = Number(values, "left_hand_free", 0, context) != 0
+                    });
                 }
                 profiles.Add(status, new ReadOnlyDictionary<string, CharacterWeaponProfile>(states));
             }
@@ -184,5 +199,15 @@ public sealed class CharacterWeaponDefinition
         if (value is not List<object?> components || components.Count != 3)
             throw new InvalidDataException($"{context}: invalid vector {key}.");
         return new(Scalar(components[0], key, context), Scalar(components[1], key, context), Scalar(components[2], key, context));
+    }
+
+    private static Vector2 Limits(Dictionary<object, object?> values, string key, string context)
+    {
+        if (!values.TryGetValue(key, out var value) || value is not List<object?> components || components.Count != 2)
+            throw new InvalidDataException($"{context}: invalid limits {key}.");
+        float minimum = Scalar(components[0], key, context);
+        float maximum = Scalar(components[1], key, context);
+        if (minimum > maximum) throw new InvalidDataException($"{context}: reversed limits {key}.");
+        return new(minimum, maximum);
     }
 }

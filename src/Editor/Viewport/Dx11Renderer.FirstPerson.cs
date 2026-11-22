@@ -67,23 +67,26 @@ namespace Editor.Viewport
 
         private void RenderPlayCrosshair()
         {
-            float pixelX = 2f / _width;
-            float pixelY = 2f / _height;
-            float crosshairY = 1f - 2f * 0.455f;
+            // The camera's forward ray projects to (0, 0). Match SO's 3-pixel
+            // centre dot; viewport dimensions keep it square at every aspect.
+            float pixelX = 3f / _width;
+            float pixelY = 3f / _height;
 
             var color = new RawColor4(
-                0.94f,
-                0.96f,
-                0.92f,
+                1f,
+                1f,
+                1f,
                 1f
             );
 
             var vertices = new GridVertex[]
             {
-                new(new Vector3(-pixelX, crosshairY, 0.01f), color),
-                new(new Vector3(pixelX, crosshairY, 0.01f), color),
-                new(new Vector3(0f, crosshairY - pixelY, 0.01f), color),
-                new(new Vector3(0f, crosshairY + pixelY, 0.01f), color)
+                new(new Vector3(-pixelX, pixelY, 0.01f), color),
+                new(new Vector3(pixelX, pixelY, 0.01f), color),
+                new(new Vector3(-pixelX, -pixelY, 0.01f), color),
+                new(new Vector3(-pixelX, -pixelY, 0.01f), color),
+                new(new Vector3(pixelX, pixelY, 0.01f), color),
+                new(new Vector3(pixelX, -pixelY, 0.01f), color)
             };
 
             if (_crosshairBuffer == null)
@@ -123,7 +126,7 @@ namespace Editor.Viewport
 
             _context.InputAssembler.InputLayout = _inputLayout;
             _context.InputAssembler.PrimitiveTopology =
-                PrimitiveTopology.LineList;
+                PrimitiveTopology.TriangleList;
 
             _context.InputAssembler.SetVertexBuffers(
                 0,

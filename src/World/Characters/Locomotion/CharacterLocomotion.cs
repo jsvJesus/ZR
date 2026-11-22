@@ -29,6 +29,7 @@ public sealed partial class CharacterLocomotion
     public float TorsoRoll => Animator.Pose.TorsoRoll;
     public float CameraHeight => _cameraHeight;
     public Vector3 CameraAnchor => Position with { Y = _cameraBaseY };
+    public CharacterCameraProfile CameraProfile => _library.CameraProfiles.Resolve(Weapon.TrackerStatus, Weapon.TrackerState);
     public IReadOnlySet<int> MatchCaps => _caps;
     public bool IsAiming => _caps.Contains((int)AnimationCap.Aiming) &&
         Weapon.State == CharacterWeaponState.Held && Grounded && !IsLanding && !IsPostureTransition &&
@@ -77,7 +78,7 @@ public sealed partial class CharacterLocomotion
         Animator.Pose.Weapon = Weapon;
     }
 
-    public void Update(float deltaTime, CharacterInput input, float cameraYaw, float cameraPitch = 0f)
+    public void Update(float deltaTime, CharacterInput input, float cameraYaw, float cameraPitch = 0f, bool skin = true)
     {
         if (!float.IsFinite(deltaTime) || deltaTime <= 0)
         {
@@ -175,21 +176,24 @@ public sealed partial class CharacterLocomotion
             (Position.Y - _cameraBaseY) *
             (1f - MathF.Exp(-8f * deltaTime));
 
+        string nextTrackerStatus = IsAiming ? "aim" : Weapon.Relaxed ? "bored" : "incombat";
+        if (IsTurning && Weapon.TrackerStatus != nextTrackerStatus)
+            Animator.BlendStance(_library.Actions[$"idle_0_{(_crouched ? "crouch" : "stay")}_{nextTrackerStatus}"]);
+
         Weapon.UpdatePose(
             deltaTime,
             Animator.Current,
             !Grounded || IsLanding,
-            Animator.Pose.FirstPersonWeight > 0.001f
-                ? IsAiming
-                : _caps.Contains((int)AnimationCap.Aiming)
+            IsAiming
         );
+        Animator.Pose.AdvanceWeaponLayers(deltaTime);
 
         float targetPitch =
             Weapon.InHands &&
             Grounded &&
             !IsPostureTransition &&
             !IsLanding
-                ? Math.Clamp(cameraPitch, -1.15f, 0.65f)
+                ? Math.Clamp(cameraPitch, -LocomotionSettings.BodyDownPitch, LocomotionSettings.BodyUpPitch)
                 : 0f;
 
         float pitchBlend =
@@ -200,9 +204,9 @@ public sealed partial class CharacterLocomotion
             pitchBlend;
 
         Animator.Pose.LookYaw = Wrap(cameraYaw - Yaw);
-        Animator.Pose.LookPitch = Math.Clamp(cameraPitch, -1.15f, 0.65f);
+        Animator.Pose.LookPitch = Math.Clamp(cameraPitch, -LocomotionSettings.FirstPersonDownPitch, LocomotionSettings.CameraUpPitch);
         UpdateTorsoRoll(deltaTime, input.Lean);
-        Animator.EvaluatePose();
+        Animator.EvaluatePose(skin);
     }
 
     public void ReleaseInput()
@@ -381,7 +385,8 @@ public sealed partial class CharacterLocomotion
                 input.Walk,
                 _crouched,
                 input.Sprint && !aiming,
-                aiming
+                aiming,
+                !Weapon.Relaxed
             )
             : 0;
 
@@ -506,13 +511,6 @@ public sealed partial class CharacterLocomotion
             Animator.Current
         );
 
-        if (_crouched &&
-            Weapon.InHands &&
-            action.Name == "run_forward_crouch_incombat")
-        {
-            action = _library.Actions["walk_forward_crouch_incombat"];
-        }
-
         bool preservePhase =
             Animator.Current.Movement &&
             action.Movement;
@@ -632,7 +630,8 @@ public sealed partial class CharacterLocomotion
             Weapon.State == CharacterWeaponState.Held &&
             Grounded &&
             !IsLanding &&
-            !IsPostureTransition)
+            !IsPostureTransition &&
+            State != AnimState.JumpWaiting)
         {
             _caps.Add((int)AnimationCap.Aiming);
         }

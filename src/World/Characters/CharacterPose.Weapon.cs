@@ -57,7 +57,7 @@ public sealed partial class CharacterPose
     private void ApplyWeaponLayers(float feetYaw, float torsoYaw)
     {
         var weapon = Weapon;
-        if (_weaponAttachment?.Weapon == null || weapon?.Profile is not { } profile) return;
+        if (_weaponAttachment?.Weapon == null || weapon?.Profile == null) return;
 
         foreach (var (rig, matrices) in _rigs)
         {
@@ -70,8 +70,8 @@ public sealed partial class CharacterPose
                 {
                     // Some original grip clips also rotate ForeArmRoll/Hand.
                     // Release the whole layer when the left hand leaves the gun.
-                    local = Layer(rig, i, local, profile.LeftGrip, weapon.LeftGripWeight);
-                    local = Layer(rig, i, local, profile.RightGrip, 1);
+                    local = _leftGrip.Apply(rig, i, local, weapon.LeftGripWeight);
+                    local = _rightGrip.Apply(rig, i, local, 1);
                 }
                 if (weapon.Overlay is { } overlay)
                     local = Layer(rig, i, local, overlay, weapon.Frame, weapon.OverlayWeight);
@@ -111,29 +111,18 @@ public sealed partial class CharacterPose
         {
             var gunAnchor = avatar[anchors.AvatarGun];
             gunAnchor.Translation += Vector3.TransformNormal(profile.GunPosition, gunAnchor);
+            gunAnchor = TrackWeaponDirection(attachment.AvatarRig, anchors, profile, gunAnchor);
             tracked = anchors.InverseGun * gunAnchor;
             // Direction belongs to avatar HP_GUNR. The weapon's GUNRW
             // offset/roll is a child transform evaluated after that tracker.
-            tracked = TrackFirstPersonWeapon(anchors, tracked, gunAnchor.Translation);
             // GUNRW is the weapon's authored roll pivot, not its mesh origin.
             if (Matrix4x4.Invert(anchors.GunPivot, out var inversePivot))
             {
                 // WeaponGunRWmover.lookAt applies T(addPos) * R(weaponRoll)
-                // before the authored local pivot. Keep the established TPS
-                // placement and blend to that original order only for FPS.
+                // before the authored local pivot in both TPS and FPS.
                 var translation = Matrix4x4.CreateTranslation(profile.GunRootPosition);
                 var roll = Matrix4x4.CreateRotationZ(profile.GunRootRoll);
-                float viewWeight = Math.Clamp(FirstPersonWeight, 0, 1);
-                if (viewWeight == 0)
-                {
-                    tracked = inversePivot * roll * translation * anchors.GunPivot * tracked;
-                }
-                else
-                {
-                    var adjustment = viewWeight == 1 ? translation * roll
-                        : Blend(roll * translation, translation * roll, viewWeight);
-                    tracked = inversePivot * adjustment * anchors.GunPivot * tracked;
-                }
+                tracked = inversePivot * translation * roll * anchors.GunPivot * tracked;
             }
             tracked = ConstrainWeaponReach(
                 attachment.AvatarRig,
@@ -141,6 +130,7 @@ public sealed partial class CharacterPose
                 profile,
                 tracked
             );
+            tracked = ConvergeThirdPersonWeapon(attachment.AvatarRig, anchors, profile, tracked, gunAnchor.Translation);
 
             tracked = AlignFirstPersonWeaponSight(
                 anchors,
@@ -191,6 +181,12 @@ public sealed partial class CharacterPose
         CharacterWeaponProfile profile, Matrix4x4 transform)
     {
         if (!_handChains.TryGetValue(avatarRig, out var hands)) return transform;
+        var rightReach = transform;
+        ConstrainHandReach(avatarRig, hands.Right, HandTarget(anchors.RightHand,
+            profile.RightHandPosition, profile.RightHandRotation, rightReach), ref rightReach);
+        float leftWeight = Weapon?.LeftGripWeight ?? 0;
+        if (leftWeight <= 0 || anchors.LeftHand is not { } left) return rightReach;
+        transform = rightReach;
         // The gun target must be reachable by both arms. Clamping only the IK
         // wrist leaves the grip visibly ahead during sprint.
         // Project the rigid weapon onto both reach spheres without stretching bones.
@@ -198,11 +194,14 @@ public sealed partial class CharacterPose
         {
             bool moved = ConstrainHandReach(avatarRig, hands.Right, HandTarget(anchors.RightHand,
                 profile.RightHandPosition, profile.RightHandRotation, transform), ref transform);
-            if (anchors.LeftHand is { } left)
-                moved |= ConstrainHandReach(avatarRig, hands.Left, HandTarget(left,
-                    profile.LeftHandPosition, profile.LeftHandRotation, transform), ref transform);
+            moved |= ConstrainHandReach(avatarRig, hands.Left, HandTarget(left,
+                profile.LeftHandPosition, profile.LeftHandRotation, transform), ref transform);
             if (!moved) break;
         }
+        // Fade the constraint once, rather than once per projection iteration.
+        transform.Translation = Vector3.Lerp(rightReach.Translation, transform.Translation, leftWeight);
+        ConstrainHandReach(avatarRig, hands.Right, HandTarget(anchors.RightHand,
+            profile.RightHandPosition, profile.RightHandRotation, transform), ref transform);
         return transform;
     }
 
@@ -220,20 +219,11 @@ public sealed partial class CharacterPose
         return true;
     }
 
-    private Matrix4x4 Layer(CharacterRig rig, int index, Matrix4x4 local, string name, float weight)
-    {
-        if (name.Length == 0 || _asset.Locomotion is not { } library || !library.Actions.TryGetValue(name, out var action)) return local;
-        return Layer(rig, index, local, action, action.Clip.FirstFrame, weight);
-    }
-
     private static Matrix4x4 Layer(CharacterRig rig, int index, Matrix4x4 local,
         CharacterAction action, float frame, float weight)
     {
         if (weight <= 0) return local;
-        int priority = 0;
-        for (int node = index; node >= 0; node = rig.Nodes[node].Parent)
-            if (action.Clip.NodePriorities.TryGetValue(rig.Nodes[node].Name, out priority)) break;
-        return priority > 0 && action.Clip.Animation.Channels.TryGetValue(rig.Nodes[index].Name, out var channel)
+        return LayerPriority(rig, index, action) > 0 && action.Clip.Animation.Channels.TryGetValue(rig.Nodes[index].Name, out var channel)
             ? Blend(local, channel.Sample(frame), weight) : local;
     }
 

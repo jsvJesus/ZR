@@ -95,85 +95,6 @@ public sealed partial class CharacterPose
                };
     }
 
-    private Matrix4x4 TrackFirstPersonWeapon(
-        CharacterWeaponAnchors anchors,
-        Matrix4x4 transform,
-        Vector3 gunPosition)
-    {
-        float weight = Math.Clamp(
-            FirstPersonWeight,
-            0f,
-            1f
-        );
-
-        if (weight <= 0.001f ||
-            !CanTrackFirstPersonWeapon() ||
-            anchors.Aim is not { } aim)
-        {
-            return transform;
-        }
-
-        Vector3 from = Vector3.TransformNormal(
-            Vector3.UnitZ,
-            aim * transform
-        );
-
-        if (from.LengthSquared() < 0.000001f)
-        {
-            return transform;
-        }
-
-        from = Vector3.Normalize(from);
-
-        Vector3 to = Vector3.TransformNormal(
-            Vector3.UnitZ,
-            FirstPersonLookRotation
-        );
-
-        if (to.LengthSquared() < 0.000001f)
-        {
-            return transform;
-        }
-
-        to = Vector3.Normalize(to);
-
-        float cosine = Math.Clamp(
-            Vector3.Dot(from, to),
-            -1f,
-            1f
-        );
-
-        Matrix4x4 delta = Matrix4x4.Identity;
-
-        if (cosine < 0.999999f)
-        {
-            Vector3 axis = Vector3.Cross(from, to);
-
-            if (axis.LengthSquared() < 0.000001f)
-            {
-                Vector3 alternative =
-                    MathF.Abs(from.Y) < 0.9f
-                        ? Vector3.UnitY
-                        : Vector3.UnitX;
-
-                axis = Vector3.Cross(
-                    from,
-                    alternative
-                );
-            }
-
-            delta = Matrix4x4.CreateFromAxisAngle(
-                Vector3.Normalize(axis),
-                MathF.Acos(cosine) * weight
-            );
-        }
-
-        return transform *
-               Matrix4x4.CreateTranslation(-gunPosition) *
-               delta *
-               Matrix4x4.CreateTranslation(gunPosition);
-    }
-
     private Matrix4x4 AlignFirstPersonWeaponSight(
         CharacterWeaponAnchors anchors,
         Matrix4x4 transform)
@@ -273,7 +194,8 @@ public sealed partial class CharacterPose
             return true;
         }
 
-        if (anchors.LeftHand is { } left)
+        float correction = Math.Clamp(0f, minimum, maximum);
+        if (Weapon is { LeftGripWeight: > 0 } weapon && anchors.LeftHand is { } left)
         {
             Matrix4x4 leftTarget = HandTarget(
                 left,
@@ -282,7 +204,7 @@ public sealed partial class CharacterPose
                 transform
             );
 
-            if (!IntersectHandReach(
+            if (IntersectHandReach(
                     rig,
                     hands.Left,
                     leftTarget,
@@ -290,15 +212,10 @@ public sealed partial class CharacterPose
                     ref minimum,
                     ref maximum))
             {
-                return true;
+                float bothHands = Math.Clamp(0f, minimum, maximum);
+                correction += (bothHands - correction) * weapon.LeftGripWeight;
             }
         }
-
-        float correction = Math.Clamp(
-            0f,
-            minimum,
-            maximum
-        );
 
         if (float.IsFinite(correction))
         {

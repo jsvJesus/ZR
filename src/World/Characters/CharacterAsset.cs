@@ -187,8 +187,10 @@ public sealed partial class CharacterPose
         bool skin = true,
         bool includeWeaponLayers = false)
     {
+        string stance = Weapon?.Armed != true ? "unarmed"
+            : Weapon.TrackerStatus;
         CharacterClip? baseClip = action?.Turn == true && action.Track != 0
-            ? _asset.Locomotion?.Actions[$"idle_0_{(action.Name.Contains("_crouch_", StringComparison.Ordinal) ? "crouch" : "stay")}_{(Weapon?.Armed == true ? "incombat" : "unarmed")}"].Clip
+            ? _asset.Locomotion?.Actions[$"idle_0_{(action.Name.Contains("_crouch_", StringComparison.Ordinal) ? "crouch" : "stay")}_{stance}"].Clip
             : null;
         float baseFrame = baseClip == null ? 0 : baseClip.FirstFrame
             + baseTime % baseClip.Duration * baseClip.FrameRate * baseClip.Direction;

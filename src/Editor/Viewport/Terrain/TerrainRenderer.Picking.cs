@@ -33,13 +33,14 @@ namespace Editor.Viewport.Terrain
             return true;
         }
 
-        public bool PickSurface(Vector3 origin, Vector3 direction, out Vector3 position, bool includeHoles = false)
+        public bool PickSurface(Vector3 origin, Vector3 direction, out Vector3 position, bool includeHoles = false,
+            float maximumDistance = float.PositiveInfinity)
         {
             position = default;
             var d = Descriptor;
             if (!ViewportPicking.Box(origin, direction, new Vector3(d.OriginX, -1e8f, d.OriginZ),
                 new Vector3(d.MaxX, 1e8f, d.MaxZ), out float near, out float far)) return false;
-            far = Math.Min(far, FarPlane);
+            far = Math.Min(far, Math.Min(FarPlane, maximumDistance));
             float distance = near;
             for (int iteration = 0; iteration < 32768 && distance <= far; iteration++)
             {

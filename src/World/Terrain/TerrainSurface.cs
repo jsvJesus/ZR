@@ -230,6 +230,12 @@ public sealed partial class TerrainSurface
             ? Math.Max(0, distance - 0.15f) : maximum;
     }
 
+    public bool RaycastScene(Vector3 origin, Vector3 direction, float maximum, out float distance)
+    {
+        distance = maximum;
+        return Collision is { } collision && collision.Raycast(origin, direction, maximum, out distance);
+    }
+
     private bool TryGetHeight(float x, float z, int step, out float height, Func<int, int, float>? sample = null)
     {
         height = 0;

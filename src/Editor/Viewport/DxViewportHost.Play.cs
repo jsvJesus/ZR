@@ -183,7 +183,8 @@ public sealed partial class DxViewportHost
                 _player.CameraAnchor,
                 _surface,
                 _player.CameraHeight,
-                false
+                false,
+                thirdPersonProfile: _player.CameraProfile
             );
 
             UpdatePlayCamera();
@@ -308,7 +309,7 @@ public sealed partial class DxViewportHost
             _orbit.FirstPersonBlend,
             _orbit.AimBlend,
             _orbit.FieldOfView,
-            !IsCharacterEditing
+            !IsCharacterEditing && !_orbit.IsFirstPerson
         );
     }
 
@@ -342,7 +343,8 @@ public sealed partial class DxViewportHost
                 _player.CameraAnchor,
                 _surface,
                 _player.CameraHeight,
-                false
+                false,
+                thirdPersonProfile: _player.CameraProfile
             );
 
             PublishCharacterWeaponState();
@@ -381,7 +383,8 @@ public sealed partial class DxViewportHost
             deltaTime,
             input,
             _orbit.Yaw,
-            _orbit.Pitch
+            _orbit.Pitch,
+            skin: false
         );
 
         bool aiming = _player.IsAiming;
@@ -397,10 +400,23 @@ public sealed partial class DxViewportHost
             _surface,
             _player.CameraHeight,
             aiming,
+            _player.CameraProfile,
             firstPersonEye,
             firstPersonAimEye,
             _player.State == AnimState.Sprint
         );
+
+        var aimDirection = _orbit.LookDirection;
+        var aimOrigin = _player.ViewRayOrigin(_orbit.CameraPosition, aimDirection);
+        float aimDistance = 200f;
+        if (_surface.RaycastScene(aimOrigin, aimDirection, aimDistance, out float objectDistance))
+            aimDistance = objectDistance;
+        if (_renderer != null && _renderer.PickTerrain(aimOrigin, aimDirection, out var groundTarget, maximumDistance: aimDistance))
+        {
+            float groundDistance = Vector3.Dot(groundTarget - aimOrigin, aimDirection);
+            if (groundDistance >= 0) aimDistance = MathF.Min(aimDistance, groundDistance);
+        }
+        _player.UpdateViewPose(aimOrigin + aimDirection * aimDistance, _orbit.FirstPersonBlend, _orbit.AimBlend);
 
         PublishCharacterWeaponState();
 
