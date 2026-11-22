@@ -1,0 +1,291 @@
+using System;
+using System.Numerics;
+using Editor.Rendering.Shaders;
+using SharpDX.Direct3D;
+using SharpDX.Direct3D11;
+using SharpDX.DXGI;
+using ZoneReborn.World.Assets;
+
+namespace Editor.Viewport
+{
+    public sealed partial class Dx11Renderer
+    {
+        private Texture2D? _hdrSceneTexture;
+        private ShaderResourceView? _hdrSceneResource;
+        private RenderTargetView? _backBufferTarget;
+
+        private ShaderResourceView? _depthShaderResource;
+
+        private Texture2D? _normalTexture;
+        private RenderTargetView? _normalTarget;
+        private ShaderResourceView? _normalResource;
+
+        private Texture2D? _roughnessTexture;
+        private RenderTargetView? _roughnessTarget;
+        private ShaderResourceView? _roughnessResource;
+
+        private Texture2D? _motionTexture;
+        private RenderTargetView? _motionTarget;
+        private ShaderResourceView? _motionResource;
+
+        private PostProcessManager? _postProcessManager;
+
+        internal ShaderResourceView? SceneColorResource =>
+            _hdrSceneResource;
+
+        internal ShaderResourceView? SceneDepthResource =>
+            _depthShaderResource;
+
+        internal ShaderResourceView? SceneNormalResource =>
+            _normalResource;
+
+        internal ShaderResourceView? SceneRoughnessResource =>
+            _roughnessResource;
+
+        internal ShaderResourceView? SceneMotionResource =>
+            _motionResource;
+
+        private void InitializePostProcessing()
+        {
+            _postProcessManager = new PostProcessManager(
+                _device,
+                new ShaderCompiler(AssetPaths.FromApplication()));
+        }
+
+        private void CreateRenderTargetResources()
+        {
+            try
+            {
+                using (var backBuffer =
+                    Texture2D.FromSwapChain<Texture2D>(
+                        _swapChain,
+                        0))
+                {
+                    _backBufferTarget = new RenderTargetView(
+                        _device,
+                        backBuffer);
+                }
+
+                (
+                    _hdrSceneTexture,
+                    _target,
+                    _hdrSceneResource
+                ) = CreateColorSurface(
+                    Format.R16G16B16A16_Float);
+
+                _depthTexture = new Texture2D(
+                    _device,
+                    new Texture2DDescription
+                    {
+                        Width = _width,
+                        Height = _height,
+                        ArraySize = 1,
+                        MipLevels = 1,
+                        Format = Format.R32_Typeless,
+                        SampleDescription = new SampleDescription(1, 0),
+                        Usage = ResourceUsage.Default,
+                        BindFlags =
+                            BindFlags.DepthStencil |
+                            BindFlags.ShaderResource,
+                        CpuAccessFlags = CpuAccessFlags.None,
+                        OptionFlags = ResourceOptionFlags.None
+                    });
+
+                _depthTarget = new DepthStencilView(
+                    _device,
+                    _depthTexture,
+                    new DepthStencilViewDescription
+                    {
+                        Format = Format.D32_Float,
+                        Dimension = DepthStencilViewDimension.Texture2D,
+                        Texture2D =
+                            new DepthStencilViewDescription.Texture2DResource
+                            {
+                                MipSlice = 0
+                            }
+                    });
+
+                _depthShaderResource = new ShaderResourceView(
+                    _device,
+                    _depthTexture,
+                    new ShaderResourceViewDescription
+                    {
+                        Format = Format.R32_Float,
+                        Dimension = ShaderResourceViewDimension.Texture2D,
+                        Texture2D =
+                            new ShaderResourceViewDescription.Texture2DResource
+                            {
+                                MostDetailedMip = 0,
+                                MipLevels = 1
+                            }
+                    });
+
+                (
+                    _normalTexture,
+                    _normalTarget,
+                    _normalResource
+                ) = CreateColorSurface(
+                    Format.R16G16B16A16_Float);
+
+                (
+                    _roughnessTexture,
+                    _roughnessTarget,
+                    _roughnessResource
+                ) = CreateColorSurface(
+                    Format.R8_UNorm);
+
+                (
+                    _motionTexture,
+                    _motionTarget,
+                    _motionResource
+                ) = CreateColorSurface(
+                    Format.R16G16_Float);
+            }
+            catch
+            {
+                DisposeRenderTargetResources();
+                throw;
+            }
+        }
+
+        private (
+            Texture2D Texture,
+            RenderTargetView Target,
+            ShaderResourceView Resource
+        ) CreateColorSurface(Format format)
+        {
+            var texture = new Texture2D(
+                _device,
+                new Texture2DDescription
+                {
+                    Width = _width,
+                    Height = _height,
+                    ArraySize = 1,
+                    MipLevels = 1,
+                    Format = format,
+                    SampleDescription = new SampleDescription(1, 0),
+                    Usage = ResourceUsage.Default,
+                    BindFlags =
+                        BindFlags.RenderTarget |
+                        BindFlags.ShaderResource,
+                    CpuAccessFlags = CpuAccessFlags.None,
+                    OptionFlags = ResourceOptionFlags.None
+                });
+
+            try
+            {
+                var target = new RenderTargetView(
+                    _device,
+                    texture);
+
+                try
+                {
+                    var resource = new ShaderResourceView(
+                        _device,
+                        texture);
+
+                    return (texture, target, resource);
+                }
+                catch
+                {
+                    target.Dispose();
+                    throw;
+                }
+            }
+            catch
+            {
+                texture.Dispose();
+                throw;
+            }
+        }
+
+        private void RenderPostProcessing(
+            Matrix4x4 viewProjection)
+        {
+            if (_postProcessManager == null ||
+                _backBufferTarget == null ||
+                _hdrSceneResource == null ||
+                _depthShaderResource == null ||
+                _normalTarget == null ||
+                _roughnessTarget == null ||
+                _motionTarget == null)
+            {
+                return;
+            }
+
+            _postProcessManager.Render(
+                _context,
+                _width,
+                _height,
+                viewProjection,
+                _hdrSceneResource,
+                _depthShaderResource,
+                _normalTarget,
+                _roughnessTarget,
+                _motionTarget,
+                _backBufferTarget);
+        }
+
+        private void ResetPostProcessHistory()
+        {
+            _postProcessManager?.ResetHistory();
+        }
+
+        private void DisposePostProcessing()
+        {
+            _postProcessManager?.Dispose();
+            _postProcessManager = null;
+        }
+
+        private void DisposeRenderTargetResources()
+        {
+            _motionResource?.Dispose();
+            _motionResource = null;
+
+            _motionTarget?.Dispose();
+            _motionTarget = null;
+
+            _motionTexture?.Dispose();
+            _motionTexture = null;
+
+            _roughnessResource?.Dispose();
+            _roughnessResource = null;
+
+            _roughnessTarget?.Dispose();
+            _roughnessTarget = null;
+
+            _roughnessTexture?.Dispose();
+            _roughnessTexture = null;
+
+            _normalResource?.Dispose();
+            _normalResource = null;
+
+            _normalTarget?.Dispose();
+            _normalTarget = null;
+
+            _normalTexture?.Dispose();
+            _normalTexture = null;
+
+            _depthShaderResource?.Dispose();
+            _depthShaderResource = null;
+
+            _depthTarget?.Dispose();
+            _depthTarget = null;
+
+            _depthTexture?.Dispose();
+            _depthTexture = null;
+
+            _hdrSceneResource?.Dispose();
+            _hdrSceneResource = null;
+
+            _target?.Dispose();
+            _target = null;
+
+            _hdrSceneTexture?.Dispose();
+            _hdrSceneTexture = null;
+
+            _backBufferTarget?.Dispose();
+            _backBufferTarget = null;
+        }
+    }
+}

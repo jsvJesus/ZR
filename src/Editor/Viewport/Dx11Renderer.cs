@@ -147,6 +147,7 @@ namespace Editor.Viewport
             _objectGizmo = new(_device, _context, _vertexShader, _pixelShader, _inputLayout);
 
             CreateRenderTarget();
+            InitializePostProcessing();
             InitializeEnvironment();
         }
 
@@ -195,27 +196,7 @@ namespace Editor.Viewport
 
         private void CreateRenderTarget()
         {
-            using var backBuffer =
-                Texture2D.FromSwapChain<Texture2D>(
-                    _swapChain,
-                    0);
-
-            _target = new RenderTargetView(
-                _device,
-                backBuffer);
-
-            _depthTexture = new Texture2D(_device, new Texture2DDescription
-            {
-                Width = _width,
-                Height = _height,
-                ArraySize = 1,
-                MipLevels = 1,
-                Format = Format.D32_Float,
-                SampleDescription = new SampleDescription(1, 0),
-                Usage = ResourceUsage.Default,
-                BindFlags = BindFlags.DepthStencil
-            });
-            _depthTarget = new DepthStencilView(_device, _depthTexture);
+            CreateRenderTargetResources();
         }
 
         public void SetLevel(LoadedLevel level, AssetPaths assets)
@@ -254,6 +235,7 @@ namespace Editor.Viewport
             _scene = level.Objects;
             _selectedObject = null;
             SetRoadSurface(level);
+            ResetPostProcessHistory();
         }
 
         public void SetObjectPreview(AssetPaths assets, SceneData scene)
@@ -270,6 +252,7 @@ namespace Editor.Viewport
             _objectPreview = true;
             SetRoadSurface(null);
             _selectedObject = null;
+            ResetPostProcessHistory();
         }
 
         public void ClearObjectPreview()
@@ -278,6 +261,7 @@ namespace Editor.Viewport
             _context.ClearState();
             _objects?.Dispose(); _objects = null;
             _scene = null; _selectedObject = null;
+            ResetPostProcessHistory();
         }
 
         public bool PickObjectSurface(Vector3 origin, Vector3 direction, out Vector3 position)
@@ -359,14 +343,11 @@ namespace Editor.Viewport
                 return;
             }
 
+            // Release all pipeline bindings before ResizeBuffers.
             _context.ClearState();
 
-            _target?.Dispose();
-            _target = null;
-            _depthTarget?.Dispose();
-            _depthTarget = null;
-            _depthTexture?.Dispose();
-            _depthTexture = null;
+            // Destroy every view and texture dependent on viewport size.
+            DisposeRenderTargetResources();
 
             _swapChain.ResizeBuffers(
                 2,
@@ -379,6 +360,7 @@ namespace Editor.Viewport
             _height = height;
 
             CreateRenderTarget();
+            ResetPostProcessHistory();
         }
 
         public void Render(
@@ -560,6 +542,7 @@ namespace Editor.Viewport
                 RenderRoadOverlay(viewProjection);
             }
 
+            RenderPostProcessing(viewProjection);
             _swapChain.Present(1, PresentFlags.None);
         }
 
@@ -631,9 +614,8 @@ namespace Editor.Viewport
             _objectSelection?.Dispose();
             _objectGizmo?.Dispose();
             _character?.Dispose();
-            _depthTarget?.Dispose();
-            _depthTexture?.Dispose();
-            _target?.Dispose();
+            DisposePostProcessing();
+            DisposeRenderTargetResources();
             _cameraBuffer?.Dispose();
             _gridBuffer?.Dispose();
             _inputLayout?.Dispose();
