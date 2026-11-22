@@ -69,6 +69,7 @@ namespace Editor.Viewport
         {
             float pixelX = 2f / _width;
             float pixelY = 2f / _height;
+            float crosshairY = 1f - 2f * 0.455f;
 
             var color = new RawColor4(
                 0.94f,
@@ -79,22 +80,10 @@ namespace Editor.Viewport
 
             var vertices = new GridVertex[]
             {
-                new(
-                    new Vector3(-pixelX, 0f, 0.01f),
-                    color
-                ),
-                new(
-                    new Vector3(pixelX, 0f, 0.01f),
-                    color
-                ),
-                new(
-                    new Vector3(0f, -pixelY, 0.01f),
-                    color
-                ),
-                new(
-                    new Vector3(0f, pixelY, 0.01f),
-                    color
-                )
+                new(new Vector3(-pixelX, crosshairY, 0.01f), color),
+                new(new Vector3(pixelX, crosshairY, 0.01f), color),
+                new(new Vector3(0f, crosshairY - pixelY, 0.01f), color),
+                new(new Vector3(0f, crosshairY + pixelY, 0.01f), color)
             };
 
             if (_crosshairBuffer == null)
