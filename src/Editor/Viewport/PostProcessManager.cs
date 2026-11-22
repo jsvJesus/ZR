@@ -47,7 +47,7 @@ namespace Editor.Viewport
                 using var presentCode = compiler.Compile(
                     "PostProcess/Frame.hlsl",
                     "PSPresent",
-                    "ps_4_0");
+                    "ps_5_0");
 
                 _fullscreenVertex = new VertexShader(
                     device,

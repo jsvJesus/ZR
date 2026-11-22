@@ -82,8 +82,7 @@ internal sealed partial class CharacterRenderer : IDisposable
             using var ps = compiler.Compile(
                 "Characters/Character.hlsl",
                 "PSMain",
-                "ps_4_0"
-            );
+                "ps_5_0");
 
             _vertex = new(device, vs.Bytecode);
             _pixel = new(device, ps.Bytecode);

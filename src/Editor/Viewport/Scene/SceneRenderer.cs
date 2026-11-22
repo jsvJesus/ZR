@@ -63,7 +63,12 @@ internal sealed partial class SceneRenderer : IDisposable
         {
             var compiler = new ShaderCompiler(assets);
             using var vs = compiler.Compile("Scene/Scene.hlsl", "VSMain", "vs_4_0");
-            using var ps = compiler.Compile("Scene/Scene.hlsl", "PSMain", "ps_4_0");
+
+            using var ps = compiler.Compile(
+                "Scene/Scene.hlsl",
+                "PSMain",
+                "ps_5_0");
+
             _vertex = new(device, vs.Bytecode); _pixel = new(device, ps.Bytecode);
             // SceneVertex = position(12), normal(12), uv(8), tangent(16). System.Numerics
             // matrices use row vectors: the instance stream contains four unchanged rows.

@@ -49,7 +49,12 @@ namespace Editor.Viewport.Vegetation
             {
                 var compiler = new ShaderCompiler(assets);
                 using var vs = compiler.Compile("Vegetation/Tree.hlsl", "VSMain", "vs_4_0");
-                using var ps = compiler.Compile("Vegetation/Tree.hlsl", "PSMain", "ps_4_0");
+
+                using var ps = compiler.Compile(
+                    "Vegetation/Tree.hlsl",
+                    "PSMain",
+                    "ps_5_0");
+
                 _vertex = new(device, vs.Bytecode); _pixel = new(device, ps.Bytecode);
                 _layout = new(device, vs.Bytecode,
                     [new InputElement("POSITION", 0, Format.R32G32B32_Float, 0, 0),

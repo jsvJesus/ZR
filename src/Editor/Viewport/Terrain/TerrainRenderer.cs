@@ -65,7 +65,12 @@ internal sealed partial class TerrainRenderer : IDisposable
             _materials = new TerrainMaterialCache(device, assets);
             var shaders = new ShaderCompiler(assets);
             using var vertex = shaders.Compile("Terrain/Terrain.hlsl", "VSMain", "vs_4_0");
-            using var pixel = shaders.Compile("Terrain/Terrain.hlsl", "PSMain", "ps_4_0");
+
+            using var pixel = shaders.Compile(
+                "Terrain/Terrain.hlsl",
+                "PSMain",
+                "ps_5_0");
+
             _vertexShader = new VertexShader(device, vertex.Bytecode);
             _pixelShader = new PixelShader(device, pixel.Bytecode);
             _layout = new InputLayout(device, vertex.Bytecode, new[]
