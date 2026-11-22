@@ -21,7 +21,7 @@ internal sealed partial class CharacterRenderer : IDisposable
 {
     private const float HideDistance = 0.85f;
     private const float ShowDistance = 1.65f;
-    private const float ViewSwitchThreshold = 0.5f;
+    private const float ViewSwitchThreshold = 0.8f;
     private const float ViewTransitionEpsilon = 0.001f;
 
     private readonly DeviceContext _context;

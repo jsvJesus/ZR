@@ -66,8 +66,29 @@ public static class CharacterLoader
             string modelPath = WithExtension(selection.Model, ".model");
             var model = PackedSection.Read(Resolve(modelPath));
             var bodyType = model.Find("bodyType");
-            bool headOnly = bodyType?.Find("head")?.Value is true &&
-                bodyType.Find("torso")?.Value is not true && bodyType.Find("foot")?.Value is not true;
+
+            bool headOnly =
+                bodyType?.Find("head")?.Value is true &&
+                bodyType.Find("torso")?.Value is not true &&
+                bodyType.Find("foot")?.Value is not true;
+
+            bool torsoOnly =
+                bodyType?.Find("torso")?.Value is true &&
+                bodyType.Find("foot")?.Value is not true;
+
+            bool clothingTorso = selection.Model
+                .Replace('\\', '/')
+                .StartsWith(
+                    "characters2/clothing/body/",
+                    StringComparison.OrdinalIgnoreCase
+                );
+
+            bool firstPersonVisible =
+                selection.FirstPersonVisible &&
+                !headOnly &&
+                !torsoOnly &&
+                !clothingTorso;
+
             string visualPath = model.String("nodefullVisual");
             if (string.IsNullOrWhiteSpace(visualPath)) visualPath = model.String("nodelessVisual");
             if (string.IsNullOrWhiteSpace(visualPath)) throw new InvalidDataException($"Missing visual in character model: {modelPath}");
@@ -163,7 +184,7 @@ public static class CharacterLoader
                         meshes.Add(new(vertices, indices.AsSpan(group.StartIndex, checked(group.TriangleCount * 3)).ToArray(), diffusePath, rig, palette, alpha)
                         {
                             Attachment = attachment,
-                            FirstPersonVisible = selection.FirstPersonVisible && !headOnly,
+                            FirstPersonVisible = firstPersonVisible,
                             DiffuseColor = BaseColour(material),
                             Surface = surface
                         });

@@ -135,9 +135,24 @@ public sealed partial class CharacterPose
                     tracked = inversePivot * adjustment * anchors.GunPivot * tracked;
                 }
             }
-            tracked = AlignFirstPersonWeaponSight(anchors, tracked);
-            if (!TryConstrainFirstPersonAimReach(attachment.AvatarRig, anchors, profile, ref tracked))
-                tracked = ConstrainWeaponReach(attachment.AvatarRig, anchors, profile, tracked);
+            tracked = ConstrainWeaponReach(
+                attachment.AvatarRig,
+                anchors,
+                profile,
+                tracked
+            );
+
+            tracked = AlignFirstPersonWeaponSight(
+                anchors,
+                tracked
+            );
+
+            TryConstrainFirstPersonAimReach(
+                attachment.AvatarRig,
+                anchors,
+                profile,
+                ref tracked
+            );
         }
         _weaponTransform = Blend(carried, tracked, weapon.TrackingWeight * (1 - rightCarry));
 

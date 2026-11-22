@@ -5,152 +5,375 @@ namespace ZoneReborn.World.Characters;
 
 public sealed partial class CharacterPose
 {
+    private const float FirstPersonSightClearance = 0.10f;
+
     public float FirstPersonWeight { get; set; }
     public float FirstPersonAimBlend { get; set; }
     public float LookYaw { get; set; }
     public float LookPitch { get; set; }
 
     private Matrix4x4 FirstPersonLookRotation =>
-        Matrix4x4.CreateRotationZ(TorsoRoll * LocomotionSettings.FirstPersonRollMultiplier)
-        * Matrix4x4.CreateRotationX(-LookPitch) * Matrix4x4.CreateRotationY(LookYaw);
+        Matrix4x4.CreateRotationZ(
+            TorsoRoll * LocomotionSettings.FirstPersonRollMultiplier
+        ) *
+        Matrix4x4.CreateRotationX(-LookPitch) *
+        Matrix4x4.CreateRotationY(LookYaw);
 
-    public bool TryGetFirstPersonEye(float aimBlend, out Vector3 position)
+    public bool TryGetFirstPersonEye(
+        float aimBlend,
+        out Vector3 position)
     {
         position = Vector3.Zero;
-        if (_asset.AvatarRig is not { } rig || !_rigs.TryGetValue(rig, out var matrices))
+
+        if (_asset.AvatarRig is not { } rig ||
+            !_rigs.TryGetValue(rig, out var matrices))
         {
             return false;
         }
 
-        int spineIndex = Array.FindIndex(rig.Nodes, node => node.Name == "Spine3");
+        int spineIndex = Array.FindIndex(
+            rig.Nodes,
+            node => node.Name == "Spine3"
+        );
+
         if (spineIndex < 0)
         {
             return false;
         }
 
-        // player_speed_settings.FPS_CAMERA. These offsets belong to the
-        // animated Spine3 frame, not to world axes or the collision capsule.
-        float aim = CanTrackFirstPersonWeapon() && _weaponAttachment?.Weapon?.Sight != null &&
-            Weapon is { InHands: true } weapon
-            ? Math.Clamp(aimBlend, 0, 1) * weapon.TrackingWeight * (1 - weapon.RightCarryWeight)
-            : 0;
-        var pivot = Vector3.Lerp(new Vector3(0, 0.1f, 0.28f), new Vector3(-0.05f, 0.1f, 0.28f), aim);
-        position = Vector3.Transform(pivot, matrices[spineIndex]);
-        var look = FirstPersonLookRotation;
-        var offset = Vector3.Lerp(new Vector3(0, 0, -0.045f), new Vector3(0, 0.05f, -0.045f), aim);
-        position -= Vector3.TransformNormal(offset, look);
+        float aim = 0f;
 
-        return float.IsFinite(position.X) && float.IsFinite(position.Y) && float.IsFinite(position.Z);
+        if (CanTrackFirstPersonWeapon() &&
+            _weaponAttachment?.Weapon?.Sight != null &&
+            Weapon is { InHands: true } weapon)
+        {
+            aim = Math.Clamp(aimBlend, 0f, 1f) *
+                  weapon.TrackingWeight *
+                  (1f - weapon.RightCarryWeight);
+        }
+
+        Vector3 normalPivot = new(0f, 0.10f, 0.28f);
+        Vector3 aimingPivot = new(-0.05f, 0.10f, 0.28f);
+
+        Vector3 pivot = Vector3.Lerp(
+            normalPivot,
+            aimingPivot,
+            aim
+        );
+
+        position = Vector3.Transform(
+            pivot,
+            matrices[spineIndex]
+        );
+
+        Vector3 normalOffset = new(0f, 0f, -0.045f);
+        Vector3 aimingOffset = new(0f, 0.05f, -0.045f);
+
+        Vector3 offset = Vector3.Lerp(
+            normalOffset,
+            aimingOffset,
+            aim
+        );
+
+        position -= Vector3.TransformNormal(
+            offset,
+            FirstPersonLookRotation
+        );
+
+        return float.IsFinite(position.X) &&
+               float.IsFinite(position.Y) &&
+               float.IsFinite(position.Z);
     }
 
-    private bool CanTrackFirstPersonWeapon() =>
-        Weapon?.Relaxed != true && _weaponAttachment?.Weapon is { Legacy: false, Aim: not null };
-
-    private Matrix4x4 TrackFirstPersonWeapon(CharacterWeaponAnchors anchors, Matrix4x4 transform, Vector3 gunPosition)
+    private bool CanTrackFirstPersonWeapon()
     {
-        float weight = Math.Clamp(FirstPersonWeight, 0, 1);
-        if (weight <= 0.001f || !CanTrackFirstPersonWeapon() || anchors.Aim is not { } aim)
+        return Weapon is { Relaxed: false, InHands: true } &&
+               _weaponAttachment?.Weapon is
+               {
+                   Legacy: false,
+                   Aim: not null
+               };
+    }
+
+    private Matrix4x4 TrackFirstPersonWeapon(
+        CharacterWeaponAnchors anchors,
+        Matrix4x4 transform,
+        Vector3 gunPosition)
+    {
+        float weight = Math.Clamp(
+            FirstPersonWeight,
+            0f,
+            1f
+        );
+
+        if (weight <= 0.001f ||
+            !CanTrackFirstPersonWeapon() ||
+            anchors.Aim is not { } aim)
         {
             return transform;
         }
 
-        // GunNode.lookAt corrects the direction with the shortest rotation.
-        // Preserve animated roll and GUNRW profile offsets instead of replacing
-        // the complete orientation. Both hand IKs receive the same rigid target.
-        var from = Vector3.TransformNormal(Vector3.UnitZ, aim * transform);
+        Vector3 from = Vector3.TransformNormal(
+            Vector3.UnitZ,
+            aim * transform
+        );
+
         if (from.LengthSquared() < 0.000001f)
         {
             return transform;
         }
 
         from = Vector3.Normalize(from);
-        var look = FirstPersonLookRotation;
-        var to = Vector3.TransformNormal(Vector3.UnitZ, look);
-        float cosine = Math.Clamp(Vector3.Dot(from, to), -1, 1);
-        var delta = Matrix4x4.Identity;
+
+        Vector3 to = Vector3.TransformNormal(
+            Vector3.UnitZ,
+            FirstPersonLookRotation
+        );
+
+        if (to.LengthSquared() < 0.000001f)
+        {
+            return transform;
+        }
+
+        to = Vector3.Normalize(to);
+
+        float cosine = Math.Clamp(
+            Vector3.Dot(from, to),
+            -1f,
+            1f
+        );
+
+        Matrix4x4 delta = Matrix4x4.Identity;
+
         if (cosine < 0.999999f)
         {
-            var axis = Vector3.Cross(from, to);
+            Vector3 axis = Vector3.Cross(from, to);
+
             if (axis.LengthSquared() < 0.000001f)
             {
-                axis = Vector3.Cross(from, MathF.Abs(from.Y) < 0.9f ? Vector3.UnitY : Vector3.UnitX);
+                Vector3 alternative =
+                    MathF.Abs(from.Y) < 0.9f
+                        ? Vector3.UnitY
+                        : Vector3.UnitX;
+
+                axis = Vector3.Cross(
+                    from,
+                    alternative
+                );
             }
 
-            delta = Matrix4x4.CreateFromAxisAngle(Vector3.Normalize(axis), MathF.Acos(cosine) * weight);
+            delta = Matrix4x4.CreateFromAxisAngle(
+                Vector3.Normalize(axis),
+                MathF.Acos(cosine) * weight
+            );
         }
 
-        // The original direction tracker rotates HP_GUNR, preserving its origin.
-        // HP_GUNRW is a child pivot displaced along the gun; using it here makes
-        // pitch/yaw corrections orbit the entire weapon toward/away from the eye.
-        return transform * Matrix4x4.CreateTranslation(-gunPosition) * delta * Matrix4x4.CreateTranslation(gunPosition);
+        return transform *
+               Matrix4x4.CreateTranslation(-gunPosition) *
+               delta *
+               Matrix4x4.CreateTranslation(gunPosition);
     }
 
-    private Matrix4x4 AlignFirstPersonWeaponSight(CharacterWeaponAnchors anchors, Matrix4x4 transform)
+    private Matrix4x4 AlignFirstPersonWeaponSight(
+        CharacterWeaponAnchors anchors,
+        Matrix4x4 transform)
     {
-        float weight = Math.Clamp(FirstPersonWeight, 0, 1) * Math.Clamp(FirstPersonAimBlend, 0, 1);
-        if (weight > 0.001f && CanTrackFirstPersonWeapon() && anchors.Sight is { } sight &&
-            TryGetFirstPersonEye(FirstPersonAimBlend, out var eye))
+        float weight =
+            Math.Clamp(FirstPersonWeight, 0f, 1f) *
+            Math.Clamp(FirstPersonAimBlend, 0f, 1f);
+
+        if (weight <= 0.001f ||
+            !CanTrackFirstPersonWeapon() ||
+            anchors.Sight is not { } sight ||
+            !TryGetFirstPersonEye(
+                FirstPersonAimBlend,
+                out Vector3 eye))
         {
-            // GunNode._apply_fps_mode moves the sight target to the skeleton
-            // camera before the hand trackers. Account for the final GUNRW
-            // profile here without making the camera follow a weapon pivot.
-            transform.Translation += (eye - (sight * transform).Translation) * weight;
+            return transform;
         }
+
+        Vector3 direction = Vector3.TransformNormal(
+            Vector3.UnitZ,
+            FirstPersonLookRotation
+        );
+
+        if (direction.LengthSquared() < 0.000001f)
+        {
+            return transform;
+        }
+
+        direction = Vector3.Normalize(direction);
+
+        Vector3 target = eye +
+                         direction * FirstPersonSightClearance;
+
+        Vector3 sightPosition = (
+            sight * transform
+        ).Translation;
+
+        Vector3 correction = target - sightPosition;
+
+        if (!float.IsFinite(correction.X) ||
+            !float.IsFinite(correction.Y) ||
+            !float.IsFinite(correction.Z))
+        {
+            return transform;
+        }
+
+        transform.Translation += correction * weight;
 
         return transform;
     }
 
-    private bool TryConstrainFirstPersonAimReach(CharacterRig rig, CharacterWeaponAnchors anchors,
-        CharacterWeaponProfile profile, ref Matrix4x4 transform)
+    private bool TryConstrainFirstPersonAimReach(
+        CharacterRig rig,
+        CharacterWeaponAnchors anchors,
+        CharacterWeaponProfile profile,
+        ref Matrix4x4 transform)
     {
-        if (FirstPersonWeight <= 0.001f || FirstPersonAimBlend <= 0.001f ||
-            !CanTrackFirstPersonWeapon() || anchors.Sight == null ||
+        if (FirstPersonWeight <= 0.001f ||
+            FirstPersonAimBlend <= 0.001f ||
+            !CanTrackFirstPersonWeapon() ||
+            anchors.Sight == null ||
             !_handChains.TryGetValue(rig, out var hands))
         {
             return false;
         }
 
-        var look = FirstPersonLookRotation;
-        var direction = Vector3.TransformNormal(Vector3.UnitZ, look);
-        float minimum = float.NegativeInfinity;
-        float maximum = float.PositiveInfinity;
-        if (!IntersectHandReach(rig, hands.Right, HandTarget(anchors.RightHand,
-                profile.RightHandPosition, profile.RightHandRotation, transform), direction, ref minimum, ref maximum) ||
-            (anchors.LeftHand is { } left && !IntersectHandReach(rig, hands.Left, HandTarget(left,
-                profile.LeftHandPosition, profile.LeftHandRotation, transform), direction, ref minimum, ref maximum)))
+        Vector3 direction = Vector3.TransformNormal(
+            Vector3.UnitZ,
+            FirstPersonLookRotation
+        );
+
+        if (direction.LengthSquared() < 0.000001f)
         {
-            return false;
+            return true;
         }
 
-        // Moving along the sight line preserves screen-centre alignment while
-        // bringing both grips within reach. Do not project the gun sideways.
-        transform.Translation += direction * Math.Clamp(0, minimum, maximum);
+        direction = Vector3.Normalize(direction);
+
+        float minimum = float.NegativeInfinity;
+        float maximum = float.PositiveInfinity;
+
+        Matrix4x4 rightTarget = HandTarget(
+            anchors.RightHand,
+            profile.RightHandPosition,
+            profile.RightHandRotation,
+            transform
+        );
+
+        if (!IntersectHandReach(
+                rig,
+                hands.Right,
+                rightTarget,
+                direction,
+                ref minimum,
+                ref maximum))
+        {
+            return true;
+        }
+
+        if (anchors.LeftHand is { } left)
+        {
+            Matrix4x4 leftTarget = HandTarget(
+                left,
+                profile.LeftHandPosition,
+                profile.LeftHandRotation,
+                transform
+            );
+
+            if (!IntersectHandReach(
+                    rig,
+                    hands.Left,
+                    leftTarget,
+                    direction,
+                    ref minimum,
+                    ref maximum))
+            {
+                return true;
+            }
+        }
+
+        float correction = Math.Clamp(
+            0f,
+            minimum,
+            maximum
+        );
+
+        if (float.IsFinite(correction))
+        {
+            transform.Translation +=
+                direction * correction;
+        }
+
         return true;
     }
 
-    private bool IntersectHandReach(CharacterRig rig, HandChain? chain, Matrix4x4 target,
-        Vector3 direction, ref float minimum, ref float maximum)
+    private bool IntersectHandReach(
+        CharacterRig rig,
+        HandChain? chain,
+        Matrix4x4 target,
+        Vector3 direction,
+        ref float minimum,
+        ref float maximum)
     {
         if (chain == null)
         {
             return true;
         }
 
-        var matrices = _rigs[rig];
-        var shoulder = matrices[chain.Arm].Translation;
-        float reach = Vector3.Distance(shoulder, matrices[chain.Elbow].Translation)
-            + Vector3.Distance(matrices[chain.Elbow].Translation, matrices[chain.Hand].Translation) - 0.005f;
-        var offset = (chain.InverseAnchor * target).Translation - shoulder;
-        float along = Vector3.Dot(offset, direction);
-        float radiusSquared = reach * reach - (offset - direction * along).LengthSquared();
-        if (reach <= 0 || radiusSquared < 0)
+        Matrix4x4[] matrices = _rigs[rig];
+
+        Vector3 shoulder = matrices[chain.Arm].Translation;
+
+        float upperArm = Vector3.Distance(
+            shoulder,
+            matrices[chain.Elbow].Translation
+        );
+
+        float forearm = Vector3.Distance(
+            matrices[chain.Elbow].Translation,
+            matrices[chain.Hand].Translation
+        );
+
+        float reach = upperArm + forearm - 0.005f;
+
+        if (reach <= 0f)
+        {
+            return false;
+        }
+
+        Vector3 offset = (
+            chain.InverseAnchor * target
+        ).Translation - shoulder;
+
+        float along = Vector3.Dot(
+            offset,
+            direction
+        );
+
+        Vector3 sideways = offset - direction * along;
+
+        float radiusSquared =
+            reach * reach - sideways.LengthSquared();
+
+        if (radiusSquared < 0f)
         {
             return false;
         }
 
         float radius = MathF.Sqrt(radiusSquared);
-        minimum = MathF.Max(minimum, -along - radius);
-        maximum = MathF.Min(maximum, -along + radius);
+
+        minimum = MathF.Max(
+            minimum,
+            -along - radius
+        );
+
+        maximum = MathF.Min(
+            maximum,
+            -along + radius
+        );
+
         return minimum <= maximum;
     }
 

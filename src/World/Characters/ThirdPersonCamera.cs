@@ -19,7 +19,7 @@ namespace ZoneReborn.World.Characters
         private const float FirstPersonEyeLift = 0.43f;
 
         private const float FollowSpeed = 14f;
-        private const float AimBlendSpeed = 12f;
+        private const float AimBlendSpeed = 5f;
         private const float ViewBlendSpeed = 12f;
         private const float DistanceBlendSpeed = 15f;
         private const float ShoulderBlendSpeed = 15f;
@@ -58,23 +58,27 @@ namespace ZoneReborn.World.Characters
             {
                 const float thirdPersonFov = 0.78f;
                 const float thirdPersonAimFov = 0.74f;
-                // Restore the actual FPS projection used before the renderer's
-                // 1.1-radian clamp was removed. Keep this explicit at the source.
-                const float firstPersonFov = 1.1f;
-                const float firstPersonAimFov = 0.75f;
-                const float firstPersonSprintFov = firstPersonFov;
 
-                float thirdPerson =
-                    thirdPersonFov +
-                    (thirdPersonAimFov - thirdPersonFov) * _aimBlend;
+                const float firstPersonFov = 0.70f;
+                const float firstPersonAimFov = 0.67f;
+                const float firstPersonSprintFov = 0.78f;
 
-                float firstPerson =
-                    firstPersonFov +
-                    (firstPersonAimFov - firstPersonFov) * _aimBlend;
-                firstPerson += (firstPersonSprintFov - firstPersonFov) * _sprintBlend * (1 - _aimBlend);
+                float thirdPerson = thirdPersonFov +
+                                    (thirdPersonAimFov - thirdPersonFov) *
+                                    _aimBlend;
+
+                float firstPerson = firstPersonFov +
+                                    (firstPersonAimFov - firstPersonFov) *
+                                    _aimBlend;
+
+                firstPerson +=
+                    (firstPersonSprintFov - firstPersonFov) *
+                    _sprintBlend *
+                    (1f - _aimBlend);
 
                 return thirdPerson +
-                       (firstPerson - thirdPerson) * _firstPersonBlend;
+                       (firstPerson - thirdPerson) *
+                       _firstPersonBlend;
             }
         }
 
@@ -284,12 +288,7 @@ namespace ZoneReborn.World.Characters
             if (_firstPersonBlend >= 0.999f &&
                 firstPersonEye.HasValue)
             {
-                CameraPosition = ConstrainFirstPersonCamera(
-                    surface,
-                    playerAnchor,
-                    targetPivot,
-                    cameraHeight
-                );
+                CameraPosition = targetPivot;
 
                 _clearRayDistance = 0f;
                 _initialized = true;
