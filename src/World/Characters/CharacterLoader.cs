@@ -83,11 +83,7 @@ public static class CharacterLoader
                     StringComparison.OrdinalIgnoreCase
                 );
 
-            bool firstPersonVisible =
-                selection.FirstPersonVisible &&
-                !headOnly &&
-                !torsoOnly &&
-                !clothingTorso;
+            bool firstPersonVisible = selection.Weapon != null || (selection.FirstPersonVisible && !headOnly);
 
             string visualPath = model.String("nodefullVisual");
             if (string.IsNullOrWhiteSpace(visualPath)) visualPath = model.String("nodelessVisual");

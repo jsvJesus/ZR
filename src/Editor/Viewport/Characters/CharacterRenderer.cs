@@ -331,7 +331,9 @@ internal sealed partial class CharacterRenderer : IDisposable
         {
             var mesh = _meshes[i];
             var source = _asset.Meshes[i];
-            if (firstPerson && !source.FirstPersonVisible)
+            if (firstPerson &&
+                !source.FirstPersonVisible &&
+                source.Attachment?.Weapon == null)
             {
                 continue;
             }
