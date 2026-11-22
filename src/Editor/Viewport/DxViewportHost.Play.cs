@@ -376,11 +376,8 @@ public sealed partial class DxViewportHost
             _orbit.Pitch
         );
 
-        // The camera follows the updated character position.
-        bool aiming =
-            _orbit.IsFirstPerson
-                ? _player.IsAiming
-                : _aimHeld && _player.Weapon.InHands;
+        bool aiming = _player.IsAiming;
+        _orbit.SetFirstPerson(aiming);
 
         Vector3? firstPersonEye = _player.TryGetFirstPersonEye(0, out var eye) ? eye : null;
         Vector3? firstPersonAimEye = _player.TryGetFirstPersonEye(1, out var aimEye) ? aimEye : null;

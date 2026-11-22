@@ -8,7 +8,7 @@ namespace ZoneReborn.World.Characters
     {
         private const float MouseSensitivity = 0.003f;
 
-        private const float DefaultDistance = 3.1f;
+        private const float DefaultDistance = 2.5f;
         private const float AimDistance = 1.8f;
         private const float FirstPersonDistance = 0.04f;
 

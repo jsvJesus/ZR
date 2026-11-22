@@ -536,7 +536,7 @@ namespace Editor.Viewport
                         return nint.Zero;
                     }
 
-                    if ((int)wParam == KeyC && IsPlaying)
+                    /*if ((int)wParam == KeyC && IsPlaying)
                     {
                         bool firstPress =
                             (lParam.ToInt64() & (1L << 30)) == 0;
@@ -550,7 +550,7 @@ namespace Editor.Viewport
                         }
 
                         return nint.Zero;
-                    }
+                    }*/
 
                     if ((int)wParam == 0x1B && (IsPlaying || IsStarting))
                     {
