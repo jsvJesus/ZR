@@ -204,23 +204,11 @@ public sealed class CharacterWeaponController
             };
         else Profile = target;
 
-        bool peacefulRightCarry =
-            Relaxed &&
-            !aiming &&
-            !_profileMoving &&
-            !_profileCrouch &&
-            !_profileSprint &&
-            State == CharacterWeaponState.Held;
+        float carry = airborne || target.ToAttachWeapon == "Right"
+            ? 1f
+            : 0f;
 
-        bool carryByRightHand =
-            airborne ||
-            target.ToAttachWeapon == "Right" ||
-            peacefulRightCarry;
-
-        float carry = carryByRightHand ? 1f : 0f;
-
-        RightCarryWeight +=
-            (carry - RightCarryWeight) * blend;
+        RightCarryWeight += (carry - RightCarryWeight) * blend;
 
         if (MathF.Abs(carry - RightCarryWeight) < 0.001f)
         {
