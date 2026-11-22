@@ -352,6 +352,12 @@ namespace Editor.Viewport
                 case WmLeftDown:
                     SetFocus(window);
 
+                    if (IsPlaying && !IsCharacterEditing)
+                    {
+                        _fireHeld = !IsPlayInspecting;
+                        return nint.Zero;
+                    }
+
                     if (RoadEditingEnabled)
                     {
                         HandleRoadPointerDown(
@@ -403,6 +409,12 @@ namespace Editor.Viewport
                     return nint.Zero;
 
                 case WmLeftUp:
+                    if (IsPlaying && !IsCharacterEditing)
+                    {
+                        _fireHeld = false;
+                        return nint.Zero;
+                    }
+
                     if (IsRoadDragging)
                     {
                         MoveRoadDrag(ReadX(lParam), ReadY(lParam));
@@ -536,7 +548,7 @@ namespace Editor.Viewport
                         return nint.Zero;
                     }
 
-                    /*if ((int)wParam == KeyC && IsPlaying)
+                    if ((int)wParam == KeyC && IsPlaying)
                     {
                         bool firstPress =
                             (lParam.ToInt64() & (1L << 30)) == 0;
@@ -546,11 +558,11 @@ namespace Editor.Viewport
                             !IsCharacterEditing &&
                             !IsPlayInspecting)
                         {
-                            _orbit?.ToggleView();
+                            _walkToggle = !_walkToggle;
                         }
 
                         return nint.Zero;
-                    }*/
+                    }
 
                     if ((int)wParam == 0x1B && (IsPlaying || IsStarting))
                     {
@@ -665,7 +677,6 @@ namespace Editor.Viewport
                    key == KeyD ||
                    key == KeySpace ||
                    key == KeyControl ||
-                   key == KeyAlt ||
                    key == KeyShift;
         }
 

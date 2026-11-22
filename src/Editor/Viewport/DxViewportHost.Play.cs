@@ -16,6 +16,8 @@ public sealed partial class DxViewportHost
 
     private bool _jumpRequested;
     private bool _aimHeld;
+    private bool _fireHeld;
+    private bool _walkToggle;
     private bool _toggleCrouchRequested;
 
     private CameraPose _savedCamera;
@@ -56,6 +58,8 @@ public sealed partial class DxViewportHost
 
         _pressedKeys.Clear();
         _aimHeld = false;
+        _fireHeld = false;
+        _walkToggle = false;
 
         using var cancellation = new CancellationTokenSource();
 
@@ -247,6 +251,8 @@ public sealed partial class DxViewportHost
 
         _jumpRequested = false;
         _aimHeld = false;
+        _fireHeld = false;
+        _walkToggle = false;
         _toggleCrouchRequested = false;
 
         _pressedKeys.Clear();
@@ -357,14 +363,15 @@ public sealed partial class DxViewportHost
 
         var input = new CharacterInput(
             movement,
-            IsPressed(KeyAlt),
+            _walkToggle,
             IsPressed(KeyShift),
             false,
             _jumpRequested,
             _toggleCrouchRequested,
             _aimHeld,
             (IsPressed(KeyQ) ? 1 : 0) -
-            (IsPressed(KeyE) ? 1 : 0)
+            (IsPressed(KeyE) ? 1 : 0),
+            _fireHeld
         );
 
         // Character rotation and locomotion remain unchanged.
@@ -406,6 +413,7 @@ public sealed partial class DxViewportHost
         _jumpRequested = false;
         _toggleCrouchRequested = false;
         _aimHeld = false;
+        _fireHeld = false;
 
         _player?.ReleaseInput();
         _orbit?.SetTorsoRoll(0);

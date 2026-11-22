@@ -111,7 +111,9 @@ public sealed partial class CharacterLocomotion
             input.Sprint &&
             !(input.AimPressed && Weapon.InHands) &&
             input.Move.Y > 0 &&
-            !input.Walk
+            !input.Walk,
+            input.AimPressed,
+            input.FirePressed
         );
 
         UpdateWeaponCaps(input.AimPressed);

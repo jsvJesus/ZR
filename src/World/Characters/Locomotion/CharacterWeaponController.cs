@@ -8,6 +8,8 @@ public enum CharacterWeaponState { Holstered, EquippingIn, EquippingOut, Held, H
 public sealed class CharacterWeaponController
 {
     private readonly LocomotionLibrary _library;
+    private const float CombatStanceDuration = 10f;
+    private float _combatStanceRemaining;
     private float _time;
     private float _transitionTime;
     private bool _requestedHeld;
@@ -22,7 +24,7 @@ public sealed class CharacterWeaponController
     public bool RequestedHeld => _requestedHeld;
     public bool InHands => State is CharacterWeaponState.Held or CharacterWeaponState.EquippingOut or CharacterWeaponState.HolsteringIn;
     public bool Armed => State is CharacterWeaponState.Held or CharacterWeaponState.EquippingIn or CharacterWeaponState.EquippingOut;
-    public bool Relaxed { get; private set; }
+    public bool Relaxed { get; private set; } = true;
     public float RightCarryWeight { get; private set; }
     public float LeftGripWeight => TrackingWeight * (1 - RightCarryWeight);
     public CharacterAction? Overlay { get; private set; }
@@ -54,40 +56,113 @@ public sealed class CharacterWeaponController
 
     public void RestoreHeld()
     {
-        if (Definition == null) return;
+        if (Definition == null)
+        {
+            return;
+        }
+
         _requestedHeld = true;
         State = CharacterWeaponState.Held;
         Overlay = null;
+
+        _combatStanceRemaining = 0f;
+        Relaxed = true;
     }
 
-    public void Advance(float dt, bool canStart, bool crouch, bool sprint)
+    public void Advance(
+        float dt,
+        bool canStart,
+        bool crouch,
+        bool sprint,
+        bool aiming = false,
+        bool firing = false)
     {
-        if (Definition == null) return;
-        Relaxed = sprint && !crouch;
-        if (!IsChanging && canStart && _requestedHeld != (State == CharacterWeaponState.Held))
+        if (Definition == null)
         {
-            State = _requestedHeld ? CharacterWeaponState.EquippingIn : CharacterWeaponState.HolsteringIn;
-            _transitionTime = 0;
+            return;
+        }
+
+        bool weaponReady = State == CharacterWeaponState.Held;
+
+        if (weaponReady && (aiming || firing))
+        {
+            _combatStanceRemaining = CombatStanceDuration;
+        }
+        else
+        {
+            _combatStanceRemaining = MathF.Max(
+                0f,
+                _combatStanceRemaining - MathF.Max(0f, dt)
+            );
+        }
+
+        if (State == CharacterWeaponState.Holstered &&
+            !_requestedHeld)
+        {
+            _combatStanceRemaining = 0f;
+        }
+
+        bool combatActive = _combatStanceRemaining > 0f;
+        bool sprintRelaxed = sprint && !crouch;
+
+        Relaxed = sprintRelaxed ||
+                  (!combatActive && !(aiming && weaponReady));
+
+        if (!IsChanging &&
+            canStart &&
+            _requestedHeld != (State == CharacterWeaponState.Held))
+        {
+            State = _requestedHeld
+                ? CharacterWeaponState.EquippingIn
+                : CharacterWeaponState.HolsteringIn;
+
+            _transitionTime = 0f;
             StartPhase();
         }
-        if (Overlay == null) return;
+
+        if (Overlay == null)
+        {
+            return;
+        }
+
         float remaining = dt * Definition.EquipSpeed;
         _transitionTime += remaining;
+
         while (Overlay is { } action)
         {
-            float step = Math.Min(remaining, Math.Max(0, action.Clip.Duration - _time));
+            float step = Math.Min(
+                remaining,
+                Math.Max(0f, action.Clip.Duration - _time)
+            );
+
             _time += step;
             remaining -= step;
-            if (_time < action.Clip.Duration) break;
+
+            if (_time < action.Clip.Duration)
+            {
+                break;
+            }
+
             State = State switch
             {
-                CharacterWeaponState.EquippingIn => CharacterWeaponState.EquippingOut,
-                CharacterWeaponState.EquippingOut => CharacterWeaponState.Held,
-                CharacterWeaponState.HolsteringIn => CharacterWeaponState.HolsteringOut,
+                CharacterWeaponState.EquippingIn =>
+                    CharacterWeaponState.EquippingOut,
+
+                CharacterWeaponState.EquippingOut =>
+                    CharacterWeaponState.Held,
+
+                CharacterWeaponState.HolsteringIn =>
+                    CharacterWeaponState.HolsteringOut,
+
                 _ => CharacterWeaponState.Holstered
             };
+
             StartPhase();
-            if (remaining <= 0) break;
+
+            if (remaining <= 0f)
+            {
+                break;
+            }
         }
     }
 

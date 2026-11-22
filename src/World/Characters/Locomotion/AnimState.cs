@@ -38,7 +38,8 @@ public readonly record struct CharacterInput(
     bool JumpPressed,
     bool ToggleCrouchPressed,
     bool AimPressed = false,
-    float Lean = 0
+    float Lean = 0f,
+    bool FirePressed = false
 );
 
 public readonly record struct LocomotionSnapshot(
