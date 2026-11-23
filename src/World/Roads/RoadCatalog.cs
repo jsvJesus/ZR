@@ -159,7 +159,8 @@ public sealed class RoadCatalog
         {
             return SourceModelReader.ReadBounds(
                 assets,
-                file);
+                file,
+                allowMeshFallback: false);
         }
         catch (Exception exception) when (
             exception is IOException or

@@ -16,7 +16,7 @@ public sealed partial class VegetationPanel
 
     private readonly ComboBox _scatterKind = new()
     {
-        ItemsSource = Enum.GetValues<VegetationScatterKind>(),
+        ItemsSource = new[] { VegetationScatterKind.Tree, VegetationScatterKind.Bush },
         SelectedIndex = 0
     };
 
@@ -157,7 +157,7 @@ public sealed partial class VegetationPanel
         var selected = _scatterModels.SelectedItem as TreeCatalogEntry;
         var entries = _entries.Where(entry =>
             VegetationCategory.ScatterKind(entry.File) ==
-            (_scatterKind.SelectedItem as VegetationScatterKind? ?? VegetationScatterKind.Grass)).ToArray();
+            (_scatterKind.SelectedItem as VegetationScatterKind? ?? VegetationScatterKind.Tree)).ToArray();
         _scatterModels.ItemsSource = entries;
         _scatterModels.SelectedItem = selected != null && entries.Contains(selected) ? selected : entries.FirstOrDefault();
     }
@@ -180,7 +180,8 @@ public sealed partial class VegetationPanel
             selectedId ??=
                 (_scatterRules.SelectedItem as VegetationScatterRule)?.Id;
 
-            var rules = _level?.Vegetation.ScatterRules.ToArray()
+            var rules = _level?.Vegetation.ScatterRules
+                .Where(rule => VegetationCategory.FromModel(rule.Model) is "Tree" or "Bush").ToArray()
                 ?? [];
 
             _scatterRules.ItemsSource = rules;

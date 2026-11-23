@@ -12,4 +12,5 @@ public sealed record LoadedLevel(
     public ZoneReborn.World.Scene.SceneData? Objects { get; init; }
     public ZoneReborn.World.Terrain.TerrainDocument? TerrainDocument { get; init; }
     public RoadNetwork Roads { get; init; } = new();
+    public ZoneReborn.World.Vegetation.GroundCoverDocument GroundCover { get; init; } = new();
 }

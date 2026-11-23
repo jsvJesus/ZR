@@ -77,7 +77,7 @@ public static class VegetationScatterGenerator
         }
 
         var rules = scene.ScatterRules
-            .Where(rule => rule.Enabled)
+            .Where(rule => rule.Enabled && rule.Kind is VegetationScatterKind.Tree or VegetationScatterKind.Bush)
             .OrderBy(rule => rule.Id)
             .ToArray();
 
@@ -126,8 +126,6 @@ public static class VegetationScatterGenerator
             descriptor.MaxZ);
 
         var surface = new TerrainSurface(level);
-        var tile = document.Tile(tileX, tileZ);
-
         var generated = new List<GeneratedVegetationInstance>();
         var occupied = new PlacementGrid();
 
@@ -256,10 +254,8 @@ public static class VegetationScatterGenerator
 
                 if (!MaterialAllowed(
                     document,
-                    tile,
-                    rule,
-                    tileX,
-                    tileZ,
+                    rule.MaterialIndex,
+                    rule.MinimumMaterialWeight,
                     x,
                     z))
                 {
@@ -278,7 +274,7 @@ public static class VegetationScatterGenerator
 
                 if (!SlopeAllowed(
                     document,
-                    rule,
+                    rule.MaximumSlopeDegrees,
                     x,
                     z))
                 {
@@ -344,8 +340,13 @@ public static class VegetationScatterGenerator
             }
         }
 
+        // Legacy saved Grass/Reed rules and instances remain intact. Only trees
+        // and bushes belong to this generator after introducing dense cover.
+        var replacedRules = scene.ScatterRules
+            .Where(rule => rule.Kind is VegetationScatterKind.Tree or VegetationScatterKind.Bush)
+            .Select(rule => rule.Id).ToHashSet();
         int previous = scene.Generated.Count(item =>
-            item.TileX == tileX && item.TileZ == tileZ);
+            item.TileX == tileX && item.TileZ == tileZ && replacedRules.Contains(item.RuleId));
 
         int resultCount =
             scene.Generated.Count - previous + generated.Count;
@@ -358,7 +359,7 @@ public static class VegetationScatterGenerator
         }
 
         scene.Generated.RemoveAll(item =>
-            item.TileX == tileX && item.TileZ == tileZ);
+            item.TileX == tileX && item.TileZ == tileZ && replacedRules.Contains(item.RuleId));
 
         scene.Generated.AddRange(generated);
 
@@ -370,15 +371,19 @@ public static class VegetationScatterGenerator
         return generated.Count;
     }
 
-    private static bool MaterialAllowed(
+    internal static bool MaterialAllowed(
         TerrainDocument document,
-        TerrainTileData tile,
-        VegetationScatterRule rule,
-        int tileX,
-        int tileZ,
+        int materialIndex,
+        float minimumMaterialWeight,
         float x,
         float z)
     {
+        if (document.Layers.Count == 0 || materialIndex >= document.Layers.Count ||
+            (materialIndex >= 0 && document.Layers[materialIndex].IsArchived)) return false;
+        var descriptor = document.Descriptor;
+        int tileX = Math.Clamp((int)((x - descriptor.OriginX) / (256f * descriptor.CellSize)), 0, descriptor.TilesX - 1);
+        int tileZ = Math.Clamp((int)((z - descriptor.OriginZ) / (256f * descriptor.CellSize)), 0, descriptor.TilesZ - 1);
+        var tile = document.Tile(tileX, tileZ);
         float pixelSize =
             256f / 248f * document.Descriptor.CellSize;
 
@@ -465,7 +470,7 @@ public static class VegetationScatterGenerator
                 _ => weights.Z
             }) / normalization;
 
-            if (index == rule.MaterialIndex)
+            if (index == materialIndex)
             {
                 selectedWeight = weight;
             }
@@ -493,13 +498,13 @@ public static class VegetationScatterGenerator
             blockedWeight += baseWeight;
         }
 
-        if (rule.MaterialIndex == 0)
+        if (materialIndex == 0)
         {
             selectedWeight = baseWeight;
         }
 
         return blockedWeight < 0.2f &&
-            selectedWeight >= rule.MinimumMaterialWeight;
+            (materialIndex == -1 || selectedWeight >= minimumMaterialWeight);
     }
 
     private static bool WaterAllowed(
@@ -551,9 +556,9 @@ public static class VegetationScatterGenerator
         return !rule.NearWaterOnly || nearWater;
     }
 
-    private static bool SlopeAllowed(
+    internal static bool SlopeAllowed(
         TerrainDocument document,
-        VegetationScatterRule rule,
+        float maximumSlopeDegrees,
         float x,
         float z)
     {
@@ -575,7 +580,7 @@ public static class VegetationScatterGenerator
             MathF.Sqrt(dx * dx + dz * dz)
         ) * 180f / MathF.PI;
 
-        return degrees <= rule.MaximumSlopeDegrees;
+        return degrees <= maximumSlopeDegrees;
     }
 
     private static float Footprint(

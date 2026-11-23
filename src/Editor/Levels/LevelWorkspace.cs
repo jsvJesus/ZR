@@ -86,7 +86,9 @@ public sealed class LevelWorkspace
         {
             Vegetation = vegetation,
             Objects = objects,
-            Roads = roads
+            Roads = roads,
+            GroundCover = await ZoneReborn.World.Vegetation.GroundCoverStorage.LoadAsync(
+                level.Directory, cancellationToken)
         };
 
         objects.AttachTerrain(level);

@@ -84,6 +84,15 @@ SurfaceOutput PSMain(
     PixelInput input,
     bool frontFace : SV_IsFrontFace)
 {
+    if (CameraPosition.w > 0.0f)
+    {
+        float distanceFade = 1.0f - smoothstep(CameraPosition.w * 0.75f,
+            CameraPosition.w, length(input.WorldPosition - CameraPosition.xyz));
+        float dither = frac(52.9829189f * frac(dot(floor(input.Position.xy),
+            float2(0.06711056f, 0.00583715f))));
+        clip(distanceFade - max(dither, 0.00001f));
+    }
+
     float4 color = Diffuse.Sample(
         SceneSampler,
         input.Uv) * MaterialColor;

@@ -55,6 +55,8 @@ internal sealed partial class SceneRenderer : IDisposable
     private TerrainTexture _white = null!, _flatNormal = null!;
     private long _modelBytes, _textureBytes, _frame;
     private bool _disposed, _preparedFrame;
+    public float DistanceFadeEnd { get; set; }
+    public bool ForceCutout { get; set; }
 
     public SceneRenderer(Device device, DeviceContext context, AssetPaths assets, SceneData scene, bool objectPreview = false)
     {
@@ -214,7 +216,7 @@ internal sealed partial class SceneRenderer : IDisposable
                 _worlds.Add(instance.World);
                 _visibleObjects.Add(instance.Id);
                 foreach (var mesh in model.Meshes)
-                    if (mesh.Material.Transparent)
+                    if (mesh.Material.Transparent && !ForceCutout)
                         _transparent.Add(new(mesh, offset, group.Mirrored,
                             Vector3.DistanceSquared(camera.Position, instance.Bounds.Center)));
             }
@@ -236,7 +238,7 @@ internal sealed partial class SceneRenderer : IDisposable
             {
                 if (group.Resources == null || group.Count == 0) continue;
                 foreach (var mesh in group.Resources.Meshes)
-                    if (!mesh.Material.Transparent)
+                    if (!mesh.Material.Transparent || ForceCutout)
                         Draw(mesh, group.Start, group.Count, group.Mirrored, camera.Position, viewProjection);
             }
             // Defer glass until trees/characters have populated opaque depth. Mesh interiors
@@ -314,17 +316,18 @@ internal sealed partial class SceneRenderer : IDisposable
     private void Draw(MeshResources mesh, int start, int count, bool mirrored, Vector3 camera, Matrix4x4 viewProjection)
     {
         var material = mesh.Material;
-        var diffuse = Texture(material.Diffuse, _white, out _);
+        var diffuse = Texture(material.Diffuse, _white, out bool diffuseReady);
+        if (ForceCutout && !diffuseReady && !string.IsNullOrWhiteSpace(material.Diffuse)) return;
         var normal = Texture(material.Normal, _flatNormal, out bool normalReady);
         var constants = new Constants
         {
             ViewProjection = viewProjection, Color = material.Color,
-            CameraPosition = new Vector4(camera, 0),
-            Parameters = new Vector4(material.AlphaTest ? 0.4f : 0,
-                material.Transparent ? 1 : 0, normalReady ? 1 : 0, material.Specular)
+            CameraPosition = new Vector4(camera, DistanceFadeEnd),
+            Parameters = new Vector4(material.AlphaTest || ForceCutout ? 0.4f : 0,
+                material.Transparent && !ForceCutout ? 1 : 0, normalReady ? 1 : 0, material.Specular)
         };
         _context.UpdateSubresource(ref constants, _constants);
-        _context.Rasterizer.State = material.DoubleSided ? (mirrored ? _mirroredTwoSided : _twoSided)
+        _context.Rasterizer.State = material.DoubleSided || ForceCutout ? (mirrored ? _mirroredTwoSided : _twoSided)
             : mirrored ? _mirroredBack : _back;
         _context.InputAssembler.SetVertexBuffers(0,
             new VertexBufferBinding(mesh.Vertices, 48, 0), new VertexBufferBinding(_instances, 64, 0));

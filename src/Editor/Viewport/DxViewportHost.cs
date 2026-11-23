@@ -179,6 +179,7 @@ namespace Editor.Viewport
         protected override void DestroyNativeControlCore(
             IPlatformHandle control)
         {
+            EndGroundCoverPaint();
             CancelObjectDrag();
             CancelTreeDrag();
             CancelObjectPlacement();
@@ -313,6 +314,7 @@ namespace Editor.Viewport
 
         public void SetCamera(CameraPose pose)
         {
+            EndGroundCoverPaint();
             CancelObjectDrag();
             CancelTreeDrag();
             _camera.Restore(pose);
@@ -323,6 +325,7 @@ namespace Editor.Viewport
 
         public void SetLevel(LoadedLevel level, AssetPaths assets)
         {
+            EndGroundCoverPaint();
             CancelObjectDrag();
             CancelTreeDrag();
             SelectTree(null);
@@ -390,6 +393,12 @@ namespace Editor.Viewport
                         return nint.Zero;
                     }
 
+                    if (GroundCoverBrushEnabled)
+                    {
+                        BeginGroundCoverPaint(window, ReadX(lParam), ReadY(lParam));
+                        return nint.Zero;
+                    }
+
                     if (TerrainBrushEnabled)
                     {
                         BeginTerrainPaint(
@@ -422,6 +431,7 @@ namespace Editor.Viewport
                         return nint.Zero;
                     }
 
+                    if (_groundCoverPainting) { PaintGroundCover(ReadX(lParam), ReadY(lParam)); EndGroundCoverPaint(); return nint.Zero; }
                     if (_terrainPainting) { PaintTerrain(ReadX(lParam), ReadY(lParam)); EndTerrainPaint(); return nint.Zero; }
 
                     if (IsTreeDragging)
@@ -441,6 +451,7 @@ namespace Editor.Viewport
                     break;
 
                 case WmRightDown:
+                    EndGroundCoverPaint();
                     EndRoadDrag();
                     EndTerrainPaint();
                     if (IsTreeDragging) { CancelTreeDrag(); return nint.Zero; }
@@ -479,6 +490,7 @@ namespace Editor.Viewport
                     return nint.Zero;
 
                 case WmCaptureChanged:
+                    EndGroundCoverPaint();
                     EndRoadDrag();
                     EndTerrainPaint();
                     CancelObjectDrag();
@@ -487,6 +499,7 @@ namespace Editor.Viewport
                     break;
 
                 case WmMouseMove:
+                    if (_groundCoverPainting) { PaintGroundCover(ReadX(lParam), ReadY(lParam)); return nint.Zero; }
                     if (MoveRoadDrag(ReadX(lParam), ReadY(lParam)))
                     {
                         return nint.Zero;
@@ -534,6 +547,12 @@ namespace Editor.Viewport
                             ObjectSaveRequested?.Invoke();
                         }
 
+                        return nint.Zero;
+                    }
+
+                    if (_groundCoverPainting && (int)wParam == 0x1B)
+                    {
+                        EndGroundCoverPaint();
                         return nint.Zero;
                     }
 
@@ -625,6 +644,7 @@ namespace Editor.Viewport
                     break;
 
                 case WmKillFocus:
+                    EndGroundCoverPaint();
                     EndTerrainPaint();
                     CancelObjectDrag();
                     CancelTreeDrag();

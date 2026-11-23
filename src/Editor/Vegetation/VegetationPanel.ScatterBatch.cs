@@ -53,6 +53,7 @@ public sealed partial class VegetationPanel
     private CancellationTokenSource? _batchCancellation;
     private Task _batchTask = Task.CompletedTask;
     private bool _batchBinding;
+    public bool IsGeneratingScatter => _batchCancellation != null;
 
     private void BuildScatterBatchControls(StackPanel parent)
     {
@@ -135,7 +136,6 @@ public sealed partial class VegetationPanel
             "сохраняя вручную расставленные деревья."));
 
         parent.Children.Add(_batchGenerate);
-        parent.Children.Add(_batchCancel);
         parent.Children.Add(_batchProgress);
         parent.Children.Add(_batchProgressText);
 
@@ -206,7 +206,8 @@ public sealed partial class VegetationPanel
         {
             foreach (var rule in _level.Vegetation.ScatterRules)
             {
-                if (rule.MaterialIndex == material.Index &&
+                if ((VegetationCategory.FromModel(rule.Model) is "Tree" or "Bush") &&
+                    rule.MaterialIndex == material.Index &&
                     rule.Enabled)
                 {
                     _batchCheckedModels.Add(rule.Model);
@@ -335,7 +336,8 @@ public sealed partial class VegetationPanel
         // Правила других материалов не затрагиваем.
         for (int i = 0; i < rules.Count; i++)
         {
-            if (rules[i].MaterialIndex == material.Index)
+            if (rules[i].MaterialIndex == material.Index &&
+                VegetationCategory.FromModel(rules[i].Model) is "Tree" or "Bush")
             {
                 rules[i] = rules[i] with { Enabled = false };
             }
@@ -432,6 +434,12 @@ public sealed partial class VegetationPanel
 
         staged.Instances.AddRange(scene.Instances);
         staged.ScatterRules.AddRange(rules);
+        // Whole-level regeneration replaces only tree/bush rules. Preserve legacy
+        // grass/reed and unknown rule IDs just as tile regeneration does.
+        var treeRuleIds = scene.ScatterRules
+            .Where(rule => rule.Kind is VegetationScatterKind.Tree or VegetationScatterKind.Bush)
+            .Select(rule => rule.Id).ToHashSet();
+        staged.Generated.AddRange(scene.Generated.Where(instance => !treeRuleIds.Contains(instance.RuleId)));
 
         foreach (var asset in scene.Assets)
         {

@@ -8,7 +8,7 @@ namespace Editor.Vegetation
     {
         private void RequireEditable()
         {
-            if (_level == null || !_level.Vegetation.CanSave || IsSaving || _viewport?.IsPlaying == true ||
+            if (GroundCoverMode || _level == null || !_level.Vegetation.CanSave || IsSaving || _viewport?.IsPlaying == true ||
                 _viewport?.IsStarting == true || _viewport?.IsTreeDragging == true)
                 throw new InvalidOperationException("Редактирование растительности сейчас недоступно.");
         }
@@ -74,6 +74,7 @@ namespace Editor.Vegetation
         public async Task SavePendingAsync()
         {
             _viewport?.CancelTreeDrag();
+            _viewport?.EndGroundCoverPaint();
             if (!_batchTask.IsCompleted)
             {
                 await _batchTask;
@@ -85,7 +86,7 @@ namespace Editor.Vegetation
                 return;
             }
 
-            if (_level == null || !_level.Vegetation.IsDirty)
+            if (_level == null || (!_level.Vegetation.IsDirty && !_level.GroundCover.IsDirty))
             {
                 return;
             }
@@ -101,16 +102,29 @@ namespace Editor.Vegetation
             IsSaving = true; BusyChanged?.Invoke(); RefreshMode();
             try
             {
-                await VegetationScatterStorage.SaveAsync(
-                    level.Directory,
-                    level.Vegetation);
-
-                await VegetationStorage.SaveAsync(level.Directory, level.Vegetation);
+                // A damaged cover document must not prevent saving valid tree edits.
+                var errors = new List<Exception>();
+                if (level.Vegetation.IsDirty)
+                {
+                    try
+                    {
+                        await VegetationScatterStorage.SaveAsync(level.Directory, level.Vegetation);
+                        await VegetationStorage.SaveAsync(level.Directory, level.Vegetation);
+                    }
+                    catch (Exception exception) { errors.Add(exception); }
+                }
+                if (level.GroundCover.IsDirty)
+                {
+                    try { await GroundCoverStorage.SaveAsync(level.Directory, level.GroundCover); }
+                    catch (Exception exception) { errors.Add(exception); }
+                }
+                if (errors.Count > 0) throw new AggregateException("Не удалось сохранить часть растительности.", errors);
 
                 if (_level == level)
                 {
-                    _status.Text = $"Сохранено: {Path.Combine(level.Directory, VegetationStorage.FileName)}";
+                    _status.Text = $"Растительность сохранена: {level.Directory}";
                     UpdateSummary();
+                    RefreshGroundCoverInfo();
                 }
             }
             finally
@@ -123,6 +137,8 @@ namespace Editor.Vegetation
         {
             _loading?.Cancel();
             _batchCancellation?.Cancel();
+            _coverCatalogLoading?.Cancel();
+            _viewport?.EndGroundCoverPaint();
         }
     }
 }

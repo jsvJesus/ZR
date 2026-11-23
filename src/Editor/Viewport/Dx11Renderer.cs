@@ -235,6 +235,7 @@ namespace Editor.Viewport
             _scene = level.Objects;
             _selectedObject = null;
             SetRoadSurface(level);
+            SetGroundCover(level, assets);
             ResetPostProcessHistory();
         }
 
@@ -251,6 +252,7 @@ namespace Editor.Viewport
             _scene = scene;
             _objectPreview = true;
             SetRoadSurface(null);
+            SetGroundCover(null, null);
             _selectedObject = null;
             ResetPostProcessHistory();
         }
@@ -457,6 +459,8 @@ namespace Editor.Viewport
                 viewProjection,
                 playing);
 
+            RenderGroundCover(camera, viewProjection);
+
             _terrain?.RenderWater(
                 viewProjection,
                 camera.Position,
@@ -617,6 +621,7 @@ namespace Editor.Viewport
             _terrainBrushOverlay?.Dispose();
             _trees?.Dispose();
             DisposeRoadModels();
+            SetGroundCover(null, null);
             _objects?.Dispose();
             _collisionOverlay?.Dispose();
             _roadOverlay?.Dispose();

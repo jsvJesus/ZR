@@ -35,6 +35,7 @@ public sealed partial class DxViewportHost
             return;
         }
 
+        EndGroundCoverPaint();
         CancelTreeDrag();
         CancelObjectPlacement();
 

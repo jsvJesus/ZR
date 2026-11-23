@@ -38,16 +38,16 @@ namespace Editor.Vegetation
         private bool _binding;
         private Task _saveTask = Task.CompletedTask;
         public bool IsSaving { get; private set; }
-        public bool HasPendingChanges => _level?.Vegetation.IsDirty == true || IsSaving;
+        public bool HasPendingChanges => _level?.Vegetation.IsDirty == true || _level?.GroundCover.IsDirty == true || IsSaving;
         public event Action? BusyChanged;
 
         public VegetationPanel()
         {
-            var root = new StackPanel { Spacing = 8 };
-            BrowserContent.Children.Add(_summary); BrowserContent.Children.Add(Title("КАТАЛОГ РАСТИТЕЛЬНОСТИ"));
-            BrowserContent.Children.Add(_categories);
-            BrowserContent.Children.Add(_search); BrowserContent.Children.Add(_catalogCount); BrowserContent.Children.Add(_catalog);
-            BrowserContent.Children.Add(Title("РАСТИТЕЛЬНОСТЬ УРОВНЯ")); BrowserContent.Children.Add(_instances);
+            var root = _treeControls;
+            _treeBrowser.Children.Add(_summary); _treeBrowser.Children.Add(Title("ДЕРЕВЬЯ И КУСТЫ SPEEDTREE"));
+            _treeBrowser.Children.Add(_categories);
+            _treeBrowser.Children.Add(_search); _treeBrowser.Children.Add(_catalogCount); _treeBrowser.Children.Add(_catalog);
+            _treeBrowser.Children.Add(Title("РАСТИТЕЛЬНОСТЬ УРОВНЯ")); _treeBrowser.Children.Add(_instances);
             root.Children.Add(_modelInfo);
             root.Children.Add(Text("Ctrl + ЛКМ — поставить выбранную модель на Terrain. ЛКМ — выбрать растение."));
             root.Children.Add(_move); root.Children.Add(_rotate);
@@ -76,7 +76,8 @@ namespace Editor.Vegetation
             {
                 try { await SavePendingAsync(); } catch (Exception exception) { _status.Text = exception.Message; }
             };
-            root.Children.Add(save); root.Children.Add(_status); Content = root;
+            var layout = BuildGroundCoverControls();
+            layout.Children.Add(save); layout.Children.Add(_status); Content = layout;
             _search.TextChanged += (_, _) => FilterCatalog();
             _categories.SelectionChanged += (_, _) => FilterCatalog();
             _catalog.SelectionChanged += async (_, _) => { if (!_binding) await LoadSelectedAsync(); };
@@ -96,9 +97,10 @@ namespace Editor.Vegetation
         public void Attach(DxViewportHost viewport, AssetPaths assets)
         {
             _viewport = viewport; _assets = assets;
-            _entries = SpeedTreeReader.Catalog(assets);
+            _entries = SpeedTreeReader.Catalog(assets)
+                .Where(entry => entry.Category is "Tree" or "Bush").ToArray();
             var categories = _entries.Select(entry => entry.Category).Distinct(StringComparer.OrdinalIgnoreCase)
-                .OrderBy(category => category == "Tree" ? 0 : category == "Bush" ? 1 : category == "Grass" ? 2 : 3)
+                .OrderBy(category => category == "Tree" ? 0 : 1)
                 .ThenBy(category => category, StringComparer.OrdinalIgnoreCase).ToArray();
             _categories.ItemsSource = categories;
             _categories.SelectedItem = categories.FirstOrDefault();
@@ -118,24 +120,33 @@ namespace Editor.Vegetation
             {
                 try { DeleteSelected(); } catch (Exception exception) { _status.Text = exception.Message; }
             };
+            AttachGroundCover(viewport, assets);
         }
 
         public void Bind(LoadedLevel level)
         {
+            _viewport?.EndGroundCoverPaint();
             _level = level;
+            BindGroundCover();
             RefreshScatterControls();
             RefreshBatchMaterials();
             RefreshInstances(null);
             RefreshMode();
-            _status.Text = level.Vegetation.Warnings.Count > 0 ? string.Join("\n", level.Vegetation.Warnings)
+            var warnings = level.Vegetation.Warnings.Concat(level.GroundCover.Warnings).ToArray();
+            _status.Text = warnings.Length > 0 ? string.Join("\n", warnings)
                 : "Расстановка доступна в режиме редактирования.";
         }
 
         public void RefreshMode()
         {
+            RefreshGroundCoverMode();
             if (_viewport == null) return;
-            bool editable = IsVisible && IsEnabled && _level?.Vegetation.CanSave == true && !IsSaving &&
+            _batchCancel.IsVisible = IsGeneratingScatter && !GroundCoverMode;
+            _batchCancel.IsEnabled = IsGeneratingScatter && IsVisible && IsEnabled && !GroundCoverMode &&
+                _level?.Vegetation.CanSave == true && !_viewport.IsPlaying && !_viewport.IsStarting;
+            bool editable = !GroundCoverMode && IsVisible && IsEnabled && _level?.Vegetation.CanSave == true && !IsSaving &&
                 !_viewport.IsPlaying && !_viewport.IsStarting;
+            _treeControls.IsEnabled = editable;
             _viewport.TreeEditingEnabled = editable;
             bool controls = editable && !_viewport.IsTreeDragging;
             _move.IsEnabled = controls; _rotate.IsEnabled = controls;
@@ -148,6 +159,11 @@ namespace Editor.Vegetation
             _rotate.Content = moving ? "Вращение [2]" : "● Вращение [2]";
             if (_viewport.IsTreeDragging) return;
             _viewport.SelectTree(editable ? Selected : null);
+            if (!editable)
+            {
+                _viewport.SetTreePlacement(null);
+                return;
+            }
             try
             {
                 float scale = Read(_scale), yaw = Read(_yaw);

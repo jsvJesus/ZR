@@ -84,14 +84,15 @@ public static class SourceModelReader
         }
     }
 
-    public static SceneBounds ReadBounds(AssetPaths assets, string file, CancellationToken cancellationToken = default)
+    public static SceneBounds ReadBounds(AssetPaths assets, string file, CancellationToken cancellationToken = default,
+        bool allowMeshFallback = true)
     {
         cancellationToken.ThrowIfCancellationRequested();
         string path = Resolve(assets, file);
         if (Path.GetExtension(path).Equals(ImportedModelStorage.Extension, StringComparison.OrdinalIgnoreCase))
             return ImportedModelStorage.ReadBounds(path);
         if (Path.GetExtension(path).Equals(".model", StringComparison.OrdinalIgnoreCase))
-            return BigWorldModelReader.ReadBounds(assets, file, cancellationToken);
+            return BigWorldModelReader.ReadBounds(assets, file, cancellationToken, allowMeshFallback);
         if (!File.Exists(path)) throw new FileNotFoundException("SCO model was not found.", path);
         string binary = Path.ChangeExtension(path, ".scb");
         if (File.Exists(binary))

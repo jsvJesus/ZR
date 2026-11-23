@@ -61,11 +61,16 @@ public static class BigWorldModelReader
         return new(SourceModelReader.Normalize(file), new(minimum, maximum), meshes.ToArray());
     }
 
-    public static SceneBounds ReadBounds(AssetPaths assets, string file, CancellationToken cancellationToken = default)
+    public static SceneBounds ReadBounds(AssetPaths assets, string file, CancellationToken cancellationToken = default,
+        bool allowMeshFallback = true)
     {
         var source = new Context(assets, cancellationToken, null).Open(file);
         var bounds = source.Visual.Child("boundingBox");
-        if (bounds == null) return Read(assets, file, cancellationToken).Bounds;
+        if (bounds == null)
+        {
+            if (!allowMeshFallback) throw new InvalidDataException("BigWorld visual has no metadata bounds.");
+            return Read(assets, file, cancellationToken).Bounds;
+        }
         Vector3 minimum = Vector(Required(bounds, "min")), maximum = Vector(Required(bounds, "max"));
         if (minimum.X > maximum.X || minimum.Y > maximum.Y || minimum.Z > maximum.Z)
             throw new InvalidDataException("Invalid BigWorld visual bounds.");

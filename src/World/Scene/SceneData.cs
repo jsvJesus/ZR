@@ -25,6 +25,7 @@ public sealed partial class SceneData
     public string SourceName { get; internal set; } = "";
     public bool CanSave { get; internal set; } = true;
     public bool IsDirty => _revision != _savedRevision;
+    public long Revision => _revision;
     public bool HasTransformPreview => _previewOriginal != null;
     public bool CanUndo => CanSave && !HasTransformPreview && _historyPosition > 0;
     public bool CanRedo => CanSave && !HasTransformPreview && _historyPosition < _history.Count;

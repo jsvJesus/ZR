@@ -147,8 +147,8 @@ public sealed partial class DxViewportHost
 
         Vector3? position = null;
 
-        if (TerrainBrushEnabled &&
-            TerrainBrushRadius > 0 &&
+        if ((GroundCoverBrushEnabled || TerrainBrushEnabled) &&
+            (GroundCoverBrushEnabled ? GroundCoverBrushRadius : TerrainBrushRadius) > 0 &&
             _windowHandle != nint.Zero &&
             _level != null &&
             !IsPlaying &&
@@ -179,7 +179,7 @@ public sealed partial class DxViewportHost
                         _camera.Position,
                         direction,
                         out Vector3 hit,
-                        TerrainBrushFill))
+                        GroundCoverBrushEnabled ? false : TerrainBrushFill))
                 {
                     position = hit;
                 }
@@ -188,9 +188,9 @@ public sealed partial class DxViewportHost
 
         _renderer.SetTerrainBrushPreview(
             position,
-            TerrainBrushRadius,
-            TerrainBrushIsMaterial,
-            TerrainBrushFill
+            GroundCoverBrushEnabled ? GroundCoverBrushRadius : TerrainBrushRadius,
+            GroundCoverBrushEnabled || TerrainBrushIsMaterial,
+            GroundCoverBrushEnabled ? false : TerrainBrushFill
         );
     }
 
