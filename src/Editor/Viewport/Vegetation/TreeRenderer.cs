@@ -79,7 +79,8 @@ namespace Editor.Viewport.Vegetation
             Matrix4x4 viewProjection,
             bool playing,
             bool shadowPass = false,
-            Vector3? shadowForward = null)
+            Vector3? shadowForward = null,
+            RasterizerState? shadowRasterizer = null)
         {
             var forward = shadowForward.HasValue
                 ? Vector3.Normalize(shadowForward.Value)
@@ -109,7 +110,7 @@ namespace Editor.Viewport.Vegetation
             _context.VertexShader.Set(_vertex); _context.VertexShader.SetConstantBuffer(0, _constants);
             _context.PixelShader.Set(_pixel); _context.PixelShader.SetConstantBuffer(0, _constants);
             _context.PixelShader.SetSampler(0, _sampler);
-            _context.Rasterizer.State = _rasterizer;
+            _context.Rasterizer.State = shadowPass ? shadowRasterizer ?? _rasterizer : _rasterizer;
             _context.OutputMerger.SetDepthStencilState(_depth);
             _context.OutputMerger.SetBlendState(null);
 

@@ -27,6 +27,7 @@ internal sealed class TerrainOverviewResources : IDisposable
     private readonly Dictionary<(int X, int Z), TerrainSurfaceGrid> _surfaceGrids = [];
     private VertexShader _vertexShader = null!;
     private PixelShader _pixelShader = null!;
+    private PixelShader _shadowPixelShader = null!;
     private InputLayout _layout = null!;
     private Buffer _vertices = null!;
     private Buffer? _indices;
@@ -76,6 +77,8 @@ internal sealed class TerrainOverviewResources : IDisposable
 
             _vertexShader = new VertexShader(device, vertexCode.Bytecode);
             _pixelShader = new PixelShader(device, pixelCode.Bytecode);
+            using var shadowPixel = shaders.Compile("Terrain/TerrainOverview.hlsl", "PSShadow", "ps_5_0");
+            _shadowPixelShader = new PixelShader(device, shadowPixel.Bytecode);
             _layout = new InputLayout(device, vertexCode.Bytecode, new[]
             {
                 new InputElement("POSITION", 0, Format.R32G32B32_Float, 0, 0),
@@ -150,7 +153,7 @@ internal sealed class TerrainOverviewResources : IDisposable
         _indexCount = indices.Count;
     }
 
-    public void Render(DeviceContext context, Matrix4x4 viewProjection, TerrainMaterialCache materials, bool painted)
+    public void Render(DeviceContext context, Matrix4x4 viewProjection, TerrainMaterialCache materials, bool painted, bool shadowPass = false)
     {
         if (_indexCount == 0) return;
         var terrain = _level.Manifest.Terrain;
@@ -176,8 +179,14 @@ internal sealed class TerrainOverviewResources : IDisposable
         context.InputAssembler.SetIndexBuffer(_indices, Format.R32_UInt, 0);
         context.VertexShader.Set(_vertexShader);
         context.VertexShader.SetConstantBuffer(0, _constants);
-        context.PixelShader.Set(_pixelShader);
+        context.PixelShader.Set(shadowPass ? _shadowPixelShader : _pixelShader);
         context.PixelShader.SetConstantBuffer(0, _constants);
+        if (shadowPass)
+        {
+            context.DrawIndexed(_indexCount, 0, 0);
+            return;
+        }
+
         context.PixelShader.SetShaderResource(0, materials.Get(
             farDiffuse ? terrain.FarDiffuseTexture : layer.DiffuseTexture, false).View);
         context.PixelShader.SetShaderResource(1, materials.Get(
@@ -192,6 +201,7 @@ internal sealed class TerrainOverviewResources : IDisposable
         _vertices?.Dispose();
         _layout?.Dispose();
         _pixelShader?.Dispose();
+        _shadowPixelShader?.Dispose();
         _vertexShader?.Dispose();
     }
 

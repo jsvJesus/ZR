@@ -15,13 +15,7 @@ cbuffer FrameConstants : register(b0)
 	float4 AoSettings;
 };
 
-cbuffer EnvironmentShadow : register(b2)
-{
-    row_major float4x4 SunShadowMatrices[4];
-    float4 SunShadowParams;
-    float4 SunShadowSplits;
-    float4 SunShadowCameraForward;
-};
+#include "Environment/SunShadow.hlsli"
 
 Texture2D<float> DepthTexture : register(t0);
 Texture2D<float4> HdrTexture : register(t0);
@@ -33,9 +27,6 @@ Texture2D<float4> ColorLutTexture : register(t4);
 Texture2D<float2> AmbientOcclusionTexture : register(t5);
 
 SamplerState PostLinearSampler : register(s0);
-
-Texture2DArray<float> SunShadowTexture : register(t7);
-SamplerComparisonState SunShadowSampler : register(s7);
 
 struct PixelInput
 {
@@ -234,70 +225,25 @@ SurfaceOutput PSSurface(PixelInput input)
     return output;
 }
 
-float SunMapVisibility(
-    float3 worldPosition)
+float SunMapVisibility(float3 worldPosition, float3 worldDx, float3 worldDy)
 {
-    if (SunShadowParams.x < 0.5f)
+    float viewDepth = dot(worldPosition - Camera.xyz, EnvironmentShadowCameraForward.xyz);
+    if (EnvironmentShadowParams.x < 0.5f ||
+        viewDepth < 0.0f || viewDepth > EnvironmentShadowSplits.w)
     {
         return 0.0f;
     }
 
-    float viewDepth = dot(
-        worldPosition - Camera.xyz,
-        SunShadowCameraForward.xyz);
-
-    if (viewDepth < 0.0f ||
-        viewDepth > SunShadowSplits.w)
-    {
-        return 0.0f;
-    }
-
-    int cascade = 0;
-
-    if (viewDepth > SunShadowSplits.x)
-        cascade = 1;
-
-    if (viewDepth > SunShadowSplits.y)
-        cascade = 2;
-
-    if (viewDepth > SunShadowSplits.z)
-        cascade = 3;
-
-    float4 lightPosition = mul(
-        float4(worldPosition, 1.0f),
-        SunShadowMatrices[cascade]);
-
-    if (lightPosition.w <= 0.0f)
-    {
-        return 0.0f;
-    }
-
-    float3 projected =
-        lightPosition.xyz / lightPosition.w;
-
-    float2 uv = float2(
-        projected.x * 0.5f + 0.5f,
-        0.5f - projected.y * 0.5f);
-
-    if (any(uv < 0.0f) ||
-        any(uv > 1.0f) ||
-        projected.z <= 0.0f ||
-        projected.z >= 1.0f)
-    {
-        return 0.0f;
-    }
-
-    return SunShadowTexture.SampleCmpLevelZero(
-        SunShadowSampler,
-        float3(uv, (float)cascade),
-        projected.z -
-            SunShadowParams.w * (1.0f + cascade * 0.35f));
+    return SunShadowVisibility(worldPosition, Camera.xyz, worldDx, worldDy);
 }
 
 float ScreenContactShadow(
     float2 uv,
     float depth,
-    float3 normal)
+    float3 normal,
+    float3 world,
+    float3 worldDx,
+    float3 worldDy)
 {
     if (Sun.w < 0.5f ||
         Sun.y <= 0.04f ||
@@ -316,11 +262,7 @@ float ScreenContactShadow(
         return 0.0f;
     }
 
-    float3 world = ReconstructPosition(
-        uv,
-        depth);
-
-    float sunVisibility = SunMapVisibility(world);
+    float sunVisibility = SunMapVisibility(world, worldDx, worldDy);
 
     if (sunVisibility < 0.8f)
     {
@@ -522,6 +464,11 @@ float4 PSPresent(PixelInput input) : SV_Target
     float depth = ContactDepth.Load(
         int3(pixel, 0));
 
+    // Compute the receiver plane before depth/normal-dependent contact branches.
+    float3 world = ReconstructPosition(uv, depth);
+    float3 worldDx = ddx(world);
+    float3 worldDy = ddy(world);
+
     // Keep the existing contact shadow pass.
     float aoAttenuation = 0.0f;
     float contactAttenuation = 0.0f;
@@ -562,7 +509,10 @@ float4 PSPresent(PixelInput input) : SV_Target
             float shadow = ScreenContactShadow(
                 uv,
                 depth,
-                normal);
+                normal,
+                world,
+                worldDx,
+                worldDy);
 
             contactAttenuation = saturate(
                 shadow * Camera.w);

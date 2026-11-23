@@ -269,7 +269,8 @@ internal sealed partial class CharacterRenderer : IDisposable
         Matrix4x4 relativeViewProjection,
         Vector3 cameraPosition,
         float visibility,
-        bool firstPerson)
+        bool firstPerson,
+        RasterizerState? shadowRasterizer = null)
     {
         if (visibility <= 0.001f)
         {
@@ -402,11 +403,11 @@ internal sealed partial class CharacterRenderer : IDisposable
                 mesh.OpacityMask.View
             );
 
-            _context.Rasterizer.State = surface.DoubleSided
+            _context.Rasterizer.State = shadowRasterizer ?? (surface.DoubleSided
                 ? _doubleSided
-                : _rasterizer;
+                : _rasterizer);
 
-            bool transparent = source.Alpha || fading;
+            bool transparent = shadowRasterizer == null && (source.Alpha || fading);
 
             _context.OutputMerger.SetDepthStencilState(
                 transparent ? _transparentDepth : _depth

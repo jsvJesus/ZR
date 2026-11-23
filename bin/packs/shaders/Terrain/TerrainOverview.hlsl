@@ -44,6 +44,17 @@ PixelInput VSMain(VertexInput input)
     return output;
 }
 
+float4 PSShadow(PixelInput input) : SV_TARGET
+{
+    if (WorldExtent.w > 0.5 &&
+        IsTerrainHole(input.World.xz, TerrainOrigin.xy, WorldExtent.z))
+    {
+        discard;
+    }
+
+    return 0;
+}
+
 float4 PSMain(PixelInput input) : SV_TARGET
 {
      if (WorldExtent.w > 0.5 &&

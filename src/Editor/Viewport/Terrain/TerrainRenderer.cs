@@ -38,6 +38,7 @@ internal sealed partial class TerrainRenderer : IDisposable
     private bool _overviewRefreshPending;
     private VertexShader _vertexShader = null!;
     private PixelShader _pixelShader = null!;
+    private PixelShader _shadowPixelShader = null!;
     private InputLayout _layout = null!;
     private Buffer _constants = null!;
     private SamplerState _wrap = null!;
@@ -73,6 +74,8 @@ internal sealed partial class TerrainRenderer : IDisposable
 
             _vertexShader = new VertexShader(device, vertex.Bytecode);
             _pixelShader = new PixelShader(device, pixel.Bytecode);
+            using var shadowPixel = shaders.Compile("Terrain/Terrain.hlsl", "PSShadow", "ps_5_0");
+            _shadowPixelShader = new PixelShader(device, shadowPixel.Bytecode);
             _layout = new InputLayout(device, vertex.Bytecode, new[]
             {
                 new InputElement("POSITION", 0, Format.R32G32B32_Float, 0, 0),
@@ -122,7 +125,7 @@ internal sealed partial class TerrainRenderer : IDisposable
         }
     }
 
-    public void Render(FreeCamera camera, Matrix4x4 viewProjection)
+    public void Render(FreeCamera camera, Matrix4x4 viewProjection, RasterizerState? shadowRasterizer = null)
     {
         if (_level.TerrainDocument is { } paintDocument && paintDocument.MaterialRevision != _paintRevision)
         {
@@ -226,23 +229,23 @@ internal sealed partial class TerrainRenderer : IDisposable
         _materials.BeginFrame();
         _overview.SetCoveredTiles(_tiles.Keys);
         _context.InputAssembler.PrimitiveTopology = PrimitiveTopology.TriangleList;
-        _context.Rasterizer.State = _rasterizer;
+        _context.Rasterizer.State = shadowRasterizer ?? _rasterizer;
         _context.OutputMerger.SetBlendState(null);
         _context.OutputMerger.SetDepthStencilState(_depthWrite);
         _context.PixelShader.SetSampler(0, _wrap);
         _context.PixelShader.SetSampler(1, _clamp);
         _context.PixelShader.SetShaderResource(5, _holes?.View);
         _context.PixelShader.SetShaderResource(6, _paintOverview?.View);
-        _overview.Render(_context, viewProjection, _materials, _paintOverview != null);
+        _overview.Render(_context, viewProjection, _materials, _paintOverview != null, shadowRasterizer != null);
         _context.InputAssembler.InputLayout = _layout;
         _context.InputAssembler.PrimitiveTopology = PrimitiveTopology.TriangleList;
         _context.VertexShader.Set(_vertexShader);
         _context.VertexShader.SetConstantBuffer(0, _constants);
-        _context.PixelShader.Set(_pixelShader);
+        _context.PixelShader.Set(shadowRasterizer != null ? _shadowPixelShader : _pixelShader);
         _context.PixelShader.SetConstantBuffer(0, _constants);
         _context.PixelShader.SetSampler(0, _wrap);
         _context.PixelShader.SetSampler(1, _clamp);
-        _context.Rasterizer.State = _rasterizer;
+        _context.Rasterizer.State = shadowRasterizer ?? _rasterizer;
         var constants = new Constants
         {
             ViewProjection = viewProjection,
@@ -271,6 +274,14 @@ internal sealed partial class TerrainRenderer : IDisposable
             tile.UpdateLodEdges(_context, skirtEdges);
             _context.InputAssembler.SetVertexBuffers(0, new VertexBufferBinding(tile.Vertices, Utilities.SizeOf<TerrainVertex>(), 0));
             _context.InputAssembler.SetIndexBuffer(tile.Indices, Format.R32_UInt, 0);
+            if (shadowRasterizer != null)
+            {
+                // One depth-only draw per tile; keep the same mesh, skirts and hole mask.
+                _context.UpdateSubresource(ref constants, _constants);
+                DrawTileGeometry(tile);
+                continue;
+            }
+
             _context.PixelShader.SetShaderResource(2, tile.Normals.View);
             _context.PixelShader.SetShaderResource(4, tile.WeightSum.View);
             _context.OutputMerger.SetBlendState(null);
@@ -448,6 +459,11 @@ internal sealed partial class TerrainRenderer : IDisposable
             ref constants,
             _constants);
 
+        DrawTileGeometry(tile);
+    }
+
+    private void DrawTileGeometry(TerrainTileResources tile)
+    {
         _context.DrawIndexed(
             tile.IndexCount,
             0,
@@ -578,6 +594,7 @@ internal sealed partial class TerrainRenderer : IDisposable
         _constants?.Dispose();
         _layout?.Dispose();
         _pixelShader?.Dispose();
+        _shadowPixelShader?.Dispose();
         _vertexShader?.Dispose();
         _waterSurface?.Dispose();
         _waterSurface = null;

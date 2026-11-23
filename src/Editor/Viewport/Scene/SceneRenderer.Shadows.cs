@@ -48,7 +48,8 @@ internal sealed partial class SceneRenderer
     public void RenderShadowCasters(
         Vector3 center,
         float radius,
-        Matrix4x4 viewProjection)
+        Matrix4x4 viewProjection,
+        RasterizerState? shadowRasterizer = null)
     {
         if (_disposed ||
             _shadowPixel == null ||
@@ -249,7 +250,7 @@ internal sealed partial class SceneRenderer
             _context.OutputMerger.SetBlendState(null);
 
             _context.Rasterizer.State =
-                _shadowRasterizer;
+                shadowRasterizer ?? _shadowRasterizer;
 
             foreach (DrawGroup group in ordered)
             {

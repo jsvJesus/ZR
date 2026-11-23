@@ -17,6 +17,7 @@ namespace Editor.Viewport
         private const int ShadowResolution = 2048;
         private const int SkyShadowResolution = 1024;
         private const float CascadeSplitLambda = 0.65f;
+        private const float CascadeBlendFraction = 0.12f;
 
         private Texture2D? _shadowTexture;
         private readonly DepthStencilView?[] _shadowDepthViews =
@@ -24,12 +25,17 @@ namespace Editor.Viewport
 
         private readonly Matrix4x4[] _shadowMatrices =
             new Matrix4x4[ShadowCascadeCount];
+        private readonly RasterizerState?[] _sunShadowRasterizers =
+            new RasterizerState?[ShadowCascadeCount];
+        private readonly float[] _shadowDepthRanges = new float[ShadowCascadeCount];
 
         private ShaderResourceView? _shadowShaderView;
         private SamplerState? _shadowSampler;
         private Buffer? _shadowConstantBuffer;
 
         private Vector4 _shadowSplits;
+        private Vector4 _shadowDepthBias;
+        private float _shadowNearPlane;
 
         private Texture2D? _skyShadowTexture;
         private DepthStencilView? _skyShadowDepthView;
@@ -49,7 +55,7 @@ namespace Editor.Viewport
                     out _skyShadowDepthView,
                     out _skyShadowShaderView);
 
-                _shadowSampler = CreateComparisonSampler();
+                _shadowSampler = CreateComparisonSampler(linear: false);
                 _skyShadowSampler = CreateComparisonSampler();
 
                 _shadowConstantBuffer = new Buffer(
@@ -204,13 +210,13 @@ namespace Editor.Viewport
             }
         }
 
-        private SamplerState CreateComparisonSampler()
+        private SamplerState CreateComparisonSampler(bool linear = true)
         {
             return new SamplerState(
                 _device,
                 new SamplerStateDescription
                 {
-                    Filter = Filter.ComparisonMinMagLinearMipPoint,
+                    Filter = linear ? Filter.ComparisonMinMagLinearMipPoint : Filter.ComparisonMinMagMipPoint,
                     AddressU = TextureAddressMode.Border,
                     AddressV = TextureAddressMode.Border,
                     AddressW = TextureAddressMode.Border,
@@ -329,6 +335,8 @@ namespace Editor.Viewport
                 lightRight);
 
             float previousSplit = nearPlane;
+            float previousCascadeStart = nearPlane;
+            _shadowNearPlane = nearPlane;
 
             for (int index = 0; index < ShadowCascadeCount; index++)
             {
@@ -350,7 +358,14 @@ namespace Editor.Viewport
                     split = shadowDistance;
                 }
 
-                float middle = (previousSplit + split) * 0.5f;
+                // The next cascade must cover the preceding cascade's blend band.
+                float cascadeNear = index == 0 ? nearPlane : MathF.Max(
+                    nearPlane,
+                    previousSplit - MathF.Max(
+                        0.5f,
+                        (previousSplit - previousCascadeStart) * CascadeBlendFraction));
+
+                float middle = (cascadeNear + split) * 0.5f;
 
                 Vector3 center =
                     camera.Position + forward * middle;
@@ -403,12 +418,15 @@ namespace Editor.Viewport
                     lightPosition,
                     lightForward);
 
+                float lightFarPlane = lightOffset + radius + casterExtension + 16f;
+                float depthRange = lightFarPlane - 0.1f;
+                RasterizerState shadowRasterizer = SunShadowRasterizer(index, depthRange);
+
                 Matrix4x4 lightProjection =
                     CreateShadowProjection(
                         radius,
                         0.1f,
-                        lightOffset + radius +
-                        casterExtension + 16f);
+                        lightFarPlane);
 
                 Matrix4x4 lightViewProjection =
                     lightView * lightProjection;
@@ -419,15 +437,19 @@ namespace Editor.Viewport
                 {
                     case 0:
                         _shadowSplits.X = split;
+                        _shadowDepthBias.X = 0.002f / depthRange;
                         break;
                     case 1:
                         _shadowSplits.Y = split;
+                        _shadowDepthBias.Y = 0.002f / depthRange;
                         break;
                     case 2:
                         _shadowSplits.Z = split;
+                        _shadowDepthBias.Z = 0.002f / depthRange;
                         break;
                     case 3:
                         _shadowSplits.W = split;
+                        _shadowDepthBias.W = 0.002f / depthRange;
                         break;
                 }
 
@@ -435,6 +457,7 @@ namespace Editor.Viewport
 
                 if (depthView == null)
                 {
+                    previousCascadeStart = previousSplit;
                     previousSplit = split;
                     continue;
                 }
@@ -457,7 +480,8 @@ namespace Editor.Viewport
                 {
                     _terrain?.Render(
                         camera,
-                        lightViewProjection);
+                        lightViewProjection,
+                        shadowRasterizer);
 
                     Vector3 casterCenter =
                         center +
@@ -466,14 +490,16 @@ namespace Editor.Viewport
                     _objects?.RenderShadowCasters(
                         casterCenter,
                         radius + casterExtension,
-                        lightViewProjection);
+                        lightViewProjection,
+                        shadowRasterizer);
 
                     _trees?.Render(
                         camera,
                         lightViewProjection,
                         playing,
                         shadowPass: true,
-                        shadowForward: lightForward);
+                        shadowForward: lightForward,
+                        shadowRasterizer: shadowRasterizer);
 
                     if (_character != null)
                     {
@@ -484,7 +510,8 @@ namespace Editor.Viewport
 
                         _character.RenderShadow(
                             relativeProjection,
-                            camera.Position);
+                            camera.Position,
+                            shadowRasterizer);
                     }
                 }
                 finally
@@ -492,6 +519,7 @@ namespace Editor.Viewport
                     RestoreRenderTarget();
                 }
 
+                previousCascadeStart = previousSplit;
                 previousSplit = split;
             }
 
@@ -499,6 +527,31 @@ namespace Editor.Viewport
                 true,
                 _environmentSettings.ShadowStrength,
                 forward);
+        }
+
+        private RasterizerState SunShadowRasterizer(int cascade, float depthRange)
+        {
+            if (_sunShadowRasterizers[cascade] == null ||
+                _shadowDepthRanges[cascade] != depthRange)
+            {
+                // Positive bias moves casters away from the light (LessEqual, D32_Float).
+                // Bound grazing-angle displacement to 2 cm in every cascade.
+                var replacement = new RasterizerState(_device, new RasterizerStateDescription
+                {
+                    FillMode = FillMode.Solid,
+                    CullMode = CullMode.None,
+                    IsDepthClipEnabled = true,
+                    DepthBias = 16,
+                    SlopeScaledDepthBias = 1.0f,
+                    DepthBiasClamp = 0.02f / depthRange
+                });
+
+                _sunShadowRasterizers[cascade]?.Dispose();
+                _sunShadowRasterizers[cascade] = replacement;
+                _shadowDepthRanges[cascade] = depthRange;
+            }
+
+            return _sunShadowRasterizers[cascade]!;
         }
 
         private void RenderSkyShadowMap(FreeCamera camera)
@@ -669,11 +722,12 @@ namespace Editor.Viewport
                     enabled ? 1f : 0f,
                     Math.Clamp(strength, 0f, 1f),
                     ShadowResolution,
-                    0.00015f),
+                    CascadeBlendFraction),
                 Splits = _shadowSplits,
                 CameraForward = new Vector4(
                     Vector3.Normalize(cameraForward),
-                    0f)
+                    _shadowNearPlane),
+                DepthBias = _shadowDepthBias
             };
 
             _context.UpdateSubresource(
@@ -744,6 +798,8 @@ namespace Editor.Viewport
             {
                 _shadowDepthViews[index]?.Dispose();
                 _shadowDepthViews[index] = null;
+                _sunShadowRasterizers[index]?.Dispose();
+                _sunShadowRasterizers[index] = null;
             }
 
             _shadowTexture?.Dispose();
@@ -760,6 +816,7 @@ namespace Editor.Viewport
             public Vector4 Parameters;
             public Vector4 Splits;
             public Vector4 CameraForward;
+            public Vector4 DepthBias;
         }
 
         [StructLayout(LayoutKind.Sequential)]
