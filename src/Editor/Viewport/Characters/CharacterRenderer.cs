@@ -460,6 +460,7 @@ internal sealed partial class CharacterRenderer : IDisposable
 
     public void Dispose()
     {
+        DisposeVelocity();
 
         foreach (var mesh in _meshes)
         {

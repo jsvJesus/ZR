@@ -30,6 +30,7 @@ namespace Editor.Viewport
 
         private Matrix4x4 _previousViewProjection;
         private Vector2 _previousJitterPixels;
+        private Vector3 _previousCameraPosition;
 
         private bool _hasPreviousFrame;
         private bool _previousFirstPersonDepth;
@@ -134,6 +135,7 @@ namespace Editor.Viewport
             _ao?.ResetHistory();
             _taa?.ResetHistory();
             _previousJitterPixels = Vector2.Zero;
+            _previousCameraPosition = Vector3.Zero;
         }
 
         public void ReleaseSizeDependentResources()
@@ -169,7 +171,8 @@ namespace Editor.Viewport
             Buffer? skyShadowConstants,
             ShaderResourceView? skyShadowResource,
             SamplerState? skyShadowSampler,
-            bool firstPersonDepth)
+            bool firstPersonDepth,
+            Action<Matrix4x4, Vector3, bool>? renderSkeletalVelocity)
         {
             if (_disposed) throw new ObjectDisposedException(nameof(PostProcessManager));
             if (width <= 0 || height <= 0) return;
@@ -214,6 +217,24 @@ namespace Editor.Viewport
                 context.PixelShader.Set(_surfacePixel);
                 context.Draw(3, 0);
                 context.PixelShader.SetShaderResource(0, null);
+
+                if (TaaEnabled &&
+                    _taa != null &&
+                    renderSkeletalVelocity != null)
+                {
+                    // Surface reconstruction has filled the Motion Buffer
+                    // with camera motion. Visible skeletal geometry now
+                    // replaces motion on its own pixels.
+                    context.ClearState();
+
+                    renderSkeletalVelocity(
+                        previousViewProjection,
+                        _previousCameraPosition,
+                        _hasPreviousFrame);
+
+                    // Rebind the fullscreen pipeline for GTAO/composition.
+                    context.ClearState();
+                }
 
                 ShaderResourceView? aoResource = null;
                 if (AoEnabled && _ao != null)
@@ -311,6 +332,7 @@ namespace Editor.Viewport
                 context.Draw(3, 0);
 
                 _previousViewProjection = viewProjection;
+                _previousCameraPosition = cameraPosition;
                 _previousFirstPersonDepth = firstPersonDepth;
                 _previousJitterPixels = TaaJitterPixels;
                 _hasPreviousFrame = true;

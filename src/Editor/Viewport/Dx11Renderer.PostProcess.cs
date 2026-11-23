@@ -263,6 +263,7 @@ namespace Editor.Viewport
             _postProcessManager.TaaJitterPixels = _taaJitterPixels;
 
             bool firstPersonDepth = _firstPersonDepthActive && _firstPersonDepth?.Resource != null;
+
             _postProcessManager.Render(
                 _context,
                 _width,
@@ -288,7 +289,48 @@ namespace Editor.Viewport
                 _skyShadowConstantBuffer,
                 _skyShadowShaderView,
                 _skyShadowSampler,
-                firstPersonDepth);
+                firstPersonDepth,
+                skeletalVelocity);
+
+            Matrix4x4 activeViewProjection = firstPersonDepth
+                ? _firstPersonViewProjection
+                : viewProjection;
+
+            Action<Matrix4x4, Vector3, bool> skeletalVelocity =
+                (previousViewProjection, previousCameraPosition, historyValid) =>
+                {
+                    if (_character == null ||
+                        _motionTarget == null)
+                    {
+                        return;
+                    }
+
+                    DepthStencilView? depthTarget = firstPersonDepth
+                        ? _firstPersonDepth?.DepthTarget
+                        : _depthTarget;
+
+                    if (depthTarget == null)
+                    {
+                        return;
+                    }
+
+                    bool firstPersonMeshes =
+                        firstPersonDepth &&
+                        _playFirstPersonBlend >= 0.8f;
+
+                    _character.RenderVelocity(
+                        _device,
+                        _motionTarget,
+                        depthTarget,
+                        activeViewProjection,
+                        previousViewProjection,
+                        cameraPosition,
+                        previousCameraPosition,
+                        firstPersonMeshes,
+                        historyValid,
+                        _width,
+                        _height);
+                };
         }
 
         private void ResetPostProcessHistory()

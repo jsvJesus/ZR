@@ -24,6 +24,7 @@ namespace Editor.Viewport
         private ShaderResourceView? _resource;
 
         public ShaderResourceView? Resource => _resource;
+        internal DepthStencilView? DepthTarget => _target;
 
         private int _width;
         private int _height;
