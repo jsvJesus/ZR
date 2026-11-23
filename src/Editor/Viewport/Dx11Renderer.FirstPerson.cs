@@ -87,6 +87,16 @@ namespace Editor.Viewport
 
             try
             {
+                // Preparing FPS depth clears the entire device context. Restore
+                // shared lighting for this character pass and later scene draws.
+                _context.PixelShader.SetConstantBuffer(1, _environmentLightBuffer);
+                _context.PixelShader.SetConstantBuffer(2, _shadowConstantBuffer);
+                _context.PixelShader.SetConstantBuffer(3, _skyShadowConstantBuffer);
+                _context.PixelShader.SetShaderResource(7, _shadowShaderView);
+                _context.PixelShader.SetSampler(7, _shadowSampler);
+                _context.PixelShader.SetShaderResource(23, _skyShadowShaderView);
+                _context.PixelShader.SetSampler(8, _skyShadowSampler);
+
                 _character.RenderFirstPerson(
                     relativeView * firstPersonProjection,
                     camera.Position,

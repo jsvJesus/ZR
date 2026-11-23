@@ -41,21 +41,25 @@ PixelInput VSMain(uint vertexId : SV_VertexID)
     return output;
 }
 
+int2 DepthCoordinate(float2 uv)
+{
+    return clamp(int2(floor(uv * Resolution.xy)), int2(0, 0), int2(Resolution.xy) - 1);
+}
+
+float2 DepthUv(float2 uv)
+{
+    return (float2(DepthCoordinate(uv)) + 0.5f) / Resolution.xy;
+}
+
 float ReadDepth(float2 uv)
 {
-    return SceneDepth.SampleLevel(
-        PointSampler,
-        saturate(uv),
-        0.0f);
+    return SceneDepth.Load(int3(DepthCoordinate(uv), 0));
 }
 
 float3 ReadNormal(float2 uv)
 {
     float3 normal =
-        SceneNormal.SampleLevel(
-            PointSampler,
-            saturate(uv),
-            0.0f).xyz * 2.0f - 1.0f;
+        SceneNormal.Load(int3(DepthCoordinate(uv), 0)).xyz * 2.0f - 1.0f;
 
     return normal * rsqrt(
         max(dot(normal, normal), 0.000001f));
@@ -83,6 +87,13 @@ float ViewDistance(float3 world)
         CurrentViewProjection).w;
 }
 
+float SurfaceSeparation(float3 delta, float3 normal0, float3 normal1)
+{
+    // A sloped surface may span a large view-depth interval without an edge.
+    // Stop filtering across separation from either surface's tangent plane.
+    return max(abs(dot(delta, normal0)), abs(dot(delta, normal1)));
+}
+
 float Hash(float2 position)
 {
     float3 p = frac(
@@ -96,6 +107,7 @@ float Hash(float2 position)
 float HorizonForSide(
     float2 uv,
     float3 world,
+    float3 surfaceNormal,
     float3 projectedNormal,
     float2 direction,
     float radiusPixels,
@@ -125,6 +137,14 @@ float HorizonForSide(
             continue;
         }
 
+        // Depth is point sampled. Its position must use that texel's centre,
+        // rather than the unsnapped ray (including in the half-resolution pass).
+        sampleUv = DepthUv(sampleUv);
+        if (all(DepthCoordinate(sampleUv) == DepthCoordinate(uv)))
+        {
+            continue;
+        }
+
         float sampledDepth = ReadDepth(sampleUv);
 
         if (sampledDepth >= 0.999999f)
@@ -145,8 +165,15 @@ float HorizonForSide(
             continue;
         }
 
+        float normalBias = max(0.001f, Options.x * 0.005f);
+        if (dot(delta, surfaceNormal) <= normalBias)
+        {
+            // Samples on the receiver plane cannot occlude that same plane.
+            continue;
+        }
+
         float horizonCosine = saturate(
-            dot(delta / distanceToSample, projectedNormal));
+            (dot(delta, projectedNormal) - normalBias) / distanceToSample);
 
         float distanceFade = 1.0f - smoothstep(
             Options.x * 0.45f,
@@ -163,7 +190,7 @@ float HorizonForSide(
 
 float PSGtao(PixelInput input) : SV_Target
 {
-    float2 uv = input.Uv;
+    float2 uv = DepthUv(input.Uv);
     float depth = ReadDepth(uv);
 
     if (depth >= 0.999999f)
@@ -198,13 +225,20 @@ float PSGtao(PixelInput input) : SV_Target
 
     float pixelWorldSize = length(
         ReconstructWorld(
-            saturate(uv + pixelStep),
+            uv + pixelStep,
             depth) - world);
 
-    float radiusPixels = clamp(
+    float radiusPixels = min(
         Options.x / max(pixelWorldSize, 0.0001f),
-        2.0f,
         96.0f);
+
+    // Subpixel radii have no neighbouring geometry to measure reliably.
+    // Do not enlarge a 10 cm world radius to an arbitrary two-pixel footprint.
+    float resolutionFade = smoothstep(1.0f, 2.0f, radiusPixels);
+    if (resolutionFade <= 0.0f)
+    {
+        return 1.0f;
+    }
 
     int quality = (int)round(Options.y);
 
@@ -235,8 +269,9 @@ float PSGtao(PixelInput input) : SV_Target
             cos(angle),
             sin(angle));
 
-        float2 adjacentUv = saturate(
-            uv + direction / Resolution.xy);
+        // These are synthetic rays at the centre depth, not depth lookups;
+        // clipping them at the viewport edge would distort the slice direction.
+        float2 adjacentUv = uv + direction / Resolution.xy;
 
         float3 sliceTangent =
             ReconstructWorld(adjacentUv, depth) -
@@ -282,6 +317,7 @@ float PSGtao(PixelInput input) : SV_Target
         float positive = HorizonForSide(
             uv,
             world,
+            normal,
             projectedNormal,
             direction,
             radiusPixels,
@@ -290,6 +326,7 @@ float PSGtao(PixelInput input) : SV_Target
         float negative = HorizonForSide(
             uv,
             world,
+            normal,
             projectedNormal,
             -direction,
             radiusPixels,
@@ -311,7 +348,7 @@ float PSGtao(PixelInput input) : SV_Target
     return lerp(
         1.0f,
         visibility,
-        distanceFade);
+        distanceFade * resolutionFade);
 }
 
 float PSBilateral(PixelInput input) : SV_Target
@@ -325,10 +362,9 @@ float PSBilateral(PixelInput input) : SV_Target
     }
 
     float3 centerWorld = ReconstructWorld(
-        uv,
+        DepthUv(uv),
         centerDepth);
 
-    float centerDistance = ViewDistance(centerWorld);
     float3 centerNormal = ReadNormal(uv);
 
     float sum = 0.0f;
@@ -348,17 +384,17 @@ float PSBilateral(PixelInput input) : SV_Target
         }
 
         float3 world = ReconstructWorld(
-            sampleUv,
+            DepthUv(sampleUv),
             depth);
 
-        float depthDifference = abs(
-            ViewDistance(world) -
-            centerDistance);
+        float3 sampleNormal = ReadNormal(sampleUv);
+        float depthDifference = SurfaceSeparation(
+            world - centerWorld, centerNormal, sampleNormal);
 
         float normalSimilarity = pow(
             saturate(dot(
                 centerNormal,
-                ReadNormal(sampleUv))),
+                sampleNormal)),
             12.0f);
 
         float spatial = exp(
@@ -397,8 +433,6 @@ float UpsampleAo(
     int2 basePixel = int2(floor(halfPixel));
     float2 fraction = frac(halfPixel);
 
-    float centerDistance = ViewDistance(centerWorld);
-
     float sum = 0.0f;
     float weightSum = 0.0f;
 
@@ -429,12 +463,12 @@ float UpsampleAo(
                 (y == 0 ? 1.0f - fraction.y : fraction.y);
 
             float3 sampleWorld = ReconstructWorld(
-                sampleUv,
+                DepthUv(sampleUv),
                 sampleDepth);
 
-            float depthDifference = abs(
-                ViewDistance(sampleWorld) -
-                centerDistance);
+            float3 sampleNormal = ReadNormal(sampleUv);
+            float depthDifference = SurfaceSeparation(
+                sampleWorld - centerWorld, centerNormal, sampleNormal);
 
             float depthWeight = exp(
                 -depthDifference /
@@ -443,7 +477,7 @@ float UpsampleAo(
             float normalWeight = pow(
                 saturate(dot(
                     centerNormal,
-                    ReadNormal(sampleUv))),
+                    sampleNormal)),
                 16.0f);
 
             float weight =
@@ -482,7 +516,7 @@ float2 PSTemporal(PixelInput input) : SV_Target
         return float2(1.0f, 0.0f);
     }
 
-    float3 world = ReconstructWorld(uv, depth);
+    float3 world = ReconstructWorld(DepthUv(uv), depth);
     float3 normal = ReadNormal(uv);
 
     float currentAo = UpsampleAo(

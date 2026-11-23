@@ -173,9 +173,11 @@ SurfaceOutput PSSurface(PixelInput input)
             ? downWorld - world
             : world - upWorld;
 
+    // Measure degeneracy independently of the world-space area of a pixel.
+    // Otherwise valid near-surface normals can be replaced with world-up.
     float3 normal = cross(
-        tangentX,
-        tangentY);
+        tangentX * rsqrt(max(dot(tangentX, tangentX), 1e-20f)),
+        tangentY * rsqrt(max(dot(tangentY, tangentY), 1e-20f)));
 
     float normalLengthSquared = dot(
         normal,
