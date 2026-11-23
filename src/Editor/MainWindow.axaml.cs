@@ -11,6 +11,8 @@ namespace Editor
         {
             InitializeComponent();
 
+            Viewport.ShowGrid = GridCheck.IsChecked == true;
+
             CameraSettingsPanel.IsVisible =
                 CameraSettingsToggle.IsChecked == true;
 

@@ -172,21 +172,39 @@ float PSGtao(PixelInput input) : SV_Target
     }
 
     float3 world = ReconstructWorld(uv, depth);
+    float viewDistance = ViewDistance(world);
+
+    if (viewDistance <= 0.01f ||
+        viewDistance >= 60.0f)
+    {
+        return 1.0f;
+    }
+
     float3 normal = ReadNormal(uv);
-    float3 eye = normalize(Camera.xyz - world);
+    float3 eyeVector = Camera.xyz - world;
+
+    float eyeLength = length(eyeVector);
+
+    if (eyeLength < 0.00001f)
+    {
+        return 1.0f;
+    }
+
+    float3 eye = eyeVector / eyeLength;
 
     float2 pixelStep = float2(
         1.0f / Resolution.x,
         0.0f);
 
     float pixelWorldSize = length(
-        ReconstructWorld(uv + pixelStep, depth) -
-        world);
+        ReconstructWorld(
+            saturate(uv + pixelStep),
+            depth) - world);
 
     float radiusPixels = clamp(
         Options.x / max(pixelWorldSize, 0.0001f),
         2.0f,
-        128.0f);
+        96.0f);
 
     int quality = (int)round(Options.y);
 
@@ -205,7 +223,9 @@ float PSGtao(PixelInput input) : SV_Target
     float total = 0.0f;
 
     [loop]
-    for (int sliceIndex = 0; sliceIndex < sliceCount; sliceIndex++)
+    for (int sliceIndex = 0;
+         sliceIndex < sliceCount;
+         sliceIndex++)
     {
         float angle =
             sliceIndex * 3.14159265f / sliceCount +
@@ -246,10 +266,18 @@ float PSGtao(PixelInput input) : SV_Target
 
         float3 projectedNormal =
             normal -
-            planeNormal * dot(normal, planeNormal);
+            planeNormal *
+            dot(normal, planeNormal);
 
-        projectedNormal = normalize(
-            projectedNormal + eye * 0.00001f);
+        float projectedLength =
+            length(projectedNormal);
+
+        if (projectedLength < 0.00001f)
+        {
+            continue;
+        }
+
+        projectedNormal /= projectedLength;
 
         float positive = HorizonForSide(
             uv,
@@ -267,11 +295,23 @@ float PSGtao(PixelInput input) : SV_Target
             radiusPixels,
             stepCount);
 
-        total += 0.5f * (positive + negative);
+        total += 0.5f * (
+            positive + negative);
     }
 
-    return saturate(
+    float visibility = saturate(
         1.0f - total / sliceCount);
+
+    float distanceFade =
+        1.0f - smoothstep(
+            25.0f,
+            60.0f,
+            viewDistance);
+
+    return lerp(
+        1.0f,
+        visibility,
+        distanceFade);
 }
 
 float PSBilateral(PixelInput input) : SV_Target

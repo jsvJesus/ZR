@@ -47,9 +47,16 @@ namespace Editor.Viewport
 
         private void InitializePostProcessing()
         {
+            var compiler = new ShaderCompiler(
+                AssetPaths.FromApplication());
+
             _postProcessManager = new PostProcessManager(
                 _device,
-                new ShaderCompiler(AssetPaths.FromApplication()));
+                compiler);
+
+            _firstPersonDepth = new FirstPersonDepthBuffer(
+                _device,
+                compiler);
         }
 
         private void CreateRenderTargetResources()

@@ -344,6 +344,7 @@ namespace Editor.Viewport
             }
 
             _context.ClearState();
+            _firstPersonDepth?.ReleaseTargets();
             _postProcessManager?.ReleaseSizeDependentResources();
             DisposeRenderTargetResources();
 
@@ -400,10 +401,11 @@ namespace Editor.Viewport
             var view = CreateViewMatrix(camera);
 
             float farPlane = _terrain?.FarPlane ?? 1000f;
+
             float nearPlane = playing
-                ? 0.15f - 0.14f *
-                Math.Clamp(_playFirstPersonBlend, 0f, 1f)
+                ? 0.15f
                 : 0.5f;
+
             if (_objectPreview && _scene?.Instances.FirstOrDefault() is { } preview)
             {
                 float radius = Math.Max(preview.Bounds.Radius, 0.05f);
@@ -502,7 +504,11 @@ namespace Editor.Viewport
 
             if (playing)
             {
-                RenderFirstPersonScene(camera, characterView * projection);
+                RenderFirstPersonScene(
+                    camera,
+                    characterView,
+                    nearPlane,
+                    farPlane);
             }
 
             _objects?.RenderTransparent(camera, viewProjection);

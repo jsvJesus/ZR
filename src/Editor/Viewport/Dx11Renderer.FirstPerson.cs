@@ -17,6 +17,7 @@ namespace Editor.Viewport
 
         private Buffer? _crosshairBuffer;
         private DepthStencilState? _crosshairDepth;
+        private FirstPersonDepthBuffer? _firstPersonDepth;
 
         public void SetPlayCameraState(
             float firstPersonBlend,
@@ -51,17 +52,57 @@ namespace Editor.Viewport
 
         private void RenderFirstPersonScene(
             FreeCamera camera,
-            Matrix4x4 relativeViewProjection)
+            Matrix4x4 relativeView,
+            float worldNearPlane,
+            float farPlane)
         {
-            if (_character != null &&
-                _playFirstPersonBlend > 0.01f &&
-                _depthTarget != null)
+            if (_character == null ||
+                _playFirstPersonBlend <= 0.01f ||
+                _depthTarget == null ||
+                _depthShaderResource == null ||
+                _target == null ||
+                _firstPersonDepth == null)
+            {
+                return;
+            }
+
+            const float firstPersonNearPlane = 0.01f;
+
+            Matrix4x4 firstPersonProjection =
+                CreateProjectionMatrix(
+                    _playFieldOfView,
+                    (float)_width / _height,
+                    firstPersonNearPlane,
+                    farPlane);
+
+            _firstPersonDepth.Prepare(
+                _context,
+                _depthShaderResource,
+                _target,
+                _width,
+                _height,
+                worldNearPlane,
+                firstPersonNearPlane,
+                farPlane);
+
+            try
             {
                 _character.RenderFirstPerson(
-                    relativeViewProjection,
+                    relativeView * firstPersonProjection,
                     camera.Position,
-                    _playFirstPersonBlend
-                );
+                    _playFirstPersonBlend);
+            }
+            finally
+            {
+                _context.OutputMerger.SetRenderTargets(
+                    _depthTarget,
+                    _target);
+
+                _context.Rasterizer.SetViewport(
+                    0,
+                    0,
+                    _width,
+                    _height);
             }
         }
 
@@ -160,9 +201,11 @@ namespace Editor.Viewport
         {
             _crosshairBuffer?.Dispose();
             _crosshairDepth?.Dispose();
+            _firstPersonDepth?.Dispose();
 
             _crosshairBuffer = null;
             _crosshairDepth = null;
+            _firstPersonDepth = null;
         }
     }
 }
