@@ -1,3 +1,5 @@
+#include "Environment/SurfaceOutput.hlsli"
+
 cbuffer WaterBuffer : register(b0)
 {
     row_major float4x4 ViewProjection;
@@ -63,7 +65,7 @@ float Noise(float2 p)
         f.y);
 }
 
-float4 PSMain(PixelInput input) : SV_TARGET
+SurfaceOutput PSMain(PixelInput input)
 {
     float ellipse = dot(input.Local, input.Local);
 
@@ -157,5 +159,5 @@ float4 PSMain(PixelInput input) : SV_TARGET
     float alpha = saturate(
         0.76 + fresnel * 0.18);
 
-    return float4(color, alpha);
+    return MakeSurfaceOutput(float4(color, alpha), 0);
 }

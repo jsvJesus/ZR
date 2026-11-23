@@ -249,7 +249,7 @@ namespace Editor.Environment
                         value => _settings.SkyDitherStrength = value,
                         value => $"{value:0.00}");
 
-                    AddHeading("AMBIENT OCCLUSION (GTAO)");
+                    AddHeading("AMBIENT OCCLUSION (SSAO)");
 
                     AddToggle(
                         "Включить Ambient Occlusion",
@@ -292,7 +292,7 @@ namespace Editor.Environment
                             });
 
                     AddInfo(
-                        "GTAO рассчитывает контактное затенение " +
+                        "SSAO рассчитывает контактное затенение " +
                         "по глубине и нормалям. Bilateral filtering " +
                         "сохраняет границы геометрии, а temporal " +
                         "accumulation уменьшает мерцание.");

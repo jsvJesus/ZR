@@ -74,9 +74,9 @@ PixelInput VSMain(VertexInput input)
     return output;
 }
 
-float4 PSMain(
+SurfaceOutput PSMain(
     PixelInput input,
-    bool front : SV_IsFrontFace) : SV_TARGET
+    bool front : SV_IsFrontFace)
 {
     float4 color = Diffuse.Sample(
         TreeSampler,
@@ -132,10 +132,12 @@ float4 PSMain(
     if (!front)
         n = -n;
 
+    float3 ambient;
     color.rgb = ShadeEnvironment(
         color.rgb,
         n,
-        input.WorldPosition);
+        input.WorldPosition,
+        ambient);
 
     color.rgb *= lerp(
         0.65,
@@ -147,5 +149,6 @@ float4 PSMain(
         float3(1, 0.65, 0.12),
         Parameters.x * 0.35);
 
-    return float4(color.rgb, 1);
+    ambient *= lerp(0.65f, 1.0f, saturate(input.Dimming)) * (1.0f - Parameters.x * 0.35f);
+    return MakeSurfaceOutput(float4(color.rgb, 1), ambient);
 }

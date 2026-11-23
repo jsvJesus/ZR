@@ -406,7 +406,7 @@ float3 PuddleSkyReflection(
     return sky;
 }
 
-float4 PSMain(PixelInput input) : SV_TARGET
+SurfaceOutput PSMain(PixelInput input)
 {
     if (WorldExtent.w > 0.5 &&
         IsTerrainHole(
@@ -655,10 +655,12 @@ float4 PSMain(PixelInput input) : SV_TARGET
         distribution * geometry * fresnel
     ) / max(4.0 * noV * noL, 0.001);
 
+    float3 ambient;
     float3 diffuseLighting = ShadeEnvironment(
         albedo * (1.0 - metallic),
         normal,
-        input.World);
+        input.World,
+        ambient);
 
     float visibility = ShadowVisibility(
         input.World);
@@ -700,7 +702,8 @@ float4 PSMain(PixelInput input) : SV_TARGET
 		waterColor,
 		saturate(puddle));
 
-    return float4(
-        finalColor * layerWeight,
-        LayerPassParameters.x > 0.5 ? 1.0 : 0.0);
+    ambient *= lerp(1.0f, 0.22f * (1.0f - reflectionAmount), saturate(puddle));
+    return MakeSurfaceOutput(
+        float4(finalColor * layerWeight, LayerPassParameters.x > 0.5 ? 1.0 : 0.0),
+        ambient * layerWeight);
 }

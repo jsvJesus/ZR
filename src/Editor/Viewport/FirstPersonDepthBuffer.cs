@@ -21,6 +21,9 @@ namespace Editor.Viewport
 
         private Texture2D? _texture;
         private DepthStencilView? _target;
+        private ShaderResourceView? _resource;
+
+        public ShaderResourceView? Resource => _resource;
 
         private int _width;
         private int _height;
@@ -82,6 +85,7 @@ namespace Editor.Viewport
             DeviceContext context,
             ShaderResourceView sceneDepth,
             RenderTargetView sceneColor,
+            RenderTargetView sceneAmbient,
             int width,
             int height,
             float worldNear,
@@ -115,9 +119,8 @@ namespace Editor.Viewport
                     1f,
                     0);
 
-                context.OutputMerger.SetRenderTargets(
-                    _target,
-                    sceneColor);
+                // This pass writes depth only; preserve both HDR color targets.
+                context.OutputMerger.SetRenderTargets(_target);
 
                 context.Rasterizer.SetViewport(
                     0,
@@ -155,7 +158,8 @@ namespace Editor.Viewport
 
             context.OutputMerger.SetRenderTargets(
                 _target,
-                sceneColor);
+                sceneColor,
+                sceneAmbient);
 
             context.Rasterizer.SetViewport(
                 0,
@@ -181,13 +185,13 @@ namespace Editor.Viewport
                 Height = height,
                 MipLevels = 1,
                 ArraySize = 1,
-                Format = Format.D32_Float,
+                Format = Format.R32_Typeless,
 
                 SampleDescription =
                     new SampleDescription(1, 0),
 
                 Usage = ResourceUsage.Default,
-                BindFlags = BindFlags.DepthStencil,
+                BindFlags = BindFlags.DepthStencil | BindFlags.ShaderResource,
                 CpuAccessFlags = CpuAccessFlags.None,
                 OptionFlags = ResourceOptionFlags.None
             };
@@ -202,16 +206,31 @@ namespace Editor.Viewport
 
                 var target = new DepthStencilView(
                     _device,
-                    texture);
+                    texture,
+                    new DepthStencilViewDescription
+                    {
+                        Format = Format.D32_Float,
+                        Dimension = DepthStencilViewDimension.Texture2D
+                    });
 
                 _texture = texture;
                 _target = target;
+                _resource = new ShaderResourceView(_device, texture, new ShaderResourceViewDescription
+                {
+                    Format = Format.R32_Float,
+                    Dimension = ShaderResourceViewDimension.Texture2D,
+                    Texture2D = new ShaderResourceViewDescription.Texture2DResource
+                    {
+                        MostDetailedMip = 0,
+                        MipLevels = 1
+                    }
+                });
                 _width = width;
                 _height = height;
             }
             catch
             {
-                texture?.Dispose();
+                if (_texture == null) texture?.Dispose();
                 ReleaseTargets();
                 throw;
             }
@@ -219,6 +238,8 @@ namespace Editor.Viewport
 
         public void ReleaseTargets()
         {
+            _resource?.Dispose();
+            _resource = null;
             _target?.Dispose();
             _target = null;
 

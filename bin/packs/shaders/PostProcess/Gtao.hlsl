@@ -3,6 +3,7 @@ cbuffer AoConstants : register(b0)
     row_major float4x4 InverseViewProjection;
     row_major float4x4 CurrentViewProjection;
     row_major float4x4 PreviousViewProjection;
+    row_major float4x4 PreviousInverseViewProjection;
 
     float4 Resolution;
     float4 Options;
@@ -13,7 +14,8 @@ cbuffer AoConstants : register(b0)
 Texture2D<float> SceneDepth : register(t0);
 Texture2D<float4> SceneNormal : register(t1);
 Texture2D<float> AoInput : register(t2);
-Texture2D<float2> AoHistory : register(t3);
+// AO, linear view depth, and the world normal encoded in two octahedral axes.
+Texture2D<float4> AoHistory : register(t3);
 
 SamplerState PointSampler : register(s0);
 
@@ -92,6 +94,43 @@ float SurfaceSeparation(float3 delta, float3 normal0, float3 normal1)
     // A sloped surface may span a large view-depth interval without an edge.
     // Stop filtering across separation from either surface's tangent plane.
     return max(abs(dot(delta, normal0)), abs(dot(delta, normal1)));
+}
+
+float GeometryWeight(float3 delta, float3 normal0, float3 normal1)
+{
+    float normalAgreement = saturate(dot(normal0, normal1));
+    float separation = SurfaceSeparation(delta, normal0, normal1);
+    float tolerance = max(0.015f, min(Options.x * 0.04f, 0.08f));
+
+    // A radius change must not allow filtering between unrelated surfaces.
+    if (normalAgreement < 0.5f || separation > tolerance * 3.0f)
+    {
+        return 0.0f;
+    }
+
+    return exp(-separation / tolerance) * pow(normalAgreement, 12.0f);
+}
+
+float2 OctahedralEncode(float3 normal)
+{
+    normal /= max(abs(normal.x) + abs(normal.y) + abs(normal.z), 0.000001f);
+    float2 encoded = normal.xy;
+    if (normal.z < 0.0f)
+    {
+        encoded = (1.0f - abs(encoded.yx)) *
+            float2(encoded.x >= 0.0f ? 1.0f : -1.0f,
+                   encoded.y >= 0.0f ? 1.0f : -1.0f);
+    }
+    return encoded;
+}
+
+float3 OctahedralDecode(float2 encoded)
+{
+    float3 normal = float3(encoded, 1.0f - abs(encoded.x) - abs(encoded.y));
+    float fold = saturate(-normal.z);
+    normal.xy += float2(normal.x >= 0.0f ? -fold : fold,
+                        normal.y >= 0.0f ? -fold : fold);
+    return normalize(normal);
 }
 
 float Hash(float2 position)
@@ -388,26 +427,11 @@ float PSBilateral(PixelInput input) : SV_Target
             depth);
 
         float3 sampleNormal = ReadNormal(sampleUv);
-        float depthDifference = SurfaceSeparation(
-            world - centerWorld, centerNormal, sampleNormal);
-
-        float normalSimilarity = pow(
-            saturate(dot(
-                centerNormal,
-                sampleNormal)),
-            12.0f);
-
         float spatial = exp(
             -offset * offset / 8.0f);
 
-        float depthWeight = exp(
-            -depthDifference /
-            max(Options.x * 0.18f, 0.035f));
-
-        float weight =
-            spatial *
-            depthWeight *
-            normalSimilarity;
+        float weight = spatial * GeometryWeight(
+            world - centerWorld, centerNormal, sampleNormal);
 
         sum += AoInput.SampleLevel(
             PointSampler,
@@ -425,27 +449,33 @@ float PSBilateral(PixelInput input) : SV_Target
 float UpsampleAo(
     float2 uv,
     float3 centerNormal,
-    float3 centerWorld)
+    float3 centerWorld,
+    out float2 neighborhoodBounds)
 {
     float2 halfPixel =
         uv * Resolution.zw - 0.5f;
 
-    int2 basePixel = int2(floor(halfPixel));
-    float2 fraction = frac(halfPixel);
+    int2 nearestPixel = int2(floor(uv * Resolution.zw));
 
     float sum = 0.0f;
     float weightSum = 0.0f;
+    float neighborhoodSum = 0.0f;
+    float neighborhoodSquaredSum = 0.0f;
+    float neighborhoodWeight = 0.0f;
+    float minimumAo = 1.0f;
+    float maximumAo = 0.0f;
 
     [unroll]
-    for (int y = 0; y < 2; y++)
+    for (int y = -1; y <= 1; y++)
     {
         [unroll]
-        for (int x = 0; x < 2; x++)
+        for (int x = -1; x <= 1; x++)
         {
-            int2 halfCoordinate = clamp(
-                basePixel + int2(x, y),
-                int2(0, 0),
-                int2(Resolution.zw) - 1);
+            int2 halfCoordinate = nearestPixel + int2(x, y);
+            if (any(halfCoordinate < 0) || any(halfCoordinate >= int2(Resolution.zw)))
+            {
+                continue;
+            }
 
             float2 sampleUv =
                 (float2(halfCoordinate) + 0.5f) /
@@ -458,71 +488,75 @@ float UpsampleAo(
                 continue;
             }
 
-            float bilinear =
-                (x == 0 ? 1.0f - fraction.x : fraction.x) *
-                (y == 0 ? 1.0f - fraction.y : fraction.y);
+            float2 pixelDelta = float2(halfCoordinate) - halfPixel;
+            float2 bilinearAxes = saturate(1.0f - abs(pixelDelta));
+            float bilinear = bilinearAxes.x * bilinearAxes.y;
 
             float3 sampleWorld = ReconstructWorld(
                 DepthUv(sampleUv),
                 sampleDepth);
 
             float3 sampleNormal = ReadNormal(sampleUv);
-            float depthDifference = SurfaceSeparation(
+            float geometryWeight = GeometryWeight(
                 sampleWorld - centerWorld, centerNormal, sampleNormal);
 
-            float depthWeight = exp(
-                -depthDifference /
-                max(Options.x * 0.16f, 0.025f));
+            if (geometryWeight <= 0.05f)
+            {
+                continue;
+            }
 
-            float normalWeight = pow(
-                saturate(dot(
-                    centerNormal,
-                    sampleNormal)),
-                16.0f);
-
-            float weight =
-                max(bilinear, 0.00001f) *
-                depthWeight *
-                normalWeight;
-
-            sum += AoInput.Load(
-                int3(halfCoordinate, 0)) * weight;
-
+            float ao = AoInput.Load(int3(halfCoordinate, 0));
+            float weight = bilinear * geometryWeight;
+            sum += ao * weight;
             weightSum += weight;
+
+            float sampleWeight = geometryWeight * exp(-dot(pixelDelta, pixelDelta) * 0.5f);
+            neighborhoodSum += ao * sampleWeight;
+            neighborhoodSquaredSum += ao * ao * sampleWeight;
+            neighborhoodWeight += sampleWeight;
+            minimumAo = min(minimumAo, ao);
+            maximumAo = max(maximumAo, ao);
         }
     }
 
     if (weightSum <= 0.00001f)
     {
-        int2 nearest = clamp(
-            int2(uv * Resolution.zw),
-            int2(0, 0),
-            int2(Resolution.zw) - 1);
-
-        return AoInput.Load(
-            int3(nearest, 0));
+        // Thin geometry may have no matching half-resolution sample. Copying
+        // the nearest sample here would put a foreground contact onto its background.
+        neighborhoodBounds = float2(1.0f, 1.0f);
+        return 1.0f;
     }
 
-    return sum / weightSum;
+    float currentAo = sum / weightSum;
+    float mean = neighborhoodSum / max(neighborhoodWeight, 0.00001f);
+    float variance = max(0.0f,
+        neighborhoodSquaredSum / max(neighborhoodWeight, 0.00001f) - mean * mean);
+    float deviation = sqrt(variance) * 1.25f;
+    neighborhoodBounds = float2(
+        min(currentAo, max(minimumAo, mean - deviation)),
+        max(currentAo, min(maximumAo, mean + deviation)));
+    return currentAo;
 }
 
-float2 PSTemporal(PixelInput input) : SV_Target
+float4 PSTemporal(PixelInput input) : SV_Target
 {
     float2 uv = input.Uv;
     float depth = ReadDepth(uv);
 
     if (depth >= 0.999999f)
     {
-        return float2(1.0f, 0.0f);
+        return float4(1.0f, 0.0f, 0.0f, 0.0f);
     }
 
     float3 world = ReconstructWorld(DepthUv(uv), depth);
     float3 normal = ReadNormal(uv);
 
+    float2 neighborhoodBounds;
     float currentAo = UpsampleAo(
         uv,
         normal,
-        world);
+        world,
+        neighborhoodBounds);
 
     float viewDistance = ViewDistance(world);
 
@@ -544,17 +578,35 @@ float2 PSTemporal(PixelInput input) : SV_Target
             if (all(previousUv > 0.0f) &&
                 all(previousUv < 1.0f))
             {
-                float2 history = AoHistory.SampleLevel(
-                    PointSampler,
-                    previousUv,
-                    0.0f);
+                int2 historyPixel = DepthCoordinate(previousUv);
+                float2 historyUv = (float2(historyPixel) + 0.5f) / Resolution.xy;
+                float4 history = AoHistory.Load(int3(historyPixel, 0));
 
-                float depthTolerance = max(
-                    0.075f,
-                    previousClip.w * 0.015f);
+                // Point history lives at the previous pixel centre, which can
+                // have a different depth on a slope. Intersect its previous ray
+                // with the receiver plane instead of widening depth rejection.
+                float2 historyNdc = float2(historyUv.x * 2.0f - 1.0f,
+                                          1.0f - historyUv.y * 2.0f);
+                float4 nearClip = mul(float4(historyNdc, 0.0f, 1.0f),
+                                      PreviousInverseViewProjection);
+                // A point farther down the ray reduces cancellation when the
+                // camera has large world coordinates, without using far-plane infinity.
+                float4 rayClip = mul(float4(historyNdc, 0.99f, 1.0f),
+                                     PreviousInverseViewProjection);
+                float3 rayOrigin = nearClip.xyz / max(nearClip.w, 0.000001f);
+                float3 ray = rayClip.xyz / max(rayClip.w, 0.000001f) - rayOrigin;
+                float planeDenominator = dot(normal, ray);
+                float planeDistance = dot(normal, world - rayOrigin) /
+                    (abs(planeDenominator) > 0.000001f ? planeDenominator : 1.0f);
+                float expectedDepth = mul(float4(rayOrigin + ray * planeDistance, 1.0f),
+                                          PreviousViewProjection).w;
+                // RGBA16F linear depth needs at least one half-float ULP of tolerance.
+                float depthTolerance = max(0.01f, abs(expectedDepth) * 0.0015f);
 
-                if (history.y > 0.0f &&
-                    abs(history.y - previousClip.w) <= depthTolerance)
+                if (abs(planeDenominator) > 0.000001f && planeDistance >= 0.0f &&
+                    expectedDepth > 0.0f && history.y > 0.0f &&
+                    abs(history.y - expectedDepth) <= depthTolerance &&
+                    dot(OctahedralDecode(history.zw), normal) >= 0.95f)
                 {
                     float travelPixels = length(
                         (uv - previousUv) *
@@ -563,10 +615,16 @@ float2 PSTemporal(PixelInput input) : SV_Target
                     float historyWeight =
                         0.9f * exp(-travelPixels * 0.08f);
 
+                    // Reprojection accounts for camera motion only. With no
+                    // object motion vectors, current AO changes must also reject
+                    // history when an occluder moves along the same receiver.
+                    historyWeight *= 1.0f - smoothstep(
+                        0.04f, 0.2f, abs(history.x - currentAo));
+
                     float boundedHistory = clamp(
                         history.x,
-                        currentAo - 0.18f,
-                        currentAo + 0.18f);
+                        neighborhoodBounds.x,
+                        neighborhoodBounds.y);
 
                     currentAo = lerp(
                         currentAo,
@@ -577,7 +635,8 @@ float2 PSTemporal(PixelInput input) : SV_Target
         }
     }
 
-    return float2(
+    return float4(
         saturate(currentAo),
-        viewDistance);
+        clamp(viewDistance, 0.0f, 65504.0f),
+        OctahedralEncode(normal));
 }

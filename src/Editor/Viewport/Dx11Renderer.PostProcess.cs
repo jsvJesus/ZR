@@ -12,6 +12,12 @@ namespace Editor.Viewport
     {
         private Texture2D? _hdrSceneTexture;
         private ShaderResourceView? _hdrSceneResource;
+        private Texture2D? _ambientTexture;
+        private RenderTargetView? _ambientTarget;
+        private ShaderResourceView? _ambientResource;
+        private Texture2D? _composedTexture;
+        private RenderTargetView? _composedTarget;
+        private ShaderResourceView? _composedResource;
         private RenderTargetView? _backBufferTarget;
 
         private ShaderResourceView? _depthShaderResource;
@@ -34,7 +40,7 @@ namespace Editor.Viewport
             _hdrSceneResource;
 
         internal ShaderResourceView? SceneDepthResource =>
-            _depthShaderResource;
+            _firstPersonDepthActive ? _firstPersonDepth?.Resource ?? _depthShaderResource : _depthShaderResource;
 
         internal ShaderResourceView? SceneNormalResource =>
             _normalResource;
@@ -79,6 +85,11 @@ namespace Editor.Viewport
                     _hdrSceneResource
                 ) = CreateColorSurface(
                     Format.R16G16B16A16_Float);
+
+                (_ambientTexture, _ambientTarget, _ambientResource) =
+                    CreateColorSurface(Format.R16G16B16A16_Float);
+                (_composedTexture, _composedTarget, _composedResource) =
+                    CreateColorSurface(Format.R16G16B16A16_Float);
 
                 _depthTexture = new Texture2D(
                     _device,
@@ -214,6 +225,9 @@ namespace Editor.Viewport
             if (_postProcessManager == null ||
                 _backBufferTarget == null ||
                 _hdrSceneResource == null ||
+                _ambientResource == null ||
+                _composedTarget == null ||
+                _composedResource == null ||
                 _depthShaderResource == null ||
                 _normalTarget == null ||
                 _normalResource == null ||
@@ -242,16 +256,20 @@ namespace Editor.Viewport
             _postProcessManager.AoRadius = _environmentSettings.AoRadius;
             _postProcessManager.AoQuality = _environmentSettings.AoQuality;
 
+            bool firstPersonDepth = _firstPersonDepthActive && _firstPersonDepth?.Resource != null;
             _postProcessManager.Render(
                 _context,
                 _width,
                 _height,
-                viewProjection,
+                firstPersonDepth ? _firstPersonViewProjection : viewProjection,
                 cameraPosition,
                 sunDirection,
                 contactStrength,
                 _hdrSceneResource,
-                _depthShaderResource,
+                _ambientResource,
+                _composedTarget,
+                _composedResource,
+                firstPersonDepth ? _firstPersonDepth!.Resource! : _depthShaderResource,
                 _normalTarget,
                 _normalResource,
                 _roughnessTarget,
@@ -259,7 +277,11 @@ namespace Editor.Viewport
                 _backBufferTarget,
                 _shadowConstantBuffer,
                 _shadowShaderView,
-                _shadowSampler);
+                _shadowSampler,
+                _skyShadowConstantBuffer,
+                _skyShadowShaderView,
+                _skyShadowSampler,
+                firstPersonDepth);
         }
 
         private void ResetPostProcessHistory()
@@ -275,6 +297,13 @@ namespace Editor.Viewport
 
         private void DisposeRenderTargetResources()
         {
+            _firstPersonDepthActive = false;
+            _ambientResource?.Dispose(); _ambientResource = null;
+            _ambientTarget?.Dispose(); _ambientTarget = null;
+            _ambientTexture?.Dispose(); _ambientTexture = null;
+            _composedResource?.Dispose(); _composedResource = null;
+            _composedTarget?.Dispose(); _composedTarget = null;
+            _composedTexture?.Dispose(); _composedTexture = null;
             _motionResource?.Dispose();
             _motionResource = null;
 

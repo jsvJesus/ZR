@@ -18,6 +18,7 @@ namespace Editor.Viewport
         private VertexShader _fullscreenVertex = null!;
         private PixelShader _surfacePixel = null!;
         private PixelShader _presentPixel = null!;
+        private PixelShader _composePixel = null!;
         private Buffer _frameBuffer = null!;
 
         private SamplerState? _colorSampler;
@@ -27,6 +28,7 @@ namespace Editor.Viewport
 
         private Matrix4x4 _previousViewProjection;
         private bool _hasPreviousFrame;
+        private bool _previousFirstPersonDepth;
         private bool _disposed;
 
         public bool ToneMappingEnabled { get; set; } = true;
@@ -78,6 +80,9 @@ namespace Editor.Viewport
                 _presentPixel = new PixelShader(
                     device,
                     presentCode.Bytecode);
+
+                using var composeCode = compiler.Compile("PostProcess/Frame.hlsl", "PSComposite", "ps_5_0");
+                _composePixel = new PixelShader(device, composeCode.Bytecode);
 
                 _frameBuffer = new Buffer(
                     device,
@@ -136,6 +141,9 @@ namespace Editor.Viewport
             Vector3 sunDirection,
             float contactStrength,
             ShaderResourceView hdrScene,
+            ShaderResourceView ambient,
+            RenderTargetView composedTarget,
+            ShaderResourceView composedResource,
             ShaderResourceView depth,
             RenderTargetView normal,
             ShaderResourceView normalResource,
@@ -144,227 +152,124 @@ namespace Editor.Viewport
             RenderTargetView backBuffer,
             Buffer? sunShadowConstants,
             ShaderResourceView? sunShadowResource,
-            SamplerState? sunShadowSampler)
+            SamplerState? sunShadowSampler,
+            Buffer? skyShadowConstants,
+            ShaderResourceView? skyShadowResource,
+            SamplerState? skyShadowSampler,
+            bool firstPersonDepth)
         {
-            if (_disposed)
-            {
-                throw new ObjectDisposedException(
-                    nameof(PostProcessManager));
-            }
+            if (_disposed) throw new ObjectDisposedException(nameof(PostProcessManager));
+            if (width <= 0 || height <= 0) return;
 
-            if (width <= 0 || height <= 0)
-            {
-                return;
-            }
-
-            if (!Matrix4x4.Invert(
-                    viewProjection,
-                    out Matrix4x4 inverseViewProjection))
+            if (!Matrix4x4.Invert(viewProjection, out Matrix4x4 inverseViewProjection))
             {
                 ResetHistory();
                 return;
             }
 
-            Matrix4x4 previousViewProjection =
-                _hasPreviousFrame
-                    ? _previousViewProjection
-                    : viewProjection;
+            if (_hasPreviousFrame && firstPersonDepth != _previousFirstPersonDepth)
+                ResetHistory();
 
-            bool contactAvailable =
-                contactStrength > 0f &&
-                sunShadowConstants != null &&
-                sunShadowResource != null &&
-                sunShadowSampler != null;
-
+            Matrix4x4 previousViewProjection = _hasPreviousFrame
+                ? _previousViewProjection : viewProjection;
+            bool contactAvailable = contactStrength > 0f &&
+                sunShadowConstants != null && sunShadowResource != null && sunShadowSampler != null;
             _lut?.SetPreset(GradingPreset);
-
-            ShaderResourceView? bloomResource = null;
-
-            if (BloomIntensity > 0.0001f && _bloom != null)
-            {
-                bloomResource = _bloom.Render(
-                    context,
-                    width,
-                    height,
-                    hdrScene,
-                    BloomThreshold);
-            }
 
             var constants = new FrameConstants
             {
                 InverseViewProjection = inverseViewProjection,
                 PreviousViewProjection = previousViewProjection,
                 CurrentViewProjection = viewProjection,
-                AoSettings = new Vector4(
-                    Math.Clamp(AoIntensity, 0f, 2f),
-                    AoEnabled ? 1f : 0f,
-                    0f,
-                    0f),
-                Parameters = new Vector4(
-                    width,
-                    height,
-                    Math.Clamp(Exposure, 0.01f, 16f),
+                AoSettings = new Vector4(Math.Clamp(AoIntensity, 0f, 2f), AoEnabled ? 1f : 0f, 0f, 0f),
+                Parameters = new Vector4(width, height, Math.Clamp(Exposure, 0.01f, 16f),
                     ToneMappingEnabled ? 1f : 0f),
-                Camera = new Vector4(
-                    cameraPosition,
-                    Math.Clamp(contactStrength, 0f, 1f)),
-                Sun = new Vector4(
-                    sunDirection,
-                    contactAvailable ? 1f : 0f),
-                GradeSettings = new Vector4(
-                    Math.Clamp(BloomIntensity, 0f, 5f),
+                Camera = new Vector4(cameraPosition, Math.Clamp(contactStrength, 0f, 1f)),
+                Sun = new Vector4(sunDirection, contactAvailable ? 1f : 0f),
+                GradeSettings = new Vector4(Math.Clamp(BloomIntensity, 0f, 5f),
                     Math.Clamp(ColorGradingStrength, 0f, 1f),
-                    Math.Clamp(SkyDitherStrength, 0f, 2f),
-                    bloomResource != null ? 1f : 0f)
+                    Math.Clamp(SkyDitherStrength, 0f, 2f), 0f)
             };
 
             context.ClearState();
-
             try
             {
-                context.UpdateSubresource(
-                    ref constants,
-                    _frameBuffer);
-
-                context.Rasterizer.SetViewport(
-                    0,
-                    0,
-                    width,
-                    height);
-
-                context.InputAssembler.InputLayout = null;
-
-                context.InputAssembler.PrimitiveTopology =
-                    PrimitiveTopology.TriangleList;
-
-                context.VertexShader.Set(
-                    _fullscreenVertex);
-
-                context.PixelShader.SetConstantBuffer(
-                    0,
-                    _frameBuffer);
-
-                // Surface reconstruction.
-                context.OutputMerger.SetRenderTargets(
-                    null,
-                    normal,
-                    roughness,
-                    motion);
-
-                context.PixelShader.SetShaderResource(
-                    0,
-                    depth);
-
-                context.PixelShader.Set(
-                    _surfacePixel);
-
+                context.UpdateSubresource(ref constants, _frameBuffer);
+                BindFullscreen(context, width, height);
+                context.OutputMerger.SetRenderTargets(null, normal, roughness, motion);
+                context.PixelShader.SetShaderResource(0, depth);
+                context.PixelShader.Set(_surfacePixel);
                 context.Draw(3, 0);
-
-                context.PixelShader.SetShaderResource(
-                    0,
-                    null);
+                context.PixelShader.SetShaderResource(0, null);
 
                 ShaderResourceView? aoResource = null;
-
                 if (AoEnabled && _ao != null)
                 {
-                    aoResource = _ao.Render(
-                        context,
-                        width,
-                        height,
-                        inverseViewProjection,
-                        viewProjection,
-                        previousViewProjection,
-                        cameraPosition,
-                        depth,
-                        normalResource,
-                        AoRadius,
-                        AoQuality);
+                    aoResource = _ao.Render(context, width, height, inverseViewProjection,
+                        viewProjection, previousViewProjection, cameraPosition,
+                        depth, normalResource, AoRadius, AoQuality);
                 }
                 else
                 {
                     _ao?.ResetHistory();
                 }
 
-                // GTAO Effect clears the context state. Restoring the state of the fullscreen pipeline.
-                context.Rasterizer.SetViewport(
-                    0,
-                    0,
-                    width,
-                    height);
+                // AO changes only the captured ambient contribution. Compose before
+                // bloom so occluded ambient cannot return as an unoccluded glow.
+                BindFullscreen(context, width, height);
+                context.OutputMerger.SetRenderTargets(null, composedTarget);
+                context.PixelShader.SetShaderResource(0, hdrScene);
+                context.PixelShader.SetShaderResource(1, depth);
+                context.PixelShader.SetShaderResource(2, normalResource);
+                context.PixelShader.SetShaderResource(5, aoResource);
+                context.PixelShader.SetShaderResource(6, ambient);
+                context.PixelShader.SetConstantBuffer(3, skyShadowConstants);
+                context.PixelShader.SetShaderResource(23, skyShadowResource);
+                context.PixelShader.SetSampler(8, skyShadowSampler);
+                context.PixelShader.Set(_composePixel);
+                context.Draw(3, 0);
+                context.ClearState();
 
-                context.InputAssembler.InputLayout = null;
+                ShaderResourceView? bloomResource = null;
+                if (BloomIntensity > 0.0001f && _bloom != null)
+                    bloomResource = _bloom.Render(context, width, height, composedResource, BloomThreshold);
 
-                context.InputAssembler.PrimitiveTopology =
-                    PrimitiveTopology.TriangleList;
-
-                context.VertexShader.Set(
-                    _fullscreenVertex);
-
-                context.PixelShader.SetConstantBuffer(
-                    0,
-                    _frameBuffer);
-
-                // HDR composition and presentation.
-                context.OutputMerger.SetRenderTargets(
-                    null,
-                    backBuffer);
-
-                context.PixelShader.SetShaderResource(
-                    0,
-                    hdrScene);
-
-                context.PixelShader.SetShaderResource(
-                    1,
-                    depth);
-
-                context.PixelShader.SetShaderResource(
-                    2,
-                    normalResource);
-
-                context.PixelShader.SetShaderResource(
-                    3,
-                    bloomResource);
-
-                context.PixelShader.SetShaderResource(
-                    4,
-                    _lut?.View);
-
-                context.PixelShader.SetShaderResource(
-                    5,
-                    aoResource);
-
-                context.PixelShader.SetSampler(
-                    0,
-                    _colorSampler);
-
+                constants.GradeSettings.W = bloomResource != null ? 1f : 0f;
+                context.UpdateSubresource(ref constants, _frameBuffer);
+                BindFullscreen(context, width, height);
+                context.OutputMerger.SetRenderTargets(null, backBuffer);
+                context.PixelShader.SetShaderResource(0, composedResource);
+                context.PixelShader.SetShaderResource(1, depth);
+                context.PixelShader.SetShaderResource(2, normalResource);
+                context.PixelShader.SetShaderResource(3, bloomResource);
+                context.PixelShader.SetShaderResource(4, _lut?.View);
+                context.PixelShader.SetSampler(0, _colorSampler);
                 if (contactAvailable)
                 {
-                    context.PixelShader.SetConstantBuffer(
-                        2,
-                        sunShadowConstants);
-
-                    context.PixelShader.SetShaderResource(
-                        7,
-                        sunShadowResource);
-
-                    context.PixelShader.SetSampler(
-                        7,
-                        sunShadowSampler);
+                    context.PixelShader.SetConstantBuffer(2, sunShadowConstants);
+                    context.PixelShader.SetShaderResource(7, sunShadowResource);
+                    context.PixelShader.SetSampler(7, sunShadowSampler);
                 }
-
-                context.PixelShader.Set(
-                    _presentPixel);
-
+                context.PixelShader.Set(_presentPixel);
                 context.Draw(3, 0);
 
                 _previousViewProjection = viewProjection;
+                _previousFirstPersonDepth = firstPersonDepth;
                 _hasPreviousFrame = true;
             }
             finally
             {
                 context.ClearState();
             }
+        }
+
+        private void BindFullscreen(DeviceContext context, int width, int height)
+        {
+            context.Rasterizer.SetViewport(0, 0, width, height);
+            context.InputAssembler.InputLayout = null;
+            context.InputAssembler.PrimitiveTopology = PrimitiveTopology.TriangleList;
+            context.VertexShader.Set(_fullscreenVertex);
+            context.PixelShader.SetConstantBuffer(0, _frameBuffer);
         }
 
         public void Dispose()
@@ -390,6 +295,7 @@ namespace Editor.Viewport
 
             _frameBuffer?.Dispose();
             _presentPixel?.Dispose();
+            _composePixel?.Dispose();
             _surfacePixel?.Dispose();
             _fullscreenVertex?.Dispose();
         }

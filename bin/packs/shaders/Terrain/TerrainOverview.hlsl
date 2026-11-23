@@ -55,7 +55,7 @@ float4 PSShadow(PixelInput input) : SV_TARGET
     return 0;
 }
 
-float4 PSMain(PixelInput input) : SV_TARGET
+SurfaceOutput PSMain(PixelInput input)
 {
      if (WorldExtent.w > 0.5 &&
         IsTerrainHole(
@@ -121,10 +121,12 @@ float4 PSMain(PixelInput input) : SV_TARGET
             paint.a);
     }
 
+    float3 ambient;
     color = ShadeEnvironment(
         color,
         normal,
-        input.World);
+        input.World,
+        ambient);
 
-    return float4(color, 1);
+    return MakeSurfaceOutput(float4(color, 1), ambient);
 }

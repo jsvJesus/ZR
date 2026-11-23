@@ -1,3 +1,5 @@
+#include "Environment/SurfaceOutput.hlsli"
+
 cbuffer CameraBuffer : register(b0)
 {
     row_major float4x4 ViewProjection;
@@ -23,7 +25,7 @@ PixelInput VSMain(VertexInput input)
     return output;
 }
 
-float4 PSMain(PixelInput input) : SV_TARGET
+SurfaceOutput PSMain(PixelInput input)
 {
-    return input.Color;
+    return MakeSurfaceOutput(input.Color, 0);
 }

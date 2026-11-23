@@ -75,12 +75,12 @@ float Stripe(float distance, float halfWidth, float filterWidth)
     return 1.0 - smoothstep(halfWidth - filterWidth, halfWidth + filterWidth, abs(distance));
 }
 
-float4 PSMain(PixelInput input) : SV_TARGET
+SurfaceOutput PSMain(PixelInput input)
 {
     if (Parameters.w > 0.5)
     {
         float3 markerColor = Parameters.w > 1.5 ? float3(1.0, 0.35, 0.08) : float3(0.15, 0.85, 1.0);
-        return float4(markerColor * (0.65 + 0.35 * abs(normalize(input.Normal).y)), 1);
+        return MakeSurfaceOutput(float4(markerColor * (0.65 + 0.35 * abs(normalize(input.Normal).y)), 1), 0);
     }
 
     float3 normal = normalize(input.Normal);
@@ -188,7 +188,8 @@ float4 PSMain(PixelInput input) : SV_TARGET
     albedo = lerp(albedo, float3(0.85, 0.84, 0.73), saturate(markings));
     float wetness = saturate(RoadWetness(input.WorldPosition.xz) * wetResponse);
     albedo *= lerp(1.0, 0.64, wetness);
-    float3 color = ShadeEnvironment(albedo, normal, input.WorldPosition);
+    float3 ambient;
+    float3 color = ShadeEnvironment(albedo, normal, input.WorldPosition, ambient);
     float3 view = CameraPosition.xyz - input.WorldPosition;
     view *= rsqrt(max(dot(view, view), 0.000001));
     float3 halfway = EnvironmentSun.xyz + view;
@@ -199,5 +200,5 @@ float4 PSMain(PixelInput input) : SV_TARGET
         saturate(dot(normal, EnvironmentSun.xyz)) * ShadowVisibility(input.WorldPosition) *
         EnvironmentSun.w * fogVisibility;
     color = lerp(color, float3(1, 0.65, 0.12), Parameters.x * 0.22);
-    return float4(color, 1);
+    return MakeSurfaceOutput(float4(color, 1), ambient * (1.0f - Parameters.x * 0.22f));
 }

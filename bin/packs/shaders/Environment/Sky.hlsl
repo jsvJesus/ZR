@@ -1,3 +1,5 @@
+#include "Environment/SurfaceOutput.hlsli"
+
 cbuffer SkyConstants : register(b0)
 {
     float4 CameraRight;
@@ -60,7 +62,7 @@ float Noise(float2 p)
         f.y);
 }
 
-float4 PSMain(PixelInput input) : SV_TARGET
+SurfaceOutput PSMain(PixelInput input)
 {
     float2 pixel = input.Position.xy / Viewport.xy;
     float2 ndc = pixel * 2.0 - 1.0;
@@ -206,5 +208,5 @@ float4 PSMain(PixelInput input) : SV_TARGET
 		0.82,
 		1.0) * lightning * 0.85;
 
-    return float4(saturate(sky), 1.0);
+    return MakeSurfaceOutput(float4(saturate(sky), 1.0), 0);
 }

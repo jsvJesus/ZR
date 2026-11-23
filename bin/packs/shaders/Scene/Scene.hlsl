@@ -80,9 +80,9 @@ PixelInput VSMain(VertexInput input)
     return output;
 }
 
-float4 PSMain(
+SurfaceOutput PSMain(
     PixelInput input,
-    bool frontFace : SV_IsFrontFace) : SV_TARGET
+    bool frontFace : SV_IsFrontFace)
 {
     float4 color = Diffuse.Sample(
         SceneSampler,
@@ -131,10 +131,12 @@ float4 PSMain(
     float visibility = ShadowVisibility(
         input.WorldPosition);
 
+    float3 ambient;
     color.rgb = ShadeEnvironment(
         color.rgb,
         n,
-        input.WorldPosition);
+        input.WorldPosition,
+        ambient);
 
     float3 viewDirection = CameraPosition.xyz
         - input.WorldPosition;
@@ -155,5 +157,5 @@ float4 PSMain(
 
     color.rgb += specular;
 
-    return color;
+    return MakeSurfaceOutput(color, ambient);
 }

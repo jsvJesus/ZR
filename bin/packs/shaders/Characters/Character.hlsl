@@ -66,7 +66,7 @@ PixelInput VSMain(VertexInput input)
     return output;
 }
 
-float4 PSMain(PixelInput input) : SV_TARGET
+SurfaceOutput PSMain(PixelInput input)
 {
     float4 color = Diffuse.Sample(
         SurfaceSampler,
@@ -153,11 +153,13 @@ float4 PSMain(PixelInput input) : SV_TARGET
     float3 worldPosition =
         input.RelativeWorld + EnvironmentCamera.xyz;
 
+    float3 ambient;
     color.rgb = ShadeEnvironment(
         color.rgb,
         normalize(input.Normal),
-        worldPosition
+        worldPosition,
+        ambient
     );
 
-    return color;
+    return MakeSurfaceOutput(color, ambient);
 }

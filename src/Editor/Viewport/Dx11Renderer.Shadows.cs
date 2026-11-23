@@ -635,7 +635,8 @@ namespace Editor.Viewport
         {
             _context.OutputMerger.SetRenderTargets(
                 _depthTarget,
-                _target);
+                _target,
+                _ambientTarget);
 
             _context.Rasterizer.SetViewport(
                 0,

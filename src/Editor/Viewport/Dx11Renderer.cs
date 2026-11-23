@@ -376,12 +376,14 @@ namespace Editor.Viewport
 
             Resize(width, height);
 
-            if (_target == null)
+            if (_target == null || _ambientTarget == null)
             {
                 return;
             }
 
-            _context.OutputMerger.SetRenderTargets(_depthTarget, _target);
+            _firstPersonDepthActive = false;
+            _context.OutputMerger.SetRenderTargets(_depthTarget, _target, _ambientTarget);
+            _context.ClearRenderTargetView(_ambientTarget, new RawColor4(0f, 0f, 0f, 0f));
             _context.ClearDepthStencilView(_depthTarget!, DepthStencilClearFlags.Depth, 1f, 0);
 
             _context.Rasterizer.SetViewport(

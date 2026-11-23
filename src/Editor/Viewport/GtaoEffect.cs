@@ -145,6 +145,16 @@ namespace Editor.Viewport
                 _lastQuality = quality;
             }
 
+            bool previousProjectionValid = Matrix4x4.Invert(
+                previousViewProjection,
+                out Matrix4x4 previousInverseViewProjection);
+
+            if (!previousProjectionValid)
+            {
+                ResetHistory();
+                previousInverseViewProjection = Matrix4x4.Identity;
+            }
+
             Surface previous = _historyIndex == 0
                 ? _history0!
                 : _history1!;
@@ -158,6 +168,7 @@ namespace Editor.Viewport
                 InverseViewProjection = inverseViewProjection,
                 CurrentViewProjection = currentViewProjection,
                 PreviousViewProjection = previousViewProjection,
+                PreviousInverseViewProjection = previousInverseViewProjection,
 
                 Resolution = new Vector4(
                     width,
@@ -358,13 +369,13 @@ namespace Editor.Viewport
                     _device,
                     width,
                     height,
-                    Format.R32G32_Float);
+                    Format.R16G16B16A16_Float);
 
                 _history1 = new Surface(
                     _device,
                     width,
                     height,
-                    Format.R32G32_Float);
+                    Format.R16G16B16A16_Float);
 
                 _width = width;
                 _height = height;
@@ -428,6 +439,7 @@ namespace Editor.Viewport
             public Matrix4x4 InverseViewProjection;
             public Matrix4x4 CurrentViewProjection;
             public Matrix4x4 PreviousViewProjection;
+            public Matrix4x4 PreviousInverseViewProjection;
 
             public Vector4 Resolution;
             public Vector4 Options;

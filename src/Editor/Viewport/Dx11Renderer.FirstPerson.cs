@@ -18,6 +18,8 @@ namespace Editor.Viewport
         private Buffer? _crosshairBuffer;
         private DepthStencilState? _crosshairDepth;
         private FirstPersonDepthBuffer? _firstPersonDepth;
+        private bool _firstPersonDepthActive;
+        private Matrix4x4 _firstPersonViewProjection;
 
         public void SetPlayCameraState(
             float firstPersonBlend,
@@ -61,6 +63,7 @@ namespace Editor.Viewport
                 _depthTarget == null ||
                 _depthShaderResource == null ||
                 _target == null ||
+                _ambientTarget == null ||
                 _firstPersonDepth == null)
             {
                 return;
@@ -79,6 +82,7 @@ namespace Editor.Viewport
                 _context,
                 _depthShaderResource,
                 _target,
+                _ambientTarget,
                 _width,
                 _height,
                 worldNearPlane,
@@ -101,12 +105,17 @@ namespace Editor.Viewport
                     relativeView * firstPersonProjection,
                     camera.Position,
                     _playFirstPersonBlend);
+
+                _firstPersonViewProjection = Matrix4x4.CreateTranslation(-camera.Position) *
+                    relativeView * firstPersonProjection;
+                _firstPersonDepthActive = true;
             }
             finally
             {
                 _context.OutputMerger.SetRenderTargets(
                     _depthTarget,
-                    _target);
+                    _target,
+                    _ambientTarget);
 
                 _context.Rasterizer.SetViewport(
                     0,

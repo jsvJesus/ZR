@@ -16,6 +16,7 @@ cbuffer FrameConstants : register(b0)
 };
 
 #include "Environment/SunShadow.hlsli"
+#include "Environment/SkyVisibility.hlsli"
 
 Texture2D<float> DepthTexture : register(t0);
 Texture2D<float4> HdrTexture : register(t0);
@@ -24,7 +25,8 @@ Texture2D<float> ContactDepth : register(t1);
 Texture2D<float4> ContactNormal : register(t2);
 Texture2D<float4> BloomTexture : register(t3);
 Texture2D<float4> ColorLutTexture : register(t4);
-Texture2D<float2> AmbientOcclusionTexture : register(t5);
+Texture2D<float4> AmbientOcclusionTexture : register(t5);
+Texture2D<float4> AmbientLightingTexture : register(t6);
 
 SamplerState PostLinearSampler : register(s0);
 
@@ -449,7 +451,7 @@ float InterleavedGradientNoise(float2 pixel)
             0.00583715f * pixel.y));
 }
 
-float4 PSPresent(PixelInput input) : SV_Target
+float4 PSComposite(PixelInput input) : SV_Target
 {
     int2 size = int2(Parameters.xy);
 
@@ -466,14 +468,9 @@ float4 PSPresent(PixelInput input) : SV_Target
     float depth = ContactDepth.Load(
         int3(pixel, 0));
 
-    // Compute the receiver plane before depth/normal-dependent contact branches.
     float3 world = ReconstructPosition(uv, depth);
-    float3 worldDx = ddx(world);
-    float3 worldDy = ddy(world);
 
-    // Keep the existing contact shadow pass.
-    float aoAttenuation = 0.0f;
-    float contactAttenuation = 0.0f;
+    float3 ambientReduction = 0.0f;
 
     if (depth < 0.999999f)
     {
@@ -490,42 +487,42 @@ float4 PSPresent(PixelInput input) : SV_Target
                 AmbientOcclusionTexture.Load(
                     int3(pixel, 0)).x);
 
-            float3 sunDirection =
-                Sun.xyz / max(length(Sun.xyz), 0.0001f);
-
-            float sunFacing = saturate(
-                dot(normal, sunDirection));
-
-            float ambientWeight =
-                1.0f -
-                0.55f * sunFacing * saturate(Sun.y);
-
-            aoAttenuation = saturate(
-                (1.0f - visibility) *
-                AoSettings.x *
-                ambientWeight) * 0.65f;
+            float localVisibility = max(0.05f,
+                1.0f - saturate((1.0f - visibility) * AoSettings.x));
+            float sky = SurfaceSkyVisibility(world, normal);
+            float existingAmbient = lerp(0.08f, 1.0f, sky);
+            // Sky light uses the stronger occluder, avoiding duplicate roof AO.
+            // Local AO also modulates residual bounce, so indoor contacts remain.
+            float combinedAmbient = 0.08f * localVisibility +
+                0.92f * min(sky, localVisibility);
+            ambientReduction = AmbientLightingTexture.Load(int3(pixel, 0)).rgb *
+                saturate(1.0f - combinedAmbient / existingAmbient);
         }
 
-        if (Sun.w > 0.5f)
-        {
-            float shadow = ScreenContactShadow(
-                uv,
-                depth,
-                normal,
-                world,
-                worldDx,
-                worldDy);
-
-            contactAttenuation = saturate(
-                shadow * Camera.w);
-        }
     }
 
-    float attenuation = max(
-        aoAttenuation,
-        contactAttenuation);
+    hdr = max(hdr - ambientReduction, 0.0f);
+    return float4(hdr, 1.0f);
+}
 
-    hdr *= 1.0f - attenuation;
+float4 PSPresent(PixelInput input) : SV_Target
+{
+    int2 pixel = clamp(int2(input.Position.xy), int2(0, 0), int2(Parameters.xy) - 1);
+    float2 uv = PixelUv(pixel);
+    float3 hdr = HdrTexture.Load(int3(pixel, 0)).rgb;
+    float depth = ContactDepth.Load(int3(pixel, 0));
+
+    // Preserve the original contact-shadow/bloom ordering. Only ambient AO
+    // feeds the bloom source; camera contact attenuation stays in presentation.
+    float3 world = ReconstructPosition(uv, depth);
+    float3 worldDx = ddx(world);
+    float3 worldDy = ddy(world);
+    if (Sun.w > 0.5f && depth < 0.999999f)
+    {
+        float3 normal = normalize(ContactNormal.Load(int3(pixel, 0)).xyz * 2.0f - 1.0f);
+        float shadow = ScreenContactShadow(uv, depth, normal, world, worldDx, worldDy);
+        hdr *= 1.0f - saturate(shadow * Camera.w);
+    }
 
     // HDR bloom is combined before tone mapping.
     if (GradeSettings.w > 0.5f)
