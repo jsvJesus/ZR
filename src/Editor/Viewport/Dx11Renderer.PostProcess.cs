@@ -262,35 +262,9 @@ namespace Editor.Viewport
             _postProcessManager.TaaFeedback = _environmentSettings.TaaFeedback;
             _postProcessManager.TaaJitterPixels = _taaJitterPixels;
 
-            bool firstPersonDepth = _firstPersonDepthActive && _firstPersonDepth?.Resource != null;
-
-            _postProcessManager.Render(
-                _context,
-                _width,
-                _height,
-                firstPersonDepth ? _firstPersonViewProjection : viewProjection,
-                cameraPosition,
-                sunDirection,
-                contactStrength,
-                _hdrSceneResource,
-                _ambientResource,
-                _composedTarget,
-                _composedResource,
-                firstPersonDepth ? _firstPersonDepth!.Resource! : _depthShaderResource,
-                _normalTarget,
-                _normalResource,
-                _roughnessTarget,
-                _motionTarget,
-                _motionResource,
-                _backBufferTarget,
-                _shadowConstantBuffer,
-                _shadowShaderView,
-                _shadowSampler,
-                _skyShadowConstantBuffer,
-                _skyShadowShaderView,
-                _skyShadowSampler,
-                firstPersonDepth,
-                skeletalVelocity);
+            bool firstPersonDepth =
+                _firstPersonDepthActive &&
+                _firstPersonDepth?.Resource != null;
 
             Matrix4x4 activeViewProjection = firstPersonDepth
                 ? _firstPersonViewProjection
@@ -331,6 +305,36 @@ namespace Editor.Viewport
                         _width,
                         _height);
                 };
+
+            _postProcessManager.Render(
+                _context,
+                _width,
+                _height,
+                activeViewProjection,
+                cameraPosition,
+                sunDirection,
+                contactStrength,
+                _hdrSceneResource,
+                _ambientResource,
+                _composedTarget,
+                _composedResource,
+                firstPersonDepth
+                    ? _firstPersonDepth!.Resource!
+                    : _depthShaderResource,
+                _normalTarget,
+                _normalResource,
+                _roughnessTarget,
+                _motionTarget,
+                _motionResource,
+                _backBufferTarget,
+                _shadowConstantBuffer,
+                _shadowShaderView,
+                _shadowSampler,
+                _skyShadowConstantBuffer,
+                _skyShadowShaderView,
+                _skyShadowSampler,
+                firstPersonDepth,
+                skeletalVelocity);
         }
 
         private void ResetPostProcessHistory()
