@@ -260,6 +260,7 @@ namespace Editor.Viewport
 
             _postProcessManager.TaaEnabled = _environmentSettings.TaaEnabled && !_objectPreview;
             _postProcessManager.TaaFeedback = _environmentSettings.TaaFeedback;
+            _postProcessManager.TaaJitterPixels = _taaJitterPixels;
 
             bool firstPersonDepth = _firstPersonDepthActive && _firstPersonDepth?.Resource != null;
             _postProcessManager.Render(

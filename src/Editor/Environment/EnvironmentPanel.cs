@@ -264,6 +264,14 @@ namespace Editor.Environment
                         value => _settings.TaaFeedback = value,
                         value => $"{value:0.00}");
 
+                    AddSlider(
+                        "TAA Jitter Strength",
+                        0,
+                        1,
+                        () => _settings.TaaJitterStrength,
+                        value => _settings.TaaJitterStrength = value,
+                        value => $"{value:0.00}");
+
                     AddInfo(
                         "TAA использует Halton Jitter, историю HDR-кадров, " +
                         "Motion Buffer, проверку глубины и neighborhood " +

@@ -12,6 +12,7 @@ namespace Editor.Viewport
         private Vector3 _taaPreviousLookDirection;
 
         private float _taaPreviousFieldOfView;
+        private float _taaPreviousJitterStrength = -1f;
 
         private bool _taaCameraRecorded;
         private bool _taaPreviousEnabled;
@@ -30,6 +31,11 @@ namespace Editor.Viewport
                 playing &&
                 _playFirstPersonBlend > 0.01f;
 
+            float jitterStrength = Math.Clamp(
+                _environmentSettings.TaaJitterStrength,
+                0f,
+                1f);
+
             Vector3 direction = Vector3.Normalize(
                 camera.LookDirection);
 
@@ -42,22 +48,26 @@ namespace Editor.Viewport
                         camera.Position,
                         _taaPreviousCameraPosition);
 
-                float rotation =
-                    Vector3.Dot(
-                        direction,
-                        _taaPreviousLookDirection);
+                float directionDot = Vector3.Dot(
+                    direction,
+                    _taaPreviousLookDirection);
 
                 cameraCut =
                     distanceSquared > 9f ||
-                    rotation < 0.94f ||
+                    directionDot < 0.94f ||
                     MathF.Abs(
                         fieldOfView -
                         _taaPreviousFieldOfView) > 0.04f;
             }
 
-            if (cameraCut ||
+            bool settingsChanged =
                 enabled != _taaPreviousEnabled ||
-                firstPerson != _taaPreviousFirstPerson)
+                firstPerson != _taaPreviousFirstPerson ||
+                MathF.Abs(
+                    jitterStrength -
+                    _taaPreviousJitterStrength) > 0.001f;
+
+            if (cameraCut || settingsChanged)
             {
                 ResetPostProcessHistory();
                 _taaSequenceIndex = 0;
@@ -74,9 +84,10 @@ namespace Editor.Viewport
 
             _taaPreviousEnabled = enabled;
             _taaPreviousFirstPerson = firstPerson;
+            _taaPreviousJitterStrength = jitterStrength;
             _taaCameraRecorded = true;
 
-            if (!enabled)
+            if (!enabled || jitterStrength <= 0f)
             {
                 _taaJitterPixels = Vector2.Zero;
                 _taaSequenceIndex = 0;
@@ -88,7 +99,8 @@ namespace Editor.Viewport
 
             _taaJitterPixels = new Vector2(
                 Halton(sampleIndex, 2) - 0.5f,
-                Halton(sampleIndex, 3) - 0.5f);
+                Halton(sampleIndex, 3) - 0.5f) *
+                jitterStrength;
 
             _taaSequenceIndex++;
         }

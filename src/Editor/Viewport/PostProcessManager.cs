@@ -8,6 +8,7 @@ using SharpDX.Direct3D;
 using SharpDX.Direct3D11;
 using Buffer = SharpDX.Direct3D11.Buffer;
 using Device = SharpDX.Direct3D11.Device;
+using Vector2 = System.Numerics.Vector2;
 using Vector3 = System.Numerics.Vector3;
 using Vector4 = System.Numerics.Vector4;
 
@@ -28,6 +29,8 @@ namespace Editor.Viewport
         private TaaEffect? _taa;
 
         private Matrix4x4 _previousViewProjection;
+        private Vector2 _previousJitterPixels;
+
         private bool _hasPreviousFrame;
         private bool _previousFirstPersonDepth;
         private bool _disposed;
@@ -51,6 +54,7 @@ namespace Editor.Viewport
 
         public bool TaaEnabled { get; set; } = true;
         public float TaaFeedback { get; set; } = 0.88f;
+        public Vector2 TaaJitterPixels { get; set; }
 
         public PostProcessManager(
             Device device,
@@ -129,6 +133,7 @@ namespace Editor.Viewport
             _previousViewProjection = Matrix4x4.Identity;
             _ao?.ResetHistory();
             _taa?.ResetHistory();
+            _previousJitterPixels = Vector2.Zero;
         }
 
         public void ReleaseSizeDependentResources()
@@ -266,6 +271,8 @@ namespace Editor.Viewport
                         inverseViewProjection,
                         viewProjection,
                         previousViewProjection,
+                        TaaJitterPixels,
+                        _previousJitterPixels,
                         effectiveFeedback);
                 }
                 else
@@ -305,6 +312,7 @@ namespace Editor.Viewport
 
                 _previousViewProjection = viewProjection;
                 _previousFirstPersonDepth = firstPersonDepth;
+                _previousJitterPixels = TaaJitterPixels;
                 _hasPreviousFrame = true;
             }
             finally

@@ -59,6 +59,7 @@ namespace Editor.Environment
 
         public bool TaaEnabled { get; set; } = true;
         public float TaaFeedback { get; set; } = 0.88f;
+        public float TaaJitterStrength { get; set; } = 1f;
 
         public bool ShadowsEnabled { get; set; } = true;
         public float ShadowDistance { get; set; } = 35f;

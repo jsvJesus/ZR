@@ -8,6 +8,7 @@ using SharpDX.Direct3D11;
 using SharpDX.DXGI;
 using Buffer = SharpDX.Direct3D11.Buffer;
 using Device = SharpDX.Direct3D11.Device;
+using Vector2 = System.Numerics.Vector2;
 using Vector4 = System.Numerics.Vector4;
 
 namespace Editor.Viewport
@@ -96,6 +97,8 @@ namespace Editor.Viewport
             Matrix4x4 inverseViewProjection,
             Matrix4x4 currentViewProjection,
             Matrix4x4 previousViewProjection,
+            Vector2 currentJitter,
+            Vector2 previousJitter,
             float feedback)
         {
             if (_disposed)
@@ -135,7 +138,13 @@ namespace Editor.Viewport
                     width,
                     height,
                     Math.Clamp(feedback, 0f, 0.96f),
-                    _hasHistory ? 1f : 0f)
+                    _hasHistory ? 1f : 0f),
+
+                Jitter = new Vector4(
+                    currentJitter.X,
+                    currentJitter.Y,
+                    previousJitter.X,
+                    previousJitter.Y)
             };
 
             context.ClearState();
@@ -282,6 +291,7 @@ namespace Editor.Viewport
             public Matrix4x4 CurrentViewProjection;
             public Matrix4x4 PreviousViewProjection;
             public Vector4 Parameters;
+            public Vector4 Jitter;
         }
 
         private sealed class Surface : IDisposable
