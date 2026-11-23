@@ -57,6 +57,9 @@ namespace Editor.Environment
         public float AoRadius { get; set; } = 1.2f;
         public int AoQuality { get; set; } = 2;
 
+        public bool TaaEnabled { get; set; } = true;
+        public float TaaFeedback { get; set; } = 0.88f;
+
         public bool ShadowsEnabled { get; set; } = true;
         public float ShadowDistance { get; set; } = 35f;
         public float ShadowStrength { get; set; } = 0.72f;

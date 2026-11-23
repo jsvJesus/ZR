@@ -422,6 +422,14 @@ namespace Editor.Viewport
                 nearPlane,
                 farPlane);
 
+            PrepareTaaJitter(
+                camera,
+                playing ? _playFieldOfView : 1.05f,
+                playing);
+
+            ApplyTaaProjectionJitter(
+                ref projection);
+
             var viewProjection = view * projection;
 
             AdvanceEnvironmentTime();

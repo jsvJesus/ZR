@@ -25,6 +25,7 @@ namespace Editor.Viewport
         private HdrBloom? _bloom;
         private ColorLutAtlas? _lut;
         private GtaoEffect? _ao;
+        private TaaEffect? _taa;
 
         private Matrix4x4 _previousViewProjection;
         private bool _hasPreviousFrame;
@@ -47,6 +48,9 @@ namespace Editor.Viewport
         public float AoIntensity { get; set; } = 0.65f;
         public float AoRadius { get; set; } = 1.2f;
         public int AoQuality { get; set; } = 2;
+
+        public bool TaaEnabled { get; set; } = true;
+        public float TaaFeedback { get; set; } = 0.88f;
 
         public PostProcessManager(
             Device device,
@@ -110,6 +114,7 @@ namespace Editor.Viewport
                 _bloom = new HdrBloom(device, compiler);
                 _lut = new ColorLutAtlas(device);
                 _ao = new GtaoEffect(device, compiler);
+                _taa = new TaaEffect(device, compiler);
             }
             catch
             {
@@ -123,12 +128,14 @@ namespace Editor.Viewport
             _hasPreviousFrame = false;
             _previousViewProjection = Matrix4x4.Identity;
             _ao?.ResetHistory();
+            _taa?.ResetHistory();
         }
 
         public void ReleaseSizeDependentResources()
         {
             _bloom?.ReleaseTargets();
             _ao?.ReleaseTargets();
+            _taa?.ReleaseTargets();
             ResetHistory();
         }
 
@@ -149,6 +156,7 @@ namespace Editor.Viewport
             ShaderResourceView normalResource,
             RenderTargetView roughness,
             RenderTargetView motion,
+            ShaderResourceView motionResource,
             RenderTargetView backBuffer,
             Buffer? sunShadowConstants,
             ShaderResourceView? sunShadowResource,
@@ -230,15 +238,57 @@ namespace Editor.Viewport
                 context.Draw(3, 0);
                 context.ClearState();
 
+                ShaderResourceView resolvedColor =
+                    composedResource;
+
+                if (TaaEnabled && _taa != null)
+                {
+                    float effectiveFeedback = Math.Clamp(
+                        TaaFeedback,
+                        0f,
+                        0.96f);
+
+                    // FPS skeleton and weapon poses currently have
+                    // no independent per-vertex velocity.
+                    // Use a conservative history weight.
+                    if (firstPersonDepth)
+                    {
+                        effectiveFeedback *= 0.35f;
+                    }
+
+                    resolvedColor = _taa.Render(
+                        context,
+                        width,
+                        height,
+                        composedResource,
+                        depth,
+                        motionResource,
+                        inverseViewProjection,
+                        viewProjection,
+                        previousViewProjection,
+                        effectiveFeedback);
+                }
+                else
+                {
+                    _taa?.ResetHistory();
+                }
+
                 ShaderResourceView? bloomResource = null;
                 if (BloomIntensity > 0.0001f && _bloom != null)
-                    bloomResource = _bloom.Render(context, width, height, composedResource, BloomThreshold);
+                {
+                    bloomResource = _bloom.Render(
+                        context,
+                        width,
+                        height,
+                        resolvedColor,
+                        BloomThreshold);
+                }
 
                 constants.GradeSettings.W = bloomResource != null ? 1f : 0f;
                 context.UpdateSubresource(ref constants, _frameBuffer);
                 BindFullscreen(context, width, height);
                 context.OutputMerger.SetRenderTargets(null, backBuffer);
-                context.PixelShader.SetShaderResource(0, composedResource);
+                context.PixelShader.SetShaderResource(0, resolvedColor);
                 context.PixelShader.SetShaderResource(1, depth);
                 context.PixelShader.SetShaderResource(2, normalResource);
                 context.PixelShader.SetShaderResource(3, bloomResource);
@@ -283,6 +333,9 @@ namespace Editor.Viewport
 
             _lut?.Dispose();
             _lut = null;
+
+            _taa?.Dispose();
+            _taa = null;
 
             _ao?.Dispose();
             _ao = null;

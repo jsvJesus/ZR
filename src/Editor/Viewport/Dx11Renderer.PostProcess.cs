@@ -229,6 +229,7 @@ namespace Editor.Viewport
                 _composedTarget == null ||
                 _composedResource == null ||
                 _depthShaderResource == null ||
+                _motionResource == null ||
                 _normalTarget == null ||
                 _normalResource == null ||
                 _roughnessTarget == null ||
@@ -251,10 +252,14 @@ namespace Editor.Viewport
             _postProcessManager.ColorGradingStrength = _environmentSettings.ColorGradingStrength;
             _postProcessManager.GradingPreset = _environmentSettings.ColorGradingPreset;
             _postProcessManager.SkyDitherStrength = _environmentSettings.SkyDitherStrength;
+
             _postProcessManager.AoEnabled = _environmentSettings.AoEnabled;
             _postProcessManager.AoIntensity = _environmentSettings.AoIntensity;
             _postProcessManager.AoRadius = _environmentSettings.AoRadius;
             _postProcessManager.AoQuality = _environmentSettings.AoQuality;
+
+            _postProcessManager.TaaEnabled = _environmentSettings.TaaEnabled && !_objectPreview;
+            _postProcessManager.TaaFeedback = _environmentSettings.TaaFeedback;
 
             bool firstPersonDepth = _firstPersonDepthActive && _firstPersonDepth?.Resource != null;
             _postProcessManager.Render(
@@ -274,6 +279,7 @@ namespace Editor.Viewport
                 _normalResource,
                 _roughnessTarget,
                 _motionTarget,
+                _motionResource,
                 _backBufferTarget,
                 _shadowConstantBuffer,
                 _shadowShaderView,

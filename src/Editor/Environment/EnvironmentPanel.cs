@@ -249,6 +249,26 @@ namespace Editor.Environment
                         value => _settings.SkyDitherStrength = value,
                         value => $"{value:0.00}");
 
+                    AddHeading("TEMPORAL ANTI-ALIASING (TAA)");
+
+                    AddToggle(
+                        "Включить TAA",
+                        () => _settings.TaaEnabled,
+                        value => _settings.TaaEnabled = value);
+
+                    AddSlider(
+                        "TAA History Weight",
+                        0.4,
+                        0.96,
+                        () => _settings.TaaFeedback,
+                        value => _settings.TaaFeedback = value,
+                        value => $"{value:0.00}");
+
+                    AddInfo(
+                        "TAA использует Halton Jitter, историю HDR-кадров, " +
+                        "Motion Buffer, проверку глубины и neighborhood " +
+                        "clipping для уменьшения мерцания тонкой геометрии.");
+
                     AddHeading("AMBIENT OCCLUSION (SSAO)");
 
                     AddToggle(

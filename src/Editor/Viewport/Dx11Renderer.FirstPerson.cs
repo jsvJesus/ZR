@@ -78,6 +78,9 @@ namespace Editor.Viewport
                     firstPersonNearPlane,
                     farPlane);
 
+            ApplyTaaProjectionJitter(
+                ref firstPersonProjection);
+
             _firstPersonDepth.Prepare(
                 _context,
                 _depthShaderResource,
