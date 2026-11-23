@@ -151,7 +151,7 @@ public sealed class RoadCatalog
         }
     }
 
-    private static SceneBounds ReadModelBounds(
+    internal static SceneBounds ReadModelBounds(
         AssetPaths assets,
         string file)
     {

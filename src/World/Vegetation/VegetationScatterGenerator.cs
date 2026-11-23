@@ -140,6 +140,15 @@ public static class VegetationScatterGenerator
             .DefaultIfEmpty(0f)
             .Max();
 
+        // Enclose the full XZ bounds at any generated yaw, including diagonal corners.
+        const float roadFootprintScale = 1.414214f;
+        float maximumRoadRadius = rules.Select(rule =>
+                Footprint(scene.Assets[rule.Model], rule.MaximumScale) * roadFootprintScale +
+                rule.RoadClearance)
+            .DefaultIfEmpty(0f).Max();
+        var roadExclusion = VegetationRoadExclusion.ForTile(level.Roads, assets,
+            minX, minZ, maxX, maxZ, maximumRoadRadius, token);
+
         foreach (var tree in scene.Instances)
         {
             if (scene.Assets.TryGetValue(tree.Model, out var asset))
@@ -278,6 +287,12 @@ public static class VegetationScatterGenerator
 
                 float footprint = Footprint(asset, scale);
                 float spacing = footprint + rule.MinimumSpacing;
+
+                if (roadExclusion.Intersects(x, z,
+                    footprint * roadFootprintScale, rule.RoadClearance))
+                {
+                    continue;
+                }
 
                 if (occupied.Intersects(x, z, spacing))
                 {
