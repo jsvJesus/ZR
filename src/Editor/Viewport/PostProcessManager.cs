@@ -164,6 +164,8 @@ namespace Editor.Viewport
             RenderTargetView roughness,
             RenderTargetView motion,
             ShaderResourceView motionResource,
+            RenderTargetView reactive,
+            ShaderResourceView reactiveResource,
             RenderTargetView backBuffer,
             Buffer? sunShadowConstants,
             ShaderResourceView? sunShadowResource,
@@ -172,7 +174,7 @@ namespace Editor.Viewport
             ShaderResourceView? skyShadowResource,
             SamplerState? skyShadowSampler,
             bool firstPersonDepth,
-            Action<Matrix4x4, Vector3, bool>? renderSkeletalVelocity)
+            Action<Matrix4x4, Vector3, bool>? renderGeometryVelocity)
         {
             if (_disposed) throw new ObjectDisposedException(nameof(PostProcessManager));
             if (width <= 0 || height <= 0) return;
@@ -211,6 +213,8 @@ namespace Editor.Viewport
             try
             {
                 context.UpdateSubresource(ref constants, _frameBuffer);
+                context.ClearRenderTargetView(reactive,
+                    new SharpDX.Mathematics.Interop.RawColor4(0f, 0f, 0f, 0f));
                 BindFullscreen(context, width, height);
                 context.OutputMerger.SetRenderTargets(null, normal, roughness, motion);
                 context.PixelShader.SetShaderResource(0, depth);
@@ -220,14 +224,14 @@ namespace Editor.Viewport
 
                 if (TaaEnabled &&
                     _taa != null &&
-                    renderSkeletalVelocity != null)
+                    renderGeometryVelocity != null)
                 {
-                    // Surface reconstruction has filled the Motion Buffer
-                    // with camera motion. Visible skeletal geometry now
-                    // replaces motion on its own pixels.
+                    // Static reconstruction supplies camera motion and previous
+                    // depth. Geometry replaces it with the actual previous surface;
+                    // material passes also accumulate a separate reactive mask.
                     context.ClearState();
 
-                    renderSkeletalVelocity(
+                    renderGeometryVelocity(
                         previousViewProjection,
                         _previousCameraPosition,
                         _hasPreviousFrame);
@@ -260,6 +264,12 @@ namespace Editor.Viewport
                 context.PixelShader.SetConstantBuffer(3, skyShadowConstants);
                 context.PixelShader.SetShaderResource(23, skyShadowResource);
                 context.PixelShader.SetSampler(8, skyShadowSampler);
+                if (contactAvailable)
+                {
+                    context.PixelShader.SetConstantBuffer(2, sunShadowConstants);
+                    context.PixelShader.SetShaderResource(7, sunShadowResource);
+                    context.PixelShader.SetSampler(7, sunShadowSampler);
+                }
                 context.PixelShader.Set(_composePixel);
                 context.Draw(3, 0);
                 context.ClearState();
@@ -274,14 +284,6 @@ namespace Editor.Viewport
                         0f,
                         0.96f);
 
-                    // FPS skeleton and weapon poses currently have
-                    // no independent per-vertex velocity.
-                    // Use a conservative history weight.
-                    if (firstPersonDepth)
-                    {
-                        effectiveFeedback *= 0.35f;
-                    }
-
                     resolvedColor = _taa.Render(
                         context,
                         width,
@@ -289,11 +291,13 @@ namespace Editor.Viewport
                         composedResource,
                         depth,
                         motionResource,
+                        reactiveResource,
                         inverseViewProjection,
                         viewProjection,
                         previousViewProjection,
                         TaaJitterPixels,
                         _previousJitterPixels,
+                        cameraPosition,
                         effectiveFeedback);
                 }
                 else

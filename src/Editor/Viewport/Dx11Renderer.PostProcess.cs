@@ -34,6 +34,10 @@ namespace Editor.Viewport
         private RenderTargetView? _motionTarget;
         private ShaderResourceView? _motionResource;
 
+        private Texture2D? _reactiveTexture;
+        private RenderTargetView? _reactiveTarget;
+        private ShaderResourceView? _reactiveResource;
+
         private PostProcessManager? _postProcessManager;
 
         internal ShaderResourceView? SceneColorResource =>
@@ -157,7 +161,10 @@ namespace Editor.Viewport
                     _motionTarget,
                     _motionResource
                 ) = CreateColorSurface(
-                    Format.R16G16_Float);
+                    Format.R16G16B16A16_Float);
+
+                (_reactiveTexture, _reactiveTarget, _reactiveResource) =
+                    CreateColorSurface(Format.R8_UNorm);
             }
             catch
             {
@@ -233,7 +240,9 @@ namespace Editor.Viewport
                 _normalTarget == null ||
                 _normalResource == null ||
                 _roughnessTarget == null ||
-                _motionTarget == null)
+                _motionTarget == null ||
+                _reactiveTarget == null ||
+                _reactiveResource == null)
             {
                 return;
             }
@@ -270,15 +279,9 @@ namespace Editor.Viewport
                 ? _firstPersonViewProjection
                 : viewProjection;
 
-            Action<Matrix4x4, Vector3, bool> skeletalVelocity =
+            Action<Matrix4x4, Vector3, bool> geometryVelocity =
                 (previousViewProjection, previousCameraPosition, historyValid) =>
                 {
-                    if (_character == null ||
-                        _motionTarget == null)
-                    {
-                        return;
-                    }
-
                     DepthStencilView? depthTarget = firstPersonDepth
                         ? _firstPersonDepth?.DepthTarget
                         : _depthTarget;
@@ -292,9 +295,19 @@ namespace Editor.Viewport
                         firstPersonDepth &&
                         _playFirstPersonBlend >= 0.8f;
 
-                    _character.RenderVelocity(
+                    _objects?.RenderVelocity(_motionTarget, _reactiveTarget, depthTarget,
+                        activeViewProjection, previousViewProjection, cameraPosition, historyValid, _width, _height);
+                    _roadModelRenderer?.RenderVelocity(_motionTarget, _reactiveTarget, depthTarget,
+                        activeViewProjection, previousViewProjection, cameraPosition, historyValid, _width, _height);
+                    _groundCoverRenderer?.RenderVelocity(_motionTarget, _reactiveTarget, depthTarget,
+                        activeViewProjection, previousViewProjection, cameraPosition, historyValid, _width, _height);
+                    _trees?.RenderVelocity(_motionTarget, _reactiveTarget, depthTarget,
+                        activeViewProjection, previousViewProjection, cameraPosition, historyValid, _width, _height);
+
+                    _character?.RenderVelocity(
                         _device,
                         _motionTarget,
+                        _reactiveTarget,
                         depthTarget,
                         activeViewProjection,
                         previousViewProjection,
@@ -303,7 +316,8 @@ namespace Editor.Viewport
                         firstPersonMeshes,
                         historyValid,
                         _width,
-                        _height);
+                        _height,
+                        _taaPreviousPlaying ? _playFirstPersonBlend : 0f);
                 };
 
             _postProcessManager.Render(
@@ -326,6 +340,8 @@ namespace Editor.Viewport
                 _roughnessTarget,
                 _motionTarget,
                 _motionResource,
+                _reactiveTarget,
+                _reactiveResource,
                 _backBufferTarget,
                 _shadowConstantBuffer,
                 _shadowShaderView,
@@ -334,7 +350,7 @@ namespace Editor.Viewport
                 _skyShadowShaderView,
                 _skyShadowSampler,
                 firstPersonDepth,
-                skeletalVelocity);
+                geometryVelocity);
         }
 
         private void ResetPostProcessHistory()
@@ -351,6 +367,9 @@ namespace Editor.Viewport
         private void DisposeRenderTargetResources()
         {
             _firstPersonDepthActive = false;
+            _reactiveResource?.Dispose(); _reactiveResource = null;
+            _reactiveTarget?.Dispose(); _reactiveTarget = null;
+            _reactiveTexture?.Dispose(); _reactiveTexture = null;
             _ambientResource?.Dispose(); _ambientResource = null;
             _ambientTarget?.Dispose(); _ambientTarget = null;
             _ambientTexture?.Dispose(); _ambientTexture = null;

@@ -516,6 +516,17 @@ namespace Editor.Viewport
             _character?.Render(characterView * projection, camera.Position,
                 playing ? _playFirstPersonBlend : 0);
 
+            _objects?.RenderTransparent(camera, viewProjection);
+
+            RenderRoadTransparency(
+                camera,
+                viewProjection);
+
+            RenderEnvironmentWeather(camera, viewProjection);
+
+            // Finish the world before drawing FPS hands/weapons. Their color,
+            // combined depth and reactive coverage must agree about occlusion;
+            // late world glass must not be blended over the foreground weapon.
             if (playing)
             {
                 RenderFirstPersonScene(
@@ -524,14 +535,6 @@ namespace Editor.Viewport
                     nearPlane,
                     farPlane);
             }
-
-            _objects?.RenderTransparent(camera, viewProjection);
-
-            RenderRoadTransparency(
-                camera,
-                viewProjection);
-
-            RenderEnvironmentWeather(camera, viewProjection);
 
             if (playing &&
                 _showPlayCrosshair &&

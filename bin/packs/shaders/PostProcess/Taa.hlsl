@@ -1,25 +1,21 @@
+#include "PostProcess/TemporalMotion.hlsli"
+
 cbuffer TaaConstants : register(b0)
 {
     row_major float4x4 InverseViewProjection;
     row_major float4x4 CurrentViewProjection;
     row_major float4x4 PreviousViewProjection;
-
-    float4 Parameters;
-    // x = Width
-    // y = Height
-    // z = History Feedback
-    // w = History Valid
-
-    float4 Jitter;
-    // xy = Current Jitter in pixels
-    // zw = Previous Jitter in pixels
+    float4 Parameters; // width, height, feedback, history valid
+    float4 Jitter; // current xy and previous zw, in pixels
+    float4 CameraPosition;
 };
 
 Texture2D<float4> CurrentColor : register(t0);
 Texture2D<float4> PreviousHistory : register(t1);
 Texture2D<float> CurrentDepth : register(t2);
-Texture2D<float2> MotionVectors : register(t3);
-
+Texture2D<float4> MotionVectors : register(t3);
+Texture2D<float> ReactiveMask : register(t4);
+Texture2D<float> PreviousRawDepth : register(t5);
 SamplerState LinearSampler : register(s0);
 
 struct PixelInput
@@ -31,311 +27,210 @@ struct PixelInput
 PixelInput VSMain(uint vertexId : SV_VertexID)
 {
     PixelInput output;
-
-    float2 uv = float2(
-        (vertexId << 1) & 2,
-        vertexId & 2);
-
+    float2 uv = float2((vertexId << 1) & 2, vertexId & 2);
     output.Uv = uv;
-
-    output.Position = float4(
-        uv.x * 2.0f - 1.0f,
-        1.0f - uv.y * 2.0f,
-        0.0f,
-        1.0f);
-
+    output.Position = float4(uv.x * 2.0f - 1.0f, 1.0f - uv.y * 2.0f, 0.0f, 1.0f);
     return output;
+}
+
+int2 ClampPixel(int2 pixel)
+{
+    return clamp(pixel, int2(0, 0), int2(Parameters.xy) - 1);
+}
+
+float2 PixelUv(int2 pixel)
+{
+    return (float2(pixel) + 0.5f) / Parameters.xy;
 }
 
 float3 ReconstructWorld(float2 uv, float depth)
 {
-    float4 clip = float4(
-        uv.x * 2.0f - 1.0f,
-        1.0f - uv.y * 2.0f,
-        depth,
-        1.0f);
-
-    float4 world = mul(
-        clip,
-        InverseViewProjection);
-
+    float4 clip = float4(uv.x * 2.0f - 1.0f, 1.0f - uv.y * 2.0f, depth, 1.0f);
+    float4 world = mul(clip, InverseViewProjection);
     return world.xyz / max(world.w, 0.000001f);
+}
+
+float3 ToYCoCg(float3 color)
+{
+    return float3(dot(color, float3(0.25f, 0.5f, 0.25f)),
+        (color.r - color.b) * 0.5f, (-color.r + 2.0f * color.g - color.b) * 0.25f);
+}
+
+float3 FromYCoCg(float3 color)
+{
+    return float3(color.x + color.y - color.z, color.x + color.z, color.x - color.y - color.z);
 }
 
 float Luminance(float3 color)
 {
-    return dot(
-        color,
-        float3(0.2126f, 0.7152f, 0.0722f));
+    return dot(color, float3(0.2126f, 0.7152f, 0.0722f));
 }
 
-float3 ReadColor(float2 uv)
+// A bilinear reconstruction changes its blur with each Halton phase. Cubic
+// reconstruction preserves detail while returning color to the fixed output grid.
+float CubicWeight(float distance)
 {
-    return max(
-        CurrentColor.SampleLevel(
-            LinearSampler,
-            saturate(uv),
-            0.0f).rgb,
-        0.0f);
+    float x = abs(distance);
+    if (x < 1.0f) return (1.5f * x - 2.5f) * x * x + 1.0f;
+    if (x < 2.0f) return ((-0.5f * x + 2.5f) * x - 4.0f) * x + 2.0f;
+    return 0.0f;
 }
 
-void Neighborhood(
-    float2 uv,
-    out float3 minimumColor,
-    out float3 maximumColor,
-    out float3 averageColor)
+float3 ReconstructCurrent(int2 pixel, out int2 surfacePixel, out float surfaceDepth,
+    out float3 minimumColor, out float3 maximumColor, out float3 averageColor,
+    out float3 deviation, out float reactive)
 {
-    float2 texel = 1.0f / Parameters.xy;
-
+    surfacePixel = pixel;
+    surfaceDepth = 1.0f;
     minimumColor = float3(65504.0f, 65504.0f, 65504.0f);
-    maximumColor = float3(0.0f, 0.0f, 0.0f);
+    maximumColor = float3(-65504.0f, -65504.0f, -65504.0f);
     averageColor = 0.0f;
-
+    float3 secondMoment = 0.0f;
+    reactive = 0.0f;
     [unroll]
     for (int y = -1; y <= 1; y++)
     {
         [unroll]
         for (int x = -1; x <= 1; x++)
         {
-            float3 color = ReadColor(
-                uv + float2(x, y) * texel);
-
+            int2 samplePixel = ClampPixel(pixel + int2(x, y));
+            float3 color = ToYCoCg(max(CurrentColor.Load(int3(samplePixel, 0)).rgb, 0.0f));
             minimumColor = min(minimumColor, color);
             maximumColor = max(maximumColor, color);
             averageColor += color;
+            secondMoment += color * color;
+            reactive = max(reactive, ReactiveMask.Load(int3(samplePixel, 0)));
         }
     }
-
     averageColor /= 9.0f;
-}
-
-float DepthEdgeFactor(int2 pixel, float centerDepth)
-{
-    int2 size = int2(Parameters.xy);
-
-    float3 centerWorld = ReconstructWorld(
-        (float2(pixel) + 0.5f) / Parameters.xy,
-        centerDepth);
-
-    float centerDistance = max(
-        mul(float4(centerWorld, 1.0f),
-            CurrentViewProjection).w,
-        0.001f);
-
-    float maximumDifference = 0.0f;
-
+    deviation = sqrt(max(secondMoment / 9.0f - averageColor * averageColor, 0.000001f));
+    float2 samplePosition = float2(pixel) + Jitter.xy;
+    int2 firstPixel = int2(floor(samplePosition));
+    float2 fraction = samplePosition - floor(samplePosition);
+    float3 result = 0.0f;
+    float totalWeight = 0.0f;
+    float surfaceWeight = 0.0f;
     [unroll]
-    for (int direction = 0; direction < 4; direction++)
+    for (int row = -1; row <= 2; row++)
     {
-        int2 offset =
-            direction == 0 ? int2(-1, 0) :
-            direction == 1 ? int2(1, 0) :
-            direction == 2 ? int2(0, -1) :
-            int2(0, 1);
-
-        int2 samplePixel = clamp(
-            pixel + offset,
-            int2(0, 0),
-            size - 1);
-
-        float sampleDepth = CurrentDepth.Load(
-            int3(samplePixel, 0));
-
-        if (sampleDepth >= 0.999999f)
+        [unroll]
+        for (int column = -1; column <= 2; column++)
         {
-            return 1.0f;
+            float weight = CubicWeight(column - fraction.x) * CubicWeight(row - fraction.y);
+            int2 samplePixel = ClampPixel(firstPixel + int2(column, row));
+            result += max(CurrentColor.Load(int3(samplePixel, 0)).rgb, 0.0f) * weight;
+            totalWeight += weight;
+            float depth = CurrentDepth.Load(int3(samplePixel, 0));
+            // Use only actual positive reconstruction support. At zero jitter
+            // all off-center weights are zero: adjacent geometry cannot turn a
+            // pure sky pixel into a moving foreground surface.
+            if (weight > max(surfaceWeight, 0.00001f) && depth < 0.999999f)
+            {
+                surfaceWeight = weight;
+                surfaceDepth = depth;
+                surfacePixel = samplePixel;
+            }
         }
-
-        float3 sampleWorld = ReconstructWorld(
-            (float2(samplePixel) + 0.5f) / Parameters.xy,
-            sampleDepth);
-
-        float sampleDistance = mul(
-            float4(sampleWorld, 1.0f),
-            CurrentViewProjection).w;
-
-        maximumDifference = max(
-            maximumDifference,
-            abs(sampleDistance - centerDistance));
     }
-
-    return saturate(
-        maximumDifference /
-        max(centerDistance * 0.08f, 0.08f));
+    if (surfaceWeight <= 0.0f)
+        return max(CurrentColor.Load(int3(pixel, 0)).rgb, 0.0f); // unjittered sky
+    // Bound negative cubic lobes so HDR highlights cannot ring around cutouts.
+    return max(FromYCoCg(clamp(ToYCoCg(result / max(totalWeight, 0.00001f)),
+        minimumColor, maximumColor)), 0.0f);
 }
 
-float4 PSResolve(PixelInput input) : SV_Target
+struct TemporalOutput
 {
-    int2 size = int2(Parameters.xy);
+    float4 Color : SV_Target0;
+    float RawDepth : SV_Target1;
+};
 
-    int2 pixel = clamp(
-        int2(input.Position.xy),
-        int2(0, 0),
-        size - 1);
+TemporalOutput ResolveOutput(float3 color, float surfaceDepth, float rawDepth)
+{
+    TemporalOutput output;
+    output.Color = float4(color, surfaceDepth);
+    output.RawDepth = rawDepth;
+    return output;
+}
 
-    float2 uv =
-        (float2(pixel) + 0.5f) / Parameters.xy;
+TemporalOutput PSResolve(PixelInput input)
+{
+    int2 pixel = ClampPixel(int2(input.Position.xy));
+    float2 uv = PixelUv(pixel);
+    int2 surfacePixel;
+    float depth;
+    float3 minimumColor, maximumColor, averageColor, deviation;
+    float materialReactive;
+    float3 current = ReconstructCurrent(pixel, surfacePixel, depth,
+        minimumColor, maximumColor, averageColor, deviation, materialReactive);
 
-    // The projected image is displaced by Halton jitter.
-    // Sample the displaced image to reconstruct an
-    // unjittered output pixel.
-    float2 sceneUv = saturate(
-        uv + Jitter.xy / Parameters.xy);
-
-    int2 scenePixel = clamp(
-        int2(sceneUv * Parameters.xy),
-        int2(0, 0),
-        size - 1);
-
-    float depth = CurrentDepth.Load(
-        int3(scenePixel, 0));
-
-    // The sky is rendered without projection jitter.
-    if (depth >= 0.999999f)
+    // Depth history is a raw center-sample atlas, independent of the surface
+    // selected to reconstruct color at a silhouette. Never dilate its contents.
+    float rawDepth = CurrentDepth.Load(int3(pixel, 0));
+    float encodedRawDepth = 0.0f;
+    if (rawDepth < 0.999999f)
     {
-        float3 sky = max(
-            CurrentColor.Load(
-                int3(pixel, 0)).rgb,
-            0.0f);
-
-        return float4(sky, 0.0f);
+        float3 rawWorld = ReconstructWorld(uv, rawDepth);
+        encodedRawDepth = EncodeTemporalDepth(mul(float4(rawWorld, 1.0f), CurrentViewProjection).w);
     }
 
-    float3 current = ReadColor(sceneUv);
-
-    float3 world = ReconstructWorld(
-        sceneUv,
-        depth);
-
-    float4 currentClip = mul(
-        float4(world, 1.0f),
-        CurrentViewProjection);
-
-    float viewDepth = max(
-        currentClip.w,
-        0.0001f);
-
-    float encodedDepth = log2(1.0f + viewDepth);
-
-    if (Parameters.w < 0.5f)
+    bool sky = depth >= 0.999999f;
+    float encodedDepth = 0.0f;
+    if (!sky)
     {
-        return float4(current, encodedDepth);
+        float3 world = ReconstructWorld(PixelUv(surfacePixel), depth);
+        encodedDepth = EncodeTemporalDepth(mul(float4(world, 1.0f), CurrentViewProjection).w);
     }
+    if (Parameters.w < 0.5f || materialReactive >= 0.999f)
+        return ResolveOutput(current, encodedDepth, encodedRawDepth);
 
-    float2 velocity = MotionVectors.Load(
-        int3(scenePixel, 0));
-
-    // Motion buffer contains screen-space motion from
-    // the jittered projections. History is stored in
-    // unjittered output coordinates.
-    float2 previousUv =
-        sceneUv -
-        velocity -
-        Jitter.zw / Parameters.xy;
-
-    if (any(previousUv <= 0.0f) ||
-        any(previousUv >= 1.0f))
+    float2 previousUv;
+    float2 previousDepthUv;
+    float2 geometricMotion = 0.0f;
+    float expectedDepth = 0.0f;
+    if (sky)
     {
-        return float4(current, encodedDepth);
+        // The sky has no translation or raster jitter. Reconstruct its stable
+        // camera ray and remove previous jitter from the history projection.
+        float3 direction = ReconstructWorld(uv + Jitter.xy / Parameters.xy, 1.0f) - CameraPosition.xyz;
+        float4 previousClip = mul(float4(direction, 0.0f), PreviousViewProjection);
+        if (previousClip.w <= 0.00001f) return ResolveOutput(current, 0.0f, encodedRawDepth);
+        previousUv = ClipToTemporalUv(previousClip) - Jitter.zw / Parameters.xy;
+        previousDepthUv = previousUv + Jitter.zw / Parameters.xy;
     }
-
-    float4 previousClip = mul(
-        float4(world, 1.0f),
-        PreviousViewProjection);
-
-    if (previousClip.w <= 0.00001f)
+    else
     {
-        return float4(current, encodedDepth);
+        float4 motion = MotionVectors.Load(int3(surfacePixel, 0));
+        if (motion.w < 0.5f) return ResolveOutput(current, encodedDepth, encodedRawDepth);
+        // Remove projection jitter exactly once. Halton offsets must not be
+        // interpreted as physical movement when reducing history feedback.
+        geometricMotion = motion.xy - (Jitter.xy - Jitter.zw) / Parameters.xy;
+        previousUv = uv - geometricMotion;
+        // Depth retains raw raster samples, whereas RGB is reconstructed on the
+        // stable grid. Address the two histories in their own coordinate domains.
+        previousDepthUv = PixelUv(surfacePixel) - motion.xy;
+        expectedDepth = motion.z; // previous actual deformed/rigid/billboard surface
     }
+    if (any(previousUv <= 0.0f) || any(previousUv >= 1.0f) ||
+        any(previousDepthUv <= 0.0f) || any(previousDepthUv >= 1.0f))
+        return ResolveOutput(current, encodedDepth, encodedRawDepth);
 
-    float previousDepth =
-        previousClip.z / previousClip.w;
+    int2 previousPixel = ClampPixel(int2(previousDepthUv * Parameters.xy));
+    float storedDepth = PreviousRawDepth.Load(int3(previousPixel, 0));
+    // Never interpolate depth across silhouettes while checking disocclusion.
+    float tolerance = 0.01f + expectedDepth * 0.002f;
+    if ((sky && storedDepth > 0.0f) || (!sky &&
+        (storedDepth <= 0.0f || abs(storedDepth - expectedDepth) > tolerance)))
+        return ResolveOutput(current, encodedDepth, encodedRawDepth);
 
-    if (previousDepth <= 0.0f ||
-        previousDepth >= 1.0f)
-    {
-        return float4(current, encodedDepth);
-    }
-
-    float4 history = PreviousHistory.SampleLevel(
-        LinearSampler,
-        previousUv,
-        0.0f);
-
-    float expectedDepth = log2(
-        1.0f + previousClip.w);
-
-    float depthTolerance =
-        0.018f + expectedDepth * 0.004f;
-
-    if (history.a <= 0.0f ||
-        abs(history.a - expectedDepth) > depthTolerance)
-    {
-        return float4(current, encodedDepth);
-    }
-
-    float3 minimumColor;
-    float3 maximumColor;
-    float3 averageColor;
-
-    Neighborhood(
-        sceneUv,
-        minimumColor,
-        maximumColor,
-        averageColor);
-
-    float3 colorRange = max(
-        maximumColor - minimumColor,
-        0.00001f);
-
-    float3 expansion = colorRange * 0.05f;
-
-    float3 clippedHistory = clamp(
-        history.rgb,
-        minimumColor - expansion,
-        maximumColor + expansion);
-
-    float currentLuma = Luminance(current);
-    float historyLuma = Luminance(history.rgb);
-
-    float relativeDifference =
-        abs(historyLuma - currentLuma) /
-        max(currentLuma + 0.12f, 0.12f);
-
-    float clippingDifference =
-        length(history.rgb - clippedHistory) /
-        max(length(current) + 0.1f, 0.1f);
-
-    float velocityPixels = length(
-        velocity * Parameters.xy);
-
-    float edgeFactor = DepthEdgeFactor(
-        scenePixel,
-        depth);
-
-    // Screen-space reactive estimate for changing
-    // silhouettes, cutouts and rapidly changing color.
-    float reactive = saturate(
-        relativeDifference * 1.25f +
-        clippingDifference * 0.8f +
-        edgeFactor * 0.3f);
-
-    float motionReduction = saturate(
-        velocityPixels / 24.0f);
-
-    float historyWeight =
-        saturate(Parameters.z) *
-        (1.0f - reactive * 0.85f) *
-        (1.0f - motionReduction * 0.65f);
-
-    historyWeight = min(historyWeight, 0.96f);
-
-    float3 resolved = lerp(
-        current,
-        clippedHistory,
-        historyWeight);
-
-    return float4(
-        max(resolved, 0.0f),
-        encodedDepth);
+    float3 history = max(PreviousHistory.SampleLevel(LinearSampler, previousUv, 0.0f).rgb, 0.0f);
+    float3 minimumClip = max(minimumColor, averageColor - deviation * 1.5f);
+    float3 maximumClip = min(maximumColor, averageColor + deviation * 1.5f);
+    float3 clippedHistory = max(FromYCoCg(clamp(ToYCoCg(history), minimumClip, maximumClip)), 0.0f);
+    float relativeDifference = abs(Luminance(history) - Luminance(current)) / max(Luminance(current) + 0.12f, 0.12f);
+    float clippingDifference = length(history - clippedHistory) / max(length(current) + 0.1f, 0.1f);
+    float reactive = saturate(max(materialReactive, relativeDifference * 0.65f + clippingDifference * 0.5f));
+    float motionReduction = saturate(length(geometricMotion * Parameters.xy) / 32.0f);
+    float historyWeight = min(saturate(Parameters.z), 0.96f) * (1.0f - reactive) * (1.0f - motionReduction * 0.5f);
+    return ResolveOutput(max(lerp(current, clippedHistory, historyWeight), 0.0f), encodedDepth, encodedRawDepth);
 }

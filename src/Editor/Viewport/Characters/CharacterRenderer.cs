@@ -241,6 +241,8 @@ internal sealed partial class CharacterRenderer : IDisposable
         Vector3 cameraPosition,
         float firstPersonBlend = 0)
     {
+        BeginVelocityColorFrame();
+
         float blend = Math.Clamp(firstPersonBlend, 0f, 1f);
 
         // FPS meshes are rendered by RenderFirstPerson.
@@ -416,6 +418,11 @@ internal sealed partial class CharacterRenderer : IDisposable
             _context.OutputMerger.SetBlendState(
                 transparent ? _alpha : null
             );
+
+            if (shadowRasterizer == null)
+            {
+                _velocityColorMeshes[i] = relativeViewProjection;
+            }
 
             _context.DrawIndexed(
                 source.Indices.Length,

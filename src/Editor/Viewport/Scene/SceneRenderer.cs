@@ -29,6 +29,7 @@ internal sealed partial class SceneRenderer : IDisposable
     private static readonly SemaphoreSlim TextureDecoder = new(1, 1);
     private readonly Device _device;
     private readonly DeviceContext _context;
+    private readonly AssetPaths _assets;
     private readonly SceneData _scene;
     private readonly bool _objectPreview;
     private readonly Dictionary<string, ModelResources> _models = new(StringComparer.OrdinalIgnoreCase);
@@ -60,7 +61,7 @@ internal sealed partial class SceneRenderer : IDisposable
 
     public SceneRenderer(Device device, DeviceContext context, AssetPaths assets, SceneData scene, bool objectPreview = false)
     {
-        _device = device; _context = context; _scene = scene; _objectPreview = objectPreview;
+        _device = device; _context = context; _assets = assets; _scene = scene; _objectPreview = objectPreview;
         try
         {
             var compiler = new ShaderCompiler(assets);
@@ -145,6 +146,7 @@ internal sealed partial class SceneRenderer : IDisposable
         if (_disposed) return;
         _preparedFrame = false;
         _frame++;
+        BeginVelocityFrame();
         _visibleObjects.Clear();
         // Hard visibility bounds also bound the number of spatial cells visited on large maps.
         float distance = float.IsFinite(farPlane) ? (_objectPreview ? Math.Max(farPlane, 1) : Math.Clamp(farPlane, 1, 1800)) : 1800;
@@ -214,6 +216,7 @@ internal sealed partial class SceneRenderer : IDisposable
                 if (_worlds.Count == MaximumInstances) break;
                 int offset = _worlds.Count;
                 _worlds.Add(instance.World);
+                _velocityInstances.Add(new(instance, model));
                 _visibleObjects.Add(instance.Id);
                 foreach (var mesh in model.Meshes)
                     if (mesh.Material.Transparent && !ForceCutout)
@@ -335,6 +338,7 @@ internal sealed partial class SceneRenderer : IDisposable
         _context.PixelShader.SetShaderResource(0, diffuse.View);
         _context.PixelShader.SetShaderResource(1, normal.View);
         _context.DrawIndexedInstanced(mesh.IndexCount, count, 0, 0, start);
+        RecordVelocityDraw(mesh, diffuse, normal, start, count, mirrored, constants);
     }
 
     private TerrainTexture Texture(string path, TerrainTexture fallback, out bool ready)
@@ -626,6 +630,7 @@ internal sealed partial class SceneRenderer : IDisposable
     {
         if (_disposed) return;
         _disposed = true;
+        DisposeVelocityPipeline();
         DisposeShadowPipeline();
         _stop.Cancel(); _stop.Dispose();
         // Workers own CPU-only data and observe cancellation; disposal never waits for disk IO.

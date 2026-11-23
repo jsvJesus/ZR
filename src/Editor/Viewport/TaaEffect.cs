@@ -24,6 +24,8 @@ namespace Editor.Viewport
 
         private Surface? _history0;
         private Surface? _history1;
+        private Surface? _depthHistory0;
+        private Surface? _depthHistory1;
 
         private int _width;
         private int _height;
@@ -94,11 +96,13 @@ namespace Editor.Viewport
             ShaderResourceView currentColor,
             ShaderResourceView depth,
             ShaderResourceView motion,
+            ShaderResourceView reactive,
             Matrix4x4 inverseViewProjection,
             Matrix4x4 currentViewProjection,
             Matrix4x4 previousViewProjection,
             Vector2 currentJitter,
             Vector2 previousJitter,
+            System.Numerics.Vector3 cameraPosition,
             float feedback)
         {
             if (_disposed)
@@ -122,6 +126,8 @@ namespace Editor.Viewport
             Surface destination = _historyIndex == 0
                 ? _history1!
                 : _history0!;
+            Surface previousDepth = _historyIndex == 0 ? _depthHistory0! : _depthHistory1!;
+            Surface destinationDepth = _historyIndex == 0 ? _depthHistory1! : _depthHistory0!;
 
             var constants = new TaaConstants
             {
@@ -144,7 +150,8 @@ namespace Editor.Viewport
                     currentJitter.X,
                     currentJitter.Y,
                     previousJitter.X,
-                    previousJitter.Y)
+                    previousJitter.Y),
+                CameraPosition = new Vector4(cameraPosition, 0f)
             };
 
             context.ClearState();
@@ -157,7 +164,8 @@ namespace Editor.Viewport
 
                 context.OutputMerger.SetRenderTargets(
                     null,
-                    destination.Target);
+                    destination.Target,
+                    destinationDepth.Target);
 
                 context.Rasterizer.SetViewport(
                     0,
@@ -199,6 +207,8 @@ namespace Editor.Viewport
                 context.PixelShader.SetShaderResource(
                     3,
                     motion);
+                context.PixelShader.SetShaderResource(4, reactive);
+                context.PixelShader.SetShaderResource(5, _hasHistory ? previousDepth.View : null);
 
                 context.Draw(3, 0);
 
@@ -218,7 +228,7 @@ namespace Editor.Viewport
             if (_width == width &&
                 _height == height &&
                 _history0 != null &&
-                _history1 != null)
+                _history1 != null && _depthHistory0 != null && _depthHistory1 != null)
             {
                 return;
             }
@@ -236,6 +246,10 @@ namespace Editor.Viewport
                     _device,
                     width,
                     height);
+                // Raw raster depth has its own coordinate grid. Keep it separate
+                // from reconstructed color/sky metadata, especially at silhouettes.
+                _depthHistory0 = new Surface(_device, width, height, Format.R16_Float);
+                _depthHistory1 = new Surface(_device, width, height, Format.R16_Float);
 
                 _width = width;
                 _height = height;
@@ -260,6 +274,8 @@ namespace Editor.Viewport
 
             _history1?.Dispose();
             _history1 = null;
+            _depthHistory0?.Dispose(); _depthHistory0 = null;
+            _depthHistory1?.Dispose(); _depthHistory1 = null;
 
             _width = 0;
             _height = 0;
@@ -292,6 +308,7 @@ namespace Editor.Viewport
             public Matrix4x4 PreviousViewProjection;
             public Vector4 Parameters;
             public Vector4 Jitter;
+            public Vector4 CameraPosition;
         }
 
         private sealed class Surface : IDisposable
@@ -303,7 +320,8 @@ namespace Editor.Viewport
             public Surface(
                 Device device,
                 int width,
-                int height)
+                int height,
+                Format format = Format.R16G16B16A16_Float)
             {
                 var texture = new Texture2D(
                     device,
@@ -313,7 +331,7 @@ namespace Editor.Viewport
                         Height = height,
                         MipLevels = 1,
                         ArraySize = 1,
-                        Format = Format.R16G16B16A16_Float,
+                        Format = format,
                         SampleDescription =
                             new SampleDescription(1, 0),
                         Usage = ResourceUsage.Default,

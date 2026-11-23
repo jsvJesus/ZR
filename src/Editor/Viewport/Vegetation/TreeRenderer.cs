@@ -17,7 +17,7 @@ using Vector4 = System.Numerics.Vector4;
 
 namespace Editor.Viewport.Vegetation
 {
-    internal sealed class TreeRenderer : IDisposable
+    internal sealed partial class TreeRenderer : IDisposable
     {
         private readonly Device _device;
         private readonly DeviceContext _context;
@@ -70,6 +70,7 @@ namespace Editor.Viewport.Vegetation
                 _rasterizer = new(device, new RasterizerStateDescription { FillMode = FillMode.Solid,
                     CullMode = CullMode.None, IsDepthClipEnabled = true });
                 _depth = new(device, DepthStencilStateDescription.Default());
+                InitializeVelocity(compiler);
             }
             catch { Dispose(); throw; }
         }
@@ -82,6 +83,9 @@ namespace Editor.Viewport.Vegetation
             Vector3? shadowForward = null,
             RasterizerState? shadowRasterizer = null)
         {
+            // Shadow cascades run before color and must never advance geometry history.
+            if (!shadowPass) BeginVelocityColorPass();
+
             var forward = shadowForward.HasValue
                 ? Vector3.Normalize(shadowForward.Value)
                 : Vector3.Normalize(camera.LookDirection);
@@ -170,10 +174,12 @@ namespace Editor.Viewport.Vegetation
                     continue;
                 }
 
-                if (!_models.TryGetValue(tree.Model, out var model))
+                if (!_models.TryGetValue(tree.Model, out var model) ||
+                    !ReferenceEquals(model.Asset, asset))
                 {
+                    model?.Dispose();
                     model = new ModelResources(_device, asset);
-                    _models.Add(tree.Model, model);
+                    _models[tree.Model] = model;
                 }
                 float height = Math.Max(1, asset.Maximum.Y - asset.Minimum.Y) * tree.Scale;
                 var constants = new Constants { World = world, ViewProjection = viewProjection,
@@ -194,6 +200,8 @@ namespace Editor.Viewport.Vegetation
                     _context.PixelShader.SetShaderResource(0, Texture(part.Diffuse, false).View);
                     _context.PixelShader.SetShaderResource(1, Texture(part.Normal, true).View);
                     _context.DrawIndexed(part.Lods[lod].Length, 0, 0);
+                    if (!shadowPass)
+                        RecordVelocityDraw(tree, entry.Generated, asset, model, i, lod, constants);
                 }
             }
             _context.PixelShader.SetShaderResource(0, null); _context.PixelShader.SetShaderResource(1, null);
@@ -225,6 +233,7 @@ namespace Editor.Viewport.Vegetation
 
         public void Dispose()
         {
+            DisposeVelocity();
             foreach (var model in _models.Values) model.Dispose();
             foreach (var texture in _textures.Values) texture.Dispose();
             _models.Clear(); _textures.Clear();
@@ -240,9 +249,11 @@ namespace Editor.Viewport.Vegetation
         }
         private sealed class ModelResources : IDisposable
         {
+            public TreeAsset Asset { get; }
             public List<(Buffer Vertices, Buffer?[] Indices)> Parts { get; } = [];
             public ModelResources(Device device, TreeAsset asset)
             {
+                Asset = asset;
                 try
                 {
                     foreach (var part in asset.Parts)

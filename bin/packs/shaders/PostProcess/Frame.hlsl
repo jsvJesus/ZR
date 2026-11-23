@@ -17,6 +17,7 @@ cbuffer FrameConstants : register(b0)
 
 #include "Environment/SunShadow.hlsli"
 #include "Environment/SkyVisibility.hlsli"
+#include "PostProcess/TemporalMotion.hlsli"
 
 Texture2D<float> DepthTexture : register(t0);
 Texture2D<float4> HdrTexture : register(t0);
@@ -40,7 +41,7 @@ struct SurfaceOutput
 {
     float4 Normal : SV_Target0;
     float Roughness : SV_Target1;
-    float2 Motion : SV_Target2;
+    float4 Motion : SV_Target2;
 };
 
 PixelInput VSMain(uint vertexId : SV_VertexID)
@@ -112,7 +113,7 @@ SurfaceOutput PSSurface(PixelInput input)
             0.0f);
 
         output.Roughness = 1.0f;
-        output.Motion = float2(0.0f, 0.0f);
+        output.Motion = float4(0.0f, 0.0f, 0.0f, 0.0f);
 
         return output;
     }
@@ -207,24 +208,8 @@ SurfaceOutput PSSurface(PixelInput input)
         float4(world, 1.0f),
         PreviousViewProjection);
 
-    float2 velocity = float2(
-        0.0f,
-        0.0f);
-
-    if (previousClip.w > 0.000001f)
-    {
-        float2 previousNdc =
-            previousClip.xy / previousClip.w;
-
-        float2 previousUv = float2(
-            previousNdc.x * 0.5f + 0.5f,
-            0.5f - previousNdc.y * 0.5f);
-
-        velocity =
-            PixelUv(pixel) - previousUv;
-    }
-
-    output.Motion = velocity;
+    output.Motion = MakeTemporalMotion(
+        mul(float4(world, 1.0f), CurrentViewProjection), previousClip, 1.0f);
 
     return output;
 }
@@ -469,6 +454,8 @@ float4 PSComposite(PixelInput input) : SV_Target
         int3(pixel, 0));
 
     float3 world = ReconstructPosition(uv, depth);
+    float3 worldDx = ddx(world);
+    float3 worldDy = ddy(world);
 
     float3 ambientReduction = 0.0f;
 
@@ -502,27 +489,23 @@ float4 PSComposite(PixelInput input) : SV_Target
     }
 
     hdr = max(hdr - ambientReduction, 0.0f);
-    return float4(hdr, 1.0f);
-}
-
-float4 PSPresent(PixelInput input) : SV_Target
-{
-    int2 pixel = clamp(int2(input.Position.xy), int2(0, 0), int2(Parameters.xy) - 1);
-    float2 uv = PixelUv(pixel);
-    float3 hdr = HdrTexture.Load(int3(pixel, 0)).rgb;
-    float depth = ContactDepth.Load(int3(pixel, 0));
-
-    // Preserve the original contact-shadow/bloom ordering. Only ambient AO
-    // feeds the bloom source; camera contact attenuation stays in presentation.
-    float3 world = ReconstructPosition(uv, depth);
-    float3 worldDx = ddx(world);
-    float3 worldDy = ddy(world);
+    // All depth-dependent lighting remains in the jittered scene domain and is
+    // resolved with the color. Applying this after TAA reintroduced jitter.
     if (Sun.w > 0.5f && depth < 0.999999f)
     {
         float3 normal = normalize(ContactNormal.Load(int3(pixel, 0)).xyz * 2.0f - 1.0f);
         float shadow = ScreenContactShadow(uv, depth, normal, world, worldDx, worldDy);
         hdr *= 1.0f - saturate(shadow * Camera.w);
     }
+    return float4(hdr, depth < 0.999999f ? 1.0f : 0.0f);
+}
+
+float4 PSPresent(PixelInput input) : SV_Target
+{
+    int2 pixel = clamp(int2(input.Position.xy), int2(0, 0), int2(Parameters.xy) - 1);
+    float2 uv = PixelUv(pixel);
+    float4 resolved = HdrTexture.Load(int3(pixel, 0));
+    float3 hdr = resolved.rgb;
 
     // HDR bloom is combined before tone mapping.
     if (GradeSettings.w > 0.5f)
@@ -545,7 +528,7 @@ float4 PSPresent(PixelInput input) : SV_Target
     color = LinearToSrgb(color);
 
     // Stable spatial dithering for sky pixels.
-    if (depth >= 0.999999f &&
+    if (resolved.a <= 0.0f &&
         GradeSettings.z > 0.0001f)
     {
         float noise =

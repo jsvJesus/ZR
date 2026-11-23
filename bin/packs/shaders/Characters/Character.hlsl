@@ -130,6 +130,7 @@ SurfaceOutput PSMain(PixelInput input)
 
     if (SurfaceOptions.x > 0.5)
     {
+        color.a *= DiffuseColor.a;
         float2 opacityUv =
             input.Uv * OpacityScaleShift.xy +
             OpacityScaleShift.zw;
