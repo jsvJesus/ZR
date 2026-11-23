@@ -101,7 +101,7 @@ VelocityOutput PSMain(PixelInput input)
     float material = max(Parameters.z, input.LeafCard * 0.3);
     float cutoutEdge = Parameters.x > 0 ? saturate((0.75 - alpha) / 0.35) : 0;
     output.Reactive = max(1 - output.Motion.w,
-        saturate(material * moving + cutoutEdge * 0.25
+        saturate(material * moving + cutoutEdge * 0.25 * max(moving, Parameters.w)
             + input.LeafCard * Parameters.w * 0.65));
     return output;
 }

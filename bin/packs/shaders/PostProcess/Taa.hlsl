@@ -66,13 +66,16 @@ float Luminance(float3 color)
     return dot(color, float3(0.2126f, 0.7152f, 0.0722f));
 }
 
-// A bilinear reconstruction changes its blur with each Halton phase. Cubic
-// reconstruction preserves detail while returning color to the fixed output grid.
-float CubicWeight(float distance)
+// Positive compact cubic low-pass: current color, moments and material support
+// use one footprint in stable output coordinates. Interpolating signed lobes
+// preserved phase-dependent aliases and could select diagonal ringing as geometry.
+float ReconstructionWeight(float distance)
 {
+    // Keep the full cardinal B-spline support. Rescaling/truncating the kernel
+    // would break its unit sum/first moment and reintroduce a phase position bias.
     float x = abs(distance);
-    if (x < 1.0f) return (1.5f * x - 2.5f) * x * x + 1.0f;
-    if (x < 2.0f) return ((-0.5f * x + 2.5f) * x - 4.0f) * x + 2.0f;
+    if (x < 1.0f) return (4.0f - 6.0f * x * x + 3.0f * x * x * x) / 6.0f;
+    if (x < 2.0f) return (2.0f - x) * (2.0f - x) * (2.0f - x) / 6.0f;
     return 0.0f;
 }
 
@@ -86,45 +89,32 @@ float3 ReconstructCurrent(int2 pixel, out int2 surfacePixel, out float surfaceDe
     maximumColor = float3(-65504.0f, -65504.0f, -65504.0f);
     averageColor = 0.0f;
     float3 secondMoment = 0.0f;
+    float totalWeight = 0.0f;
+    float surfaceWeight = 0.0f;
     reactive = 0.0f;
-    [unroll]
-    for (int y = -1; y <= 1; y++)
-    {
-        [unroll]
-        for (int x = -1; x <= 1; x++)
-        {
-            int2 samplePixel = ClampPixel(pixel + int2(x, y));
-            float3 color = ToYCoCg(max(CurrentColor.Load(int3(samplePixel, 0)).rgb, 0.0f));
-            minimumColor = min(minimumColor, color);
-            maximumColor = max(maximumColor, color);
-            averageColor += color;
-            secondMoment += color * color;
-            reactive = max(reactive, ReactiveMask.Load(int3(samplePixel, 0)));
-        }
-    }
-    averageColor /= 9.0f;
-    deviation = sqrt(max(secondMoment / 9.0f - averageColor * averageColor, 0.000001f));
     float2 samplePosition = float2(pixel) + Jitter.xy;
     int2 firstPixel = int2(floor(samplePosition));
     float2 fraction = samplePosition - floor(samplePosition);
-    float3 result = 0.0f;
-    float totalWeight = 0.0f;
-    float surfaceWeight = 0.0f;
     [unroll]
-    for (int row = -1; row <= 2; row++)
+    for (int y = -1; y <= 2; y++)
     {
         [unroll]
-        for (int column = -1; column <= 2; column++)
+        for (int x = -1; x <= 2; x++)
         {
-            float weight = CubicWeight(column - fraction.x) * CubicWeight(row - fraction.y);
-            int2 samplePixel = ClampPixel(firstPixel + int2(column, row));
-            result += max(CurrentColor.Load(int3(samplePixel, 0)).rgb, 0.0f) * weight;
+            int2 samplePixel = ClampPixel(firstPixel + int2(x, y));
+            float weight = ReconstructionWeight(x - fraction.x) * ReconstructionWeight(y - fraction.y);
+            if (weight <= 0.00001f) continue;
+            float3 color = ToYCoCg(max(CurrentColor.Load(int3(samplePixel, 0)).rgb, 0.0f));
+            minimumColor = min(minimumColor, color);
+            maximumColor = max(maximumColor, color);
+            averageColor += color * weight;
+            secondMoment += color * color * weight;
             totalWeight += weight;
+            // Weak reconstruction tails must not turn a neighbouring reactive
+            // pixel into full history rejection over the reconstruction footprint.
+            reactive = max(reactive, ReactiveMask.Load(int3(samplePixel, 0)) * saturate(weight / 0.25f));
             float depth = CurrentDepth.Load(int3(samplePixel, 0));
-            // Use only actual positive reconstruction support. At zero jitter
-            // all off-center weights are zero: adjacent geometry cannot turn a
-            // pure sky pixel into a moving foreground surface.
-            if (weight > max(surfaceWeight, 0.00001f) && depth < 0.999999f)
+            if (weight > surfaceWeight && depth < 0.999999f)
             {
                 surfaceWeight = weight;
                 surfaceDepth = depth;
@@ -132,11 +122,11 @@ float3 ReconstructCurrent(int2 pixel, out int2 surfacePixel, out float surfaceDe
             }
         }
     }
+    averageColor /= max(totalWeight, 0.00001f);
+    deviation = sqrt(max(secondMoment / max(totalWeight, 0.00001f) - averageColor * averageColor, 0.000001f));
     if (surfaceWeight <= 0.0f)
         return max(CurrentColor.Load(int3(pixel, 0)).rgb, 0.0f); // unjittered sky
-    // Bound negative cubic lobes so HDR highlights cannot ring around cutouts.
-    return max(FromYCoCg(clamp(ToYCoCg(result / max(totalWeight, 0.00001f)),
-        minimumColor, maximumColor)), 0.0f);
+    return max(FromYCoCg(averageColor), 0.0f);
 }
 
 struct TemporalOutput
@@ -145,12 +135,48 @@ struct TemporalOutput
     float RawDepth : SV_Target1;
 };
 
-TemporalOutput ResolveOutput(float3 color, float surfaceDepth, float rawDepth)
+TemporalOutput ResolveOutput(float3 color, float surfaceDepth, float rawDepth, float confidence)
 {
     TemporalOutput output;
-    output.Color = float4(color, surfaceDepth);
+    // Alpha carries bounded temporal evidence, preserving its sign as the
+    // presentation sky marker. Exact depth remains in the separate raw atlas.
+    output.Color = float4(color, (surfaceDepth > 0.0f ? 1.0f : -1.0f) * clamp(confidence, 1.0f, 32.0f));
     output.RawDepth = rawDepth;
     return output;
+}
+
+TemporalOutput ResolveOutput(float3 color, float surfaceDepth, float rawDepth)
+{
+    return ResolveOutput(color, surfaceDepth, rawDepth, 1.0f);
+}
+
+float DepthFootprintSupport(float2 uv, float expectedDepth, bool sky, out bool foregroundConflict)
+{
+    float2 coordinate = uv * Parameters.xy - 0.5f;
+    int2 first = int2(floor(coordinate));
+    float2 fraction = coordinate - floor(coordinate);
+    float tolerance = 0.01f + expectedDepth * 0.002f;
+    float support = 0.0f;
+    foregroundConflict = false;
+    [unroll]
+    for (int y = 0; y < 2; y++)
+    {
+        [unroll]
+        for (int x = 0; x < 2; x++)
+        {
+            float weight = (x == 0 ? 1.0f - fraction.x : fraction.x) *
+                (y == 0 ? 1.0f - fraction.y : fraction.y);
+            if (weight <= 0.0001f) continue;
+            float stored = PreviousRawDepth.Load(int3(ClampPixel(first + int2(x, y)), 0));
+            bool compatible = sky ? stored <= 0.0f :
+                stored > 0.0f && abs(stored - expectedDepth) <= tolerance;
+            if (compatible) support += weight;
+            // Missing subpixel coverage is different from a known closer occluder.
+            if (!sky && stored > 0.0f && stored + tolerance < expectedDepth)
+                foregroundConflict = true;
+        }
+    }
+    return support;
 }
 
 TemporalOutput PSResolve(PixelInput input)
@@ -197,6 +223,7 @@ TemporalOutput PSResolve(PixelInput input)
         if (previousClip.w <= 0.00001f) return ResolveOutput(current, 0.0f, encodedRawDepth);
         previousUv = ClipToTemporalUv(previousClip) - Jitter.zw / Parameters.xy;
         previousDepthUv = previousUv + Jitter.zw / Parameters.xy;
+        geometricMotion = uv - previousUv;
     }
     else
     {
@@ -215,22 +242,52 @@ TemporalOutput PSResolve(PixelInput input)
         any(previousDepthUv <= 0.0f) || any(previousDepthUv >= 1.0f))
         return ResolveOutput(current, encodedDepth, encodedRawDepth);
 
-    int2 previousPixel = ClampPixel(int2(previousDepthUv * Parameters.xy));
-    float storedDepth = PreviousRawDepth.Load(int3(previousPixel, 0));
-    // Never interpolate depth across silhouettes while checking disocclusion.
-    float tolerance = 0.01f + expectedDepth * 0.002f;
-    if ((sky && storedDepth > 0.0f) || (!sky &&
-        (storedDepth <= 0.0f || abs(storedDepth - expectedDepth) > tolerance)))
+    float historyMetadata = PreviousHistory.Load(int3(ClampPixel(int2(previousUv * Parameters.xy)), 0)).a;
+    // A different surface domain cannot inherit mature evidence from the old
+    // one. Start both accumulation weight and confidence from the current frame.
+    if ((historyMetadata < 0.0f) != sky)
         return ResolveOutput(current, encodedDepth, encodedRawDepth);
+    float historySamples = clamp(abs(historyMetadata), 1.0f, 32.0f);
+    float motionPixels = length(geometricMotion * Parameters.xy);
+    float stationary = 1.0f - smoothstep(0.1f, 0.75f, motionPixels);
+    bool foregroundConflict;
+    float depthSupport = DepthFootprintSupport(previousDepthUv, expectedDepth, sky, foregroundConflict);
+    // A mature, stationary surface can be thinner than all previous raster
+    // samples. Preserve its accumulated coverage only if no closer occluder
+    // contradicts it; new/moving/disoccluded geometry cannot take this path.
+    bool retainedCoverage = !sky && historyMetadata > 0.0f && historySamples >= 8.0f &&
+        stationary > 0.999f && materialReactive < 0.001f && !foregroundConflict;
+    if (depthSupport < 0.05f && !retainedCoverage)
+        return ResolveOutput(current, encodedDepth, encodedRawDepth);
+    // A nearer neighbour is normal beside a static silhouette. It contradicts
+    // this query only when matching depth is not the majority of its footprint.
+    bool conflictingHistory = foregroundConflict && depthSupport < 0.5f;
+    if (conflictingHistory) historySamples = 1.0f;
 
     float3 history = max(PreviousHistory.SampleLevel(LinearSampler, previousUv, 0.0f).rgb, 0.0f);
     float3 minimumClip = max(minimumColor, averageColor - deviation * 1.5f);
     float3 maximumClip = min(maximumColor, averageColor + deviation * 1.5f);
     float3 clippedHistory = max(FromYCoCg(clamp(ToYCoCg(history), minimumClip, maximumClip)), 0.0f);
+    float temporalTrust = saturate((historySamples - 1.0f) / 7.0f) * stationary * (1.0f - materialReactive);
+    // A sky/geometry transition has no stable surface correspondence. It must
+    // not use the stationary-coverage exception merely because the camera stops.
+    if (conflictingHistory) temporalTrust = 0.0f;
+    clippedHistory = lerp(clippedHistory, history, temporalTrust);
     float relativeDifference = abs(Luminance(history) - Luminance(current)) / max(Luminance(current) + 0.12f, 0.12f);
     float clippingDifference = length(history - clippedHistory) / max(length(current) + 0.1f, 0.1f);
-    float reactive = saturate(max(materialReactive, relativeDifference * 0.65f + clippingDifference * 0.5f));
-    float motionReduction = saturate(length(geometricMotion * Parameters.xy) / 32.0f);
-    float historyWeight = min(saturate(Parameters.z), 0.96f) * (1.0f - reactive) * (1.0f - motionReduction * 0.5f);
-    return ResolveOutput(max(lerp(current, clippedHistory, historyWeight), 0.0f), encodedDepth, encodedRawDepth);
+    // On trusted static geometry, phase disagreement is the signal TAA needs
+    // to accumulate, not evidence of physical motion or material reactivity.
+    float reactive = saturate(max(materialReactive,
+        (relativeDifference * 0.65f + clippingDifference * 0.5f) * (1.0f - temporalTrust)));
+    float motionReduction = saturate(motionPixels / 32.0f);
+    float feedback = min(saturate(Parameters.z), 0.96f);
+    float historyWeight = min(feedback, historySamples / (historySamples + 1.0f)) *
+        (1.0f - reactive) * (1.0f - motionReduction * 0.5f);
+    // Sampling disagreement must not prevent a genuinely stationary surface
+    // from warming up: only geometry/material incompatibility reduces evidence.
+    float confidence = 1.0f + min(historySamples, 31.0f) * (1.0f - materialReactive) * stationary;
+    if (conflictingHistory) confidence = 1.0f;
+    confidence = min(confidence, 1.0f / max(1.0f - feedback, 0.04f));
+    return ResolveOutput(max(lerp(current, clippedHistory, historyWeight), 0.0f),
+        encodedDepth, encodedRawDepth, confidence);
 }

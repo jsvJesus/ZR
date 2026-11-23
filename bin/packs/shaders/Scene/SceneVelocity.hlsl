@@ -105,9 +105,11 @@ VelocityOutput PSMain(PixelInput input)
     float2 geometryPixels = (ClipToTemporalUv(input.CurrentClip)
         - ClipToTemporalUv(input.ObjectPreviousClip)) * ViewportSize.xy;
     float moving = min(length(geometryPixels) * 0.035f, 0.65f);
+    float coverageChange = saturate(length(geometryPixels) / 4.0f);
     // Static cutout edges still need temporal accumulation to suppress grass
     // shimmer. Reserve full rejection for incompatible history/translucency.
-    output.Reactive = output.Motion.w < 0.5f ? 1.0f : max(max(edge * 0.25f, fadeReactive), moving);
+    output.Reactive = output.Motion.w < 0.5f ? 1.0f :
+        max(max(edge * 0.25f, fadeReactive) * coverageChange, moving);
     return output;
 }
 

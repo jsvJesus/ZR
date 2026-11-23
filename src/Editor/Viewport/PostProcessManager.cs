@@ -245,7 +245,8 @@ namespace Editor.Viewport
                 {
                     aoResource = _ao.Render(context, width, height, inverseViewProjection,
                         viewProjection, previousViewProjection, cameraPosition,
-                        depth, normalResource, AoRadius, AoQuality);
+                        depth, normalResource, AoRadius, AoQuality,
+                        TaaJitterPixels, _previousJitterPixels);
                 }
                 else
                 {

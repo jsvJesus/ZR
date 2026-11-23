@@ -90,7 +90,8 @@ MotionOutput PSMain(PixelInput input)
     float cutoutReactive = AlphaSettings.x > 0.5f
         ? saturate((alphaWidth - abs(alpha - AlphaSettings.y)) / max(alphaWidth, 0.00001f))
         : 0.0f;
-    output.Reactive = max(1.0f - output.Motion.w, max(materialReactive, cutoutReactive * 0.25f));
+    output.Reactive = max(1.0f - output.Motion.w,
+        max(materialReactive, cutoutReactive * 0.25f * saturate(length(geometryPixels) / 4.0f)));
     return output;
 }
 

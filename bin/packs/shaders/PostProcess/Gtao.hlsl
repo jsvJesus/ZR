@@ -9,6 +9,7 @@ cbuffer AoConstants : register(b0)
     float4 Options;
     float4 Camera;
     float4 BlurAxis;
+    float4 Jitter; // current and previous projection offsets, in full-resolution pixels
 };
 
 Texture2D<float> SceneDepth : register(t0);
@@ -538,6 +539,88 @@ float UpsampleAo(
     return currentAo;
 }
 
+bool ReadCompatibleHistory(int2 pixel, float3 world, float3 normal, out float ao)
+{
+    ao = 1.0f;
+    if (any(pixel < 0) || any(pixel >= int2(Resolution.xy)))
+    {
+        return false;
+    }
+
+    // AO is filtered, but discrete depth/normal metadata must be validated at
+    // each previous raster centre before that tap can enter the interpolation.
+    float4 history = AoHistory.Load(int3(pixel, 0));
+    if (!(history.y > 0.0f) || !(dot(OctahedralDecode(history.zw), normal) >= 0.95f))
+    {
+        return false;
+    }
+
+    float2 historyUv = (float2(pixel) + 0.5f) / Resolution.xy;
+    float2 historyNdc = float2(historyUv.x * 2.0f - 1.0f,
+                              1.0f - historyUv.y * 2.0f);
+    float4 nearClip = mul(float4(historyNdc, 0.0f, 1.0f),
+                          PreviousInverseViewProjection);
+    // Use a finite point well down the ray to reduce cancellation at large
+    // world coordinates, while retaining the exact previous raster centre.
+    float4 rayClip = mul(float4(historyNdc, 0.99f, 1.0f),
+                         PreviousInverseViewProjection);
+    float3 rayOrigin = nearClip.xyz / max(nearClip.w, 0.000001f);
+    float3 ray = rayClip.xyz / max(rayClip.w, 0.000001f) - rayOrigin;
+    float planeDenominator = dot(normal, ray);
+    if (!(abs(planeDenominator) > 0.000001f))
+    {
+        return false;
+    }
+
+    // Intersect this tap's ray with the current receiver plane; a slope may
+    // legitimately have a different view depth at each of the four taps.
+    float planeDistance = dot(normal, world - rayOrigin) / planeDenominator;
+    float expectedDepth = mul(float4(rayOrigin + ray * planeDistance, 1.0f),
+                              PreviousViewProjection).w;
+    // RGBA16F linear depth needs at least one half-float ULP of tolerance.
+    float depthTolerance = max(0.01f, abs(expectedDepth) * 0.0015f);
+    if (!(planeDistance >= 0.0f && expectedDepth > 0.0f &&
+        abs(history.y - expectedDepth) <= depthTolerance))
+    {
+        return false;
+    }
+
+    ao = history.x;
+    return true;
+}
+
+bool FilterHistory(float2 previousUv, float3 world, float3 normal, out float ao)
+{
+    // History AO stays in raw raster coordinates. Projection jitter belongs in
+    // this reprojection; only its contribution to motion attenuation is removed.
+    float2 historyPosition = previousUv * Resolution.xy - 0.5f;
+    int2 firstPixel = int2(floor(historyPosition));
+    float2 fraction = frac(historyPosition);
+    float sum = 0.0f;
+    float weightSum = 0.0f;
+
+    [unroll]
+    for (int y = 0; y <= 1; y++)
+    {
+        [unroll]
+        for (int x = 0; x <= 1; x++)
+        {
+            float weight = (x == 0 ? 1.0f - fraction.x : fraction.x) *
+                           (y == 0 ? 1.0f - fraction.y : fraction.y);
+            float sampleAo = 1.0f;
+            if (weight > 0.0f && ReadCompatibleHistory(
+                firstPixel + int2(x, y), world, normal, sampleAo))
+            {
+                sum += sampleAo * weight;
+                weightSum += weight;
+            }
+        }
+    }
+
+    ao = weightSum > 0.00001f ? sum / weightSum : 1.0f;
+    return weightSum > 0.00001f;
+}
+
 float4 PSTemporal(PixelInput input) : SV_Target
 {
     float2 uv = input.Uv;
@@ -578,39 +661,12 @@ float4 PSTemporal(PixelInput input) : SV_Target
             if (all(previousUv > 0.0f) &&
                 all(previousUv < 1.0f))
             {
-                int2 historyPixel = DepthCoordinate(previousUv);
-                float2 historyUv = (float2(historyPixel) + 0.5f) / Resolution.xy;
-                float4 history = AoHistory.Load(int3(historyPixel, 0));
-
-                // Point history lives at the previous pixel centre, which can
-                // have a different depth on a slope. Intersect its previous ray
-                // with the receiver plane instead of widening depth rejection.
-                float2 historyNdc = float2(historyUv.x * 2.0f - 1.0f,
-                                          1.0f - historyUv.y * 2.0f);
-                float4 nearClip = mul(float4(historyNdc, 0.0f, 1.0f),
-                                      PreviousInverseViewProjection);
-                // A point farther down the ray reduces cancellation when the
-                // camera has large world coordinates, without using far-plane infinity.
-                float4 rayClip = mul(float4(historyNdc, 0.99f, 1.0f),
-                                     PreviousInverseViewProjection);
-                float3 rayOrigin = nearClip.xyz / max(nearClip.w, 0.000001f);
-                float3 ray = rayClip.xyz / max(rayClip.w, 0.000001f) - rayOrigin;
-                float planeDenominator = dot(normal, ray);
-                float planeDistance = dot(normal, world - rayOrigin) /
-                    (abs(planeDenominator) > 0.000001f ? planeDenominator : 1.0f);
-                float expectedDepth = mul(float4(rayOrigin + ray * planeDistance, 1.0f),
-                                          PreviousViewProjection).w;
-                // RGBA16F linear depth needs at least one half-float ULP of tolerance.
-                float depthTolerance = max(0.01f, abs(expectedDepth) * 0.0015f);
-
-                if (abs(planeDenominator) > 0.000001f && planeDistance >= 0.0f &&
-                    expectedDepth > 0.0f && history.y > 0.0f &&
-                    abs(history.y - expectedDepth) <= depthTolerance &&
-                    dot(OctahedralDecode(history.zw), normal) >= 0.95f)
+                float historyAo;
+                if (FilterHistory(previousUv, world, normal, historyAo))
                 {
                     float travelPixels = length(
-                        (uv - previousUv) *
-                        Resolution.xy);
+                        (uv - previousUv) * Resolution.xy -
+                        (Jitter.xy - Jitter.zw));
 
                     float historyWeight =
                         0.9f * exp(-travelPixels * 0.08f);
@@ -619,10 +675,10 @@ float4 PSTemporal(PixelInput input) : SV_Target
                     // object motion vectors, current AO changes must also reject
                     // history when an occluder moves along the same receiver.
                     historyWeight *= 1.0f - smoothstep(
-                        0.04f, 0.2f, abs(history.x - currentAo));
+                        0.04f, 0.2f, abs(historyAo - currentAo));
 
                     float boundedHistory = clamp(
-                        history.x,
+                        historyAo,
                         neighborhoodBounds.x,
                         neighborhoodBounds.y);
 
