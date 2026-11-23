@@ -52,6 +52,11 @@ namespace Editor.Environment
 
         public float SkyDitherStrength { get; set; } = 1f;
 
+        public bool AoEnabled { get; set; } = true;
+        public float AoIntensity { get; set; } = 0.65f;
+        public float AoRadius { get; set; } = 1.2f;
+        public int AoQuality { get; set; } = 2;
+
         public bool ShadowsEnabled { get; set; } = true;
         public float ShadowDistance { get; set; } = 35f;
         public float ShadowStrength { get; set; } = 0.72f;

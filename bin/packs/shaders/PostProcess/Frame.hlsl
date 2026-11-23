@@ -12,6 +12,7 @@ cbuffer FrameConstants : register(b0)
 	// y = LUT Strength
 	// z = Sky Dither Strength
 	// w = Bloom Enabled
+	float4 AoSettings;
 };
 
 cbuffer EnvironmentShadow : register(b2)
@@ -29,6 +30,7 @@ Texture2D<float> ContactDepth : register(t1);
 Texture2D<float4> ContactNormal : register(t2);
 Texture2D<float4> BloomTexture : register(t3);
 Texture2D<float4> ColorLutTexture : register(t4);
+Texture2D<float2> AmbientOcclusionTexture : register(t5);
 
 SamplerState PostLinearSampler : register(s0);
 
@@ -521,24 +523,57 @@ float4 PSPresent(PixelInput input) : SV_Target
         int3(pixel, 0));
 
     // Keep the existing contact shadow pass.
-    if (Sun.w > 0.5f &&
-        depth < 0.999999f)
+    float aoAttenuation = 0.0f;
+    float contactAttenuation = 0.0f;
+
+    if (depth < 0.999999f)
     {
         float3 normal =
             ContactNormal.Load(
                 int3(pixel, 0)).xyz *
                 2.0f - 1.0f;
 
-        float shadow = ScreenContactShadow(
-            uv,
-            depth,
-            normalize(normal));
+        normal = normalize(normal);
 
-        float attenuation = saturate(
-            shadow * Camera.w);
+        if (AoSettings.y > 0.5f)
+        {
+            float visibility = saturate(
+                AmbientOcclusionTexture.Load(
+                    int3(pixel, 0)).x);
 
-        hdr *= 1.0f - attenuation;
+            float3 sunDirection =
+                Sun.xyz / max(length(Sun.xyz), 0.0001f);
+
+            float sunFacing = saturate(
+                dot(normal, sunDirection));
+
+            float ambientWeight =
+                1.0f -
+                0.55f * sunFacing * saturate(Sun.y);
+
+            aoAttenuation = saturate(
+                (1.0f - visibility) *
+                AoSettings.x *
+                ambientWeight) * 0.65f;
+        }
+
+        if (Sun.w > 0.5f)
+        {
+            float shadow = ScreenContactShadow(
+                uv,
+                depth,
+                normal);
+
+            contactAttenuation = saturate(
+                shadow * Camera.w);
+        }
     }
+
+    float attenuation = max(
+        aoAttenuation,
+        contactAttenuation);
+
+    hdr *= 1.0f - attenuation;
 
     // HDR bloom is combined before tone mapping.
     if (GradeSettings.w > 0.5f)

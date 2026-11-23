@@ -249,6 +249,54 @@ namespace Editor.Environment
                         value => _settings.SkyDitherStrength = value,
                         value => $"{value:0.00}");
 
+                    AddHeading("AMBIENT OCCLUSION (GTAO)");
+
+                    AddToggle(
+                        "Включить Ambient Occlusion",
+                        () => _settings.AoEnabled,
+                        value => _settings.AoEnabled = value);
+
+                    AddSlider(
+                        "AO Intensity",
+                        0,
+                        2,
+                        () => _settings.AoIntensity,
+                        value => _settings.AoIntensity = value,
+                        value => $"{value:0.00}");
+
+                    AddSlider(
+                        "AO Radius",
+                        0.1,
+                        5,
+                        () => _settings.AoRadius,
+                        value => _settings.AoRadius = value,
+                        value => $"{value:0.00} м");
+
+                    AddSlider(
+                        "AO Quality",
+                        1,
+                        3,
+                        () => _settings.AoQuality,
+                        value => _settings.AoQuality = Math.Clamp(
+                            (int)Math.Round(value),
+                            1,
+                            3),
+                        value => Math.Clamp(
+                                (int)Math.Round(value),
+                                1,
+                                3) switch
+                            {
+                                1 => "Low",
+                                2 => "Medium",
+                                _ => "High"
+                            });
+
+                    AddInfo(
+                        "GTAO рассчитывает контактное затенение " +
+                        "по глубине и нормалям. Bilateral filtering " +
+                        "сохраняет границы геометрии, а temporal " +
+                        "accumulation уменьшает мерцание.");
+
                     AddInfo(
                         "Параметры освещения применяются ко всей сцене.");
                     break;

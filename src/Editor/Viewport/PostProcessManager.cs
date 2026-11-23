@@ -23,6 +23,7 @@ namespace Editor.Viewport
         private SamplerState? _colorSampler;
         private HdrBloom? _bloom;
         private ColorLutAtlas? _lut;
+        private GtaoEffect? _ao;
 
         private Matrix4x4 _previousViewProjection;
         private bool _hasPreviousFrame;
@@ -39,6 +40,11 @@ namespace Editor.Viewport
             ColorGradingPreset.Atmospheric;
 
         public float SkyDitherStrength { get; set; } = 1f;
+
+        public bool AoEnabled { get; set; } = true;
+        public float AoIntensity { get; set; } = 0.65f;
+        public float AoRadius { get; set; } = 1.2f;
+        public int AoQuality { get; set; } = 2;
 
         public PostProcessManager(
             Device device,
@@ -95,8 +101,10 @@ namespace Editor.Viewport
                         MaximumLod = float.MaxValue
                     });
 
+                // Construct
                 _bloom = new HdrBloom(device, compiler);
                 _lut = new ColorLutAtlas(device);
+                _ao = new GtaoEffect(device, compiler);
             }
             catch
             {
@@ -109,11 +117,13 @@ namespace Editor.Viewport
         {
             _hasPreviousFrame = false;
             _previousViewProjection = Matrix4x4.Identity;
+            _ao?.ResetHistory();
         }
 
         public void ReleaseSizeDependentResources()
         {
             _bloom?.ReleaseTargets();
+            _ao?.ReleaseTargets();
             ResetHistory();
         }
 
@@ -185,6 +195,11 @@ namespace Editor.Viewport
                 InverseViewProjection = inverseViewProjection,
                 PreviousViewProjection = previousViewProjection,
                 CurrentViewProjection = viewProjection,
+                AoSettings = new Vector4(
+                    Math.Clamp(AoIntensity, 0f, 2f),
+                    AoEnabled ? 1f : 0f,
+                    0f,
+                    0f),
                 Parameters = new Vector4(
                     width,
                     height,
@@ -229,7 +244,7 @@ namespace Editor.Viewport
                     0,
                     _frameBuffer);
 
-                // Stage 1: surface reconstruction.
+                // Surface reconstruction.
                 context.OutputMerger.SetRenderTargets(
                     null,
                     normal,
@@ -249,7 +264,48 @@ namespace Editor.Viewport
                     0,
                     null);
 
-                // Stage 2: HDR composition and presentation.
+                ShaderResourceView? aoResource = null;
+
+                if (AoEnabled && _ao != null)
+                {
+                    aoResource = _ao.Render(
+                        context,
+                        width,
+                        height,
+                        inverseViewProjection,
+                        viewProjection,
+                        previousViewProjection,
+                        cameraPosition,
+                        depth,
+                        normalResource,
+                        AoRadius,
+                        AoQuality);
+                }
+                else
+                {
+                    _ao?.ResetHistory();
+                }
+
+                // GTAO Effect clears the context state. Restoring the state of the fullscreen pipeline.
+                context.Rasterizer.SetViewport(
+                    0,
+                    0,
+                    width,
+                    height);
+
+                context.InputAssembler.InputLayout = null;
+
+                context.InputAssembler.PrimitiveTopology =
+                    PrimitiveTopology.TriangleList;
+
+                context.VertexShader.Set(
+                    _fullscreenVertex);
+
+                context.PixelShader.SetConstantBuffer(
+                    0,
+                    _frameBuffer);
+
+                // HDR composition and presentation.
                 context.OutputMerger.SetRenderTargets(
                     null,
                     backBuffer);
@@ -273,6 +329,10 @@ namespace Editor.Viewport
                 context.PixelShader.SetShaderResource(
                     4,
                     _lut?.View);
+
+                context.PixelShader.SetShaderResource(
+                    5,
+                    aoResource);
 
                 context.PixelShader.SetSampler(
                     0,
@@ -319,6 +379,9 @@ namespace Editor.Viewport
             _lut?.Dispose();
             _lut = null;
 
+            _ao?.Dispose();
+            _ao = null;
+
             _bloom?.Dispose();
             _bloom = null;
 
@@ -341,6 +404,7 @@ namespace Editor.Viewport
             public Vector4 Camera;
             public Vector4 Sun;
             public Vector4 GradeSettings;
+            public Vector4 AoSettings;
         }
     }
 }

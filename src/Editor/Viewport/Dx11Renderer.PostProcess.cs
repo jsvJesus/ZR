@@ -230,6 +230,10 @@ namespace Editor.Viewport
             _postProcessManager.ColorGradingStrength = _environmentSettings.ColorGradingStrength;
             _postProcessManager.GradingPreset = _environmentSettings.ColorGradingPreset;
             _postProcessManager.SkyDitherStrength = _environmentSettings.SkyDitherStrength;
+            _postProcessManager.AoEnabled = _environmentSettings.AoEnabled;
+            _postProcessManager.AoIntensity = _environmentSettings.AoIntensity;
+            _postProcessManager.AoRadius = _environmentSettings.AoRadius;
+            _postProcessManager.AoQuality = _environmentSettings.AoQuality;
 
             _postProcessManager.Render(
                 _context,
