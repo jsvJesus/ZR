@@ -60,6 +60,10 @@ internal sealed class SourceMaterialReader
             bool doubleSided = Amount(fields, "DoubleSided") > 0;
             // Source foliage commonly has no explicit AlphaRef; its DDS stores the cutout alpha.
             bool alphaTest = !transparent && (Amount(fields, "AlphaTest") > 0 || Amount(fields, "AlphaRef") > 0 || HasAlpha(diffuse));
+            // Flora cards need both faces even when legacy material files omit DoubleSided.
+            string flora = Path.Combine(_assets.Root, "objects", "flora") + Path.DirectorySeparatorChar;
+            if (alphaTest && (directory + Path.DirectorySeparatorChar).StartsWith(flora, StringComparison.OrdinalIgnoreCase))
+                doubleSided = true;
             return new(name, diffuse, normal, new(Color(0), Color(1), Color(2), 1), doubleSided, alphaTest,
                 transparent, Math.Clamp(Amount(fields, "SpecularPower"), 0, 1));
         }
@@ -83,6 +87,7 @@ internal sealed class SourceMaterialReader
         IEnumerable<string> Candidates()
         {
             yield return AssetPathResolver.Resolve(directory, "Textures/" + Path.GetFileName(texture));
+            yield return AssetPathResolver.Resolve(directory, texture);
             if (texture.Contains('/')) yield return ResolveAsset(texture);
             if (fields.TryGetValue("ImagesDir", out string? images) && !string.IsNullOrWhiteSpace(images))
                 yield return ResolveAsset(images.TrimEnd('/', '\\') + "/" + Path.GetFileName(texture));

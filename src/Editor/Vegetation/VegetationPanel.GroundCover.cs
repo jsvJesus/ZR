@@ -43,6 +43,7 @@ public sealed partial class VegetationPanel
     private CancellationTokenSource? _coverCatalogLoading;
     private bool _coverBinding;
     private bool _coverModeBinding;
+    private int _coverWarningCount;
     private bool GroundCoverMode => _vegetationMode.SelectedIndex == 1;
 
     private StackPanel BuildGroundCoverControls()
@@ -62,6 +63,8 @@ public sealed partial class VegetationPanel
 
         _coverBrowser.Children.Add(_coverBrowserInfo);
         _coverBrowser.Children.Add(Title("ТРАВА И МЕЛКИЕ КАМНИ OBJECTS/FLORA"));
+        _coverBrowser.Children.Add(Text("Модели SCO/SCB из objects/flora. Пары файлов показаны одной моделью; " +
+            "отдельные LOD, деревья и кусты скрыты."));
         _coverBrowser.Children.Add(_coverCategory);
         _coverBrowser.Children.Add(_coverSearch);
         _coverBrowser.Children.Add(_coverCount);
@@ -167,6 +170,12 @@ public sealed partial class VegetationPanel
         };
         viewport.GroundCoverStrokeEnded += () => { _level?.GroundCover.EndStroke(); RefreshGroundCoverInfo(); };
         viewport.GroundCoverBrushRequested += PaintGroundCover;
+        viewport.CameraChanged += _ =>
+        {
+            if (IsVisible && GroundCoverMode && _level is { } level &&
+                level.GroundCover.Warnings.Count != _coverWarningCount)
+                RefreshGroundCoverInfo();
+        };
         _ = LoadGroundCoverCatalogAsync(assets);
         RefreshMode();
     }
@@ -266,6 +275,8 @@ public sealed partial class VegetationPanel
             _coverModelList.Children.Add(checkbox);
         }
         UpdateCoverModelCount();
+        if (_coverEntries.Count == 0)
+            _coverCount.Text = "В objects/flora не найдены модели травы и мелких камней (.sco/.scb).";
     }
 
     private void SelectCoverModels(bool selected)
@@ -388,6 +399,7 @@ public sealed partial class VegetationPanel
     private void RefreshGroundCoverInfo()
     {
         var document = _level?.GroundCover;
+        _coverWarningCount = document?.Warnings.Count ?? 0;
         string info = document == null ? "Откройте уровень с Terrain." :
             $"{_level!.Manifest.Name}\nАвтопокрытие: {(document.Settings.AutoGenerate ? "включено" : "выключено")}\n" +
             $"Моделей: {document.Settings.Models.Length} · Плотность: {Format(document.Settings.DensityPerSquareMeter)} / м²\n" +

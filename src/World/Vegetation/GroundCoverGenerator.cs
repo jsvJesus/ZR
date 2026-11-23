@@ -267,7 +267,9 @@ public static class GroundCoverGenerator
         {
             try
             {
-                SceneBounds bounds = RoadCatalog.ReadModelBounds(assets, file);
+                SceneBounds bounds = Path.GetExtension(file).Equals(".model", StringComparison.OrdinalIgnoreCase)
+                    ? RoadCatalog.ReadModelBounds(assets, file)
+                    : SourceModelReader.ReadBounds(assets, file);
                 if (!Finite(bounds.Minimum) || !Finite(bounds.Maximum) ||
                     bounds.Minimum.X > bounds.Maximum.X || bounds.Minimum.Y > bounds.Maximum.Y ||
                     bounds.Minimum.Z > bounds.Maximum.Z || Footprint(bounds) > 50f ||

@@ -244,14 +244,18 @@ public static class SourceModelReader
     internal static string Resolve(AssetPaths assets, string file)
     {
         string normalized = Normalize(file);
-        bool source = normalized.StartsWith("models/", StringComparison.OrdinalIgnoreCase)
-            && Path.GetExtension(normalized).Equals(".sco", StringComparison.OrdinalIgnoreCase);
+        string extension = Path.GetExtension(normalized);
+        bool source = (normalized.StartsWith("models/", StringComparison.OrdinalIgnoreCase) ||
+                normalized.StartsWith("objects/flora/", StringComparison.OrdinalIgnoreCase)) &&
+            (extension.Equals(".sco", StringComparison.OrdinalIgnoreCase) ||
+                extension.Equals(".scb", StringComparison.OrdinalIgnoreCase));
         bool bigWorld = normalized.StartsWith("objects/", StringComparison.OrdinalIgnoreCase)
             && Path.GetExtension(normalized).Equals(".model", StringComparison.OrdinalIgnoreCase);
         bool imported = normalized.StartsWith("models2/", StringComparison.OrdinalIgnoreCase)
             && Path.GetExtension(normalized).Equals(ImportedModelStorage.Extension, StringComparison.OrdinalIgnoreCase);
         if (!source && !bigWorld && !imported)
-            throw new InvalidDataException("Expected a models/*.sco, objects/*.model or models2/*.zrmodel scene asset.");
+            throw new InvalidDataException("Expected a models/*.sco, models/*.scb, objects/flora/*.sco, " +
+                "objects/flora/*.scb, objects/*.model or models2/*.zrmodel scene asset.");
         return AssetPathResolver.Resolve(assets.Root, normalized);
     }
 

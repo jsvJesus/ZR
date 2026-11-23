@@ -39,9 +39,9 @@ public sealed record GroundCoverSettings
         {
             if (string.IsNullOrWhiteSpace(file) || file.Length > 1024 || file.Contains('\\') || file.Contains(':') ||
                 !file.StartsWith("objects/flora/", StringComparison.OrdinalIgnoreCase) ||
-                !file.EndsWith(".model", StringComparison.OrdinalIgnoreCase) ||
+                !GroundCoverCatalog.SupportsExtension(file) ||
                 file.Split('/').Any(part => part is "" or "." or "..") || !unique.Add(file))
-                throw new InvalidDataException("Ожидается уникальная .model из objects/flora.");
+                throw new InvalidDataException("Ожидается уникальная .sco, .scb или .model из objects/flora.");
             _ = AssetPathResolver.Resolve(".", file);
         }
     }

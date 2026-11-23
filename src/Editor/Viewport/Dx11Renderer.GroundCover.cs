@@ -78,5 +78,13 @@ public sealed partial class Dx11Renderer
         float visibleDistance = MathF.Min(distance, _groundCoverCapacityDistance);
         _groundCoverRenderer.DistanceFadeEnd = visibleDistance;
         _groundCoverRenderer.Render(camera, viewProjection, visibleDistance);
+        // Background model/material and renderer errors belong to the cover panel,
+        // rather than an otherwise inaccessible transient scene. Do not dirty the level.
+        while (_groundCoverScene.Warnings.TryDequeue(out string? warning))
+        {
+            string message = $"Покрытие: {warning}";
+            if (level.GroundCover.Warnings.Count < 256 && !level.GroundCover.Warnings.Contains(message))
+                level.GroundCover.Warnings.Add(message);
+        }
     }
 }
