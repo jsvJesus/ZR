@@ -389,6 +389,6 @@ SurfaceOutput PSMain(PixelInput input)
         lightning * 0.85f;
 
     return MakeSurfaceOutput(
-        float4(saturate(sky), 1f),
-        0);
+        float4(saturate(sky), 1.0f),
+        float3(0.0f, 0.0f, 0.0f));
 }
