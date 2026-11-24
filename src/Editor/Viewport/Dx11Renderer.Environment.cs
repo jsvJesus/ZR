@@ -36,6 +36,7 @@ namespace Editor.Viewport
             (float Rate, float FallSpeed)> _weatherEmitterCache = new();
 
         private WeatherFrame _weatherFrame;
+        private CelestialFrame _celestialFrame;
         private SkyCycle? _skyCycle;
 
         private float _particleRate;
@@ -139,6 +140,18 @@ namespace Editor.Viewport
                 float time = _environmentSettings.TimeOfDay +
                              deltaTime / secondsPerHour;
 
+                int passedDays = (int)MathF.Floor(time / 24f);
+
+                if (passedDays > 0)
+                {
+                    long nextDay = Math.Clamp(
+                        (long)_environmentSettings.GameDay + passedDays,
+                        0L,
+                        (long)int.MaxValue);
+
+                    _environmentSettings.GameDay = (int)nextDay;
+                }
+
                 _environmentSettings.TimeOfDay =
                     (time % 24f + 24f) % 24f;
             }
@@ -162,88 +175,34 @@ namespace Editor.Viewport
             Vector3 cameraPosition,
             out float daylight)
         {
-            var settings = _environmentSettings;
+            _celestialFrame = CelestialCycle.Evaluate(
+                _environmentSettings,
+                _weatherFrame,
+                _skyCycle);
 
-            float time = Math.Clamp(
-                settings.TimeOfDay,
-                0f,
-                24f);
-
-            float hourAngle = (time - 12f)
-                * MathF.PI / 12f;
-
-            float elevation = MathF.Cos(hourAngle);
-            float horizontal = MathF.Sin(hourAngle);
-
-            float azimuth = settings.SunAzimuth
-                * MathF.PI / 180f;
-
-            Vector3 direction = Vector3.Normalize(new Vector3(
-                MathF.Cos(azimuth) * horizontal,
-                elevation,
-                MathF.Sin(azimuth) * horizontal));
-
-            daylight = Math.Clamp(
-                (direction.Y + 0.05f) * 4f,
-                0f,
-                1f);
-
-            Vector3 sunColor = _skyCycle?.SunColor(time) ??
-                Vector3.Lerp(
-                    new Vector3(1f, 0.53f, 0.26f),
-                    new Vector3(1f, 0.96f, 0.87f),
-                    daylight);
-
-            Vector3 ambient = _skyCycle?.AmbientColor(time) ??
-                Vector3.Lerp(
-                    new Vector3(0.07f, 0.09f, 0.14f),
-                    new Vector3(0.48f, 0.52f, 0.56f),
-                    daylight);
-
-            ambient *= Math.Clamp(
-                settings.AmbientIntensity,
-                0f,
-                2f);
-
-            float sunlight = daylight
-                * Math.Clamp(settings.SunIntensity, 0f, 3f)
-                * _weatherFrame.SunMultiplier;
-
-            float lightning = _weatherFrame.Lightning;
-
-            if (lightning > 0f)
-            {
-                ambient += new Vector3(
-                    0.75f,
-                    0.85f,
-                    1f) * lightning * 0.85f;
-            }
-
-            float fogDensity = Math.Clamp(
-                _weatherFrame.FogDensity,
-                0f,
-                0.04f);
-
-            Vector3 fogColor = Vector3.Lerp(
-                new Vector3(0.018f, 0.028f, 0.045f),
-                new Vector3(0.56f, 0.64f, 0.69f),
-                daylight);
-
-            fogColor *= 1f -
-                _weatherFrame.StormCover * 0.45f;
-
-            fogColor += new Vector3(
-                0.35f,
-                0.43f,
-                0.6f) * lightning * 0.35f;
+            daylight = _celestialFrame.Daylight;
 
             var constants = new EnvironmentLightConstants
             {
-                Sun = new Vector4(direction, sunlight),
-                SunColor = new Vector4(sunColor, 1f),
-                Ambient = new Vector4(ambient, 1f),
-                Fog = new Vector4(fogColor, fogDensity),
-                Camera = new Vector4(cameraPosition, 1f)
+                Sun = new Vector4(
+                    _celestialFrame.LightDirection,
+                    _celestialFrame.LightIntensity),
+
+                SunColor = new Vector4(
+                    _celestialFrame.LightColor,
+                    1f),
+
+                Ambient = new Vector4(
+                    _celestialFrame.Ambient,
+                    1f),
+
+                Fog = new Vector4(
+                    _celestialFrame.FogColor,
+                    _celestialFrame.FogDensity),
+
+                Camera = new Vector4(
+                    cameraPosition,
+                    1f)
             };
 
             _context.UpdateSubresource(
@@ -254,7 +213,7 @@ namespace Editor.Viewport
                 1,
                 _environmentLightBuffer);
 
-            return direction;
+            return _celestialFrame.LightDirection;
         }
 
         private void RenderEnvironmentSky(
@@ -267,12 +226,15 @@ namespace Editor.Viewport
                 camera,
                 _environmentSettings,
                 _weatherFrame,
-                sunDirection,
+                _celestialFrame.SunDirection,
                 daylight,
                 _width,
                 _height,
                 playing ? _playFieldOfView : 1.05f,
-                _environmentTime);
+                _environmentTime,
+                _celestialFrame.MoonDirection,
+                _celestialFrame.MoonStrength,
+                _celestialFrame.Night);
         }
 
         private void RenderEnvironmentWeather(
@@ -297,12 +259,12 @@ namespace Editor.Viewport
             }
 
             WeatherType rainType =
-                _environmentSettings.Weather == WeatherType.Thunderstorm
+                _weatherRuntime.ActiveWeather == WeatherType.Thunderstorm
                     ? WeatherType.Thunderstorm
                     : WeatherType.Rain;
 
             WeatherType snowType =
-                _environmentSettings.Weather == WeatherType.Blizzard
+                _weatherRuntime.ActiveWeather == WeatherType.Blizzard
                     ? WeatherType.Blizzard
                     : WeatherType.Snow;
 

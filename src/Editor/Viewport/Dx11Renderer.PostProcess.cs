@@ -251,7 +251,9 @@ namespace Editor.Viewport
                 _environmentSettings.ShadowsEnabled &&
                 !_objectPreview &&
                 sunDirection.Y > 0.04f
-                    ? 0.3f
+                    ? _celestialFrame.MoonActive
+                        ? 0.08f
+                        : 0.3f
                     : 0f;
 
             _postProcessManager.ToneMappingEnabled = _environmentSettings.ToneMappingEnabled;

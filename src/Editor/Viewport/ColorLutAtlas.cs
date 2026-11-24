@@ -145,6 +145,7 @@ namespace Editor.Viewport
                 ColorGradingPreset.Atmospheric => 0.9f,
                 ColorGradingPreset.Cold => 0.82f,
                 ColorGradingPreset.Warm => 0.96f,
+                ColorGradingPreset.ZoneBleak => 0.76f,
                 _ => 1f
             };
 
@@ -153,6 +154,7 @@ namespace Editor.Viewport
                 ColorGradingPreset.Atmospheric => 1.08f,
                 ColorGradingPreset.Cold => 1.06f,
                 ColorGradingPreset.Warm => 1.04f,
+                ColorGradingPreset.ZoneBleak => 1.11f,
                 _ => 1f
             };
 
@@ -198,6 +200,29 @@ namespace Editor.Viewport
                         1f + highlight * 0.025f,
                         1f - shadow * 0.07f);
                     break;
+                case ColorGradingPreset.ZoneBleak:
+                {
+                    color *= new Vector3(
+                        1f - shadow * 0.055f,
+                        1f + shadow * 0.008f,
+                        1f + shadow * 0.025f);
+
+                    float greenDominance = MathF.Max(
+                        0f,
+                        color.Y - (color.X + color.Z) * 0.5f);
+
+                    color.Y -= greenDominance * 0.13f;
+
+                    color = Vector3.Lerp(
+                        color,
+                        color * new Vector3(
+                            0.94f,
+                            0.96f,
+                            0.98f),
+                        0.25f);
+
+                    break;
+                }
             }
 
             return Vector3.Clamp(

@@ -13,7 +13,43 @@ namespace Editor.Environment
         Thunderstorm,
         Snow,
         Blizzard,
-        Fog
+        Fog,
+        Overcast
+    }
+
+    public enum WeatherFrequency
+    {
+        Disabled = 0,
+        Rare = 1,
+        Normal = 2,
+        Frequent = 4
+    }
+
+    public enum NightBrightness
+    {
+        Dark,
+        Dim,
+        Bright
+    }
+
+    public enum MoonPhase
+    {
+        NewMoon,
+        WaxingCrescent,
+        FirstQuarter,
+        WaxingGibbous,
+        FullMoon,
+        WaningGibbous,
+        LastQuarter,
+        WaningCrescent
+    }
+
+    public sealed class WeatherPresetRule
+    {
+        public float MinHours { get; set; } = 4f;
+        public float MaxHours { get; set; } = 12f;
+        public WeatherFrequency Frequency { get; set; } =
+            WeatherFrequency.Normal;
     }
 
     public enum ColorGradingPreset
@@ -21,7 +57,8 @@ namespace Editor.Environment
         Neutral,
         Atmospheric,
         Cold,
-        Warm
+        Warm,
+        ZoneBleak
     }
 
     public sealed class EnvironmentSettings
@@ -186,5 +223,63 @@ namespace Editor.Environment
 
             return fallback;
         }
+
+        public bool AutoWeather { get; set; } = true;
+        public int WeatherSeed { get; set; } = 13579;
+        public float AutoWeatherTransitionHours { get; set; } = 0.3f;
+
+        public Dictionary<WeatherType, WeatherPresetRule> WeatherSchedule { get; set; } = new()
+        {
+            [WeatherType.Clear] = new()
+            {
+                MinHours = 4f,
+                MaxHours = 12f,
+                Frequency = WeatherFrequency.Frequent
+            },
+
+            [WeatherType.Cloudy] = new()
+            {
+                MinHours = 4f,
+                MaxHours = 12f,
+                Frequency = WeatherFrequency.Frequent
+            },
+
+            [WeatherType.Overcast] = new()
+            {
+                MinHours = 4f,
+                MaxHours = 12f,
+                Frequency = WeatherFrequency.Normal
+            },
+
+            [WeatherType.Rain] = new()
+            {
+                MinHours = 2f,
+                MaxHours = 12f,
+                Frequency = WeatherFrequency.Normal
+            },
+
+            [WeatherType.Thunderstorm] = new()
+            {
+                MinHours = 2f,
+                MaxHours = 12f,
+                Frequency = WeatherFrequency.Rare
+            },
+
+            [WeatherType.Fog] = new()
+            {
+                MinHours = 2f,
+                MaxHours = 12f,
+                Frequency = WeatherFrequency.Normal
+            }
+        };
+
+        public int GameDay { get; set; }
+        public int NightSeed { get; set; } = 24681;
+        public float MoonIntensity { get; set; } = 1f;
+        public bool RandomMoonPhases { get; set; } = true;
+        public bool RandomNightBrightness { get; set; } = true;
+        public MoonPhase FixedMoonPhase { get; set; } = MoonPhase.FullMoon;
+        public NightBrightness FixedNightBrightness { get; set; } =
+            NightBrightness.Dim;
     }
 }

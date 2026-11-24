@@ -194,6 +194,38 @@ namespace Editor.Environment
                         () => _settings.AmbientIntensity,
                         value => _settings.AmbientIntensity = value);
 
+                    AddHeading("ЛУНА И НОЧНОЕ ОСВЕЩЕНИЕ");
+
+                    AddSlider(
+                        "Яркость лунного света",
+                        0,
+                        3,
+                        () => _settings.MoonIntensity,
+                        value => _settings.MoonIntensity = value,
+                        value => $"{value:0.00}");
+
+                    AddToggle(
+                        "Автоматические фазы Луны",
+                        () => _settings.RandomMoonPhases,
+                        value => _settings.RandomMoonPhases = value);
+
+                    AddToggle(
+                        "Случайная яркость ночей",
+                        () => _settings.RandomNightBrightness,
+                        value => _settings.RandomNightBrightness = value);
+
+                    AddSlider(
+                        "Игровой день (для проверки)",
+                        0,
+                        120,
+                        () => _settings.GameDay,
+                        value => _settings.GameDay = Math.Max(
+                            0,
+                            (int)Math.Round(value)),
+                        value => $"{value:0}");
+
+                    AddMoonControls();
+
                     AddHeading("HDR И ПОСТОБРАБОТКА");
 
                     AddToggle(
@@ -377,6 +409,21 @@ namespace Editor.Environment
                     AddHeading("ПОГОДА");
 
                     AddWeatherSelector();
+
+                    AddToggle(
+                        "Автоматическая смена погоды",
+                        () => _settings.AutoWeather,
+                        value => _settings.AutoWeather = value);
+
+                    AddSlider(
+                        "Плавный переход (игровые часы)",
+                        0.05,
+                        2,
+                        () => _settings.AutoWeatherTransitionHours,
+                        value => _settings.AutoWeatherTransitionHours = value,
+                        value => $"{value:0.00} ч");
+
+                    AddWeatherProfileControls();
 
                     AddSlider(
                         "Переход погоды",
@@ -571,10 +618,157 @@ namespace Editor.Environment
                 {
                     _settings.Weather = weather;
                     Changed();
+                    Build();
                 }
             };
 
             _content.Children.Add(selector);
+        }
+
+        private void AddWeatherProfileControls()
+        {
+            WeatherType type = _settings.Weather;
+
+            if (type is WeatherType.Snow or WeatherType.Blizzard)
+            {
+                AddInfo(
+                    "Снег и метель доступны для ручного выбора, " +
+                    "но пока не входят в автоматическую ротацию.");
+                return;
+            }
+
+            _settings.WeatherSchedule ??= new();
+
+            if (!_settings.WeatherSchedule.TryGetValue(
+                    type,
+                    out WeatherPresetRule? rule) ||
+                rule == null)
+            {
+                rule = new WeatherPresetRule
+                {
+                    MinHours = type is WeatherType.Clear or
+                        WeatherType.Cloudy or WeatherType.Overcast
+                        ? 4f
+                        : 2f,
+
+                    MaxHours = 12f,
+                    Frequency = WeatherFrequency.Normal
+                };
+
+                _settings.WeatherSchedule[type] = rule;
+            }
+
+            WeatherPresetRule profile = rule;
+
+            AddHeading("РАСПИСАНИЕ ПРЕСЕТА");
+
+            AddSlider(
+                "Минимальная длительность",
+                2,
+                12,
+                () => profile.MinHours,
+                value => profile.MinHours = Math.Min(
+                    value,
+                    profile.MaxHours),
+                value => $"{value:0.0} ч");
+
+            AddSlider(
+                "Максимальная длительность",
+                2,
+                12,
+                () => profile.MaxHours,
+                value => profile.MaxHours = Math.Max(
+                    value,
+                    profile.MinHours),
+                value => $"{value:0.0} ч");
+
+            _content.Children.Add(new TextBlock
+            {
+                Text = "Частота появления",
+                FontSize = 12
+            });
+
+            var selector = new ComboBox
+            {
+                ItemsSource =
+                    Enum.GetValues<WeatherFrequency>(),
+
+                SelectedItem = profile.Frequency,
+
+                HorizontalAlignment =
+                    Avalonia.Layout.HorizontalAlignment.Stretch
+            };
+
+            selector.SelectionChanged += (_, _) =>
+            {
+                if (selector.SelectedItem is WeatherFrequency frequency)
+                {
+                    profile.Frequency = frequency;
+                    Changed();
+                }
+            };
+
+            _content.Children.Add(selector);
+        }
+
+        private void AddMoonControls()
+        {
+            _content.Children.Add(new TextBlock
+            {
+                Text = "Фаза Луны при ручном выборе",
+                FontSize = 12
+            });
+
+            var phaseSelector = new ComboBox
+            {
+                ItemsSource = Enum.GetValues<MoonPhase>(),
+                SelectedItem = _settings.FixedMoonPhase,
+                HorizontalAlignment =
+                    Avalonia.Layout.HorizontalAlignment.Stretch
+            };
+
+            phaseSelector.SelectionChanged += (_, _) =>
+            {
+                if (phaseSelector.SelectedItem is MoonPhase phase)
+                {
+                    _settings.FixedMoonPhase = phase;
+                    Changed();
+                }
+            };
+
+            _content.Children.Add(phaseSelector);
+
+            _content.Children.Add(new TextBlock
+            {
+                Text = "Яркость ночи при ручном выборе",
+                FontSize = 12
+            });
+
+            var brightnessSelector = new ComboBox
+            {
+                ItemsSource = Enum.GetValues<NightBrightness>(),
+                SelectedItem = _settings.FixedNightBrightness,
+                HorizontalAlignment =
+                    Avalonia.Layout.HorizontalAlignment.Stretch
+            };
+
+            brightnessSelector.SelectionChanged += (_, _) =>
+            {
+                if (brightnessSelector.SelectedItem is NightBrightness brightness)
+                {
+                    _settings.FixedNightBrightness = brightness;
+                    Changed();
+                }
+            };
+
+            _content.Children.Add(brightnessSelector);
+
+            NightState night = NightCycle.Evaluate(_settings);
+
+            AddInfo(
+                $"Текущая фаза: {night.Phase}. " +
+                $"Яркость: {night.Brightness}. " +
+                $"Освещённость диска: {night.Illumination:P0}.");
         }
     }
 }

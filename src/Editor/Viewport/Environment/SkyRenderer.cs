@@ -120,7 +120,10 @@ namespace Editor.Viewport.Environment
             int width,
             int height,
             float fieldOfView,
-            float elapsed)
+            float elapsed,
+            Vector3 moonDirection,
+            float moonStrength,
+            NightState night)
         {
             Vector3 forward = Vector3.Normalize(camera.LookDirection);
 
@@ -158,7 +161,16 @@ namespace Editor.Viewport.Environment
                     _cumulus != null ? 1f : 0f,
                     _cirrus != null ? 1f : 0f,
                     _storm != null ? 1f : 0f,
-                    weather.Lightning)
+                    weather.Lightning),
+                Moon = new Vector4(
+                    moonDirection,
+                    moonStrength),
+
+                MoonSettings = new Vector4(
+                    (float)night.Phase,
+                    night.BrightnessFactor,
+                    night.Illumination,
+                    0f)
             };
 
             _context.UpdateSubresource(ref data, _constants);
@@ -248,6 +260,8 @@ namespace Editor.Viewport.Environment
             public Vector4 Cloud;
             public Vector4 Weather;
             public Vector4 Textures;
+            public Vector4 Moon;
+            public Vector4 MoonSettings;
         }
     }
 }
