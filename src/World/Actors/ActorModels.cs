@@ -67,6 +67,8 @@ namespace ZoneReborn.World.Actors
 
         public string NpcHeadPreset { get; set; } = "";
 
+        public NpcAppearancePreset NpcAppearance { get; set; } = NpcAppearancePreset.Civilian;
+
         public string NpcBarterList { get; set; } = "";
 
         public int NpcFactionId { get; set; }

@@ -27,7 +27,10 @@ internal sealed partial class CharacterRenderer : IDisposable
     private readonly DeviceContext _context;
     private readonly CharacterPose _pose;
     private readonly CharacterAsset _asset;
-    private readonly CharacterLocomotion _locomotion;
+    private readonly CharacterLocomotion? _locomotion;
+
+    private Vector3 _npcPosition;
+    private float _npcYaw;
 
     private readonly List<(
         Buffer Vertices,
@@ -53,9 +56,8 @@ internal sealed partial class CharacterRenderer : IDisposable
     private DepthStencilState _transparentDepth = null!;
     private BlendState _alpha = null!;
 
-    public Vector3 Position => _locomotion.Position;
-
-    public float Yaw => _locomotion.Yaw;
+    public Vector3 Position => _locomotion?.Position ?? _npcPosition;
+    public float Yaw => _locomotion?.Yaw ?? _npcYaw;
 
     public CharacterRenderer(
         Device device,
@@ -63,11 +65,43 @@ internal sealed partial class CharacterRenderer : IDisposable
         AssetPaths assets,
         CharacterAsset asset,
         CharacterLocomotion locomotion)
+        : this(
+            device,
+            context,
+            assets,
+            asset,
+            locomotion.Animator.Pose,
+            locomotion)
+    {
+    }
+
+    public CharacterRenderer(
+        Device device,
+        DeviceContext context,
+        AssetPaths assets,
+        CharacterAsset asset)
+        : this(
+            device,
+            context,
+            assets,
+            asset,
+            new CharacterPose(asset),
+            null)
+    {
+    }
+
+    private CharacterRenderer(
+        Device device,
+        DeviceContext context,
+        AssetPaths assets,
+        CharacterAsset asset,
+        CharacterPose pose,
+        CharacterLocomotion? locomotion)
     {
         _context = context;
         _asset = asset;
         _locomotion = locomotion;
-        _pose = locomotion.Animator.Pose;
+        _pose = pose;
 
         try
         {
@@ -234,6 +268,22 @@ internal sealed partial class CharacterRenderer : IDisposable
             Dispose();
             throw;
         }
+    }
+
+    public void UpdateNpcPose(
+        Vector3 position,
+        float yaw,
+        double animationTime)
+    {
+        if (_locomotion != null)
+        {
+            return;
+        }
+
+        _npcPosition = position;
+        _npcYaw = yaw;
+
+        _pose.Update(animationTime);
     }
 
     public void Render(
@@ -441,28 +491,33 @@ internal sealed partial class CharacterRenderer : IDisposable
         _context.Rasterizer.State = null;
     }
 
-    private float CalculateVisibility(Vector3 cameraPosition)
+    private float CalculateVisibility(
+        Vector3 cameraPosition)
     {
-        Vector3 pivot = _locomotion.CameraAnchor + new Vector3(
-            0f,
-            _locomotion.CameraHeight,
-            0f
-        );
+        if (_locomotion == null)
+        {
+            return 1f;
+        }
+
+        Vector3 pivot = _locomotion.CameraAnchor +
+                        new Vector3(
+                            0f,
+                            _locomotion.CameraHeight,
+                            0f);
 
         float distance = Vector3.Distance(
             cameraPosition,
-            pivot
-        );
+            pivot);
 
         float visibility = Math.Clamp(
             (distance - HideDistance) /
             (ShowDistance - HideDistance),
             0f,
-            1f
-        );
+            1f);
 
-        // Smoothstep prevents an abrupt change in transparency.
-        return visibility * visibility * (3f - 2f * visibility);
+        return visibility *
+               visibility *
+               (3f - 2f * visibility);
     }
 
     public void Dispose()

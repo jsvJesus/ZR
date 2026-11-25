@@ -47,6 +47,48 @@ public static class CharacterLoader
             with { Locomotion = template.Locomotion };
     }
 
+    public static CharacterAsset LoadIdle(
+        AssetPaths assets,
+        IReadOnlyList<CharacterPartSelection>? selections,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(assets);
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var model = PackedSection.Read(
+            AssetPathResolver.Resolve(
+                assets.Root,
+                BaseModel + ".model"));
+
+        var idle = model.All("animation")
+            .Single(animation =>
+                animation.String("name") == "idle_unarmed");
+
+        var animation = AnimationReader.Read(
+            AssetPathResolver.Resolve(
+                assets.Root,
+                WithExtension(
+                    idle.String("nodes"),
+                    ".animation")));
+
+        float frameRate =
+            idle.Find("frameRate")?.Floats.Single() ?? 0;
+
+        if (frameRate <= 0)
+        {
+            throw new InvalidDataException(
+                "Invalid NPC animation frame rate.");
+        }
+
+        return Build(
+            assets,
+            selections ?? DefaultParts,
+            animation,
+            frameRate,
+            cancellationToken);
+    }
+
     private static CharacterAsset Build(AssetPaths assets, IReadOnlyList<CharacterPartSelection> selections, SourceAnimation animation, float frameRate, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(assets);

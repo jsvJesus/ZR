@@ -76,6 +76,32 @@ namespace Editor.Actors
                     Changed();
                 });
 
+            _properties.Children.Add(new Separator());
+
+            _properties.Children.Add(new TextBlock
+            {
+                Text = "Внешность NPC",
+                FontWeight = FontWeight.SemiBold
+            });
+
+            AddChoice(
+                _properties,
+                "Комплект одежды",
+                Enum.GetValues<NpcAppearancePreset>(),
+                actor.NpcAppearance,
+                value =>
+                {
+                    actor.NpcAppearance = value;
+
+                    Changed();
+                });
+
+            _properties.Children.Add(new TextBlock
+            {
+                Text = "Модель обновляется автоматически.",
+                TextWrapping = TextWrapping.Wrap
+            });
+
             AddNumber(
                 _properties,
                 "Faction ID",
@@ -247,6 +273,7 @@ namespace Editor.Actors
                     actor.NpcHeadPreset = npc.HeadPreset;
                     actor.NpcBarterList = npc.BarterList;
                     actor.NpcFactionId = npc.FactionId;
+                    actor.NpcAppearance = NpcAppearance.Resolve(npc);
 
                     Changed();
                     BuildProperties();

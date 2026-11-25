@@ -501,17 +501,26 @@ namespace Editor.Viewport
                         shadowForward: lightForward,
                         shadowRasterizer: shadowRasterizer);
 
-                    if (_character != null)
+                    if (_character != null || _npcRenderers.Count > 0)
                     {
                         Matrix4x4 relativeProjection =
                             Matrix4x4.CreateTranslation(
                                 camera.Position) *
                             lightViewProjection;
 
-                        _character.RenderShadow(
+                        _character?.RenderShadow(
                             relativeProjection,
                             camera.Position,
                             shadowRasterizer);
+
+                        foreach (NpcPreviewEntry preview in
+                                 _npcRenderers.Values)
+                        {
+                            preview.Renderer.RenderShadow(
+                                relativeProjection,
+                                camera.Position,
+                                shadowRasterizer);
+                        }
                     }
                 }
                 finally

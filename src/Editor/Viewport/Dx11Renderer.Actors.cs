@@ -7,6 +7,7 @@ namespace Editor.Viewport
     public sealed partial class Dx11Renderer
     {
         private ActorDocument? _actorDocument;
+
         private Guid? _actorSelection;
 
         public void SetActors(
@@ -36,7 +37,8 @@ namespace Editor.Viewport
             _roadOverlay.RenderActors(
                 _actorDocument,
                 _actorSelection,
-                viewProjection);
+                viewProjection,
+                _npcRenderers.ContainsKey);
         }
     }
 }

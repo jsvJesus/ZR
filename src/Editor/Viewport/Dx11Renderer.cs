@@ -236,6 +236,7 @@ namespace Editor.Viewport
             _selectedObject = null;
             SetRoadSurface(level);
             SetGroundCover(level, assets);
+            SetNpcLevel(level.Actors, assets);
             ResetPostProcessHistory();
         }
 
@@ -253,6 +254,7 @@ namespace Editor.Viewport
             _objectPreview = true;
             SetRoadSurface(null);
             SetGroundCover(null, null);
+            SetNpcLevel(null, null);
             _selectedObject = null;
             ResetPostProcessHistory();
         }
@@ -438,6 +440,10 @@ namespace Editor.Viewport
                 camera.Position,
                 out float daylight);
 
+            UpdateNpcPreviews(
+                camera.Position,
+                farPlane);
+
             RenderEnvironmentShadows(
                 camera,
                 sunDirection,
@@ -515,6 +521,10 @@ namespace Editor.Viewport
             characterView.Translation = Vector3.Zero;
             _character?.Render(characterView * projection, camera.Position,
                 playing ? _playFirstPersonBlend : 0);
+
+            RenderNpcPreviews(
+                characterView * projection,
+                camera.Position);
 
             _objects?.RenderTransparent(camera, viewProjection);
 
@@ -640,6 +650,7 @@ namespace Editor.Viewport
             _objectSelection?.Dispose();
             _objectGizmo?.Dispose();
             _character?.Dispose();
+            DisposeNpcPreviews();
             DisposePostProcessing();
             DisposeRenderTargetResources();
             _cameraBuffer?.Dispose();

@@ -226,19 +226,52 @@ internal sealed class RoadOverlayRenderer : IDisposable
     public void RenderActors(
         ActorDocument document,
         Guid? selectedActor,
-        Matrix4x4 viewProjection)
+        Matrix4x4 viewProjection,
+        Func<Guid, bool>? hasNpcModel = null)
     {
         _lines.Clear();
 
         if (selectedActor.HasValue &&
             document.Find(selectedActor.Value) is { } selected)
         {
-            DrawActor(selected, true);
+            bool modelVisible =
+                selected.Kind == ActorKind.NpcSpawn &&
+                hasNpcModel?.Invoke(selected.Id) == true;
+
+            if (modelVisible)
+            {
+                Vector3 center = selected.Position +
+                                 Vector3.UnitY * 0.08f;
+
+                DrawActorCircle(
+                    center,
+                    0.85f,
+                    new Vector4(
+                        0.15f,
+                        0.55f,
+                        1f,
+                        1f));
+
+                DrawActorCircle(
+                    center + Vector3.UnitY * 0.03f,
+                    0.95f,
+                    Vector4.One);
+            }
+            else
+            {
+                DrawActor(selected, true);
+            }
         }
 
         foreach (LevelActor actor in document.Actors)
         {
             if (actor.Id == selectedActor)
+            {
+                continue;
+            }
+
+            if (actor.Kind == ActorKind.NpcSpawn &&
+                hasNpcModel?.Invoke(actor.Id) == true)
             {
                 continue;
             }

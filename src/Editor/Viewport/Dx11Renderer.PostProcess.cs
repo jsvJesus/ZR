@@ -320,6 +320,25 @@ namespace Editor.Viewport
                         _width,
                         _height,
                         _taaPreviousPlaying ? _playFirstPersonBlend : 0f);
+
+                    foreach (NpcPreviewEntry preview in
+                             _npcRenderers.Values)
+                    {
+                        preview.Renderer.RenderVelocity(
+                            _device,
+                            _motionTarget,
+                            _reactiveTarget,
+                            depthTarget,
+                            activeViewProjection,
+                            previousViewProjection,
+                            cameraPosition,
+                            previousCameraPosition,
+                            false,
+                            historyValid,
+                            _width,
+                            _height,
+                            0f);
+                    }
                 };
 
             _postProcessManager.Render(
