@@ -11,12 +11,24 @@ public sealed partial class MainWindow
 {
     private async void SaveLevel_Click(object? sender, RoutedEventArgs e)
     {
-        if (_level == null || _isClosing || _importCancellation != null || _levelOpening || _levelSaving || _savingChangesOnClose
-            || VegetationPanel.IsSaving || ObjectsPanel.IsBusy || TerrainEditorPanel.IsBusy || Viewport.IsObjectDragging || Viewport.IsPlaying || Viewport.IsStarting)
+        if (_level == null ||
+            _isClosing ||
+            _importCancellation != null ||
+            _levelOpening ||
+            _levelSaving ||
+            _savingChangesOnClose ||
+            VegetationPanel.IsSaving ||
+            ObjectsPanel.IsBusy ||
+            TerrainEditorPanel.IsBusy ||
+            Viewport.IsObjectDragging ||
+            Viewport.IsActorDragging ||
+            Viewport.IsPlaying ||
+            Viewport.IsStarting)
         {
             StatusText.Text = "Сначала откройте преобразованный уровень.";
             return;
         }
+
         _levelSaving = true;
         UpdatePlayControls();
         try

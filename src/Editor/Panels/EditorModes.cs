@@ -82,6 +82,7 @@ namespace Editor
                 _savingChangesOnClose ||
                 _importCancellation != null ||
                 Viewport.IsObjectDragging ||
+                Viewport.IsActorDragging ||
                 VegetationPanel.IsSaving ||
                 ObjectsPanel.IsBusy ||
                 TerrainEditorPanel.IsBusy)
@@ -229,7 +230,8 @@ namespace Editor
 
         private void ActivateObjectsSection(ObjectsSection section)
         {
-            if (Viewport.IsObjectDragging)
+            if (Viewport.IsObjectDragging ||
+                Viewport.IsActorDragging)
             {
                 return;
             }

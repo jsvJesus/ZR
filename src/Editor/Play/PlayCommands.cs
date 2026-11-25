@@ -7,7 +7,13 @@ namespace Editor
     {
         private async void Play_Click(object? sender, RoutedEventArgs e)
         {
-            if (CharacterPanel.IsActive || Viewport.IsObjectDragging) return;
+            if (CharacterPanel.IsActive ||
+                Viewport.IsObjectDragging ||
+                Viewport.IsActorDragging)
+            {
+                return;
+            }
+
             if (Viewport.IsPlaying || Viewport.IsStarting)
             {
                 Viewport.StopPlay();
@@ -39,7 +45,11 @@ namespace Editor
             PlayHint.Text = CharacterPanel.IsActive ? "Character Editor · ПКМ — осмотр · колесо — расстояние"
                 : Viewport.IsPlayInspecting ? "Осмотр · WASD — полёт · Space/Shift — вверх/вниз · F8 — к персонажу"
                 : active ? "WASD · Alt — шаг · Shift — спринт · Ctrl — присед · Q/E — наклон · Space — прыжок · F8 — осмотр" : "Персонаж появится на Terrain под камерой";
-            CameraSpeedSlider.IsEnabled = !active && !Viewport.IsObjectDragging;
+
+            CameraSpeedSlider.IsEnabled =
+                !active &&
+                !Viewport.IsObjectDragging &&
+                !Viewport.IsActorDragging;
             PlayNavigationHints.IsVisible = active && !CharacterPanel.IsActive && !Viewport.IsPlayInspecting;
             InspectionNavigationHints.IsVisible = Viewport.IsPlayInspecting && !CharacterPanel.IsActive;
             FreeNavigationHints.IsVisible = !active && !CharacterPanel.IsActive;

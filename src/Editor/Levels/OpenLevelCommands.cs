@@ -11,8 +11,22 @@ public sealed partial class MainWindow
 {
     private async void OpenLevel_Click(object? sender, RoutedEventArgs e)
     {
-        if (_isClosing || _importCancellation != null || _levelOpening || _levelSaving || _savingChangesOnClose
-            || VegetationPanel.IsSaving || ObjectsPanel.IsBusy || TerrainEditorPanel.IsBusy || Viewport.IsObjectDragging || Viewport.IsPlaying || Viewport.IsStarting) return;
+        if (_isClosing ||
+            _importCancellation != null ||
+            _levelOpening ||
+            _levelSaving ||
+            _savingChangesOnClose ||
+            VegetationPanel.IsSaving ||
+            ObjectsPanel.IsBusy ||
+            TerrainEditorPanel.IsBusy ||
+            Viewport.IsObjectDragging ||
+            Viewport.IsActorDragging ||
+            Viewport.IsPlaying ||
+            Viewport.IsStarting)
+        {
+            return;
+        }
+
         try
         {
             var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
@@ -33,7 +47,18 @@ public sealed partial class MainWindow
 
     private async Task OpenLevelAsync(string path)
     {
-        if (_isClosing || _levelOpening || _levelSaving || _savingChangesOnClose || Viewport.IsObjectDragging || Viewport.IsPlaying || Viewport.IsStarting) return;
+        if (_isClosing ||
+            _levelOpening ||
+            _levelSaving ||
+            _savingChangesOnClose ||
+            Viewport.IsObjectDragging ||
+            Viewport.IsActorDragging ||
+            Viewport.IsPlaying ||
+            Viewport.IsStarting)
+        {
+            return;
+        }
+
         _levelOpening = true;
         SetLevelCommandsBusy(_importCancellation != null);
         try
