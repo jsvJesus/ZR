@@ -50,10 +50,21 @@ internal sealed class SceneGizmoRenderer : IDisposable
         catch { Dispose(); throw; }
     }
 
-    public void Render(ObjectGizmoFrame frame, ObjectGizmoMode mode, ObjectGizmoAxis highlighted,
-        Matrix4x4 viewProjection)
+    public void Render(
+        ObjectGizmoFrame frame,
+        ObjectGizmoMode mode,
+        ObjectGizmoAxis highlighted,
+        Matrix4x4 viewProjection,
+        ObjectGizmoAxis rotationAxis = ObjectGizmoAxis.None)
     {
-        ObjectGizmoGeometry.Build(frame, mode, highlighted, _lines, _triangles);
+        ObjectGizmoGeometry.Build(
+            frame,
+            mode,
+            highlighted,
+            _lines,
+            _triangles,
+            rotationAxis);
+
         Upload(_lineBuffer, _lines, _lineData);
         Upload(_triangleBuffer, _triangles, _triangleData);
         try

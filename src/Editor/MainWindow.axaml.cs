@@ -45,6 +45,7 @@ namespace Editor
             Viewport.ObjectSaveRequested += () => SaveLevel_Click(this, new RoutedEventArgs());
             ObjectsPanel.BusyChanged += UpdatePlayControls;
             Viewport.ObjectDragStateChanged += UpdatePlayControls;
+            Viewport.ActorDragStateChanged += UpdatePlayControls;
             CharacterPanel.Attach(Viewport, _workspace.Assets);
             CharacterPanel.BusyChanged += UpdatePlayControls;
 
@@ -124,6 +125,7 @@ namespace Editor
         private async void SaveChangesBeforeClosing(object? sender, WindowClosingEventArgs e)
         {
             Viewport.CancelObjectDrag();
+            Viewport.CancelActorDrag();
             Viewport.CancelObjectPlacement();
             ObjectsPanel.CancelModelImport();
             TerrainEditorPanel.CancelMaterialImport();

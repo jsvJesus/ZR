@@ -20,7 +20,7 @@ public sealed partial class MainWindow
     {
         bool saving = _levelSaving || _savingChangesOnClose || VegetationPanel.IsSaving || ObjectsPanel.IsBusy || TerrainEditorPanel.IsBusy || RoadsPanel.IsSaving;;
         bool baseLocked = busy || _levelOpening || saving || Viewport.IsPlaying || Viewport.IsStarting || CharacterPanel.IsBusy;
-        bool dragging = Viewport.IsObjectDragging;
+        bool dragging = Viewport.IsObjectDragging || Viewport.IsActorDragging;
         bool locked = baseLocked || dragging;
         ImportLevelMenu.IsEnabled = !locked;
         ImportAllLevelsMenu.IsEnabled = !locked;
@@ -41,7 +41,8 @@ public sealed partial class MainWindow
         VegetationPanel.IsEnabled = !locked;
         VegetationPanel.RefreshMode();
         RoadsPanel.IsEnabled = !locked;
-        ActorsPanel.IsEnabled = !locked;
+        ActorsPanel.IsEnabled = !baseLocked;
+        ActorsPanel.BrowserContent.IsEnabled = !locked;
         ActorsPanel.RefreshMode();
         ObjectsPanel.IsEnabled = !baseLocked;
         ObjectsPanel.RefreshMode();

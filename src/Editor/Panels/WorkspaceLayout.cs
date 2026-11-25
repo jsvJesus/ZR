@@ -17,12 +17,18 @@ public sealed partial class MainWindow
     private double _rightPanelWidth = 310;
 
     private bool CanSwitchWorkspace =>
-        !_isClosing && !_levelOpening && !_levelSaving && !_savingChangesOnClose &&
-        _importCancellation == null && !Viewport.IsObjectDragging &&
+        !_isClosing &&
+        !_levelOpening &&
+        !_levelSaving &&
+        !_savingChangesOnClose &&
+        _importCancellation == null &&
+        !Viewport.IsObjectDragging &&
+        !Viewport.IsActorDragging &&
         !CharacterPanel.IsBusy &&
         !RoadsPanel.IsSaving &&
         !VegetationPanel.IsSaving &&
-        !ObjectsPanel.IsBusy && !TerrainEditorPanel.IsBusy;
+        !ObjectsPanel.IsBusy &&
+        !TerrainEditorPanel.IsBusy;
 
     private void InitializeWorkspaceLayout()
     {

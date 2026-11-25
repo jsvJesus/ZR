@@ -43,12 +43,41 @@ public static class ObjectGizmoGeometry
     internal const int ArrowSegments = 12;
     private const float HitTolerance = 8;
 
-    public static bool TryCreateFrame(SceneInstance instance, FreeCamera camera, int width, int height,
-        out ObjectGizmoFrame frame, float farPlane = float.MaxValue)
+    public static bool TryCreateFrame(
+        SceneInstance instance,
+        FreeCamera camera,
+        int width,
+        int height,
+        out ObjectGizmoFrame frame,
+        float farPlane = float.MaxValue)
+    {
+        return TryCreateFrame(
+            instance.World.Translation,
+            camera,
+            width,
+            height,
+            out frame,
+            farPlane);
+    }
+
+    public static bool TryCreateFrame(
+        Vector3 pivot,
+        FreeCamera camera,
+        int width,
+        int height,
+        out ObjectGizmoFrame frame,
+        float farPlane = float.MaxValue)
     {
         frame = default;
-        if (width < 1 || height < 1 || !float.IsFinite(farPlane) || farPlane <= NearPlane) return false;
-        var pivot = instance.World.Translation;
+
+        if (width < 1 ||
+            height < 1 ||
+            !float.IsFinite(farPlane) ||
+            farPlane <= NearPlane)
+        {
+            return false;
+        }
+
         var forward = Vector3.Normalize(camera.LookDirection);
         var right = Vector3.Normalize(Vector3.Cross(Vector3.UnitY, forward));
         var up = Vector3.Cross(forward, right);
@@ -68,7 +97,11 @@ public static class ObjectGizmoGeometry
         _ => Vector3.Zero
     };
 
-    public static ObjectGizmoAxis HitTest(ObjectGizmoFrame frame, ObjectGizmoMode mode, Vector2 pixel)
+    public static ObjectGizmoAxis HitTest(
+        ObjectGizmoFrame frame,
+        ObjectGizmoMode mode,
+        Vector2 pixel,
+        ObjectGizmoAxis rotationAxis = ObjectGizmoAxis.None)
     {
         if (!float.IsFinite(pixel.X) || !float.IsFinite(pixel.Y) || pixel.X < 0 || pixel.Y < 0 ||
             pixel.X >= frame.Width || pixel.Y >= frame.Height) return ObjectGizmoAxis.None;
@@ -76,6 +109,13 @@ public static class ObjectGizmoGeometry
         var result = ObjectGizmoAxis.None;
         for (var axis = ObjectGizmoAxis.X; axis <= ObjectGizmoAxis.Z; axis++)
         {
+            if (mode == ObjectGizmoMode.Rotate &&
+                rotationAxis != ObjectGizmoAxis.None &&
+                axis != rotationAxis)
+            {
+                continue;
+            }
+
             if (mode == ObjectGizmoMode.Move)
             {
                 if (!MoveVisible(frame, axis)) continue;
@@ -113,12 +153,24 @@ public static class ObjectGizmoGeometry
         return result;
     }
 
-    internal static void Build(ObjectGizmoFrame frame, ObjectGizmoMode mode, ObjectGizmoAxis highlighted,
-        List<ObjectGizmoVertex> lines, List<ObjectGizmoVertex> triangles)
+    internal static void Build(
+        ObjectGizmoFrame frame,
+        ObjectGizmoMode mode,
+        ObjectGizmoAxis highlighted,
+        List<ObjectGizmoVertex> lines,
+        List<ObjectGizmoVertex> triangles,
+        ObjectGizmoAxis rotationAxis = ObjectGizmoAxis.None)
     {
         lines.Clear(); triangles.Clear();
         for (var axis = ObjectGizmoAxis.X; axis <= ObjectGizmoAxis.Z; axis++)
         {
+            if (mode == ObjectGizmoMode.Rotate &&
+                rotationAxis != ObjectGizmoAxis.None &&
+                axis != rotationAxis)
+            {
+                continue;
+            }
+
             var color = axis == highlighted ? new Vector4(1, 0.9f, 0.12f, 1) : axis switch
             {
                 ObjectGizmoAxis.X => new Vector4(1, 0.2f, 0.18f, 1),

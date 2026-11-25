@@ -6,7 +6,6 @@ namespace Editor.Viewport
     public sealed partial class DxViewportHost
     {
         private bool _actorEditingEnabled;
-        private bool _actorMoveRequested;
 
         private Guid? _selectedActorId;
 
@@ -23,7 +22,10 @@ namespace Editor.Viewport
 
                 if (!value)
                 {
-                    _actorMoveRequested = false;
+                    CancelActorDrag();
+
+                    _hoveredActorAxis =
+                        ObjectGizmoAxis.None;
                 }
             }
         }
@@ -34,21 +36,19 @@ namespace Editor.Viewport
 
         public void SelectActor(Guid? id)
         {
+            if (id != _selectedActorId)
+            {
+                CancelActorDrag();
+
+                _hoveredActorAxis =
+                    ObjectGizmoAxis.None;
+            }
+
             _selectedActorId =
                 id.HasValue &&
                 _level?.Actors.Find(id.Value) != null
                     ? id
                     : null;
-
-            _actorMoveRequested = false;
-        }
-
-        public void BeginActorMove()
-        {
-            if (ActorEditingEnabled && _selectedActorId.HasValue)
-            {
-                _actorMoveRequested = true;
-            }
         }
 
         private void HandleActorPointerDown(int x, int y)
@@ -57,6 +57,7 @@ namespace Editor.Viewport
                 IsPlaying ||
                 IsStarting ||
                 _rotating ||
+                IsActorDragging ||
                 _renderer == null ||
                 _level == null ||
                 !TryObjectRay(x, y, out Vector3 direction))
@@ -69,7 +70,7 @@ namespace Editor.Viewport
 
             ActorDocument document = _level.Actors;
 
-            if (_actorMoveRequested || control)
+            if (control)
             {
                 if (!_renderer.PickObjectSurface(
                         _camera.Position,
@@ -82,23 +83,6 @@ namespace Editor.Viewport
                     return;
                 }
 
-                if (_actorMoveRequested)
-                {
-                    _actorMoveRequested = false;
-
-                    if (_selectedActorId is Guid selectedId &&
-                        document.Find(selectedId) is { } selected)
-                    {
-                        selected.Position = position;
-
-                        document.Touch();
-
-                        ActorChanged?.Invoke(selected.Id);
-                    }
-
-                    return;
-                }
-
                 LevelActor actor = LevelActor.Create(
                     ActorPlacementKind,
                     position,
@@ -106,10 +90,15 @@ namespace Editor.Viewport
 
                 document.Add(actor);
 
-                _selectedActorId = actor.Id;
+                SelectActor(actor.Id);
 
                 ActorChanged?.Invoke(actor.Id);
 
+                return;
+            }
+
+            if (BeginActorDrag(x, y))
+            {
                 return;
             }
 
@@ -119,6 +108,7 @@ namespace Editor.Viewport
                 direction);
 
             SelectActor(picked);
+
             ActorPicked?.Invoke(picked);
         }
 
@@ -133,8 +123,13 @@ namespace Editor.Viewport
 
             foreach (LevelActor actor in document.Actors)
             {
+                float height =
+                    actor.Kind == ActorKind.LootSpawn
+                        ? 0.4f
+                        : 0.8f;
+
                 Vector3 center = actor.Position +
-                    Vector3.UnitY * 0.8f;
+                    Vector3.UnitY * height;
 
                 Vector3 offset = center - origin;
 
@@ -142,21 +137,23 @@ namespace Editor.Viewport
                     offset,
                     direction);
 
-                if (distance <= 0 || distance >= nearest)
+                if (distance <= 0 ||
+                    distance >= nearest)
                 {
                     continue;
                 }
 
-                Vector3 closest = origin +
-                    direction * distance;
+                Vector3 closest =
+                    origin + direction * distance;
 
                 float radius = Math.Clamp(
                     distance * 0.008f,
                     0.65f,
                     3f);
 
-                if (Vector3.DistanceSquared(center, closest) >
-                    radius * radius)
+                if (Vector3.DistanceSquared(
+                        center,
+                        closest) > radius * radius)
                 {
                     continue;
                 }
@@ -174,14 +171,31 @@ namespace Editor.Viewport
         {
             if (!ActorEditingEnabled ||
                 IsPlaying ||
-                IsStarting)
+                IsStarting ||
+                GetFocus() != _windowHandle)
             {
                 return false;
             }
 
-            if (key == 0x1B)
+            if (IsActorDragging)
             {
-                _actorMoveRequested = false;
+                if (key == 0x1B)
+                {
+                    CancelActorDrag();
+                }
+
+                return true;
+            }
+
+            bool control =
+                (GetKeyState(KeyControl) & 0x8000) != 0;
+
+            if (!control && key is 0x31 or 0x32)
+            {
+                ActorTransformMode = key == 0x31
+                    ? ObjectGizmoMode.Move
+                    : ObjectGizmoMode.Rotate;
+
                 return true;
             }
 

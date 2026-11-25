@@ -572,6 +572,10 @@ namespace Editor.Viewport
             {
                 RenderRoadOverlay(viewProjection);
                 RenderActorOverlay(viewProjection);
+
+                RenderActorGizmo(
+                    camera,
+                    viewProjection);
             }
 
             RenderPostProcessing(

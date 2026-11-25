@@ -259,6 +259,7 @@ namespace Editor.Actors
         {
             if (!IsVisible ||
                 !IsEnabled ||
+                _viewport?.IsActorDragging == true ||
                 _viewport?.ActorEditingEnabled != true ||
                 SelectedActor is not { } actor ||
                 Document == null)
@@ -421,9 +422,57 @@ namespace Editor.Actors
                 BuildLootProperties(actor);
             }
 
-            _properties.Children.Add(CreateButton(
-                "Переместить на сцене",
-                () => _viewport?.BeginActorMove()));
+            _properties.Children.Add(new Separator());
+
+            _properties.Children.Add(new TextBlock
+            {
+                Text = "Transform",
+                FontWeight = FontWeight.SemiBold
+            });
+
+            var transformTools = new Grid
+            {
+                ColumnDefinitions =
+                    new ColumnDefinitions("*,*")
+            };
+
+            Button moveButton = CreateButton(
+                "Move [1]",
+                () =>
+                {
+                    if (_viewport != null)
+                    {
+                        _viewport.ActorTransformMode =
+                            ObjectGizmoMode.Move;
+                    }
+                });
+
+            Button rotateButton = CreateButton(
+                "Rotate [2]",
+                () =>
+                {
+                    if (_viewport != null)
+                    {
+                        _viewport.ActorTransformMode =
+                            ObjectGizmoMode.Rotate;
+                    }
+                });
+
+            moveButton.Margin = new Thickness(0, 0, 4, 0);
+
+            Grid.SetColumn(moveButton, 0);
+            Grid.SetColumn(rotateButton, 1);
+
+            transformTools.Children.Add(moveButton);
+            transformTools.Children.Add(rotateButton);
+
+            _properties.Children.Add(transformTools);
+
+            _properties.Children.Add(new TextBlock
+            {
+                Text = "Shift — привязка к шагу\nEsc — отмена перемещения",
+                TextWrapping = TextWrapping.Wrap
+            });
 
             _properties.Children.Add(CreateButton(
                 "Удалить актор",

@@ -181,6 +181,7 @@ namespace Editor.Viewport
         {
             EndGroundCoverPaint();
             CancelObjectDrag();
+            CancelActorDrag();
             CancelTreeDrag();
             CancelObjectPlacement();
             StopPlay();
@@ -245,7 +246,8 @@ namespace Editor.Viewport
                     !IsStarting &&
                     !IsObjectDragging &&
                     !IsTreeDragging &&
-                    !IsRoadDragging)
+                    !IsRoadDragging &&
+                    !IsActorDragging)
                     _camera.Move(
                     IsPressed(KeyW),
                     IsPressed(KeyS),
@@ -289,6 +291,14 @@ namespace Editor.Viewport
                                 : null,
                             _selectedActorId);
 
+                        _renderer.SetActorGizmo(
+                            ActorTransformMode,
+                            _actorDrag?.Axis ?? _hoveredActorAxis,
+                            ActorEditingEnabled &&
+                            !IsPlaying &&
+                            !IsStarting &&
+                            !_rotating);
+
                         _renderer.Render(
                             IsPlaying ? ActivePlayCamera : _camera,
                             width,
@@ -324,6 +334,7 @@ namespace Editor.Viewport
         {
             EndGroundCoverPaint();
             CancelObjectDrag();
+            CancelActorDrag();
             CancelTreeDrag();
             _camera.Restore(pose);
             _pressedKeys.Clear();
@@ -335,6 +346,7 @@ namespace Editor.Viewport
         {
             EndGroundCoverPaint();
             CancelObjectDrag();
+            CancelActorDrag();
             CancelTreeDrag();
             SelectTree(null);
             SetTreePlacement(null);
@@ -442,6 +454,17 @@ namespace Editor.Viewport
                         return nint.Zero;
                     }
 
+                    if (IsActorDragging)
+                    {
+                        MoveActorDrag(
+                            ReadX(lParam),
+                            ReadY(lParam));
+
+                        EndActorDrag(true);
+
+                        return nint.Zero;
+                    }
+
                     if (IsRoadDragging)
                     {
                         MoveRoadDrag(ReadX(lParam), ReadY(lParam));
@@ -469,10 +492,19 @@ namespace Editor.Viewport
                     break;
 
                 case WmRightDown:
+                    if (IsActorDragging)
+                    {
+                        CancelActorDrag();
+
+                        return nint.Zero;
+                    }
+
                     EndGroundCoverPaint();
                     EndRoadDrag();
                     EndTerrainPaint();
+
                     if (IsTreeDragging) { CancelTreeDrag(); return nint.Zero; }
+
                     if (IsObjectDragging)
                     {
                         CancelObjectDrag();
@@ -512,22 +544,33 @@ namespace Editor.Viewport
                     EndRoadDrag();
                     EndTerrainPaint();
                     CancelObjectDrag();
+                    CancelActorDrag();
                     CancelTreeDrag();
                     _rotating = false;
                     break;
 
                 case WmMouseMove:
+                    if (MoveActorDrag(
+                            ReadX(lParam),
+                            ReadY(lParam)))
+                    {
+                        return nint.Zero;
+                    }
+
                     if (_groundCoverPainting) { PaintGroundCover(ReadX(lParam), ReadY(lParam)); return nint.Zero; }
+
                     if (MoveRoadDrag(ReadX(lParam), ReadY(lParam)))
                     {
                         return nint.Zero;
                     }
+
                     if (_terrainPainting) { PaintTerrain(ReadX(lParam), ReadY(lParam)); return nint.Zero; }
                     if (MoveTreeDrag(ReadX(lParam), ReadY(lParam))) return nint.Zero;
                     if (MoveObjectDrag(ReadX(lParam), ReadY(lParam))) return nint.Zero;
                     HandleMouseMove(lParam);
                     HoverObjectGizmo(ReadX(lParam), ReadY(lParam));
                     HoverTreeGizmo(ReadX(lParam), ReadY(lParam));
+                    HoverActorGizmo( ReadX(lParam), ReadY(lParam));
                     return nint.Zero;
 
                 case WmInput:
@@ -667,6 +710,7 @@ namespace Editor.Viewport
                     EndGroundCoverPaint();
                     EndTerrainPaint();
                     CancelObjectDrag();
+                    CancelActorDrag();
                     CancelTreeDrag();
                     ReleasePlayMouse(false);
                     _pressedKeys.Clear();
