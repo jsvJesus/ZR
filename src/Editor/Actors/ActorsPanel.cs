@@ -9,7 +9,7 @@ using ZoneReborn.World.Levels.Models;
 
 namespace Editor.Actors
 {
-    public sealed class ActorsPanel : UserControl
+    public sealed partial class ActorsPanel : UserControl
     {
         private readonly StackPanel _browser = new()
         {
@@ -362,7 +362,12 @@ namespace Editor.Actors
                     Changed();
                 });
 
-            if (actor.Kind is ActorKind.NpcSpawn or ActorKind.MobSpawn)
+            if (actor.Kind == ActorKind.NpcSpawn)
+            {
+                BuildNpcProperties(actor);
+            }
+
+            if (actor.Kind == ActorKind.MobSpawn)
             {
                 AddText(
                     _properties,

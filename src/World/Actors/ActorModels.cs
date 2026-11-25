@@ -22,6 +22,16 @@ namespace ZoneReborn.World.Actors
         Legendary
     }
 
+    [Flags]
+    public enum NpcCapabilities
+    {
+        None = 0,
+        CanTalk = 1,
+        QuestGiver = 2,
+        NightHighlight = 4,
+        CanTrade = 8
+    }
+
     public sealed class LootSpawnEntry
     {
         public string Category { get; set; } = "";
@@ -50,6 +60,16 @@ namespace ZoneReborn.World.Actors
         public float Yaw { get; set; }
 
         public string TemplateId { get; set; } = "";
+
+        public int NpcId { get; set; }
+
+        public NpcCapabilities NpcFlags { get; set; } = NpcCapabilities.CanTalk;
+
+        public string NpcHeadPreset { get; set; } = "";
+
+        public string NpcBarterList { get; set; } = "";
+
+        public int NpcFactionId { get; set; }
 
         public float Radius { get; set; } = 0.65f;
         public int Count { get; set; } = 1;
