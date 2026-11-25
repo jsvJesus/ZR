@@ -40,6 +40,7 @@ namespace Editor
             VegetationPanel.BusyChanged += UpdatePlayControls;
             ObjectsPanel.Attach(Viewport, _workspace.Assets);
             RoadsPanel.Attach(Viewport);
+            ActorsPanel.Attach(Viewport, _workspace.Assets);
             ObjectsPanel.SectionChanged += UpdateObjectsSectionTitle;
             Viewport.ObjectSaveRequested += () => SaveLevel_Click(this, new RoutedEventArgs());
             ObjectsPanel.BusyChanged += UpdatePlayControls;
@@ -103,6 +104,13 @@ namespace Editor
                 e.KeyModifiers == KeyModifiers.None &&
                 e.Source is not TextBox)
             {
+                if (ActorsPanel.IsVisible)
+                {
+                    ActorsPanel.DeleteSelected();
+                    e.Handled = true;
+                    return;
+                }
+
                 e.Handled =
                     ObjectsPanel.TryDeleteSelectedFromShortcut();
             }
@@ -125,7 +133,8 @@ namespace Editor
                  !ObjectsPanel.HasPendingChanges &&
                  !TerrainEditorPanel.HasPendingChanges &&
                  !EnvironmentPanel.HasPendingChanges &&
-                 !RoadsPanel.HasPendingChanges))
+                 !RoadsPanel.HasPendingChanges &&
+                 !ActorsPanel.HasPendingChanges))
             {
                 return;
             }
@@ -141,6 +150,7 @@ namespace Editor
                 await ObjectsPanel.SavePendingAsync();
                 await EnvironmentPanel.SavePendingAsync();
                 await RoadsPanel.SavePendingAsync();
+                await ActorsPanel.SavePendingAsync();
                 _changesSavedForClose = true;
                 Avalonia.Threading.Dispatcher.UIThread.Post(Close);
             }

@@ -561,6 +561,7 @@ namespace Editor.Viewport
             if (!playing)
             {
                 RenderRoadOverlay(viewProjection);
+                RenderActorOverlay(viewProjection);
             }
 
             RenderPostProcessing(

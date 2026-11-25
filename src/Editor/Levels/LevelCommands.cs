@@ -41,6 +41,8 @@ public sealed partial class MainWindow
         VegetationPanel.IsEnabled = !locked;
         VegetationPanel.RefreshMode();
         RoadsPanel.IsEnabled = !locked;
+        ActorsPanel.IsEnabled = !locked;
+        ActorsPanel.RefreshMode();
         ObjectsPanel.IsEnabled = !baseLocked;
         ObjectsPanel.RefreshMode();
         CancelImportMenu.IsEnabled = busy;

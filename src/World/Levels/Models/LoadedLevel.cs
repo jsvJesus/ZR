@@ -1,5 +1,6 @@
 using ZoneReborn.World.Roads;
 using ZoneReborn.World.Terrain.Models;
+using ZoneReborn.World.Actors;
 
 namespace ZoneReborn.World.Levels.Models;
 
@@ -13,4 +14,5 @@ public sealed record LoadedLevel(
     public ZoneReborn.World.Terrain.TerrainDocument? TerrainDocument { get; init; }
     public RoadNetwork Roads { get; init; } = new();
     public ZoneReborn.World.Vegetation.GroundCoverDocument GroundCover { get; init; } = new();
+    public ActorDocument Actors { get; init; } = new();
 }

@@ -281,6 +281,14 @@ namespace Editor.Viewport
                             _selectedRoadId,
                             _selectedRoadPoint);
 
+                        _renderer.SetActors(
+                            ActorEditingEnabled &&
+                            !IsPlaying &&
+                            !IsStarting
+                                ? _level?.Actors
+                                : null,
+                            _selectedActorId);
+
                         _renderer.Render(
                             IsPlaying ? ActivePlayCamera : _camera,
                             width,
@@ -335,6 +343,7 @@ namespace Editor.Viewport
             _renderer?.SetLevel(level, assets);
             _objectPreview = null;
             _level = level;
+            SelectActor(null);
             SetRoadNetwork(level.Roads);
             _assets = assets;
             SelectObject(null);
@@ -358,6 +367,15 @@ namespace Editor.Viewport
                     if (IsPlaying && !IsCharacterEditing)
                     {
                         _fireHeld = !IsPlayInspecting;
+                        return nint.Zero;
+                    }
+
+                    if (ActorEditingEnabled)
+                    {
+                        HandleActorPointerDown(
+                            ReadX(lParam),
+                            ReadY(lParam));
+
                         return nint.Zero;
                     }
 
@@ -556,7 +574,9 @@ namespace Editor.Viewport
                         return nint.Zero;
                     }
 
-                    if (HandleTreeKey((int)wParam, lParam) || HandleObjectKey((int)wParam, lParam))
+                    if (HandleActorKey((int)wParam, lParam) ||
+                        HandleTreeKey((int)wParam, lParam) ||
+                        HandleObjectKey((int)wParam, lParam))
                     {
                         return nint.Zero;
                     }

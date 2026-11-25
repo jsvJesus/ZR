@@ -24,6 +24,7 @@ namespace Editor
             }
 
             RoadsPanel.SetActive(false);
+            ActorsPanel.SetActive(false);
 
             if (!showObjects || !ObjectsPanel.IsVisible)
             {

@@ -30,6 +30,7 @@ public sealed partial class MainWindow
         AddBrowser(ObjectsPanel, ObjectsPanel.BrowserContent);
         AddBrowser(VegetationPanel, VegetationPanel.BrowserContent);
         AddBrowser(CharacterPanel, CharacterPanel.BrowserContent);
+        AddBrowser(ActorsPanel, ActorsPanel.BrowserContent);
         EnvironmentBrowser.Bind(IsEnabledProperty, new ReflectionBinding(nameof(IsEnabled)) { Source = EnvironmentPanel });
 
         AddWorkspace("terrain", "Рельеф", "M1,13 L6,3 L10,9 L13,5 L17,13 Z", Terrain_Click);
@@ -39,6 +40,7 @@ public sealed partial class MainWindow
         AddWorkspace("roads", "Дороги", "M2,14 L6,2 M10,14 L14,2 M8,4 L8,6 M8,9 L8,11", Roads_Click);
         AddWorkspace("environment", "Окружение", "M5,5 L11,5 L11,11 L5,11 Z M8,0 L8,2 M8,14 L8,16 M0,8 L2,8 M14,8 L16,8 M2,2 L3,3 M13,13 L14,14 M2,14 L3,13 M13,3 L14,2", Lighting_Click);
         AddWorkspace("character", "Персонаж", "M5,1 L11,1 L11,7 L5,7 Z M2,17 L2,13 L5,10 L11,10 L14,13 L14,17", CharacterEditor_Click);
+        AddWorkspace("actors", "Actors", "M8,1 L11,5 L8,9 L5,5 Z M8,9 L8,16 M1,12 L15,12 M4,16 L12,16", Actors_Click);
 
         SetSidebarBounds(0, 220, 340);
         SetSidebarBounds(4, 260, 400);

@@ -6,6 +6,7 @@ using SharpDX.Direct3D11;
 using SharpDX.DXGI;
 using ZoneReborn.World.Roads;
 using ZoneReborn.World.Terrain;
+using ZoneReborn.World.Actors;
 using Buffer = SharpDX.Direct3D11.Buffer;
 using Device = SharpDX.Direct3D11.Device;
 using Vector3 = System.Numerics.Vector3;
@@ -140,6 +141,11 @@ internal sealed class RoadOverlayRenderer : IDisposable
             }
         }
 
+        Flush(viewProjection);
+    }
+
+    private void Flush(Matrix4x4 viewProjection)
+    {
         if (_lines.Count == 0)
         {
             return;
@@ -214,6 +220,159 @@ internal sealed class RoadOverlayRenderer : IDisposable
             _context.OutputMerger.SetBlendState(null);
             _context.OutputMerger.SetDepthStencilState(null);
             _context.Rasterizer.State = null;
+        }
+    }
+
+    public void RenderActors(
+        ActorDocument document,
+        Guid? selectedActor,
+        Matrix4x4 viewProjection)
+    {
+        _lines.Clear();
+
+        if (selectedActor.HasValue &&
+            document.Find(selectedActor.Value) is { } selected)
+        {
+            DrawActor(selected, true);
+        }
+
+        foreach (LevelActor actor in document.Actors)
+        {
+            if (actor.Id == selectedActor)
+            {
+                continue;
+            }
+
+            if (_lines.Count + 160 > MaximumVertices)
+            {
+                break;
+            }
+
+            DrawActor(actor, false);
+        }
+
+        Flush(viewProjection);
+    }
+
+    private void DrawActor(
+        LevelActor actor,
+        bool selected)
+    {
+        Vector4 color = actor.Kind switch
+        {
+            ActorKind.PlayerSpawn =>
+                new Vector4(0.15f, 1f, 0.25f, 1f),
+
+            ActorKind.NpcSpawn =>
+                new Vector4(0.15f, 0.55f, 1f, 1f),
+
+            ActorKind.MobSpawn =>
+                new Vector4(1f, 0.15f, 0.15f, 1f),
+
+            ActorKind.LootSpawn =>
+                new Vector4(1f, 0.85f, 0.1f, 1f),
+
+            _ => Vector4.One
+        };
+
+        if (!actor.Enabled)
+        {
+            color = new Vector4(
+                0.4f, 0.4f, 0.4f, 1f);
+        }
+
+        Vector3 center = actor.Position +
+            Vector3.UnitY * 0.08f;
+
+        float height = actor.Kind == ActorKind.LootSpawn
+            ? 0.8f
+            : 1.8f;
+
+        Vector3 top = center +
+            Vector3.UnitY * height;
+
+        DrawActorCircle(
+            center,
+            0.65f,
+            color);
+
+        DrawActorCircle(
+            top,
+            0.2f,
+            color);
+
+        AddLine(
+            center,
+            top,
+            color);
+
+        Vector3 forward = new(
+            MathF.Sin(actor.Yaw),
+            0f,
+            MathF.Cos(actor.Yaw));
+
+        Vector3 right = new(
+            forward.Z,
+            0f,
+            -forward.X);
+
+        Vector3 arrow = center + forward * 1.4f;
+
+        AddLine(center, arrow, color);
+
+        AddLine(
+            arrow,
+            arrow - forward * 0.35f + right * 0.2f,
+            color);
+
+        AddLine(
+            arrow,
+            arrow - forward * 0.35f - right * 0.2f,
+            color);
+
+        if (actor.Kind == ActorKind.MobSpawn)
+        {
+            DrawActorCircle(
+                center,
+                actor.Radius,
+                color);
+        }
+
+        if (selected)
+        {
+            DrawActorCircle(
+                center + Vector3.UnitY * 0.05f,
+                0.85f,
+                Vector4.One);
+        }
+    }
+
+    private void DrawActorCircle(
+        Vector3 center,
+        float radius,
+        Vector4 color)
+    {
+        const int segments = 16;
+
+        for (int index = 0; index < segments; index++)
+        {
+            float angleA =
+                index * MathF.Tau / segments;
+
+            float angleB =
+                (index + 1) * MathF.Tau / segments;
+
+            Vector3 a = center + new Vector3(
+                MathF.Cos(angleA) * radius,
+                0f,
+                MathF.Sin(angleA) * radius);
+
+            Vector3 b = center + new Vector3(
+                MathF.Cos(angleB) * radius,
+                0f,
+                MathF.Sin(angleB) * radius);
+
+            AddLine(a, b, color);
         }
     }
 

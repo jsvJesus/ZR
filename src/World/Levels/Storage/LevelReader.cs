@@ -2,6 +2,7 @@ using ZoneReborn.World.Assets;
 using ZoneReborn.World.Levels.Models;
 using ZoneReborn.World.Terrain.Models;
 using ZoneReborn.World.Terrain;
+using ZoneReborn.World.Actors;
 
 namespace ZoneReborn.World.Levels.Storage;
 
@@ -69,7 +70,15 @@ public static class LevelReader
             : TerrainHoles.Read(AssetPathResolver.Resolve(directory, terrain.HolesFile), terrain.SamplesX - 1, terrain.SamplesZ - 1);
         return new LoadedLevel(directory, manifest, layers)
         {
-            TerrainDocument = new TerrainDocument(directory, manifest, holes, layers)
+            TerrainDocument = new TerrainDocument(
+                directory,
+                manifest,
+                holes,
+                layers),
+
+            Actors = await ActorStorage.LoadAsync(
+                directory,
+                cancellationToken)
         };
     }
 }

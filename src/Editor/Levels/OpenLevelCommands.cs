@@ -43,6 +43,7 @@ public sealed partial class MainWindow
             await ObjectsPanel.SavePendingAsync();
             await EnvironmentPanel.SavePendingAsync();
             await RoadsPanel.SavePendingAsync();
+            await ActorsPanel.SavePendingAsync();
 
             var level = await _workspace.OpenAsync(path);
             if (_isClosing) return;
@@ -53,6 +54,7 @@ public sealed partial class MainWindow
             TerrainEditorPanel.Bind(level);
             EnvironmentPanel.Bind(level);
             RoadsPanel.Bind(level);
+            ActorsPanel.Bind(level);
             RoadsPanel.SetActive(RoadsPanel.IsVisible);
 
             var camera = level.Manifest.Camera;
