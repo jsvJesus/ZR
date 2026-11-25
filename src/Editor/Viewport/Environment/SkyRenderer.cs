@@ -123,7 +123,8 @@ namespace Editor.Viewport.Environment
             float elapsed,
             Vector3 moonDirection,
             float moonStrength,
-            NightState night)
+            NightState night,
+            Vector2 jitterPixels)
         {
             Vector3 forward = Vector3.Normalize(camera.LookDirection);
 
@@ -170,6 +171,12 @@ namespace Editor.Viewport.Environment
                     (float)night.Phase,
                     night.BrightnessFactor,
                     night.Illumination,
+                    0f),
+
+                Jitter = new Vector4(
+                    jitterPixels.X,
+                    jitterPixels.Y,
+                    0f,
                     0f)
             };
 
@@ -262,6 +269,7 @@ namespace Editor.Viewport.Environment
             public Vector4 Textures;
             public Vector4 Moon;
             public Vector4 MoonSettings;
+            public Vector4 Jitter;
         }
     }
 }

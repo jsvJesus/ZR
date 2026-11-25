@@ -12,6 +12,7 @@ cbuffer SkyConstants : register(b0)
     float4 TextureFlags;
     float4 Moon;
     float4 MoonSettings;
+    float4 Jitter;
 };
 
 Texture2D Cumulus : register(t0);
@@ -173,8 +174,11 @@ float3 MoonDisc(float3 direction, float cloudOpacity)
 
 SurfaceOutput PSMain(PixelInput input)
 {
-    float2 pixel = input.Position.xy / Viewport.xy;
-    float2 ndc = pixel * 2.0f - 1.0f;
+    float2 pixel = (
+		input.Position.xy - Jitter.xy
+	) / Viewport.xy;
+
+	float2 ndc = pixel * 2.0f - 1.0f;
 
     float3 direction = normalize(
         CameraForward.xyz +

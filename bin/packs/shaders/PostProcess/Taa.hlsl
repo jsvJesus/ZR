@@ -122,11 +122,20 @@ float3 ReconstructCurrent(int2 pixel, out int2 surfacePixel, out float surfaceDe
             }
         }
     }
-    averageColor /= max(totalWeight, 0.00001f);
-    deviation = sqrt(max(secondMoment / max(totalWeight, 0.00001f) - averageColor * averageColor, 0.000001f));
-    if (surfaceWeight <= 0.0f)
-        return max(CurrentColor.Load(int3(pixel, 0)).rgb, 0.0f); // unjittered sky
-    return max(FromYCoCg(averageColor), 0.0f);
+    averageColor /= max(
+        totalWeight,
+        0.00001f);
+
+    deviation = sqrt(
+        max(
+            secondMoment /
+            max(totalWeight, 0.00001f) -
+            averageColor * averageColor,
+            0.000001f));
+
+    return max(
+        FromYCoCg(averageColor),
+        0.0f);
 }
 
 struct TemporalOutput
@@ -264,30 +273,123 @@ TemporalOutput PSResolve(PixelInput input)
     bool conflictingHistory = foregroundConflict && depthSupport < 0.5f;
     if (conflictingHistory) historySamples = 1.0f;
 
-    float3 history = max(PreviousHistory.SampleLevel(LinearSampler, previousUv, 0.0f).rgb, 0.0f);
-    float3 minimumClip = max(minimumColor, averageColor - deviation * 1.5f);
-    float3 maximumClip = min(maximumColor, averageColor + deviation * 1.5f);
-    float3 clippedHistory = max(FromYCoCg(clamp(ToYCoCg(history), minimumClip, maximumClip)), 0.0f);
-    float temporalTrust = saturate((historySamples - 1.0f) / 7.0f) * stationary * (1.0f - materialReactive);
-    // A sky/geometry transition has no stable surface correspondence. It must
-    // not use the stationary-coverage exception merely because the camera stops.
-    if (conflictingHistory) temporalTrust = 0.0f;
-    clippedHistory = lerp(clippedHistory, history, temporalTrust);
-    float relativeDifference = abs(Luminance(history) - Luminance(current)) / max(Luminance(current) + 0.12f, 0.12f);
-    float clippingDifference = length(history - clippedHistory) / max(length(current) + 0.1f, 0.1f);
-    // On trusted static geometry, phase disagreement is the signal TAA needs
-    // to accumulate, not evidence of physical motion or material reactivity.
-    float reactive = saturate(max(materialReactive,
-        (relativeDifference * 0.65f + clippingDifference * 0.5f) * (1.0f - temporalTrust)));
-    float motionReduction = saturate(motionPixels / 32.0f);
-    float feedback = min(saturate(Parameters.z), 0.96f);
-    float historyWeight = min(feedback, historySamples / (historySamples + 1.0f)) *
-        (1.0f - reactive) * (1.0f - motionReduction * 0.5f);
-    // Sampling disagreement must not prevent a genuinely stationary surface
-    // from warming up: only geometry/material incompatibility reduces evidence.
-    float confidence = 1.0f + min(historySamples, 31.0f) * (1.0f - materialReactive) * stationary;
-    if (conflictingHistory) confidence = 1.0f;
-    confidence = min(confidence, 1.0f / max(1.0f - feedback, 0.04f));
-    return ResolveOutput(max(lerp(current, clippedHistory, historyWeight), 0.0f),
-        encodedDepth, encodedRawDepth, confidence);
+    float3 history = max(
+        PreviousHistory.SampleLevel(
+            LinearSampler,
+            previousUv,
+            0.0f).rgb,
+        0.0f);
+
+    float3 minimumClip = max(
+        minimumColor,
+        averageColor - deviation * 1.5f);
+
+    float3 maximumClip = min(
+        maximumColor,
+        averageColor + deviation * 1.5f);
+
+    float3 clippedHistory = max(
+        FromYCoCg(
+            clamp(
+                ToYCoCg(history),
+                minimumClip,
+                maximumClip)),
+        0.0f);
+
+    bool stableSurface =
+        motionPixels <= 0.05f &&
+        depthSupport >= 0.5f &&
+        materialReactive <= 0.01f &&
+        !foregroundConflict;
+
+    float temporalTrust = saturate(
+        (historySamples - 1.0f) / 7.0f) *
+        stationary *
+        (1.0f - materialReactive);
+
+    if (stableSurface)
+    {
+        temporalTrust = saturate(
+            (historySamples - 1.0f) / 3.0f);
+    }
+
+    if (conflictingHistory)
+    {
+        temporalTrust = 0.0f;
+    }
+
+    clippedHistory = lerp(
+        clippedHistory,
+        history,
+        temporalTrust);
+
+    float relativeDifference =
+        abs(Luminance(history) - Luminance(current)) /
+        max(Luminance(current) + 0.12f, 0.12f);
+
+    float clippingDifference =
+        length(history - clippedHistory) /
+        max(length(current) + 0.1f, 0.1f);
+
+    float colorReactive = saturate(
+        relativeDifference * 0.65f +
+        clippingDifference * 0.5f);
+
+    colorReactive *= 1.0f - temporalTrust;
+
+    if (stableSurface)
+    {
+        colorReactive *= 0.25f;
+    }
+
+    float reactive = saturate(
+        max(
+            materialReactive,
+            colorReactive));
+
+    float motionReduction = saturate(
+        motionPixels / 32.0f);
+
+    float feedback = min(
+        saturate(Parameters.z),
+        0.96f);
+
+    float historyWeight = min(
+        feedback,
+        historySamples /
+        (historySamples + 1.0f));
+
+    historyWeight *=
+        (1.0f - reactive) *
+        (1.0f - motionReduction * 0.5f);
+
+    float confidence =
+        1.0f +
+        min(historySamples, 31.0f) *
+        (1.0f - materialReactive) *
+        stationary;
+
+    if (conflictingHistory)
+    {
+        confidence = 1.0f;
+    }
+
+    confidence = min(
+        confidence,
+        1.0f / max(
+            1.0f - feedback,
+            0.04f));
+
+    float3 resolved = max(
+        lerp(
+            current,
+            clippedHistory,
+            historyWeight),
+        0.0f);
+
+    return ResolveOutput(
+        resolved,
+        encodedDepth,
+        encodedRawDepth,
+        confidence);
 }

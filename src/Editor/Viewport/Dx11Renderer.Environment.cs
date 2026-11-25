@@ -234,7 +234,8 @@ namespace Editor.Viewport
                 _environmentTime,
                 _celestialFrame.MoonDirection,
                 _celestialFrame.MoonStrength,
-                _celestialFrame.Night);
+                _celestialFrame.Night,
+                _taaJitterPixels);
         }
 
         private void RenderEnvironmentWeather(
