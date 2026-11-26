@@ -2,6 +2,7 @@ using System.Numerics;
 using ZoneReborn.World.Characters;
 using ZoneReborn.World.Characters.Locomotion;
 using ZoneReborn.World.Terrain;
+using ZoneReborn.World.Actors;
 
 namespace Editor.Viewport;
 
@@ -28,7 +29,8 @@ public sealed partial class DxViewportHost
     public event Action? PlayStateChanged;
     public event Action<LocomotionSnapshot>? LocomotionChanged;
 
-    public async Task StartPlayAsync()
+    public async Task StartPlayAsync(
+        LevelActor? spawn = null)
     {
         if (IsPlaying || IsStarting)
         {
@@ -69,72 +71,99 @@ public sealed partial class DxViewportHost
 
         try
         {
-            if (_characterCatalog == null &&
+            if (spawn != null &&
+                (!spawn.Enabled || spawn.Kind != ActorKind.PlayerSpawn))
+            {
+                throw new InvalidOperationException(
+                    "Назначена некорректная точка появления персонажа.");
+            }
+
+            if (spawn == null &&
+                _characterCatalog == null &&
                 Editor.Characters.CharacterOutfitStore.Exists(assets))
             {
                 await LoadCharacterCatalogAsync(
                     assets,
-                    cancellation.Token
-                );
+                    cancellation.Token);
             }
 
             cancellation.Token.ThrowIfCancellationRequested();
 
-            var parts = _characterOutfit == null
+            var parts = spawn != null || _characterOutfit == null
                 ? null
                 : _characterCatalog?.Compose(_characterOutfit);
 
             var saved = _savedCamera;
+
+            Vector3 spawnOrigin = spawn?.Position ??
+                                  new Vector3(
+                                      saved.X,
+                                      saved.Y,
+                                      saved.Z);
+
+            float spawnYaw = spawn?.Yaw ?? saved.Yaw;
+
+            float maximumGroundY = spawn == null
+                ? spawnOrigin.Y
+                : spawnOrigin.Y + 0.35f;
 
             var loaded = await Task.Run(() =>
             {
                 cancellation.Token.ThrowIfCancellationRequested();
 
                 var surface = new TerrainSurface(level);
-                surface.PreparePlayCollision(assets, cancellation.Token);
+
+                surface.PreparePlayCollision(
+                    assets,
+                    cancellation.Token);
 
                 level.Objects?.Preload(
-                    new Vector3(saved.X, saved.Y, saved.Z),
+                    spawnOrigin,
                     40,
-                    cancellation.Token
-                );
+                    cancellation.Token);
 
                 if (!surface.TryGetGround(
-                        saved.X,
-                        saved.Z,
-                        saved.Y,
+                        spawnOrigin.X,
+                        spawnOrigin.Z,
+                        maximumGroundY,
                         out float height))
                 {
                     throw new InvalidOperationException(
-                        "Камера находится вне Terrain. " +
-                        "Подлетите к месту появления на уровне."
-                    );
+                        spawn == null
+                            ? "Камера находится вне Terrain."
+                            : $"Под PlayerSpawn '{spawn.Name}' не найдена поверхность.");
+                }
+
+                if (spawn != null &&
+                    MathF.Abs(height - spawnOrigin.Y) > 0.75f)
+                {
+                    throw new InvalidOperationException(
+                        $"PlayerSpawn '{spawn.Name}' слишком далеко от поверхности.");
                 }
 
                 var spawnPosition = new Vector3(
-                    saved.X,
+                    spawnOrigin.X,
                     height,
-                    saved.Z
-                );
+                    spawnOrigin.Z);
 
-                if (!surface.CanOccupy(spawnPosition, 1.75f))
+                if (!surface.CanOccupy(
+                        spawnPosition,
+                        1.75f))
                 {
                     throw new InvalidOperationException(
-                        "Недостаточно места для персонажа. " +
-                        "Переместите камеру на свободный участок."
-                    );
+                        spawn == null
+                            ? "Недостаточно места для персонажа."
+                            : $"PlayerSpawn '{spawn.Name}' находится внутри коллизии.");
                 }
 
                 var asset = parts == null
                     ? CharacterLoader.Load(
                         assets,
-                        cancellation.Token
-                    )
+                        cancellation.Token)
                     : CharacterLoader.Load(
                         assets,
                         parts,
-                        cancellation.Token
-                    );
+                        cancellation.Token);
 
                 cancellation.Token.ThrowIfCancellationRequested();
 
@@ -142,8 +171,7 @@ public sealed partial class DxViewportHost
                     asset,
                     surface,
                     spawnPosition,
-                    saved.Yaw
-                );
+                    spawnYaw);
 
                 return (
                     Asset: asset,
@@ -175,7 +203,7 @@ public sealed partial class DxViewportHost
             _jumpRequested = false;
             _toggleCrouchRequested = false;
 
-            _orbit = new ThirdPersonCamera(saved.Yaw);
+            _orbit = new ThirdPersonCamera(spawnYaw);
 
             // Initialize the camera directly at its valid position.
             // The next frames use smoothed movement.

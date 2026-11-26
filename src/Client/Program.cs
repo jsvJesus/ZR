@@ -1,14 +1,17 @@
-using System;
+using Avalonia;
 
 namespace Client
 {
     internal static class Program
     {
         [STAThread]
-        private static void Main()
+        public static void Main(string[] args)
         {
-            using var game = new GameHost();
-            game.Run();
+            AppBuilder.Configure<App>()
+                .UsePlatformDetect()
+                .WithInterFont()
+                .LogToTrace()
+                .StartWithClassicDesktopLifetime(args);
         }
     }
 }

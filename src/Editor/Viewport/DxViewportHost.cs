@@ -69,6 +69,11 @@ namespace Editor.Viewport
 
         public bool ShowGrid { get; set; } = true;
         public bool ShowSelectedCollision { get; set; }
+        public bool IsGameClient { get; set; }
+
+        public bool IsRendererReady =>
+            _renderer != null &&
+            _windowHandle != nint.Zero;
 
         public CameraPose CameraPose => _camera.Pose;
 
@@ -628,7 +633,12 @@ namespace Editor.Viewport
 
                     if ((int)wParam == KeyF8 && IsPlaying)
                     {
-                        if ((lParam.ToInt64() & (1L << 30)) == 0) TogglePlayInspection();
+                        if (!IsGameClient &&
+                            (lParam.ToInt64() & (1L << 30)) == 0)
+                        {
+                            TogglePlayInspection();
+                        }
+
                         return nint.Zero;
                     }
 
