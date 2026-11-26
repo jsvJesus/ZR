@@ -10,6 +10,12 @@ namespace Editor.Viewport
 
         private Guid? _actorSelection;
 
+        private Guid? _lootLocationSelection;
+
+        private ActorItemCatalog? _lootItemCatalog;
+
+        private bool _lootPreviewEnabled;
+
         private ObjectGizmoMode _actorGizmoMode;
 
         private ObjectGizmoAxis _actorGizmoAxis;
@@ -18,10 +24,16 @@ namespace Editor.Viewport
 
         public void SetActors(
             ActorDocument? document,
-            Guid? selectedActor)
+            Guid? selectedActor,
+            Guid? selectedLocation,
+            ActorItemCatalog? itemCatalog,
+            bool lootPreviewEnabled)
         {
             _actorDocument = document;
             _actorSelection = selectedActor;
+            _lootLocationSelection = selectedLocation;
+            _lootItemCatalog = itemCatalog;
+            _lootPreviewEnabled = lootPreviewEnabled;
         }
 
         public void SetActorGizmo(
@@ -35,6 +47,7 @@ namespace Editor.Viewport
         }
 
         private void RenderActorOverlay(
+            FreeCamera camera,
             Matrix4x4 viewProjection)
         {
             if (_actorDocument == null ||
@@ -54,7 +67,16 @@ namespace Editor.Viewport
                 _actorDocument,
                 _actorSelection,
                 viewProjection,
-                _npcRenderers.ContainsKey);
+                _npcRenderers.ContainsKey,
+                _lootLocationSelection);
+
+            _roadOverlay.RenderLootLabels(
+                _actorDocument,
+                _actorSelection,
+                viewProjection,
+                camera.Position,
+                _width,
+                _height);
         }
 
         private void RenderActorGizmo(
@@ -69,8 +91,23 @@ namespace Editor.Viewport
                 return;
             }
 
+            Vector3 position = actor.Position;
+
+            if (actor.Kind == ActorKind.LootSpawn &&
+                _lootLocationSelection is Guid locationId)
+            {
+                LootSpawnLocation? location =
+                    actor.LootLocations.FirstOrDefault(
+                        item => item.Id == locationId);
+
+                if (location != null)
+                {
+                    position = location.GetWorldPosition(actor);
+                }
+            }
+
             if (!ObjectGizmoGeometry.TryCreateFrame(
-                    actor.Position,
+                    position,
                     camera,
                     _width,
                     _height,

@@ -299,6 +299,21 @@ namespace Editor.Viewport
 
                     _objects?.RenderVelocity(_motionTarget, _reactiveTarget, depthTarget,
                         activeViewProjection, previousViewProjection, cameraPosition, historyValid, _width, _height);
+
+                    if (_lootPreviewVisible)
+                    {
+                        _lootPreviewRenderer?.RenderVelocity(
+                            _motionTarget,
+                            _reactiveTarget,
+                            depthTarget,
+                            activeViewProjection,
+                            previousViewProjection,
+                            cameraPosition,
+                            historyValid,
+                            _width,
+                            _height);
+                    }
+
                     _roadModelRenderer?.RenderVelocity(_motionTarget, _reactiveTarget, depthTarget,
                         activeViewProjection, previousViewProjection, cameraPosition, historyValid, _width, _height);
                     _groundCoverRenderer?.RenderVelocity(_motionTarget, _reactiveTarget, depthTarget,

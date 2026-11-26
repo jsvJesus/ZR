@@ -77,6 +77,10 @@ namespace ZoneReborn.World.Actors
         public int Count { get; set; } = 1;
         public int RespawnSeconds { get; set; } = 60;
 
+        public string LootCategory { get; set; } = "LOOT";
+
+        public List<LootSpawnLocation> LootLocations { get; set; } = [];
+
         public List<LootSpawnEntry> Loot { get; set; } = [];
 
         [JsonIgnore]

@@ -99,6 +99,33 @@ namespace ZoneReborn.World.Actors
                         "Некорректные параметры актора.");
                 }
 
+                if (actor.LootLocations == null ||
+                    actor.LootLocations.Count > 256 ||
+                    !ActorItemCatalog.Categories.Contains(actor.LootCategory))
+                {
+                    throw new InvalidDataException(
+                        $"Некорректный LootSpawn: {actor.Name}.");
+                }
+
+                var locationIds = new HashSet<Guid>();
+
+                foreach (LootSpawnLocation location in actor.LootLocations)
+                {
+                    if (location == null ||
+                        location.Id == Guid.Empty ||
+                        !locationIds.Add(location.Id) ||
+                        !float.IsFinite(location.X) ||
+                        !float.IsFinite(location.Y) ||
+                        !float.IsFinite(location.Z) ||
+                        MathF.Abs(location.X) > 20000000f ||
+                        MathF.Abs(location.Y) > 20000000f ||
+                        MathF.Abs(location.Z) > 20000000f)
+                    {
+                        throw new InvalidDataException(
+                            $"Некорректная позиция лута: {actor.Name}.");
+                    }
+                }
+
                 foreach (LootSpawnEntry entry in actor.Loot)
                 {
                     if (entry == null ||

@@ -9,6 +9,7 @@ namespace ZoneReborn.World.Actors
         string Category,
         string Name)
     {
+        public string ModelPath { get; init; } = "";
         public override string ToString()
         {
             return $"[{TypeId}] {Name}";
@@ -39,6 +40,69 @@ namespace ZoneReborn.World.Actors
         {
             Items = items;
             Warnings = warnings;
+        }
+
+        private static string ReadModelPath(
+            Dictionary<object, object?> data)
+        {
+            if (!data.TryGetValue(
+                    "ModelNames",
+                    out object? rawModels) ||
+                rawModels is not Dictionary<object, object?> models)
+            {
+                return "";
+            }
+
+            IEnumerable<string> candidates = models
+                .OrderBy(pair => Equals(pair.Key, 0L) ? 0 : 1)
+                .Select(pair => pair.Value)
+                .OfType<string>();
+
+            foreach (string candidate in candidates)
+            {
+                string path = candidate
+                    .Trim()
+                    .Replace('\\', '/');
+
+                if (path.StartsWith(
+                        "packs/",
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    path = path[6..];
+                }
+
+                if (!path.EndsWith(
+                        ".model",
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                if (path.Contains(':') ||
+                    path.Split('/').Any(
+                        part => part is ".." or "." or ""))
+                {
+                    continue;
+                }
+
+                if (path.StartsWith(
+                        "models/",
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    path = "objects/" + path[7..];
+                }
+
+                if (!path.StartsWith(
+                        "objects/",
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    path = "objects/" + path;
+                }
+
+                return path;
+            }
+
+            return "";
         }
 
         public static ActorItemCatalog Read(
@@ -108,7 +172,10 @@ namespace ZoneReborn.World.Actors
                             (int)id,
                             categoryId,
                             category,
-                            name));
+                            name)
+                        {
+                            ModelPath = ReadModelPath(data)
+                        });
                     }
                 }
                 catch (Exception exception) when (

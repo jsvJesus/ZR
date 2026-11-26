@@ -58,6 +58,7 @@ namespace Editor.Viewport
                        _windowHandle,
                        out NativeRect rect) &&
                    ObjectGizmoGeometry.TryCreateFrame(
+                       LootLocationSelection()?.GetWorldPosition(actor) ??
                        actor.Position,
                        _camera,
                        rect.Right - rect.Left,
@@ -114,7 +115,8 @@ namespace Editor.Viewport
                 axis,
                 direction,
                 frame,
-                pixel);
+                pixel,
+                LootLocationSelection());
 
             Vector3 ray = frame.RayDirection(pixel);
 
@@ -246,7 +248,7 @@ namespace Editor.Viewport
                         return true;
                     }
 
-                    drag.Actor.Position = position;
+                    drag.Position = position;
                 }
                 else
                 {
@@ -338,12 +340,12 @@ namespace Editor.Viewport
             _actorDrag = null;
 
             bool changed =
-                drag.Actor.Position != drag.StartPosition ||
+                drag.Position != drag.StartPosition ||
                 drag.Actor.Yaw != drag.StartYaw;
 
             if (!commit)
             {
-                drag.Actor.Position = drag.StartPosition;
+                drag.Position = drag.StartPosition;
                 drag.Actor.Yaw = drag.StartYaw;
             }
             else if (changed)
@@ -372,7 +374,8 @@ namespace Editor.Viewport
             ObjectGizmoAxis axis,
             Vector3 direction,
             ObjectGizmoFrame frame,
-            Vector2 startMouse)
+            Vector2 startMouse,
+            LootSpawnLocation? location)
         {
             public LevelActor Actor { get; } = actor;
 
@@ -389,9 +392,27 @@ namespace Editor.Viewport
             public Vector2 StartMouse { get; } = startMouse;
 
             public Vector3 StartPosition { get; } =
-                actor.Position;
+                location?.GetWorldPosition(actor) ?? actor.Position;
 
             public float StartYaw { get; } = actor.Yaw;
+
+            public Vector3 Position
+            {
+                get => location?.GetWorldPosition(Actor) ??
+                       Actor.Position;
+
+                set
+                {
+                    if (location == null)
+                    {
+                        Actor.Position = value;
+                    }
+                    else
+                    {
+                        location.SetWorldPosition(Actor, value);
+                    }
+                }
+            }
 
             public Vector3 PlaneNormal { get; set; }
 

@@ -289,7 +289,10 @@ namespace Editor.Viewport
                             !IsStarting
                                 ? _level?.Actors
                                 : null,
-                            _selectedActorId);
+                            _selectedActorId,
+                            _selectedLootLocationId,
+                            LootItemCatalog,
+                            LootPreviewEnabled);
 
                         _renderer.SetActorGizmo(
                             ActorTransformMode,

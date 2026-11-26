@@ -237,6 +237,7 @@ namespace Editor.Viewport
             SetRoadSurface(level);
             SetGroundCover(level, assets);
             SetNpcLevel(level.Actors, assets);
+            SetLootPreviewLevel(assets);
             ResetPostProcessHistory();
         }
 
@@ -255,6 +256,7 @@ namespace Editor.Viewport
             SetRoadSurface(null);
             SetGroundCover(null, null);
             SetNpcLevel(null, null);
+            SetLootPreviewLevel(null);
             _selectedObject = null;
             ResetPostProcessHistory();
         }
@@ -429,6 +431,9 @@ namespace Editor.Viewport
                 playing ? _playFieldOfView : 1.05f,
                 playing);
 
+            Matrix4x4 actorViewProjection =
+                view * projection;
+
             ApplyTaaProjectionJitter(
                 ref projection);
 
@@ -467,6 +472,16 @@ namespace Editor.Viewport
                 camera,
                 viewProjection,
                 farPlane);
+
+            _lootPreviewVisible = false;
+
+            if (!playing)
+            {
+                RenderLootPreview(
+                    camera,
+                    viewProjection,
+                    farPlane);
+            }
 
             _trees?.Render(
                 camera,
@@ -528,6 +543,13 @@ namespace Editor.Viewport
 
             _objects?.RenderTransparent(camera, viewProjection);
 
+            if (!playing)
+            {
+                RenderLootPreviewTransparency(
+                    camera,
+                    viewProjection);
+            }
+
             RenderRoadTransparency(
                 camera,
                 viewProjection);
@@ -571,17 +593,36 @@ namespace Editor.Viewport
             if (!playing)
             {
                 RenderRoadOverlay(viewProjection);
-                RenderActorOverlay(viewProjection);
-
-                RenderActorGizmo(
-                    camera,
-                    viewProjection);
             }
 
             RenderPostProcessing(
                 viewProjection,
                 camera.Position,
                 sunDirection);
+
+            if (!playing &&
+                _actorDocument != null &&
+                _backBufferTarget != null)
+            {
+                _context.OutputMerger.SetRenderTargets(
+                    null,
+                    _backBufferTarget);
+
+                _context.Rasterizer.SetViewport(
+                    0,
+                    0,
+                    _width,
+                    _height);
+
+                RenderActorOverlay(
+                    camera,
+                    actorViewProjection);
+
+                RenderActorGizmo(
+                    camera,
+                    actorViewProjection);
+            }
+
             _swapChain.Present(1, PresentFlags.None);
         }
 
@@ -655,6 +696,7 @@ namespace Editor.Viewport
             _objectGizmo?.Dispose();
             _character?.Dispose();
             DisposeNpcPreviews();
+            DisposeLootPreview();
             DisposePostProcessing();
             DisposeRenderTargetResources();
             _cameraBuffer?.Dispose();

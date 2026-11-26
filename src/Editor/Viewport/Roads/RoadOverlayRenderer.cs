@@ -14,7 +14,7 @@ using Vector4 = System.Numerics.Vector4;
 
 namespace Editor.Viewport.Roads;
 
-internal sealed class RoadOverlayRenderer : IDisposable
+internal sealed partial class RoadOverlayRenderer : IDisposable
 {
     private const int MaximumVertices = 120000;
 
@@ -227,7 +227,8 @@ internal sealed class RoadOverlayRenderer : IDisposable
         ActorDocument document,
         Guid? selectedActor,
         Matrix4x4 viewProjection,
-        Func<Guid, bool>? hasNpcModel = null)
+        Func<Guid, bool>? hasNpcModel = null,
+        Guid? selectedLocation = null)
     {
         _lines.Clear();
 
@@ -282,6 +283,20 @@ internal sealed class RoadOverlayRenderer : IDisposable
             }
 
             DrawActor(actor, false);
+        }
+
+        foreach (LevelActor actor in document.Actors)
+        {
+            if (actor.Kind != ActorKind.LootSpawn)
+            {
+                continue;
+            }
+
+            DrawLootLocations(
+                actor,
+                actor.Id == selectedActor
+                    ? selectedLocation
+                    : null);
         }
 
         Flush(viewProjection);

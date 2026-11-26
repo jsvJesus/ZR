@@ -24,6 +24,9 @@ namespace Editor.Viewport
                 {
                     CancelActorDrag();
 
+                    LootLocationPlacementEnabled = false;
+                    _selectedLootLocationId = null;
+
                     _hoveredActorAxis =
                         ObjectGizmoAxis.None;
                 }
@@ -40,8 +43,11 @@ namespace Editor.Viewport
             {
                 CancelActorDrag();
 
-                _hoveredActorAxis =
-                    ObjectGizmoAxis.None;
+                _selectedLootLocationId = null;
+
+                LootLocationPlacementEnabled = false;
+
+                _hoveredActorAxis = ObjectGizmoAxis.None;
             }
 
             _selectedActorId =
@@ -78,8 +84,13 @@ namespace Editor.Viewport
                         out Vector3 position))
                 {
                     RendererError?.Invoke(
-                        "Поверхность для актора не найдена.");
+                        "Поверхность не найдена.");
 
+                    return;
+                }
+
+                if (PlaceLootLocation(position))
+                {
                     return;
                 }
 
@@ -102,10 +113,19 @@ namespace Editor.Viewport
                 return;
             }
 
+            if (TryPickLootLocation(
+                    _camera.Position,
+                    direction))
+            {
+                return;
+            }
+
             Guid? picked = PickActor(
                 document,
                 _camera.Position,
                 direction);
+
+            SelectLootLocation(null);
 
             SelectActor(picked);
 

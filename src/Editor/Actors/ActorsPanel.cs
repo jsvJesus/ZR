@@ -166,6 +166,11 @@ namespace Editor.Actors
                 _catalog = await Task.Run(
                     () => ActorItemCatalog.Read(assets));
 
+                if (_viewport != null)
+                {
+                    _viewport.LootItemCatalog = _catalog;
+                }
+
                 _catalogStatus.Text =
                     $"Предметов: {_catalog.Items.Count}";
 
@@ -241,6 +246,11 @@ namespace Editor.Actors
         {
             string prefix = actor.Enabled ? "" : "[OFF] ";
 
+            if (actor.Kind == ActorKind.LootSpawn)
+            {
+                return $"{prefix}{actor.Name} [{actor.LootCategory}]";
+            }
+
             return $"{prefix}{actor.Name} · {actor.Kind}";
         }
 
@@ -265,6 +275,21 @@ namespace Editor.Actors
                 Document == null)
             {
                 return;
+            }
+
+            if (actor.Kind == ActorKind.LootSpawn &&
+                _viewport?.SelectedLootLocationId is Guid locationId)
+            {
+                LootSpawnLocation? location =
+                    actor.LootLocations.FirstOrDefault(
+                        item => item.Id == locationId);
+
+                if (location != null)
+                {
+                    DeleteLootLocation(actor, location);
+
+                    return;
+                }
             }
 
             Document.Remove(actor.Id);
@@ -419,6 +444,7 @@ namespace Editor.Actors
 
             if (actor.Kind == ActorKind.LootSpawn)
             {
+                BuildLootLocationProperties(actor);
                 BuildLootProperties(actor);
             }
 
@@ -530,6 +556,7 @@ namespace Editor.Actors
                 () =>
                 {
                     ActorItemDefinition? item =
+                        _catalog?.FindCategory(actor.LootCategory).FirstOrDefault() ??
                         _catalog?.Items.FirstOrDefault();
 
                     if (item == null)
