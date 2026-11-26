@@ -5,26 +5,38 @@ namespace Editor.Viewport.Roads
 {
     internal sealed partial class RoadOverlayRenderer
     {
+        private static readonly Vector4 LootLocationColor =
+            new(0.82f, 0.87f, 0.95f, 1f);
+
+        private static readonly Vector4 SelectedLootLocationColor =
+            new(1f, 0.08f, 0.08f, 1f);
+
         private void DrawLootLocations(
             LevelActor actor,
             Guid? selectedLocation)
         {
+            LootSpawnLocation? selected = null;
+
             foreach (LootSpawnLocation location in actor.LootLocations)
             {
-                bool selected =
-                    location.Id == selectedLocation;
-
-                Vector4 color = selected
-                    ? new Vector4(1f, 0.05f, 0.05f, 1f)
-                    : new Vector4(0.45f, 0.45f, 0.45f, 1f);
-
-                Vector3 position =
-                    location.GetWorldPosition(actor);
+                if (location.Id == selectedLocation)
+                {
+                    selected = location;
+                    continue;
+                }
 
                 DrawLootCube(
-                    position,
+                    location.GetWorldPosition(actor),
                     0.3f,
-                    color);
+                    LootLocationColor);
+            }
+
+            if (selected != null)
+            {
+                DrawLootCube(
+                    selected.GetWorldPosition(actor),
+                    0.3f,
+                    SelectedLootLocationColor);
             }
         }
 
@@ -35,7 +47,8 @@ namespace Editor.Viewport.Roads
         {
             float half = size * 0.5f;
 
-            Span<Vector3> corners = stackalloc Vector3[8];
+            Span<Vector3> corners =
+                stackalloc Vector3[8];
 
             for (int index = 0; index < 8; index++)
             {

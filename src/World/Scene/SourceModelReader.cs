@@ -229,34 +229,184 @@ public static class SourceModelReader
 
     internal static string Normalize(string file)
     {
-        string normalized = file.Trim().Replace('\\', '/');
-        if (normalized.StartsWith("packs/", StringComparison.OrdinalIgnoreCase)) normalized = normalized[6..];
-        if (normalized.StartsWith("data/objectsdepot/", StringComparison.OrdinalIgnoreCase)) normalized = "models/" + normalized[18..];
-        if (!normalized.StartsWith("models/", StringComparison.OrdinalIgnoreCase)
-            && !normalized.StartsWith("models2/", StringComparison.OrdinalIgnoreCase)
-            && !normalized.StartsWith("objects/", StringComparison.OrdinalIgnoreCase))
-            throw new InvalidDataException("Expected a models/, models2/, objects/ or data/objectsdepot/ asset path.");
-        if (normalized.Split('/').Any(part => part is ".." or "." || part.Length == 0) || normalized.Contains(':'))
-            throw new InvalidDataException("Invalid scene model asset path.");
+        string normalized = file
+            .Trim()
+            .Replace('\\', '/');
+
+        if (normalized.StartsWith(
+                "packs/",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            normalized = normalized[6..];
+        }
+
+        if (normalized.StartsWith(
+                "data/objectsdepot/",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            normalized = "models/" + normalized[18..];
+        }
+
+        if (!normalized.StartsWith(
+                "models/",
+                StringComparison.OrdinalIgnoreCase) &&
+            !normalized.StartsWith(
+                "models2/",
+                StringComparison.OrdinalIgnoreCase) &&
+            !normalized.StartsWith(
+                "objects/",
+                StringComparison.OrdinalIgnoreCase) &&
+            !normalized.StartsWith(
+                "characters2/",
+                StringComparison.OrdinalIgnoreCase) &&
+            !normalized.StartsWith(
+                "characters/",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException(
+                "Unsupported scene model asset directory.");
+        }
+
+        if (normalized.Split('/').Any(
+                part => part is ".." or "." ||
+                        part.Length == 0) ||
+            normalized.Contains(':'))
+        {
+            throw new InvalidDataException(
+                "Invalid scene model asset path.");
+        }
+
         return normalized;
     }
 
-    internal static string Resolve(AssetPaths assets, string file)
+    internal static string Resolve(
+        AssetPaths assets,
+        string file)
     {
         string normalized = Normalize(file);
-        string extension = Path.GetExtension(normalized);
-        bool source = (normalized.StartsWith("models/", StringComparison.OrdinalIgnoreCase) ||
-                normalized.StartsWith("objects/flora/", StringComparison.OrdinalIgnoreCase)) &&
-            (extension.Equals(".sco", StringComparison.OrdinalIgnoreCase) ||
-                extension.Equals(".scb", StringComparison.OrdinalIgnoreCase));
-        bool bigWorld = normalized.StartsWith("objects/", StringComparison.OrdinalIgnoreCase)
-            && Path.GetExtension(normalized).Equals(".model", StringComparison.OrdinalIgnoreCase);
-        bool imported = normalized.StartsWith("models2/", StringComparison.OrdinalIgnoreCase)
-            && Path.GetExtension(normalized).Equals(ImportedModelStorage.Extension, StringComparison.OrdinalIgnoreCase);
+
+        string extension =
+            Path.GetExtension(normalized);
+
+        bool source =
+            (normalized.StartsWith(
+                 "models/",
+                 StringComparison.OrdinalIgnoreCase) ||
+             normalized.StartsWith(
+                 "objects/flora/",
+                 StringComparison.OrdinalIgnoreCase)) &&
+            (extension.Equals(
+                 ".sco",
+                 StringComparison.OrdinalIgnoreCase) ||
+             extension.Equals(
+                 ".scb",
+                 StringComparison.OrdinalIgnoreCase));
+
+        bool bigWorld =
+            extension.Equals(
+                ".model",
+                StringComparison.OrdinalIgnoreCase) &&
+            (normalized.StartsWith(
+                 "objects/",
+                 StringComparison.OrdinalIgnoreCase) ||
+             normalized.StartsWith(
+                 "models/",
+                 StringComparison.OrdinalIgnoreCase) ||
+             normalized.StartsWith(
+                 "characters2/",
+                 StringComparison.OrdinalIgnoreCase) ||
+             normalized.StartsWith(
+                 "characters/",
+                 StringComparison.OrdinalIgnoreCase));
+
+        bool imported =
+            normalized.StartsWith(
+                "models2/",
+                StringComparison.OrdinalIgnoreCase) &&
+            extension.Equals(
+                ImportedModelStorage.Extension,
+                StringComparison.OrdinalIgnoreCase);
+
         if (!source && !bigWorld && !imported)
-            throw new InvalidDataException("Expected a models/*.sco, models/*.scb, objects/flora/*.sco, " +
-                "objects/flora/*.scb, objects/*.model or models2/*.zrmodel scene asset.");
-        return AssetPathResolver.Resolve(assets.Root, normalized);
+        {
+            throw new InvalidDataException(
+                $"Unsupported scene model asset: {normalized}");
+        }
+
+        if (bigWorld)
+        {
+            return ResolveBigWorldAsset(
+                assets,
+                normalized);
+        }
+
+        return AssetPathResolver.Resolve(
+            assets.Root,
+            normalized);
+    }
+
+    internal static string ResolveBigWorldAsset(
+        AssetPaths assets,
+        string reference)
+    {
+        reference = reference
+            .Trim()
+            .Replace('\\', '/');
+
+        if (reference.StartsWith(
+                "packs/",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            reference = reference[6..];
+        }
+
+        if (reference.Split('/').Any(
+                part => part is ".." or "." ||
+                        part.Length == 0) ||
+            reference.Contains(':'))
+        {
+            throw new InvalidDataException(
+                "Invalid BigWorld dependency path.");
+        }
+
+        string direct = AssetPathResolver.Resolve(
+            assets.Root,
+            reference);
+
+        if (File.Exists(direct))
+        {
+            return direct;
+        }
+
+        string extension = Path.GetExtension(direct);
+
+        bool texture =
+            extension.Equals(
+                ".tga",
+                StringComparison.OrdinalIgnoreCase) ||
+            extension.Equals(
+                ".bmp",
+                StringComparison.OrdinalIgnoreCase) ||
+            extension.Equals(
+                ".png",
+                StringComparison.OrdinalIgnoreCase);
+
+        if (texture &&
+            File.Exists(Path.ChangeExtension(direct, ".dds")))
+        {
+            return direct;
+        }
+
+        if (reference.StartsWith(
+                "models/",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return AssetPathResolver.Resolve(
+                assets.Root,
+                "objects/" + reference[7..]);
+        }
+
+        return direct;
     }
 
     private static (Vector3 Center, int Count) ReadHeader(StreamReader reader)

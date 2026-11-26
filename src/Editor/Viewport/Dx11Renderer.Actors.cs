@@ -76,7 +76,8 @@ namespace Editor.Viewport
                 viewProjection,
                 camera.Position,
                 _width,
-                _height);
+                _height,
+                _lootLocationSelection);
         }
 
         private void RenderActorGizmo(

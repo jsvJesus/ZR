@@ -322,13 +322,9 @@ public static class BigWorldModelReader
 
         private string Resolve(string reference)
         {
-            reference = reference.Trim().Replace('\\', '/');
-            if (reference.StartsWith("packs/", StringComparison.OrdinalIgnoreCase)) reference = reference[6..];
-            // This alias belongs only to BigWorld resources. Existing models/*.sco stay untouched.
-            if (reference.StartsWith("models/", StringComparison.OrdinalIgnoreCase)) reference = "objects/" + reference[7..];
-            if (reference.Split('/').Any(part => part is ".." or "." || part.Length == 0) || reference.Contains(':'))
-                throw new InvalidDataException("Invalid BigWorld dependency path.");
-            return AssetPathResolver.Resolve(assets.Root, reference);
+            return SourceModelReader.ResolveBigWorldAsset(
+                assets,
+                reference);
         }
         private static string WithExtension(string reference, string extension) => reference.EndsWith(extension, StringComparison.OrdinalIgnoreCase)
             ? reference : reference + extension;

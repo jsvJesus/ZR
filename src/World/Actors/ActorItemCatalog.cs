@@ -1,5 +1,6 @@
 using ZoneReborn.World.Assets;
 using ZoneReborn.World.Characters;
+using ZoneReborn.World.Scene;
 
 namespace ZoneReborn.World.Actors
 {
@@ -43,33 +44,45 @@ namespace ZoneReborn.World.Actors
         }
 
         private static string ReadModelPath(
+            AssetPaths assets,
             Dictionary<object, object?> data)
         {
-            if (!data.TryGetValue(
-                    "ModelNames",
-                    out object? rawModels) ||
-                rawModels is not Dictionary<object, object?> models)
+            var candidates = new List<string>();
+
+            if (data.TryGetValue("OnFlorModel", out object? floorModel) &&
+                floorModel is string floorPath)
             {
-                return "";
+                candidates.Add(floorPath);
             }
 
-            IEnumerable<string> candidates = models
-                .OrderBy(pair => Equals(pair.Key, 0L) ? 0 : 1)
-                .Select(pair => pair.Value)
-                .OfType<string>();
+            if (data.TryGetValue("ModelPath", out object? modelPath) &&
+                modelPath is string directPath)
+            {
+                candidates.Add(directPath);
+            }
+
+            if (data.TryGetValue("ModelNames", out object? rawModels) &&
+                rawModels is Dictionary<object, object?> models)
+            {
+                candidates.AddRange(
+                    models
+                        .OrderBy(pair => Equals(pair.Key, 0L) ? 0 : 1)
+                        .Select(pair => pair.Value)
+                        .OfType<string>());
+            }
+
+            string fallback = "";
 
             foreach (string candidate in candidates)
             {
+                if (string.IsNullOrWhiteSpace(candidate))
+                {
+                    continue;
+                }
+
                 string path = candidate
                     .Trim()
                     .Replace('\\', '/');
-
-                if (path.StartsWith(
-                        "packs/",
-                        StringComparison.OrdinalIgnoreCase))
-                {
-                    path = path[6..];
-                }
 
                 if (!path.EndsWith(
                         ".model",
@@ -78,31 +91,33 @@ namespace ZoneReborn.World.Actors
                     continue;
                 }
 
-                if (path.Contains(':') ||
-                    path.Split('/').Any(
-                        part => part is ".." or "." or ""))
+                try
+                {
+                    path = SourceModelReader.Normalize(path);
+
+                    string fullPath =
+                        SourceModelReader.Resolve(assets, path);
+
+                    if (string.IsNullOrEmpty(fallback))
+                    {
+                        fallback = path;
+                    }
+
+                    if (File.Exists(fullPath))
+                    {
+                        return path;
+                    }
+                }
+                catch (Exception exception) when (
+                    exception is InvalidDataException ||
+                    exception is ArgumentException ||
+                    exception is NotSupportedException)
                 {
                     continue;
                 }
-
-                if (path.StartsWith(
-                        "models/",
-                        StringComparison.OrdinalIgnoreCase))
-                {
-                    path = "objects/" + path[7..];
-                }
-
-                if (!path.StartsWith(
-                        "objects/",
-                        StringComparison.OrdinalIgnoreCase))
-                {
-                    path = "objects/" + path;
-                }
-
-                return path;
             }
 
-            return "";
+            return fallback;
         }
 
         public static ActorItemCatalog Read(
@@ -174,7 +189,7 @@ namespace ZoneReborn.World.Actors
                             category,
                             name)
                         {
-                            ModelPath = ReadModelPath(data)
+                            ModelPath = ReadModelPath(assets, data)
                         });
                     }
                 }

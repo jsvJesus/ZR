@@ -1,4 +1,5 @@
 using System.Numerics;
+using System.Diagnostics;
 using Editor.Viewport.Scene;
 using ZoneReborn.World.Actors;
 using ZoneReborn.World.Assets;
@@ -48,6 +49,13 @@ namespace Editor.Viewport
             _lootPreviewScene ??= new SceneData(
                 _lootPreviewAssets,
                 []);
+
+            while (_lootPreviewScene.Warnings.TryDequeue(
+                       out string? warning))
+            {
+                Trace.TraceWarning(
+                    $"LootSpawn preview: {warning}");
+            }
 
             var instances = new List<SceneInstance>();
 

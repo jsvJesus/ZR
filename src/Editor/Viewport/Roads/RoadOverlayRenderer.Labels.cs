@@ -32,7 +32,17 @@ namespace Editor.Viewport.Roads
             ['W'] = [17, 17, 17, 21, 21, 21, 10],
             ['X'] = [17, 17, 10, 4, 10, 17, 17],
             ['Y'] = [17, 17, 10, 4, 4, 4, 4],
-            ['Z'] = [31, 1, 2, 4, 8, 16, 31]
+            ['Z'] = [31, 1, 2, 4, 8, 16, 31],
+            ['0'] = [14, 17, 19, 21, 25, 17, 14],
+            ['1'] = [4, 12, 4, 4, 4, 4, 14],
+            ['2'] = [14, 17, 1, 2, 4, 8, 31],
+            ['3'] = [30, 1, 1, 14, 1, 1, 30],
+            ['4'] = [2, 6, 10, 18, 31, 2, 2],
+            ['5'] = [31, 16, 16, 30, 1, 1, 30],
+            ['6'] = [14, 16, 16, 30, 17, 17, 14],
+            ['7'] = [31, 1, 2, 4, 8, 8, 8],
+            ['8'] = [14, 17, 17, 14, 17, 17, 14],
+            ['9'] = [14, 17, 17, 15, 1, 1, 14]
         };
 
         public void RenderLootLabels(
@@ -41,7 +51,8 @@ namespace Editor.Viewport.Roads
             Matrix4x4 viewProjection,
             Vector3 cameraPosition,
             int width,
-            int height)
+            int height,
+            Guid? selectedLocation)
         {
             if (width <= 0 || height <= 0)
             {
@@ -57,39 +68,12 @@ namespace Editor.Viewport.Roads
                     continue;
                 }
 
-                bool selected =
-                    actor.Id == selectedActor;
+                bool selected = actor.Id == selectedActor;
 
                 if (!selected &&
                     Vector3.DistanceSquared(
                         actor.Position,
                         cameraPosition) > 14400f)
-                {
-                    continue;
-                }
-
-                Vector3 position =
-                    actor.Position +
-                    Vector3.UnitY * 1.35f;
-
-                Vector4 clip = Vector4.Transform(
-                    new Vector4(position, 1f),
-                    viewProjection);
-
-                if (clip.W <= 0.001f)
-                {
-                    continue;
-                }
-
-                Vector3 ndc = new(
-                    clip.X / clip.W,
-                    clip.Y / clip.W,
-                    clip.Z / clip.W);
-
-                if (MathF.Abs(ndc.X) > 1f ||
-                    MathF.Abs(ndc.Y) > 1f ||
-                    ndc.Z < 0f ||
-                    ndc.Z > 1f)
                 {
                     continue;
                 }
@@ -104,15 +88,87 @@ namespace Editor.Viewport.Roads
                         0.45f, 0.45f, 0.45f, 1f);
                 }
 
-                DrawActorLabel(
+                DrawWorldLootLabel(
                     actor.LootCategory,
-                    ndc,
+                    actor.Position + Vector3.UnitY * 1.35f,
+                    viewProjection,
                     width,
                     height,
                     color);
+
+                if (!selected)
+                {
+                    continue;
+                }
+
+                for (int index = 0;
+                     index < actor.LootLocations.Count;
+                     index++)
+                {
+                    LootSpawnLocation location =
+                        actor.LootLocations[index];
+
+                    Vector3 position =
+                        location.GetWorldPosition(actor) +
+                        Vector3.UnitY * 0.5f;
+
+                    Vector4 locationColor =
+                        location.Id == selectedLocation
+                            ? SelectedLootLocationColor
+                            : LootLocationColor;
+
+                    DrawWorldLootLabel(
+                        $"L{index + 1}",
+                        position,
+                        viewProjection,
+                        width,
+                        height,
+                        locationColor);
+                }
             }
 
             Flush(Matrix4x4.Identity);
+        }
+
+        private void DrawWorldLootLabel(
+            string text,
+            Vector3 position,
+            Matrix4x4 viewProjection,
+            int width,
+            int height,
+            Vector4 color)
+        {
+            Vector4 clip = Vector4.Transform(
+                new Vector4(position, 1f),
+                viewProjection);
+
+            if (clip.W <= 0.001f)
+            {
+                return;
+            }
+
+            Vector3 ndc = new(
+                clip.X / clip.W,
+                clip.Y / clip.W,
+                clip.Z / clip.W);
+
+            if (!float.IsFinite(ndc.X) ||
+                !float.IsFinite(ndc.Y) ||
+                !float.IsFinite(ndc.Z) ||
+                MathF.Abs(ndc.X) > 1f ||
+                MathF.Abs(ndc.Y) > 1f ||
+                ndc.Z < 0f ||
+                ndc.Z > 1f)
+            {
+                return;
+            }
+
+            DrawActorLabel(
+                text,
+                ndc,
+                width,
+                height,
+                color);
         }
 
         private void DrawActorLabel(
