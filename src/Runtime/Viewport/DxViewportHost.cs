@@ -306,6 +306,13 @@ namespace Runtime.Viewport
                             !IsStarting &&
                             !_rotating);
 
+                        _renderer.SetHudSnapshot(
+                            IsPlaying &&
+                            !IsCharacterEditing &&
+                            !IsPlayInspecting
+                                ? _playerStats?.Snapshot
+                                : null);
+
                         _renderer.Render(
                             IsPlaying ? ActivePlayCamera : _camera,
                             width,

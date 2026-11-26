@@ -1,4 +1,5 @@
 using Avalonia;
+using Runtime.UI.Hud;
 
 namespace Editor
 {
@@ -7,7 +8,17 @@ namespace Editor
         [STAThread]
         public static void Main(string[] args)
         {
-            BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
+            HudEngine.Initialize();
+
+            try
+            {
+                BuildAvaloniaApp()
+                    .StartWithClassicDesktopLifetime(args);
+            }
+            finally
+            {
+                HudEngine.Shutdown();
+            }
         }
 
         private static AppBuilder BuildAvaloniaApp()

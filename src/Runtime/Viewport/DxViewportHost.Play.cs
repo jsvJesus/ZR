@@ -3,6 +3,7 @@ using ZoneReborn.World.Characters;
 using ZoneReborn.World.Characters.Locomotion;
 using ZoneReborn.World.Terrain;
 using ZoneReborn.World.Actors;
+using ZoneReborn.World.Characters.Stats;
 
 namespace Runtime.Viewport;
 
@@ -14,6 +15,10 @@ public sealed partial class DxViewportHost
     private ThirdPersonCamera? _orbit;
     private TerrainSurface? _surface;
     private CharacterLocomotion? _player;
+    private PlayerStats? _playerStats;
+    private bool _sprintExhausted;
+
+    public PlayerStats? CurrentPlayerStats => _playerStats;
 
     private bool _jumpRequested;
     private bool _aimHeld;
@@ -198,6 +203,15 @@ public sealed partial class DxViewportHost
             _player = loaded.Player;
             _surface = loaded.Surface;
 
+            _playerStats = new PlayerStats(
+                PlayerStatsSettings.Load(
+                    Path.Combine(
+                        assets.Root,
+                        "ui",
+                        "player-stats.json")));
+
+            _sprintExhausted = false;
+
             PublishCharacterWeaponState();
 
             _jumpRequested = false;
@@ -274,6 +288,9 @@ public sealed partial class DxViewportHost
 
         _surface = null;
         _player = null;
+
+        _playerStats = null;
+        _sprintExhausted = false;
 
         PublishCharacterWeaponState();
 
@@ -405,6 +422,35 @@ public sealed partial class DxViewportHost
             _fireHeld
         );
 
+        AnimState previousState = _player.State;
+
+        if (_playerStats != null)
+        {
+            if (!input.Sprint)
+            {
+                _sprintExhausted = false;
+            }
+            else if (!_playerStats.CanSprint)
+            {
+                _sprintExhausted = true;
+            }
+
+            input = input with
+            {
+                Sprint = input.Sprint &&
+                         _playerStats.CanSprint &&
+                         !_sprintExhausted,
+
+                JumpPressed = input.JumpPressed &&
+                              _playerStats.CanJump
+            };
+
+            if (!_playerStats.IsAlive)
+            {
+                input = default;
+            }
+        }
+
         // Character rotation and locomotion remain unchanged.
         _player.Animator.Pose.FirstPersonWeight = _orbit.FirstPersonBlend;
         _player.Animator.Pose.FirstPersonAimBlend = _orbit.AimBlend;
@@ -415,6 +461,35 @@ public sealed partial class DxViewportHost
             _orbit.Pitch,
             skin: false
         );
+
+        if (_playerStats != null)
+        {
+            bool wasJumping =
+                previousState is AnimState.JumpWaiting
+                    or AnimState.JumpTakeoff
+                    or AnimState.JumpAir;
+
+            bool startedJump =
+                _player.State is AnimState.JumpWaiting
+                    or AnimState.JumpTakeoff
+                    or AnimState.JumpAir;
+
+            if (input.JumpPressed &&
+                !wasJumping &&
+                startedJump)
+            {
+                _playerStats.ConsumeJumpStamina();
+            }
+
+            bool sprinting =
+                _player.State == AnimState.Sprint &&
+                _player.Snapshot.Speed > 0.1f;
+
+            _playerStats.Update(
+                deltaTime,
+                sprinting,
+                _player.Grounded);
+        }
 
         bool aiming = _player.IsAiming;
         _orbit.SetFirstPerson(aiming);

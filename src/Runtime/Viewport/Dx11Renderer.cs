@@ -615,6 +615,11 @@ namespace Runtime.Viewport
                     actorViewProjection);
             }
 
+            if (playing)
+            {
+                RenderHud();
+            }
+
             _swapChain.Present(1, PresentFlags.None);
         }
 
@@ -673,7 +678,7 @@ namespace Runtime.Viewport
         public void Dispose()
         {
             _context?.ClearState();
-
+            DisposeHud();
             DisposeEnvironment();
 
             _terrain?.Dispose();

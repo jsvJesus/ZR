@@ -1,4 +1,5 @@
 using Avalonia;
+using Runtime.UI.Hud;
 
 namespace Client
 {
@@ -7,11 +8,20 @@ namespace Client
         [STAThread]
         public static void Main(string[] args)
         {
-            AppBuilder.Configure<App>()
-                .UsePlatformDetect()
-                .WithInterFont()
-                .LogToTrace()
-                .StartWithClassicDesktopLifetime(args);
+            HudEngine.Initialize();
+
+            try
+            {
+                AppBuilder.Configure<App>()
+                    .UsePlatformDetect()
+                    .WithInterFont()
+                    .LogToTrace()
+                    .StartWithClassicDesktopLifetime(args);
+            }
+            finally
+            {
+                HudEngine.Shutdown();
+            }
         }
     }
 }
