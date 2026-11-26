@@ -1,7 +1,7 @@
 using Client.Configuration;
-using Editor.Environment;
-using Editor.Levels;
-using Editor.Viewport;
+using Runtime.Environment;
+using Runtime.Levels;
+using Runtime.Viewport;
 using ZoneReborn.World.Actors;
 using ZoneReborn.World.Assets;
 
@@ -9,7 +9,7 @@ namespace Client.Gameplay
 {
     public sealed class LocalGameSession
     {
-        private readonly LevelWorkspace _workspace = new();
+        private readonly LevelLoader _workspace = new();
 
         public async Task StartAsync(
             DxViewportHost viewport,

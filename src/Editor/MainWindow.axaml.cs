@@ -1,7 +1,7 @@
 using Avalonia.Controls;
 using Avalonia.Interactivity;
 using Avalonia.Input;
-using Editor.Viewport;
+using Runtime.Viewport;
 
 namespace Editor
 {
@@ -10,6 +10,8 @@ namespace Editor
         public MainWindow()
         {
             InitializeComponent();
+
+            Viewport.OutfitStore = new global::Editor.Characters.CharacterOutfitStore();
 
             Viewport.ShowGrid = GridCheck.IsChecked == true;
 

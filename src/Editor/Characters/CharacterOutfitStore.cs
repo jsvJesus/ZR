@@ -1,3 +1,4 @@
+using Runtime.Characters;
 using System.IO;
 using System.Security.Cryptography;
 using System.Text;
@@ -7,7 +8,7 @@ using ZoneReborn.World.Characters;
 
 namespace Editor.Characters;
 
-internal static class CharacterOutfitStore
+internal sealed class CharacterOutfitStore : ICharacterOutfitStore
 {
     private static string FilePath(AssetPaths assets)
     {
@@ -20,9 +21,9 @@ internal static class CharacterOutfitStore
             $"character-{key}.json");
     }
 
-    public static bool Exists(AssetPaths assets) => File.Exists(FilePath(assets));
+    public bool Exists(AssetPaths assets) => File.Exists(FilePath(assets));
 
-    public static CharacterOutfit? Read(AssetPaths assets)
+    public CharacterOutfit? Read(AssetPaths assets)
     {
         string path = FilePath(assets);
         if (!File.Exists(path)) return null;
@@ -34,7 +35,7 @@ internal static class CharacterOutfitStore
 
     // A small settings commit on the UI thread, after the GPU swap. It must
     // finish before another mode/Stop/Close event can cancel the load session.
-    public static void Write(AssetPaths assets, CharacterOutfit outfit)
+    public void Write(AssetPaths assets, CharacterOutfit outfit)
     {
         string path = FilePath(assets), temporary = path + $".{Guid.NewGuid():N}.tmp";
         try

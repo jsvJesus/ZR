@@ -5,7 +5,7 @@ using Avalonia.Media;
 using Avalonia.Threading;
 using Client.Configuration;
 using Client.Gameplay;
-using Editor.Viewport;
+using Runtime.Viewport;
 
 namespace Client
 {
