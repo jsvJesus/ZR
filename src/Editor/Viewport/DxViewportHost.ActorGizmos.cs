@@ -23,6 +23,12 @@ namespace Editor.Viewport
 
             set
             {
+                if (_selectedLootLocationId.HasValue &&
+                    value == ObjectGizmoMode.Rotate)
+                {
+                    return;
+                }
+
                 if (_actorTransformMode == value)
                 {
                     return;
