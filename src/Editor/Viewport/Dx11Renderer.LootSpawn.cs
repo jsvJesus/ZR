@@ -1,5 +1,5 @@
-using System.Numerics;
 using System.Diagnostics;
+using System.Numerics;
 using Editor.Viewport.Scene;
 using ZoneReborn.World.Actors;
 using ZoneReborn.World.Assets;
@@ -9,7 +9,9 @@ namespace Editor.Viewport
 {
     public sealed partial class Dx11Renderer
     {
-        private const int MaximumLootPreviews = 128;
+        private const int MaximumLootPreviews = 256;
+
+        private const float LootPreviewDistance = 120f;
 
         private AssetPaths? _lootPreviewAssets;
 
@@ -36,12 +38,7 @@ namespace Editor.Viewport
             if (!_lootPreviewEnabled ||
                 _lootPreviewAssets == null ||
                 _lootItemCatalog == null ||
-                _actorDocument == null ||
-                _actorSelection is not Guid id ||
-                _actorDocument.Find(id) is not { } actor ||
-                actor.Kind != ActorKind.LootSpawn ||
-                actor.Loot.Count == 0 ||
-                actor.LootLocations.Count == 0)
+                _actorDocument == null)
             {
                 return;
             }
@@ -57,29 +54,55 @@ namespace Editor.Viewport
                     $"LootSpawn preview: {warning}");
             }
 
+            float distance = Math.Min(
+                LootPreviewDistance,
+                farPlane);
+
+            float distanceSquared =
+                distance * distance;
+
+            var candidates = _actorDocument.Actors
+                .Where(actor =>
+                    actor.Kind == ActorKind.LootSpawn &&
+                    actor.Enabled)
+                .SelectMany(actor => actor.LootLocations
+                    .Where(location =>
+                        location.Loot?.Count > 0)
+                    .Select(location => new
+                    {
+                        Actor = actor,
+                        Location = location,
+                        Position = location.GetWorldPosition(actor)
+                    }))
+                .Where(candidate =>
+                    Vector3.DistanceSquared(
+                        candidate.Position,
+                        camera.Position) <= distanceSquared)
+                .OrderBy(candidate =>
+                    candidate.Actor.Id != _actorSelection)
+                .ThenBy(candidate =>
+                    Vector3.DistanceSquared(
+                        candidate.Position,
+                        camera.Position))
+                .Take(MaximumLootPreviews);
+
             var instances = new List<SceneInstance>();
 
-            int count = Math.Min(
-                actor.LootLocations.Count,
-                MaximumLootPreviews);
-
-            for (int index = 0; index < count; index++)
+            foreach (var candidate in candidates)
             {
+                LevelActor actor =
+                    candidate.Actor;
+
                 LootSpawnLocation location =
-                    actor.LootLocations[index];
+                    candidate.Location;
 
-                Vector3 position =
-                    location.GetWorldPosition(actor);
+                LootSpawnEntry? entry =
+                    location.Loot?.FirstOrDefault();
 
-                if (Vector3.DistanceSquared(
-                        position,
-                        camera.Position) > 14400f)
+                if (entry == null)
                 {
                     continue;
                 }
-
-                LootSpawnEntry entry =
-                    actor.Loot[index % actor.Loot.Count];
 
                 ActorItemDefinition? item =
                     _lootItemCatalog.Items.FirstOrDefault(
@@ -110,6 +133,9 @@ namespace Editor.Viewport
                 SceneBounds rotatedBounds =
                     geometry.Bounds.Transform(rotation);
 
+                Vector3 position =
+                    candidate.Position;
+
                 position.Y -= rotatedBounds.Minimum.Y;
 
                 Matrix4x4 world =
@@ -130,7 +156,7 @@ namespace Editor.Viewport
                     geometry.Bounds.Transform(world),
                     false)
                 {
-                    Id = $"loot-preview/{location.Id:N}",
+                    Id = $"loot-preview/{actor.Id:N}/{location.Id:N}",
                     LocalBounds = geometry.Bounds,
                     VisualLocalBounds = geometry.Bounds,
                     FollowTerrain = false

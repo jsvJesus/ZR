@@ -10,6 +10,7 @@ namespace ZoneReborn.World.Actors
         public float X { get; set; }
         public float Y { get; set; }
         public float Z { get; set; }
+        public List<LootSpawnEntry>? Loot { get; set; }
 
         [JsonIgnore]
         public Vector3 LocalPosition

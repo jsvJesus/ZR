@@ -509,140 +509,121 @@ namespace Editor.Actors
         {
             _properties.Children.Add(new Separator());
 
+            Guid? locationId =
+                _viewport?.SelectedLootLocationId;
+
+            int locationIndex = actor.LootLocations.FindIndex(
+                location => location.Id == locationId);
+
+            if (locationIndex < 0)
+            {
+                _properties.Children.Add(new TextBlock
+                {
+                    Text = "Выберите Location для назначения предмета.",
+                    TextWrapping = TextWrapping.Wrap
+                });
+
+                return;
+            }
+
+            LootSpawnLocation location =
+                actor.LootLocations[locationIndex];
+
+            LootSpawnEntry? entry =
+                location.Loot?.FirstOrDefault();
+
             _properties.Children.Add(new TextBlock
             {
-                Text = $"Loot Table ({actor.Loot.Count})",
+                Text = $"Location {locationIndex + 1}",
+                FontSize = 16,
                 FontWeight = FontWeight.SemiBold
             });
 
-            for (int index = 0; index < actor.Loot.Count; index++)
+            if (_catalog == null)
             {
-                LootSpawnEntry entry = actor.Loot[index];
-
-                var section = new StackPanel
+                _properties.Children.Add(new TextBlock
                 {
-                    Spacing = 6
-                };
-
-                section.Children.Add(new TextBlock
-                {
-                    Text = $"Предмет {index + 1}",
-                    FontWeight = FontWeight.SemiBold
+                    Text = "Каталог предметов не загружен."
                 });
 
-                BuildLootEntry(section, entry);
-
-                section.Children.Add(CreateButton(
-                    "Удалить предмет",
-                    () =>
-                    {
-                        actor.Loot.Remove(entry);
-                        Changed();
-                        BuildProperties();
-                    }));
-
-                _properties.Children.Add(new Border
-                {
-                    BorderBrush = Brushes.DimGray,
-                    BorderThickness = new Thickness(1),
-                    CornerRadius = new CornerRadius(4),
-                    Padding = new Thickness(8),
-                    Child = section
-                });
+                return;
             }
 
-            Button add = CreateButton(
-                "+ Добавить предмет",
-                () =>
-                {
-                    ActorItemDefinition? item =
-                        _catalog?.FindCategory(actor.LootCategory).FirstOrDefault() ??
-                        _catalog?.Items.FirstOrDefault();
+            var empty = new ActorItemDefinition(
+                0,
+                0,
+                actor.LootCategory,
+                "Не выбран");
 
-                    if (item == null)
-                    {
-                        return;
-                    }
-
-                    actor.Loot.Add(new LootSpawnEntry
-                    {
-                        TypeId = item.TypeId,
-                        Category = item.Category
-                    });
-
-                    Changed();
-                    BuildProperties();
-                });
-
-            add.IsEnabled = _catalog?.Items.Count > 0;
-
-            _properties.Children.Add(add);
-        }
-
-        private void BuildLootEntry(
-            StackPanel section,
-            LootSpawnEntry entry)
-        {
-            string[] categories = (_catalog?.Items
-                .Select(item => item.Category) ??
-                Enumerable.Empty<string>())
-                .Append(entry.Category)
-                .Distinct()
-                .Order()
-                .ToArray();
-
-            AddChoice(
-                section,
-                "Категория",
-                categories,
-                entry.Category,
-                category =>
-                {
-                    ActorItemDefinition? item =
-                        _catalog?.FindCategory(category)
-                            .FirstOrDefault();
-
-                    if (item == null)
-                    {
-                        return;
-                    }
-
-                    entry.Category = category;
-                    entry.TypeId = item.TypeId;
-
-                    Changed();
-                    BuildProperties();
-                });
-
-            var items = (_catalog?.FindCategory(entry.Category) ?? [])
+            var items = _catalog
+                .FindCategory(actor.LootCategory)
                 .ToList();
 
-            ActorItemDefinition? selected = items.FirstOrDefault(
-                item => item.TypeId == entry.TypeId);
+            ActorItemDefinition selected = empty;
 
-            if (selected == null)
+            if (entry != null)
             {
-                selected = new ActorItemDefinition(
-                    entry.TypeId,
-                    0,
-                    entry.Category,
-                    "Отсутствует в каталоге");
+                selected = _catalog.Items.FirstOrDefault(
+                    item =>
+                        item.TypeId == entry.TypeId &&
+                        item.Category == entry.Category)
+                    ?? new ActorItemDefinition(
+                        entry.TypeId,
+                        0,
+                        entry.Category,
+                        "Отсутствует в каталоге");
 
-                items.Insert(0, selected);
+                if (!items.Contains(selected))
+                {
+                    items.Insert(0, selected);
+                }
             }
 
+            items.Insert(0, empty);
+
             AddChoice(
-                section,
+                _properties,
                 "Предмет",
                 items,
                 selected,
                 item =>
                 {
-                    entry.TypeId = item.TypeId;
-                    entry.Category = item.Category;
+                    location.Loot ??= [];
+
+                    if (item.TypeId == 0)
+                    {
+                        location.Loot.Clear();
+
+                        Changed();
+                        BuildProperties();
+
+                        return;
+                    }
+
+                    LootSpawnEntry value =
+                        location.Loot.FirstOrDefault() ??
+                        new LootSpawnEntry();
+
+                    value.TypeId = item.TypeId;
+                    value.Category = item.Category;
+
+                    location.Loot.Clear();
+                    location.Loot.Add(value);
+
                     Changed();
+                    BuildProperties();
                 });
 
+            if (entry != null)
+            {
+                BuildLootEntrySettings(_properties, entry);
+            }
+        }
+
+        private void BuildLootEntrySettings(
+            StackPanel section,
+            LootSpawnEntry entry)
+        {
             AddNumber(
                 section,
                 "Шанс появления, %",
@@ -651,6 +632,7 @@ namespace Editor.Actors
                 value =>
                 {
                     entry.Chance = value;
+
                     Changed();
                 });
 
@@ -662,14 +644,21 @@ namespace Editor.Actors
                 value =>
                 {
                     entry.Rarity = value;
+
                     Changed();
                 });
 
             var minimum = CreateNumber(
-                entry.MinCount, 1, 10000, 1);
+                entry.MinCount,
+                1,
+                10000,
+                1);
 
             var maximum = CreateNumber(
-                entry.MaxCount, 1, 10000, 1);
+                entry.MaxCount,
+                1,
+                10000,
+                1);
 
             AddField(section, "Min Count", minimum);
             AddField(section, "Max Count", maximum);

@@ -77,7 +77,10 @@ namespace Editor.Viewport
                 return true;
             }
 
-            var location = new LootSpawnLocation();
+            var location = new LootSpawnLocation
+            {
+                Loot = []
+            };
 
             location.SetWorldPosition(actor, position);
 

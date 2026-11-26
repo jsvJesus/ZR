@@ -23,7 +23,60 @@ namespace ZoneReborn.World.Actors
 
             Validate(document);
 
+            MigrateLootLocations(document);
+
             return document;
+        }
+
+        private static void MigrateLootLocations(ActorDocument document)
+        {
+            bool changed = false;
+
+            foreach (LevelActor actor in document.Actors)
+            {
+                if (actor.Kind != ActorKind.LootSpawn)
+                {
+                    continue;
+                }
+
+                for (int index = 0;
+                     index < actor.LootLocations.Count;
+                     index++)
+                {
+                    LootSpawnLocation location =
+                        actor.LootLocations[index];
+
+                    if (location.Loot != null)
+                    {
+                        continue;
+                    }
+
+                    location.Loot = [];
+
+                    if (actor.Loot.Count > 0)
+                    {
+                        LootSpawnEntry entry =
+                            actor.Loot[index % actor.Loot.Count];
+
+                        location.Loot.Add(new LootSpawnEntry
+                        {
+                            TypeId = entry.TypeId,
+                            Category = entry.Category,
+                            Chance = entry.Chance,
+                            Rarity = entry.Rarity,
+                            MinCount = entry.MinCount,
+                            MaxCount = entry.MaxCount
+                        });
+                    }
+
+                    changed = true;
+                }
+            }
+
+            if (changed)
+            {
+                document.Touch();
+            }
         }
 
         public static async Task SaveAsync(
@@ -126,7 +179,9 @@ namespace ZoneReborn.World.Actors
                     }
                 }
 
-                foreach (LootSpawnEntry entry in actor.Loot)
+                foreach (LootSpawnEntry entry in actor.Loot.Concat(
+                             actor.LootLocations.SelectMany(
+                                 location => location.Loot ?? [])))
                 {
                     if (entry == null ||
                         entry.TypeId <= 0 ||

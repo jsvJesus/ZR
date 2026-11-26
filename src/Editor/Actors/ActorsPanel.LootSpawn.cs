@@ -21,6 +21,7 @@ namespace Editor.Actors
                     actor.LootCategory = value;
 
                     Changed();
+                    BuildProperties();
                 });
 
             _properties.Children.Add(new TextBlock
@@ -77,8 +78,24 @@ namespace Editor.Actors
                         new ColumnDefinitions("*,64")
                 };
 
+                LootSpawnEntry? entry =
+                    location.Loot?.FirstOrDefault();
+
+                ActorItemDefinition? definition =
+                    entry == null
+                        ? null
+                        : _catalog?.Items.FirstOrDefault(
+                            item =>
+                                item.TypeId == entry.TypeId &&
+                                item.Category == entry.Category);
+
+                string itemName = definition?.Name ??
+                                  (entry == null
+                                      ? "Пусто"
+                                      : $"Item {entry.TypeId}");
+
                 Button select = CreateButton(
-                    $"Location {index + 1}",
+                    $"Location {index + 1}: {itemName}",
                     () =>
                     {
                         _viewport?.SelectLootLocation(location.Id);
