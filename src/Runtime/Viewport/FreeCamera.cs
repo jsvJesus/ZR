@@ -1,0 +1,149 @@
+using System.Numerics;
+
+namespace Runtime.Viewport
+{
+    public readonly record struct CameraPose(
+        float X,
+        float Y,
+        float Z,
+        float Yaw,
+        float Pitch,
+        float Speed,
+        float Roll = 0);
+
+    public sealed class FreeCamera
+    {
+        public const float MinimumSpeed = 1f;
+        public const float MaximumSpeed = 5000f;
+
+        public Vector3 Position { get; private set; } =
+            new Vector3(0f, 4f, -12f);
+
+        public float Yaw { get; private set; }
+
+        public float Pitch { get; private set; } = -0.18f;
+        public float Roll { get; private set; }
+
+        private Matrix4x4 Orientation => Matrix4x4.CreateRotationZ(Roll) *
+            Matrix4x4.CreateRotationX(-Pitch) * Matrix4x4.CreateRotationY(Yaw);
+
+        public Vector3 RightDirection => Vector3.TransformNormal(Vector3.UnitX, Orientation);
+        public Vector3 UpDirection => Vector3.TransformNormal(Vector3.UnitY, Orientation);
+
+        public float Speed { get; set; } = 8f;
+
+        public CameraPose Pose => new CameraPose(
+            Position.X,
+            Position.Y,
+            Position.Z,
+            Yaw,
+            Pitch,
+            Speed,
+            Roll);
+
+        public Vector3 LookDirection
+        {
+            get
+            {
+                return new Vector3(
+                    MathF.Sin(Yaw) * MathF.Cos(Pitch),
+                    MathF.Sin(Pitch),
+                    MathF.Cos(Yaw) * MathF.Cos(Pitch));
+            }
+        }
+
+        public void Rotate(float deltaX, float deltaY)
+        {
+            const float sensitivity = 0.003f;
+
+            Yaw += deltaX * sensitivity;
+
+            Pitch = Math.Clamp(
+                Pitch - deltaY * sensitivity,
+                -1.50f,
+                1.50f);
+        }
+
+        public void ChangeSpeed(int wheelDelta)
+        {
+            if (wheelDelta == 0)
+            {
+                return;
+            }
+
+            float steps = wheelDelta / 120f;
+
+            Speed = Math.Clamp(
+                Speed * MathF.Pow(1.2f, steps),
+                MinimumSpeed,
+                MaximumSpeed);
+        }
+
+        public void Move(
+            bool forward,
+            bool backward,
+            bool left,
+            bool right,
+            bool up,
+            bool down,
+            float deltaTime)
+        {
+            var front = new Vector3(
+                MathF.Sin(Yaw),
+                0f,
+                MathF.Cos(Yaw));
+
+            var side = new Vector3(
+                front.Z,
+                0f,
+                -front.X);
+
+            var direction = Vector3.Zero;
+
+            if (forward)
+            {
+                direction += front;
+            }
+
+            if (backward)
+            {
+                direction -= front;
+            }
+
+            if (right)
+            {
+                direction += side;
+            }
+
+            if (left)
+            {
+                direction -= side;
+            }
+
+            if (up)
+            {
+                direction += Vector3.UnitY;
+            }
+
+            if (down)
+            {
+                direction -= Vector3.UnitY;
+            }
+
+            if (direction.LengthSquared() > 0.0001f)
+            {
+                direction = Vector3.Normalize(direction);
+                Position += direction * Speed * deltaTime;
+            }
+        }
+
+        public void Restore(CameraPose pose)
+        {
+            Position = new Vector3(pose.X, pose.Y, pose.Z);
+            Yaw = pose.Yaw;
+            Pitch = Math.Clamp(pose.Pitch, -1.50f, 1.50f);
+            Roll = float.IsFinite(pose.Roll) ? pose.Roll : 0;
+            Speed = Math.Clamp(pose.Speed, MinimumSpeed, MaximumSpeed);
+        }
+    }
+}
