@@ -284,15 +284,14 @@ namespace Editor.Viewport
                             _selectedRoadPoint);
 
                         _renderer.SetActors(
-                            ActorEditingEnabled &&
-                            !IsPlaying &&
-                            !IsStarting
+                            IsPlaying ||
+                            (ActorEditingEnabled && !IsStarting)
                                 ? _level?.Actors
                                 : null,
-                            _selectedActorId,
-                            _selectedLootLocationId,
+                            IsPlaying ? null : _selectedActorId,
+                            IsPlaying ? null : _selectedLootLocationId,
                             LootItemCatalog,
-                            LootPreviewEnabled);
+                            IsPlaying || LootPreviewEnabled);
 
                         _renderer.SetActorGizmo(
                             ActorTransformMode,

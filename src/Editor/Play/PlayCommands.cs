@@ -26,6 +26,12 @@ namespace Editor
             {
                 StatusText.Text = "Загрузка персонажа…";
                 await Viewport.StartPlayAsync();
+
+                if (Viewport.IsPlaying && !_isClosing)
+                {
+                    await ActorsPanel.LoadCatalogAsync();
+                }
+
                 if (!_isClosing) StatusText.Text = Viewport.IsPlaying
                     ? "Play: мышь — обзор, WASD — бег, Alt — ходьба, Shift — спринт, Ctrl/V — присед, C — TPS/FPS, Q/E — наклон, Space — прыжок, F8 — осмотр, Esc — Stop."
                     : "Play остановлен.";

@@ -473,15 +473,10 @@ namespace Editor.Viewport
                 viewProjection,
                 farPlane);
 
-            _lootPreviewVisible = false;
-
-            if (!playing)
-            {
-                RenderLootPreview(
-                    camera,
-                    viewProjection,
-                    farPlane);
-            }
+            RenderLootPreview(
+                camera,
+                viewProjection,
+                farPlane);
 
             _trees?.Render(
                 camera,
@@ -543,12 +538,9 @@ namespace Editor.Viewport
 
             _objects?.RenderTransparent(camera, viewProjection);
 
-            if (!playing)
-            {
-                RenderLootPreviewTransparency(
-                    camera,
-                    viewProjection);
-            }
+            RenderLootPreviewTransparency(
+                camera,
+                viewProjection);
 
             RenderRoadTransparency(
                 camera,
